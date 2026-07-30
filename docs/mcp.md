@@ -1,0 +1,49 @@
+# MCP servers
+
+aigem connects to [Model Context Protocol](https://modelcontextprotocol.io)
+servers and exposes their tools to the model.
+
+## Configuration
+
+Servers are read from `mcpServers` blocks in project settings, then global
+settings, in this order:
+
+1. `<project>/.aigem/settings.json`
+2. `<project>/.claude/settings.json`
+3. `<project>/.claude/settings.local.json`
+4. `<project>/.mcp.json`
+5. `~/.config/aigem/settings.json`
+
+```sh
+aigem mcp list             # configured servers and their status
+aigem mcp add <name> ...   # add a server
+aigem mcp remove <name>    # remove one
+aigem mcp login <name>     # run an HTTP server's OAuth flow
+aigem mcp logout <name>    # clear its stored token
+```
+
+These commands only manage configuration. The trust gate is applied when a chat
+front-end starts and would actually connect.
+
+## Trust
+
+Global servers always keep their configured behavior.
+
+**Project-local MCP servers are trust-gated**, whether they use stdio or HTTP. CLI,
+REPL, and TUI startup skip them in an untrusted project and print a warning. This
+prevents an untrusted repository from starting local commands, connecting to
+project-defined HTTP endpoints, sending configured headers or OAuth credentials,
+or applying project `autoApprove` semantics before you have approved any of it.
+
+Pass `--trust-project-mcp` to approve each server's current transport
+configuration and, **separately**, its current `autoApprove` policy. A transport
+can remain allowed while a changed approval policy is invalidated; in that case
+the server starts with `autoApprove` disabled until the new policy is approved.
+
+HTTP approval is per named target and fingerprint, and never grants general
+network access. See [the security model](security.md) for the details.
+
+## Bots
+
+Bot mode does not connect MCP servers, so bots never auto-start project-local
+ones.

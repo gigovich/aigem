@@ -1,0 +1,64 @@
+name: Bug report
+description: Something does not work the way it is documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report security vulnerabilities here - see
+        [SECURITY.md](https://github.com/gigovich/aigem/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead.
+      placeholder: |
+        I ran `aigem -p '...'` and it ...
+        I expected it to ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows the problem.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: aigem version
+      description: Output of `aigem version`.
+      placeholder: "v0.1.0 (abc1234, 2026-07-30)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: "macOS 15.4 arm64 / Ubuntu 24.04 amd64"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model and provider
+      description: Which model was in use, if the bug involves one.
+      placeholder: "openai/gpt-5.6-sol, or local/gemma-4-12b"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: >
+        Any error text or stderr. This is rendered as a code block, so no
+        backticks are needed. Please redact API keys and tokens.
+      render: text

@@ -1,0 +1,770 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"text/tabwriter"
+	"time"
+
+	"github.com/gigovich/aigem/internal/agent"
+	"github.com/gigovich/aigem/internal/auth"
+	"github.com/gigovich/aigem/internal/bot"
+	"github.com/gigovich/aigem/internal/bot/mattermost"
+	"github.com/gigovich/aigem/internal/config"
+	"github.com/gigovich/aigem/internal/llm"
+	"github.com/gigovich/aigem/internal/local"
+	"github.com/gigovich/aigem/internal/search"
+	"github.com/gigovich/aigem/internal/tools"
+)
+
+// llmRetryAttempts is how many total tries an unattended bot's LLM call gets
+// before the failure surfaces to the runtime (which then schedules a resume).
+const llmRetryAttempts = 3
+
+const botUsage = `usage:
+  aigem bot create <name>   define a bot interactively
+  aigem bot list            list configured bots
+  aigem bot rm <name>       delete a bot
+  aigem bot start <name>    run a bot's chat loop
+  aigem bot model [<name>] [<ref>]   show or switch the model a bot runs on
+  aigem bot prompt <name>   print the bot's full assembled system prompt`
+
+const botModelUsage = `usage:
+  aigem bot model                  show every bot's model
+  aigem bot model <name>           show one bot's model
+  aigem bot model <name> <ref>     switch that bot to <ref> (e.g. openai/gpt-5.6-sol)
+  aigem bot model --all <ref>      switch every bot to <ref>
+  aigem bot model <name> --clear   go back to the auto-picked default
+  aigem bot model --all --clear    clear every bot's model
+
+Refs are listed by "aigem models", but a bot can only be pinned to a provider
+that comes from the built-ins or ~/.config/aigem/models.json - never from a
+repo's own .aigem/models.json. A running bot keeps its current model until it
+is restarted.`
+
+func runBotCommand(args []string) error {
+	if len(args) == 0 {
+		fmt.Println(botUsage)
+		return nil
+	}
+	switch args[0] {
+	case "create":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: aigem bot create <name>")
+		}
+		return botCreate(args[1])
+	case "list":
+		return botList()
+	case "rm":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: aigem bot rm <name>")
+		}
+		return bot.Remove(args[1])
+	case "start":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: aigem bot start <name>")
+		}
+		return botStart(args[1])
+	case "model":
+		return botModel(args[1:])
+	case "prompt":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: aigem bot prompt <name>")
+		}
+		return botPrompt(args[1])
+	case "-h", "--help", "help":
+		fmt.Println(botUsage)
+		return nil
+	default:
+		return fmt.Errorf("unknown bot subcommand %q\n\n%s", args[0], botUsage)
+	}
+}
+
+func botList() error {
+	names, err := bot.List()
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		fmt.Println("no bots configured")
+		return nil
+	}
+	for _, n := range names {
+		c, err := bot.Load(n)
+		if err != nil {
+			fmt.Printf("%s\t(unreadable: %v)\n", n, err)
+			continue
+		}
+		profile := c.CapabilityProfile
+		if profile == "" {
+			profile = tools.DefaultCapabilityProfile
+		}
+		model := c.Model
+		if model == "" {
+			model = "auto"
+		}
+		fmt.Printf("%s\trole=%s\tprofile=%s\ttransport=%s\tmodel=%s\n", n, c.Role, profile, c.Transport.Kind, model)
+	}
+	return nil
+}
+
+// botModelRegistry builds the registry a pinned bot model is resolved against.
+// See llm.NewUserRegistry for why the project-local models.json is left out.
+func botModelRegistry() *llm.Registry {
+	localCfg, _, _ := local.Load()
+	reg, warns := llm.NewUserRegistry(localProvider(localCfg, defaultMaxTokens))
+	warnModelsConfig(warns)
+	return reg
+}
+
+// resolveBotModel resolves ref and opens it the way botStart will, discarding the
+// backend: opening is what actually rejects a logged-out provider or a model the
+// stored credential cannot reach, so a bad switch fails here instead of at the
+// bot's next start. Opening builds clients only - no request is sent - so a
+// revoked or expired credential still surfaces later, at the first turn.
+func resolveBotModel(reg *llm.Registry, ref string) (llm.ModelInfo, error) {
+	if strings.TrimSpace(ref) == "" {
+		return llm.ModelInfo{}, fmt.Errorf("empty model ref")
+	}
+	_, _, m, err := auth.OpenModel(reg, ref, defaultMaxTokens)
+	if err != nil {
+		return llm.ModelInfo{}, err
+	}
+	return m, nil
+}
+
+// botModel dispatches "aigem bot model ...". Flags and positional arguments may
+// be interleaved.
+func botModel(args []string) error {
+	var all, clear bool
+	var pos []string
+	for _, a := range args {
+		switch a {
+		case "--all":
+			all = true
+		case "--clear":
+			clear = true
+		case "-h", "--help", "help":
+			fmt.Println(botModelUsage)
+			return nil
+		default:
+			if strings.HasPrefix(a, "-") {
+				return fmt.Errorf("unknown flag %q\n\n%s", a, botModelUsage)
+			}
+			pos = append(pos, a)
+		}
+	}
+
+	configured, err := bot.List()
+	if err != nil {
+		return err
+	}
+	// A single positional means "report this bot" and only turns into a model ref
+	// when a second one follows, so it is never guessed by shape.
+	names, ref := pos, ""
+	switch {
+	case all && clear:
+		if len(pos) > 0 {
+			return fmt.Errorf("--all --clear takes no other arguments\n\n%s", botModelUsage)
+		}
+	case all:
+		if len(pos) != 1 {
+			return fmt.Errorf("--all needs exactly one model ref\n\n%s", botModelUsage)
+		}
+		// Without this, "aigem bot model kate --all" would read the bot name as a
+		// ref and, if some bot's name matched a bare model id, silently switch every bot.
+		if slices.Contains(configured, pos[0]) {
+			return fmt.Errorf("%q is a bot name; --all switches every bot and takes a model ref\n\n%s",
+				pos[0], botModelUsage)
+		}
+		ref, names = pos[0], nil
+	case clear:
+		if len(pos) != 1 {
+			return fmt.Errorf("--clear needs exactly one bot name\n\n%s", botModelUsage)
+		}
+	case len(pos) == 2:
+		names, ref = pos[:1], pos[1]
+	case len(pos) > 2:
+		return fmt.Errorf("too many arguments\n\n%s", botModelUsage)
+	}
+
+	if all || len(names) == 0 {
+		if len(configured) == 0 {
+			fmt.Println("no bots configured")
+			return nil
+		}
+		names = configured
+	}
+
+	if ref == "" && !clear {
+		return reportBotModels(names, len(pos) == 0)
+	}
+	return setBotModels(names, ref)
+}
+
+// reportBotModels prints one row per bot. tolerate keeps a broken config from
+// hiding the others, the way `bot list` does; a name the operator typed is an
+// error instead - and rows are collected before anything prints, so that error
+// is not preceded by a half-written table.
+func reportBotModels(names []string, tolerate bool) error {
+	reg := botModelRegistry()
+	rows := make([]string, 0, len(names))
+	for _, n := range names {
+		row, err := botModelRow(reg, n)
+		if err != nil {
+			if !tolerate {
+				return err
+			}
+			row = fmt.Sprintf("%s\t\t%v", n, err)
+		}
+		rows = append(rows, row)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "bot\tmodel\tsource")
+	for _, r := range rows {
+		fmt.Fprintln(w, r)
+	}
+	return w.Flush()
+}
+
+// setBotModels validates the ref and every target before writing any of them, so
+// a ref one bot rejects cannot leave the fleet half-switched.
+func setBotModels(names []string, ref string) error {
+	for _, n := range names {
+		if _, err := bot.Load(n); err != nil {
+			return fmt.Errorf("bot %q: %w", n, err)
+		}
+	}
+	if ref != "" {
+		m, err := resolveBotModel(botModelRegistry(), ref)
+		if err != nil {
+			return explainPinFailure(ref, err)
+		}
+		ref = m.Ref() // normalize a bare id to provider/id
+	}
+	changed := 0
+	for _, n := range names {
+		// Re-read rather than reuse the pre-flight copy: a running bot rewrites its
+		// own bot.yaml to persist cron jobs, and writing back a snapshot taken
+		// before that would erase them.
+		c, err := bot.Load(n)
+		if err != nil {
+			return fmt.Errorf("bot %q: %w", n, err)
+		}
+		if c.Model == ref {
+			continue
+		}
+		c.Name, c.Model = n, ref
+		if err := bot.Save(c); err != nil {
+			return fmt.Errorf("bot %q: %w", n, err)
+		}
+		changed++
+		if ref == "" {
+			fmt.Printf("%s: model cleared (auto)\n", n)
+		} else {
+			fmt.Printf("%s: model set to %s\n", n, ref)
+		}
+	}
+	if changed == 0 {
+		fmt.Println("no change")
+		return nil
+	}
+	fmt.Println("restart the affected bots for the change to take effect")
+	return nil
+}
+
+// explainPinFailure names the one rejection that looks like a bug: a ref that
+// `aigem models` lists from the current directory, but that pinning cannot use
+// because only a project-local models.json defines it.
+func explainPinFailure(ref string, err error) error {
+	if _, _, uerr := botModelRegistry().Resolve(ref); uerr == nil {
+		return err // it resolved; the failure is about the credential, not the file
+	}
+	if _, _, perr := defaultModelRegistry().Resolve(ref); perr != nil {
+		return err
+	}
+	return fmt.Errorf("%w\n%q comes from a project-local .aigem/models.json, which is not consulted when pinning a bot",
+		err, ref)
+}
+
+// logUsagePerCall makes an unattended bot report what it spends: it has no
+// screen to put a gauge on, so the log is the only record of the burn rate. The
+// callback fires once per model call - per attempt of a retried one, since that
+// is what the provider charges for - and carries that call's own cost, so
+// concurrent threads cannot smear each other's numbers.
+func logUsagePerCall(client *llm.Ref) {
+	rep, ok := llm.UsageOf(client)
+	if !ok {
+		return
+	}
+	rep.OnCall(func(u llm.Usage, r llm.UsageReport) {
+		args := []any{
+			"in", u.InputTokens, "cached", u.CachedTokens, "out", u.OutputTokens,
+			"total_in", r.Total.InputTokens, "total_out", r.Total.OutputTokens, "calls", r.Calls,
+		}
+		if r.Uncounted > 0 {
+			args = append(args, "uncounted", r.Uncounted)
+		}
+		if w, ok := r.Limits.Tightest(); ok {
+			args = append(args, "limit", w.Name)
+			if w.UsedPercent > 0 {
+				args = append(args, "used_pct", w.UsedPercent)
+			}
+			if w.Remaining != "" {
+				args = append(args, "remaining", w.Remaining)
+			}
+		}
+		slog.Info("llm usage", args...)
+	})
+
+	// Persisting hangs off the quota callback, not the usage one: a rejected call
+	// reports no tokens, and a 429's reading is the one most worth having on disk.
+	// It is throttled because a turn is dozens of calls and the snapshot only has
+	// to be fresh enough for `aigem usage` to be worth reading.
+	var saved atomic.Pointer[time.Time]
+	rep.OnLimits(func(l llm.Limits) {
+		now := time.Now()
+		if last := saved.Load(); last != nil && now.Sub(*last) < quotaSaveInterval {
+			return
+		}
+		saved.Store(&now)
+		if serr := llm.SaveLimits(l); serr != nil {
+			slog.Debug("could not persist quota snapshot", "err", serr)
+		}
+	})
+}
+
+// quotaSaveInterval bounds how often a bot rewrites its provider's snapshot.
+const quotaSaveInterval = time.Minute
+
+// saveCronJobs returns the scheduler's persist hook. It re-reads bot.yaml on
+// every call instead of closing over the config loaded at startup, so a model
+// switch made from the CLI while the bot runs is not erased by the next cron
+// write. Nothing locks the file, so a switch landing inside this read-modify-write
+// can still be lost; the scheduler re-persists its jobs, a lost switch is silent,
+// which is why the command tells the operator to restart the bot.
+func saveCronJobs(name string) func([]bot.CronJob) error {
+	return func(jobs []bot.CronJob) error {
+		c, err := bot.Load(name)
+		if err != nil {
+			return err
+		}
+		c.Name, c.Cron = name, jobs
+		return bot.Save(c)
+	}
+}
+
+// botModelRow renders one tab-separated row. An unpinned bot shows the model it
+// would pick today, which is the value a switch would actually be changing.
+func botModelRow(reg *llm.Registry, name string) (string, error) {
+	c, err := bot.Load(name)
+	if err != nil {
+		return "", fmt.Errorf("bot %q: %w", name, err)
+	}
+	if pinned := strings.TrimSpace(c.Model); pinned != "" {
+		note := "configured"
+		if _, err := resolveBotModel(reg, pinned); err != nil {
+			note = "configured, UNUSABLE: " + err.Error()
+		}
+		return fmt.Sprintf("%s\t%s\t%s", name, pinned, note), nil
+	}
+	effective := "(none available)"
+	if def, ok := reg.DefaultPreferring(auth.IsAuthenticated); ok {
+		effective = def.Ref()
+	}
+	return fmt.Sprintf("%s\t%s\tauto", name, effective), nil
+}
+
+func promptLine(rd *bufio.Reader, label string) string {
+	fmt.Print(label)
+	line, _ := rd.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
+func botCreate(name string) error {
+	rd := bufio.NewReader(os.Stdin)
+
+	fmt.Println("Roles:")
+	for _, r := range bot.Roles() {
+		fmt.Printf("  %-10s %s\n", r.Name, r.Description)
+	}
+	role := promptLine(rd, "role: ")
+	if _, ok := bot.RoleByName(role); !ok {
+		return fmt.Errorf("unknown role %q", role)
+	}
+
+	persona := promptLine(rd, "persona (optional, e.g. \"female; use feminine forms in Russian\"): ")
+
+	kind := promptLine(rd, "transport [mattermost]: ")
+	if kind == "" {
+		kind = "mattermost"
+	}
+	if kind != "mattermost" {
+		return fmt.Errorf("only the mattermost transport is supported")
+	}
+
+	conf := bot.TransportConf{Kind: kind}
+	conf.ServerURL = promptLine(rd, "server URL: ")
+	token := promptLine(rd, "bot token: ")
+	conf.Team = promptLine(rd, "team: ")
+	workdir := promptLine(rd, "workdir [.]: ")
+	if workdir == "" {
+		workdir = "."
+	}
+	profile := promptLine(rd, "capability profile ["+tools.DefaultCapabilityProfile+"]: ")
+	if profile == "" {
+		profile = tools.DefaultCapabilityProfile
+	}
+	if _, err := tools.ResolveCapabilityProfile(profile); err != nil {
+		return err
+	}
+
+	fmt.Print("verifying... ")
+	botUserID, err := verifyMattermost(context.Background(), conf, token)
+	if err != nil {
+		fmt.Println("FAILED")
+		return err
+	}
+	conf.BotUserID = botUserID
+	fmt.Println("ok")
+
+	c := bot.Config{Name: name, Role: role, Persona: persona, Workdir: workdir,
+		Transport: conf, CapabilityProfile: profile}
+	if err := bot.Save(c); err != nil {
+		return err
+	}
+	if err := bot.SaveToken(name, token); err != nil {
+		return err
+	}
+	fmt.Printf("bot %q ready (role %s)\n", name, role)
+	return nil
+}
+
+// verifyMattermost confirms the token works and the team resolves. Channel membership is
+// managed in Mattermost and resolved at post time, so it is not checked here.
+func intersectTools(a, b []string) []string {
+	set := make(map[string]bool, len(b))
+	for _, name := range b {
+		set[name] = true
+	}
+	out := make([]string, 0, len(a))
+	for _, name := range a {
+		if set[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func verifyMattermost(ctx context.Context, conf bot.TransportConf, token string) (string, error) {
+	c := mattermost.NewClient(conf.ServerURL, token)
+	userID, err := c.Me(ctx)
+	if err != nil {
+		return "", fmt.Errorf("authenticate: %w", err)
+	}
+	if _, err := c.TeamID(ctx, conf.Team); err != nil {
+		return "", fmt.Errorf("resolve team %q: %w", conf.Team, err)
+	}
+	return userID, nil
+}
+
+// mmResolver adapts the Mattermost client to bot.ChannelResolver, binding the team so the
+// post_message tool resolves a channel name to an id among the bot's memberships on demand.
+type mmResolver struct {
+	client *mattermost.Client
+	team   string
+	teamID string
+}
+
+func (r mmResolver) ResolveChannel(ctx context.Context, name string) (string, error) {
+	// "@username" targets a direct-message channel. DM channels have no name in
+	// Mattermost, so they cannot be resolved through the team channel list.
+	if user, ok := strings.CutPrefix(strings.TrimSpace(name), "@"); ok {
+		user = strings.TrimSpace(user)
+		if user == "" {
+			return "", fmt.Errorf("a direct message needs a username after the @")
+		}
+		return r.client.DirectChannelWith(ctx, user)
+	}
+	if r.teamID == "" {
+		return "", fmt.Errorf("team %q was not resolved at startup; cannot post", r.team)
+	}
+	return r.client.ChannelIDByName(ctx, r.teamID, name)
+}
+
+func (r mmResolver) MemberChannels(ctx context.Context) ([]string, error) {
+	if r.teamID == "" {
+		return nil, fmt.Errorf("team %q was not resolved at startup", r.team)
+	}
+	return r.client.MemberChannelNames(ctx, r.teamID)
+}
+
+// errRunner is returned by the agent factory when a thread's tool registry cannot be
+// built; its error surfaces as an in-thread reply instead of crashing the whole bot.
+type errRunner struct{ err error }
+
+func (r errRunner) Run(_ context.Context, _ string, _ agent.Events) (string, error) {
+	return "", r.err
+}
+
+// botPrompt assembles and prints the bot's full system prompt exactly as botStart would,
+// minus the live transport and model. Memory index and skills catalog are read from the
+// bot's own directories, so the output matches what the running bot sees.
+func botPrompt(name string) error {
+	c, err := bot.Load(name)
+	if err != nil {
+		return err
+	}
+	role, ok := bot.RoleByName(c.Role)
+	if !ok {
+		return fmt.Errorf("bot %q has unknown role %q", name, c.Role)
+	}
+
+	extra := config.ProjectInstructions(c.Workdir)
+
+	memDir, err := bot.MemoryDir(name)
+	if err != nil {
+		return err
+	}
+	idx, err := bot.NewStore(memDir).Index()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not read memory index:", err)
+	}
+
+	skillsDir, err := bot.SkillsDir(name)
+	if err != nil {
+		return err
+	}
+	skills, skillErrs := bot.DiscoverBotSkills(skillsDir)
+	for _, e := range skillErrs {
+		fmt.Fprintln(os.Stderr, "warning: skills:", e)
+	}
+
+	fmt.Println(bot.ComposeSystem(c, role, idx, skills.Prompt(), extra))
+	return nil
+}
+
+func botStart(name string) error {
+	c, err := bot.Load(name)
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	role, ok := bot.RoleByName(c.Role)
+	if !ok {
+		return fmt.Errorf("bot %q has unknown role %q", name, c.Role)
+	}
+	token, err := bot.LoadToken(name)
+	if err != nil {
+		return err
+	}
+
+	localCfg, _, _ := local.Load()
+	modelReg, modelWarns := llm.NewRegistry(c.Workdir, localProvider(localCfg, defaultMaxTokens))
+	warnModelsConfig(modelWarns)
+	// A configured model is binding: if it cannot be opened the bot refuses to
+	// start rather than silently running on whatever else is authenticated. It is
+	// trimmed first because a blank ref means "the default model" to Resolve,
+	// which would be exactly the silent fallback this is meant to prevent.
+	pinned := strings.TrimSpace(c.Model)
+	ref := pinned
+	if ref == "" {
+		if def, ok := modelReg.DefaultPreferring(auth.IsAuthenticated); ok {
+			ref = def.Ref()
+		}
+	}
+	backend, _, info, err := auth.OpenModel(modelReg, ref, defaultMaxTokens)
+	if err != nil {
+		if pinned != "" {
+			return fmt.Errorf("open model %s configured for bot %q (change it with `aigem bot model %s <ref>`): %w",
+				pinned, name, name, err)
+		}
+		return fmt.Errorf("open model: %w", err)
+	}
+	source := "auto"
+	if pinned != "" {
+		source = "configured"
+	}
+	slog.Info("model", "ref", info.Ref(), "ctx", info.ContextWindow, "source", source)
+	client := llm.NewRef(backend)
+
+	extra := config.ProjectInstructions(c.Workdir)
+	memDir, err := bot.MemoryDir(name)
+	if err != nil {
+		return err
+	}
+	store := bot.NewStore(memDir)
+	skillsDir, err := bot.SkillsDir(name)
+	if err != nil {
+		return err
+	}
+	capProfile, err := tools.ResolveCapabilityProfile(c.CapabilityProfile)
+	if err != nil {
+		return err
+	}
+	turnBudget, err := c.TurnBudget.ResolveTurnBudgetFor(bot.TurnBudgetForRole(role.Name))
+	if err != nil {
+		return err
+	}
+	gate := bot.AllowGate(capProfile)
+
+	// Throttle the request rate so unattended runs stay under provider limits,
+	// and ride out transient provider failures (429/5xx/dropped streams) with a
+	// few retries. Retrying wraps Paced - not the other way around - so a failed
+	// attempt returns immediately (Paced only pauses after a successful call) and
+	// the pacing pause is never multiplied by retry backoff. Both decorators are
+	// stateless, so the per-thread agents built below share them.
+	logUsagePerCall(client)
+	paceFactor := c.ResolveLLMPaceFactor()
+	paced := llm.NewRetrying(llm.NewPaced(client, paceFactor), llmRetryAttempts)
+	slog.Info("llm pacing", "factor", paceFactor, "retries", llmRetryAttempts)
+
+	if _, err := tools.NewRegistry(c.Workdir); err != nil {
+		return fmt.Errorf("workdir %q is not usable: %w", c.Workdir, err)
+	}
+
+	searchCfg, serr := search.Load()
+	if serr != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not load search config:", serr)
+	}
+	// Give each bot its own browser profile. All bots run concurrently, and Chrome refuses to open
+	// the same user-data-dir twice (SingletonLock), so a shared profile makes every bot but the
+	// first fail web_search/open_url. Nest a per-bot dir under the configured (or default) profile.
+	if searchCfg.Browser != nil {
+		parent := searchCfg.Browser.ProfileDir
+		if parent == "" {
+			if d, derr := search.DefaultBrowserProfileDir(); derr == nil {
+				parent = d
+			}
+		}
+		if parent != "" {
+			searchCfg.Browser.ProfileDir = filepath.Join(parent, name)
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	tr, err := mattermost.Dial(ctx, c.Transport.ServerURL, token, c.Transport.BotUserID)
+	if err != nil {
+		return fmt.Errorf("connect mattermost: %w", err)
+	}
+	defer func() { _ = tr.Close() }()
+
+	if ts, terr := bot.NewThreadStore(name); terr != nil {
+		fmt.Fprintln(os.Stderr, "warning: thread state:", terr)
+	} else {
+		tr.SeedThreads(ts.Load())
+		tr.SetThreadSink(func(version uint64, ids []string) {
+			if err := ts.Save(version, ids); err != nil {
+				slog.Warn("could not persist followed threads", "err", err)
+			}
+		})
+	}
+
+	mmClient := mattermost.NewClient(c.Transport.ServerURL, token)
+	teamID, terr := mmClient.TeamID(ctx, c.Transport.Team)
+	if terr != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not resolve team for posting:", terr)
+	}
+	resolver := mmResolver{client: mmClient, team: c.Transport.Team, teamID: teamID}
+
+	scheduler, cronWarns := bot.NewScheduler(c.Cron, saveCronJobs(name))
+	for _, w := range cronWarns {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+	if err := scheduler.SetBuiltin(bot.MemoryReviewJob(name)); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: memory review job:", err)
+	}
+	heartbeat := bot.NewHeartbeat(name, scheduler)
+	// Fatal on purpose: without the heartbeat a bot that runs out of chat wake-ups has no way
+	// back to its own work, which is the exact stall this job exists to prevent.
+	if err := heartbeat.Arm(); err != nil {
+		return err
+	}
+
+	buildAgent := func() (*agent.Agent, func() string, error) {
+		reg, rerr := tools.NewRegistry(c.Workdir)
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		reg.Register(bot.NewMemoryTool(store))
+		reg.Register(bot.NewScheduleTool(scheduler))
+		reg.Register(bot.NewPostMessageTool(tr, resolver))
+		reg.Register(bot.NewHandoffTool(tr, resolver))
+		reg.Register(bot.NewReadChatTool(tr, resolver))
+		reg.Register(bot.NewSaveSkillTool(skillsDir))
+		reg.Register(bot.NewDeleteSkillTool(skillsDir))
+		skills, skillErrs := bot.DiscoverBotSkills(skillsDir)
+		for _, e := range skillErrs {
+			slog.Warn("skills discovery", "err", e)
+		}
+		if st := agent.NewSkillTool(skills, paced, reg, 0.3, gate); st != nil {
+			reg.Register(st)
+		}
+		if st := search.NewTool(searchCfg); st != nil {
+			reg.Register(st)
+		}
+		if bt := search.NewBrowseTool(searchCfg); bt != nil {
+			reg.Register(bt)
+		}
+		if at := search.NewBrowserActionTool(searchCfg); at != nil {
+			reg.Register(at)
+		}
+		sub := reg.Subset(intersectTools(role.Allow, capProfile.Allow))
+		catalog := skills.Prompt()
+		build := func() string {
+			idx, ierr := store.Index()
+			if ierr != nil {
+				fmt.Fprintln(os.Stderr, "warning: could not read memory index:", ierr)
+			}
+			return bot.ComposeSystem(c, role, idx, catalog, extra)
+		}
+		ag := agent.New(paced, sub, 0.3, gate, build())
+		ag.SetTurnBudget(turnBudget)
+		// Enable auto-compaction. Without this the per-thread agent accumulates every turn's
+		// tool output until it overflows the model context window and then fails every wake with
+		// context_length_exceeded. maybeCompact is a no-op unless CtxSize is set, so seed it from
+		// the model's own context window (falling back to the CLI default).
+		compactCfg := agent.DefaultCompactConfig()
+		compactCfg.CtxSize = defaultCtxSize
+		if cw := client.Model().ContextWindow; cw > 0 {
+			compactCfg.CtxSize = cw
+		}
+		ag.SetCompaction(compactCfg)
+		return ag, build, nil
+	}
+	mk := func(string) bot.Runner {
+		ag, build, aerr := buildAgent()
+		if aerr != nil {
+			return errRunner{err: fmt.Errorf("workdir %q became unusable: %w", c.Workdir, aerr)}
+		}
+		return bot.RefreshingRunner{Agent: ag, Build: build}
+	}
+	// Wire the runtime before the scheduler starts ticking: a job that fired in between would
+	// find no busy gate installed and could land on top of a live turn.
+	rt := bot.NewRuntime(tr, mk, 4)
+	scheduler.SetBusy(rt.Busy)
+	rt.SetOnAddressed(heartbeat.Addressed)
+	scheduler.SetRunner(bot.NewCronRunner(func() (bot.Runner, error) {
+		ag, _, aerr := buildAgent()
+		return ag, aerr
+	}, heartbeat, rt.EnterTurn))
+
+	go scheduler.Run(ctx)
+
+	fmt.Printf("bot %q running as %s; press Ctrl+C to stop\n", name, role.Name)
+	if err := rt.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
+}

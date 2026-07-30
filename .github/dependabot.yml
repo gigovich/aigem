@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # The Charm libraries move together; one PR per week beats six.
+      charm:
+        patterns:
+          - "github.com/charmbracelet/*"
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+    commit-message:
+      prefix: "chore"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore"

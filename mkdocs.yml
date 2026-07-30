@@ -1,0 +1,77 @@
+site_name: aigem
+site_description: A terminal AI coding agent in Go, with a real sandbox and an explicit trust model.
+site_url: https://gigovich.github.io/aigem/
+repo_url: https://github.com/gigovich/aigem
+repo_name: gigovich/aigem
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Givi Khojanashvili - Apache-2.0
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Security model: security.md
+  - Models and providers: models.md
+  - Reference:
+      - Tools: tools.md
+      - Skills: skills.md
+      - Hooks: hooks.md
+      - MCP servers: mcp.md
+      - Web search: search.md
+      - The TUI: tui.md
+      - Configuration: configuration.md
+  - Unattended:
+      - Chat bots: bots.md
+      - Docker: docker.md
+  - Architecture: architecture.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/gigovich/aigem

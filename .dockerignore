@@ -1,0 +1,10 @@
+# Keep the build context small and free of the .claude symlink (points outside the repo).
+.git
+.gitignore
+.claude
+.remember/
+/aigem
+/bin/
+docs/
+Dockerfile
+.dockerignore

@@ -1,0 +1,74 @@
+version: "2"
+
+# Deliberately not enabled, with reasons:
+#   nilerr   - every hit is a filepath.WalkDir callback returning nil to skip an
+#              unreadable entry, which is the intended behavior for every scan here.
+#   noctx    - the local llama-server is spawned as a detached daemon that must
+#              outlive the calling context, and the OAuth callback listeners are
+#              loopback-only with their own timeouts.
+#   prealloc - micro-optimization noise on cold paths.
+#   unparam  - the TUI key handlers share one `tea.Cmd` signature on purpose, so
+#              "always returns nil" is a property of the interface, not a defect.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errorlint
+    - gocritic
+    - misspell
+    - perfsprint
+    - revive
+    - rowserrcheck
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+        # Flags the in-place filter idiom (`kept := s[:0]` ... `s = append(kept, x)`),
+        # which is correct and used deliberately in pathgrant and trust.
+        - appendAssign
+    perfsprint:
+      # Constant-string fmt.Errorf is idiomatic and used throughout; the other
+      # perfsprint checks (integer-format, concat-loop) stay on.
+      errorf: false
+    revive:
+      rules:
+        - name: indent-error-flow
+        - name: errorf
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: increment-decrement
+        - name: receiver-naming
+        - name: superfluous-else
+        - name: unreachable-code
+    staticcheck:
+      checks:
+        - all
+
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+          - perfsprint
+
+formatters:
+  enable:
+    - gofmt

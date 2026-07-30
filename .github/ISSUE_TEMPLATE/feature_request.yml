@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest something aigem should be able to do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do that aigem makes hard or impossible? Describe
+        the situation rather than the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: How you imagine it working - a flag, a tool, a TUI command.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Workarounds you have already used, and why they fall short.

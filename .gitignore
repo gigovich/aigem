@@ -1,0 +1,14 @@
+# Build output
+/aigem
+/bin/
+/dist/
+
+# Local agent/editor state
+/.claude
+/.remember/
+/.superpowers/
+/.aigem/
+
+# Editor and OS noise
+*.swp
+.DS_Store
