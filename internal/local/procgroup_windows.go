@@ -3,8 +3,6 @@
 package local
 
 import (
-	"path/filepath"
-	"strings"
 	"syscall"
 
 	"golang.org/x/sys/windows"
@@ -70,12 +68,4 @@ func imageMatches(h windows.Handle, binaryPath string) bool {
 		return false
 	}
 	return exeName(windows.UTF16ToString(buf[:size])) == exeName(binaryPath)
-}
-
-// exeName reduces a path to a comparable executable name: base name, lowercased,
-// without the .exe suffix. The configured binary may be a bare name or a full
-// path, while the OS always reports a full path.
-func exeName(p string) string {
-	base := strings.ToLower(filepath.Base(strings.TrimSpace(p)))
-	return strings.TrimSuffix(base, ".exe")
 }

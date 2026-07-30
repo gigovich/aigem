@@ -439,8 +439,15 @@ func Stop() error {
 	if !ok {
 		return nil
 	}
-	cfg, _, _ := Load()
-	terminateDaemon(pid, cfg.BinaryPath)
+	// Load returns a zero Config when the file is unreadable or malformed, and an
+	// empty binary would match nothing on Windows - leaving the daemon
+	// permanently unstoppable. Fall back to the default name in that case.
+	cfg, _, err := Load()
+	binary := cfg.BinaryPath
+	if err != nil || binary == "" {
+		binary = Defaults().BinaryPath
+	}
+	terminateDaemon(pid, binary)
 	return removePidfile()
 }
 
