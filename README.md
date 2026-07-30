@@ -16,6 +16,8 @@ Runs a model against a real sandbox - your own llama.cpp server, or a hosted one
 [Getting started](docs/getting-started.md) ·
 [Security model](docs/security.md)
 
+<img src="docs/assets/demo.gif" alt="aigem answering a question about a small Go project: it calls list_dir, grep and read_file, then renders a markdown answer" width="900">
+
 </div>
 
 ---

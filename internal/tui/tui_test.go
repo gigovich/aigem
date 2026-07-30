@@ -1273,7 +1273,7 @@ func TestLocalWizardProducesConfig(t *testing.T) {
 
 func TestAssessActiveModelLocalNotSetUp(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir()) // no local.json -> not set up
-	a := assessActiveModel(llm.LocalProviderID + "/whatever.gguf")
+	a := assessActiveModel(llm.LocalProviderID+"/whatever.gguf", nil)
 	if a == nil {
 		t.Fatal("expected a warning for an unconfigured local model")
 	}
@@ -1288,7 +1288,7 @@ func TestAssessActiveModelLocalNotSetUp(t *testing.T) {
 func TestAssessActiveModelRemoteUnauthed(t *testing.T) {
 	// A non-OpenAI provider has no interactive login, so the box is dismiss-only
 	// and points to the CLI `aigem auth login` path.
-	a := assessActiveModel("definitely-not-a-real-provider/m")
+	a := assessActiveModel("definitely-not-a-real-provider/m", nil)
 	if a == nil {
 		t.Fatal("expected a warning for an unauthenticated provider")
 	}

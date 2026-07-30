@@ -4,6 +4,12 @@ A terminal AI coding agent written in Go, with a [Bubble Tea](https://github.com
 TUI. It runs a model against a small set of sandboxed tools, and it works with a
 model you host yourself as happily as with a hosted one.
 
+![aigem answering a question about a small Go project: it calls list_dir, grep and read_file, then renders a markdown answer](assets/demo.gif)
+
+*Asking about a small Go project. The tool calls, the sandbox, and the markdown
+rendering are real; only the model is scripted, so the recording is
+[reproducible](https://github.com/gigovich/aigem/tree/main/demo).*
+
 ## Start here
 
 - **[Getting started](getting-started.md)** - install, first run, and every flag.

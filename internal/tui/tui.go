@@ -642,14 +642,29 @@ func (m Model) Init() tea.Cmd {
 // render path (the local probe can take a couple of seconds), surfacing an
 // availabilityMsg whose alert is non-nil when the model is unavailable.
 func (m Model) checkActiveAvailability() tea.Cmd {
-	ref := m.model
-	return func() tea.Msg { return availabilityMsg{alert: assessActiveModel(ref)} }
+	ref, reg := m.model, m.modelReg
+	return func() tea.Msg { return availabilityMsg{alert: assessActiveModel(ref, reg)} }
+}
+
+// needsAuth reports whether the provider behind ref requires a credential at
+// all. A provider declared with "auth": "none" in models.json - a self-hosted
+// OpenAI-compatible endpoint such as Ollama, vLLM, or a second llama.cpp - never
+// does, and must not be reported as unauthenticated.
+func needsAuth(ref string, reg *llm.Registry) bool {
+	if reg == nil {
+		return true
+	}
+	p, _, err := reg.Resolve(ref)
+	if err != nil {
+		return true // unknown: fall back to the conservative answer
+	}
+	return p.NeedsAuth()
 }
 
 // assessActiveModel returns a warning for an unavailable active model, or nil
 // when it is available. Local availability means the server is reachable;
 // provider availability means it is authenticated.
-func assessActiveModel(ref string) *alertBox {
+func assessActiveModel(ref string, reg *llm.Registry) *alertBox {
 	prov, _, _ := strings.Cut(ref, "/")
 	if prov == llm.LocalProviderID {
 		cfg, exists, _ := local.Load()
@@ -669,7 +684,7 @@ func assessActiveModel(ref string) *alertBox {
 		}
 		return nil
 	}
-	if prov != "" && !auth.IsAuthenticated(prov) {
+	if prov != "" && needsAuth(ref, reg) && !auth.IsAuthenticated(prov) {
 		a := &alertBox{title: prov + " not authenticated", provider: prov}
 		if prov == llm.OpenAIProviderID {
 			// Only the OpenAI provider has an interactive (browser) login flow.
@@ -2501,7 +2516,7 @@ func (m *Model) fallbackModel() (llm.ModelInfo, bool) {
 // selectLocal switches to the local model when it is available, otherwise shows
 // the warning box with a download/setup confirm button.
 func (m *Model) selectLocal(ref string) tea.Cmd {
-	if a := assessActiveModel(ref); a != nil {
+	if a := assessActiveModel(ref, m.modelReg); a != nil {
 		m.alert = a
 		m.layout()
 		return nil

@@ -1,6 +1,7 @@
 # Build output
 /aigem
 /aigem.exe
+/mockmodel
 /bin/
 /dist/
 /site/
