@@ -2,8 +2,8 @@
 #
 # Everything it shows is real: a real aigem TUI, real tool calls against the
 # sample project in demo/workspace, rendered by the real markdown renderer. Only
-# the model is scripted (demo/mockmodel), so the recording is deterministic and
-# needs no credentials.
+# the model is scripted (demo/mockmodel), so the same session is recorded every
+# time and no credentials are needed.
 
 Output docs/assets/demo.gif
 

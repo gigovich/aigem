@@ -27,9 +27,14 @@ all the real thing. Only the **model** is scripted.
 | [`demo.tape`](demo.tape) | The VHS script: what gets typed, and how long each beat lasts. |
 | [`record.sh`](record.sh) | Builds everything, prepares an isolated environment, records, cleans up. |
 
-A scripted model is what makes the recording **deterministic** - the same GIF
-comes out every time - and means regenerating it costs no tokens and needs no
-credentials.
+A scripted model is what makes the recording **repeatable**: the same prompt, the
+same three tool calls, the same answer, every time. Regenerating it costs no
+tokens and needs no credentials.
+
+It is not byte-reproducible. The recording happens in real time against a real
+TUI, so frame timing jitters slightly between runs and two GIFs of the same
+session will not be identical files. The content is what is fixed, not the
+bytes - so re-record when the UI actually changes, rather than routinely.
 
 ## Why it runs in a throwaway directory
 

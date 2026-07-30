@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Regenerate docs/assets/demo.gif.
 #
-# The recording is deterministic: aigem, its tools, and the markdown renderer are
-# real, but the model is the scripted stub in demo/mockmodel, so no credentials
-# are used and the same GIF comes out every time.
+# aigem, its tools, and the markdown renderer in the recording are real; only the
+# model is the scripted stub in demo/mockmodel. That makes the session repeatable
+# - same prompt, same tool calls, same answer - and costs no credentials. The GIF
+# itself is not byte-reproducible: it is recorded in real time, so frame timing
+# varies between runs.
 #
 # Needs: vhs, ttyd, ffmpeg, go. See demo/README.md.
 set -euo pipefail

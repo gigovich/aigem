@@ -1,9 +1,9 @@
 // Command mockmodel serves a scripted OpenAI-compatible endpoint so the demo
-// recording is deterministic and needs no credentials.
+// recording replays the same session every time and needs no credentials.
 //
 // It replies to /v1/chat/completions with a fixed sequence: the first turn asks
 // for a tool, the next turn answers. Which reply comes back is decided by what
-// is already in the conversation, so a re-record produces the same GIF.
+// is already in the conversation, so a re-record replays the same session.
 package main
 
 import (
