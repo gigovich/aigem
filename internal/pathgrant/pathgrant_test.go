@@ -45,7 +45,7 @@ func TestGrantIsScopedToItsProject(t *testing.T) {
 
 func TestAddCollapsesOverlappingGrants(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	project, shared := t.TempDir(), t.TempDir()
+	project, shared := tempDir(t), tempDir(t)
 	deep := filepath.Join(shared, "pkg", "inner")
 
 	// A narrower grant added under a broader one must not create a second entry,
@@ -66,7 +66,7 @@ func TestAddCollapsesOverlappingGrants(t *testing.T) {
 
 	// The reverse order collapses the other way: the broader grant replaces the
 	// narrower one rather than sitting beside it.
-	other := t.TempDir()
+	other := tempDir(t)
 	if err := Add(project, filepath.Join(other, "sub")); err != nil {
 		t.Fatal(err)
 	}

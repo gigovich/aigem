@@ -15,7 +15,9 @@ import (
 func TestGrantsAreConsistentUnderASymlinkedAncestor(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	base := t.TempDir()
+	// Resolved, because the assertions below compare against stored Dir values -
+	// and on macOS t.TempDir() is itself reached through a symlink.
+	base := tempDir(t)
 	real := filepath.Join(base, "private", "store")
 	if err := os.MkdirAll(real, 0o755); err != nil {
 		t.Fatal(err)
