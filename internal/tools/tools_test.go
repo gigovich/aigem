@@ -67,7 +67,7 @@ func TestGrepBoundsAndSkipsVendorDirs(t *testing.T) {
 	mustWrite(t, dir, "node_modules/dep/index.js", "var needle = 1\n")
 
 	// A match buried in agent-scratch / VCS hidden dirs must be skipped by default.
-	mustWrite(t, dir, ".ralphex/progress/log.txt", "TODO(mcp): needle in scratch\n")
+	mustWrite(t, dir, ".scratch/progress/log.txt", "TODO(mcp): needle in scratch\n")
 
 	out, err := run(t, r, "grep", map[string]any{"pattern": "needle"})
 	if err != nil {
@@ -79,7 +79,7 @@ func TestGrepBoundsAndSkipsVendorDirs(t *testing.T) {
 	if strings.Contains(out, "node_modules") {
 		t.Fatalf("grep descended into node_modules: %q", out)
 	}
-	if strings.Contains(out, ".ralphex") {
+	if strings.Contains(out, ".scratch") {
 		t.Fatalf("grep descended into a hidden dir: %q", out)
 	}
 	if !strings.Contains(out, "[line truncated]") {
@@ -96,7 +96,7 @@ func TestGrepBoundsAndSkipsVendorDirs(t *testing.T) {
 	}
 
 	// The skip exempts the search root: pointing grep at the hidden dir searches it.
-	out, _ = run(t, r, "grep", map[string]any{"pattern": "needle", "path": ".ralphex"})
+	out, _ = run(t, r, "grep", map[string]any{"pattern": "needle", "path": ".scratch"})
 	if !strings.Contains(out, "log.txt") {
 		t.Fatalf("grep rooted at a hidden dir should search it: %q", out)
 	}

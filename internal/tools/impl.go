@@ -39,7 +39,7 @@ var vendorDirs = map[string]bool{
 // skipSearchDir reports whether a directory should be skipped while searching
 // file contents or paths. Like ripgrep, hidden (dot) directories are skipped by
 // default: in real trees they hold VCS metadata (.git), virtualenvs (.venv), and
-// agent scratch (.ralphex, .remember) whose notes and progress logs otherwise
+// agent scratch directories whose notes and progress logs otherwise
 // dominate a TODO/FIXME search and pull the model toward summarizing prose
 // instead of reading code. The caller must exempt the search root so a search
 // rooted inside a dot-directory still runs.

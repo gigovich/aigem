@@ -7,6 +7,14 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - ".github/workflows/pages.yml"
+  # Build (but do not deploy) on PRs, so a --strict break is caught before merge
+  # rather than after. GitHub Actions does not support YAML anchors, so this
+  # list is duplicated rather than shared.
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -25,7 +33,8 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-      - run: pip install mkdocs-material==9.6.14
+          cache-dependency-path: docs/requirements.txt
+      - run: pip install -r docs/requirements.txt
       # --strict turns a broken internal link or a nav entry pointing at a
       # missing page into a failed build rather than a quietly broken site.
       - run: mkdocs build --strict
@@ -35,6 +44,8 @@ jobs:
 
   deploy:
     needs: build
+    # Never deploy from a pull request - it would publish unreviewed content.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -43,5 +54,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # enablement:true turns Pages on for the repo, so the very first run does
+      # not fail on a repo where Settings -> Pages was never touched.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - id: deployment
         uses: actions/deploy-pages@v4

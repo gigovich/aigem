@@ -1,8 +1,8 @@
 # Docker (bot mode)
 
 A small image for running a single bot non-interactively as `aigem bot start <name>`. The
-bot's config and state are bind-mounted, so the image carries only the binary plus a shell,
-git, and CA certificates.
+bot's config and state are bind-mounted, so the image carries only the binary plus the
+handful of runtime packages listed below.
 
 Files live at the repo root: `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore`.
 
@@ -14,16 +14,17 @@ Every tagged release publishes a multi-arch image (amd64 and arm64):
 docker pull ghcr.io/gigovich/aigem:latest
 ```
 
-Or build it yourself:
+Or build it yourself. The Dockerfile uses BuildKit features (`--platform`,
+`RUN --mount=type=cache`), so it needs `buildx` - the default on current Docker,
+but the legacy builder fails at the first line:
 
 ```
-docker build -t aigem-bot .
+docker buildx build -t aigem-bot .
 ```
 
 Multi-stage: `golang:1.26-alpine` compiles a static, CGO-free binary; the runtime is
-`alpine:3.21` with `ca-certificates`, `bash`, `git`, `tzdata`, and `tini`. `tini` is PID 1 -
-it reaps the subprocesses the `bash` tool spawns and forwards `SIGTERM` for a clean stop. The
-image is about 47 MB.
+`alpine:3.23` with `ca-certificates`, `bash`, `git`, `tzdata`, and `tini`. `tini` is PID 1 -
+it reaps the subprocesses the `bash` tool spawns and forwards `SIGTERM` for a clean stop.
 
 ## Volumes
 
@@ -51,8 +52,10 @@ docker run -d --name aigem-jane \
   aigem-bot
 ```
 
-Without `BOT_NAME` the entrypoint passes its arguments straight to `aigem`, so the image
-doubles as the CLI: `docker run --rm -v ~/.config/aigem:/config/aigem aigem-bot bot list`.
+An explicit command is passed straight to `aigem` and takes precedence over
+`BOT_NAME`, so the image doubles as the CLI:
+`docker run --rm -v ~/.config/aigem:/config/aigem aigem-bot bot list`. With
+neither a command nor `BOT_NAME`, the container prints a hint and exits non-zero.
 
 Do not run the same bot in two places at once (e.g. locally and in a container): two websocket
 connections for one Mattermost account cause duplicate replies and authentication errors.

@@ -11,5 +11,7 @@ if [ -n "${BOT_NAME:-}" ]; then
 	exec aigem bot start "$BOT_NAME"
 fi
 
+# Neither a command nor BOT_NAME: the container is misconfigured. Exit non-zero
+# so a restart policy or orchestrator sees a failure instead of a clean stop.
 echo "aigem: set BOT_NAME=<bot> or pass a command (e.g. 'bot list')." >&2
-exec aigem bot list
+exit 1

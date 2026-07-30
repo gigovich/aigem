@@ -50,7 +50,7 @@ turnBudget:
   maxRepeatedToolCalls: 12
 cron:
   - id: standup
-    at: "09:00"
+    expr: "0 9 * * *"
     prompt: "Post a short status summary for the team."
 ```
 
@@ -72,9 +72,17 @@ any numeric budget to `0`, or `maxDuration: "0"`, to disable it explicitly.
 
 ### Cron
 
-A `cron` entry fires a prompt on a schedule - either `at:` for a daily time or
-`expr:` for a cron expression. Each run is a normal turn, subject to the same
-budgets.
+A `cron` entry fires a prompt on a schedule. Each run is a normal turn, subject
+to the same budgets. A job carries exactly one of:
+
+- **`expr:`** - a cron expression, for anything recurring. `"0 9 * * *"` is every
+  day at 09:00.
+- **`at:`** - a single RFC3339 instant, for a one-shot. It fires once and then
+  deletes itself from `bot.yaml`, so it needs a full timestamp
+  (`"2026-08-01T09:00:00+04:00"`), not a time of day.
+
+A job whose `at:` or `expr:` does not parse is dropped with a warning at startup
+rather than failing the bot, so check the log after editing one.
 
 ## Choosing a bot's model
 

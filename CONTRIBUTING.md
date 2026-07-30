@@ -21,6 +21,14 @@ self-contained and never talks to a network.
 Run what CI runs:
 
 ```sh
+make check
+```
+
+That is `fmt-check`, `vet`, `lint`, `race`, and `cross` - the same set the CI
+workflow runs. `make help` lists every target. If you would rather run them by
+hand:
+
+```sh
 gofmt -l .            # must print nothing
 go vet ./...
 go test -race ./...
@@ -34,13 +42,10 @@ go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 ```
 
 CI also cross-builds every released target, so if you touch anything
-platform-specific check it still compiles:
-
-```sh
-for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
-  GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/aigem || echo "broke $t"
-done
-```
+platform-specific check it still compiles - `make cross` does this. Process
+handling is the usual culprit; the platform-specific pieces live in
+`procgroup_unix.go` / `procgroup_windows.go` under `internal/hooks` and
+`internal/local`.
 
 ## House style
 

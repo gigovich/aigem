@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -171,7 +172,7 @@ func runOne(ctx context.Context, h Hook, dir string, stdin []byte) (string, stri
 	} else {
 		shell, flag := "bash", "-c"
 		if h.Shell != "" {
-			shell = h.Shell
+			shell, flag = h.Shell, shellFlag(h.Shell)
 		}
 		cmd = exec.CommandContext(ctx, shell, flag, h.Command)
 	}
@@ -182,9 +183,9 @@ func runOne(ctx context.Context, h Hook, dir string, stdin []byte) (string, stri
 	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr capWriter
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	configureProcessGroup(cmd)
 	// WaitDelay bounds how long Run blocks if a surviving child keeps the output
 	// pipes open after the hook itself is gone.
-	configureProcessGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 
 	err := cmd.Run()
@@ -215,6 +216,20 @@ func parseOutput(s string) (hookOutput, bool) {
 		return hookOutput{}, false
 	}
 	return o, true
+}
+
+// shellFlag returns the "run this string" flag for a shell. Getting this wrong
+// is silent: `cmd -c "..."` is rejected by cmd.exe, so a Windows hook that sets
+// `shell` would never run.
+func shellFlag(shell string) string {
+	switch strings.ToLower(filepath.Base(shell)) {
+	case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
+		return "-Command"
+	case "cmd", "cmd.exe":
+		return "/c"
+	default:
+		return "-c"
+	}
 }
 
 func firstLine(s string) string {

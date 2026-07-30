@@ -60,7 +60,7 @@ func TestValidateActionRequestQueryNames(t *testing.T) {
 }
 
 func TestActionURLReason(t *testing.T) {
-	cfg := BrowserConfig{TestHosts: []string{"laban.internal"}}
+	cfg := BrowserConfig{TestHosts: []string{"staging.internal"}}
 	cases := []struct {
 		name    string
 		url     string
@@ -69,8 +69,8 @@ func TestActionURLReason(t *testing.T) {
 		{"public host allowed", "https://example.com/x", true},
 		{"non-http refused", "ftp://example.com", false},
 		{"internal not listed refused", "https://other.internal/x", false},
-		{"internal listed allowed", "https://laban.internal/events", true},
-		{"internal listed case-insensitive", "https://LABAN.internal/events", true},
+		{"internal listed allowed", "https://staging.internal/events", true},
+		{"internal listed case-insensitive", "https://STAGING.internal/events", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -83,7 +83,7 @@ func TestActionURLReason(t *testing.T) {
 }
 
 func TestLandingHostReason(t *testing.T) {
-	cfg := BrowserConfig{TestHosts: []string{"laban.internal"}}
+	cfg := BrowserConfig{TestHosts: []string{"staging.internal"}}
 	cases := []struct {
 		name    string
 		url     string
@@ -92,7 +92,7 @@ func TestLandingHostReason(t *testing.T) {
 		{"about:blank passes", "about:blank", true},
 		{"data uri passes", "data:text/html,x", true},
 		{"public landing passes", "https://example.com/", true},
-		{"allowed internal passes", "https://laban.internal/events", true},
+		{"allowed internal passes", "https://staging.internal/events", true},
 		{"unlisted internal blocked", "https://169.254.169.254/latest/meta-data/", false},
 		{"other internal blocked", "https://other.internal/x", false},
 		{"file scheme blocked", "file:///etc/passwd", false},
@@ -119,7 +119,7 @@ func TestKeySequence(t *testing.T) {
 
 func TestFormatActionResult(t *testing.T) {
 	o := actionObservation{
-		URL:       "https://laban.internal/events",
+		URL:       "https://staging.internal/events",
 		Title:     "Events",
 		HasActive: true,
 		Active:    activeElementInfo{Selector: "input#search", Name: "q"},
@@ -135,7 +135,7 @@ func TestFormatActionResult(t *testing.T) {
 	}
 	out := formatActionResult(o)
 	for _, want := range []string{
-		"URL: https://laban.internal/events",
+		"URL: https://staging.internal/events",
 		"Active element: input#search (name=q)",
 		"install_badge: exists=false count=0",
 		`tooltip: exists=true count=1 text="Top paths" title="Top paths help" visibility=visible`,

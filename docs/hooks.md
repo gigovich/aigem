@@ -14,7 +14,11 @@ matching hook runs - in this load order:
 3. `<project>/.claude/settings.json` and `.claude/settings.local.json`
 4. `~/.claude/settings.json`
 
-Set `"disableAllHooks": true` in any of them to turn hooks off entirely.
+`"disableAllHooks": true` behaves differently depending on where it is set. In a
+**global** source (`~/.config/aigem/settings.json`, `~/.claude/settings.json`) it
+turns hooks off entirely. In a **project-local** source it only disables that
+project's own hooks - your global hooks still run, so a repository cannot switch
+off the hooks you rely on.
 
 ## Events
 
@@ -32,6 +36,10 @@ Set `"disableAllHooks": true` in any of them to turn hooks off entirely.
 
 A skill's `hooks:` frontmatter registers hooks active only while that skill is
 active. Only the `command` handler type is supported.
+
+A hook entry may also set `shell` to run its `command` with something other than
+`bash` - `powershell`, `pwsh`, and `cmd` get the right "run this string" flag
+automatically.
 
 ## The contract
 

@@ -16,13 +16,32 @@ The model can call these. All file paths are sandboxed under `--cwd` - see
 | `fuzzy_find` | Fuzzy-match file paths                                        | no           |
 | `web_search` | Search current public web results (when configured)           | no           |
 | `open_url`   | Open a URL in the browser backend, return text + links/forms  | no           |
+| `browser_action` | Drive a page: click, type, observe (browser backend only) | no           |
+| `todo_write` | Keep a visible task list for the current turn                 | no           |
 | `task`       | Delegate to a specialized subagent                            | no           |
 | `skill`      | Invoke a discovered skill                                     | no           |
+
+`web_search`, `open_url`, and `browser_action` appear only once a search backend
+is configured, and `skill` only when at least one model-invocable skill was
+discovered. Bots additionally get `memory`, `schedule`, `save_skill`, and
+`delete_skill`.
 
 `write_file`, `edit_file`, and `bash` prompt for confirmation in the TUI before
 running. For changes to existing files the model uses `edit_file` (exact
 find/replace) so it never has to resend the whole file; `write_file` is for new
 files or full rewrites.
+
+### `bash` on Windows
+
+The `bash` tool runs `bash -c`, so on Windows it needs a `bash` on your `PATH` -
+Git Bash, WSL, or MSYS2. Without one, every `bash` call fails with
+`executable file not found in %PATH%`; the rest of aigem is unaffected.
+
+There is deliberately no automatic fallback to PowerShell or `cmd`. The
+destructive-command deny list that backs auto mode and the `shell` capability
+profile recognizes Unix command shapes (`rm`, `dd`, `git reset --hard`, ...) and
+knows nothing about `del`, `rd /s`, or `Remove-Item`. Silently switching shells
+would leave those commands unguarded, so aigem asks for a real `bash` instead.
 
 ## Subagents
 

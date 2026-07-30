@@ -2,7 +2,7 @@
 
 ## Install
 
-The quickest route, if you have a Go toolchain:
+The quickest route, if you have **Go 1.26 or newer**:
 
 ```sh
 go install github.com/gigovich/aigem/cmd/aigem@latest
@@ -26,7 +26,8 @@ arm64.
 
 ## Requirements
 
-- **Go 1.26+**, only if you are building from source.
+- **Go 1.26+**, if you are building from source or installing with `go install`.
+  Prebuilt release binaries need no toolchain.
 - **A model.** Either a hosted provider (OpenAI, or anything OpenAI-compatible
   you configure) or a local [llama.cpp](https://github.com/ggml-org/llama.cpp)
   server. See [Models and providers](models.md).
@@ -35,6 +36,13 @@ For the local path you need a `llama-server` binary on your `PATH`. aigem can se
 up and launch it for you, so you do not need one already running. The
 OpenAI-compatible endpoint at `/v1/chat/completions` with the `--jinja` template
 is what makes native tool calling work.
+
+### On Windows
+
+aigem builds and runs on Windows, but the `bash` tool and shell-running hooks
+literally invoke `bash`, so they need one on your `PATH` - Git Bash, WSL, or
+MSYS2. Everything else (the TUI, file tools, search, models, MCP, skills) works
+without it. See [the note in Tools](tools.md#bash-on-windows).
 
 The default local server address is `http://127.0.0.1:9280`.
 
@@ -46,9 +54,14 @@ Just run it:
 aigem
 ```
 
-With no `--model`, aigem prefers an authenticated hosted model if you have one
-configured, and otherwise falls back to the local model. If neither is set up,
-the TUI points you at `/model` to pick one.
+The very first run asks you to set up a web-search backend (a Brave API key, or
+Chrome automation). Search is optional - decline it and aigem starts normally;
+you can configure it later with `aigem search set`. See [Web search](search.md).
+
+With no `--model`, aigem reuses the model you last selected, then falls back to
+the first authenticated provider, then to the local model. If nothing is set up,
+the TUI shows a "Local model not set up" alert with a **Set up & download**
+action - nothing is downloaded until you choose it.
 
 To log in to a hosted provider first:
 
@@ -93,7 +106,9 @@ part worth understanding before automating anything.
 | `-y`                     | `false`                 | auto-approve confirm-gated tools in `-p`, within the active profile  |
 | `--capability-profile`   | `workspace-write`       | `read-only`, `workspace-write`, `shell`, or `dangerous-shell`        |
 | `--repl`                 | `false`                 | plain line-based REPL instead of the TUI                            |
-| `version`                | -                       | print the version and exit                                          |
+
+`aigem version` is a subcommand, not a flag, and prints the version. `--version`
+and `-v` do the same but only as the first argument.
 
 ### Compaction
 

@@ -429,13 +429,18 @@ func hfFileSize(apiBase, repo, quant string) (int64, error) {
 	return total, nil
 }
 
-// Stop sends SIGTERM to the daemon process group and removes the pidfile.
+// Stop asks the daemon to exit and removes the pidfile. On Unix that is SIGTERM
+// to its process group; on Windows there is no catchable signal, so the process
+// is terminated outright after its image is matched against the configured
+// binary. The configured path is loaded here because a recycled pid must not be
+// mistaken for the daemon.
 func Stop() error {
 	pid, ok := readPid()
 	if !ok {
 		return nil
 	}
-	terminateTree(pid)
+	cfg, _, _ := Load()
+	terminateDaemon(pid, cfg.BinaryPath)
 	return removePidfile()
 }
 

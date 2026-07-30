@@ -1,0 +1,2 @@
+# Pinned so the published docs are reproducible. Dependabot keeps this current.
+mkdocs-material==9.6.14

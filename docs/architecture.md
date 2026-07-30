@@ -25,7 +25,7 @@ the workflow.
 | `internal/tui`       | the Bubble Tea front-end                                              |
 | `internal/bot`       | unattended bots, roles, memory, cron, and the Mattermost transport    |
 
-Roughly 26k lines of non-test Go, with a comparable amount of tests.
+Roughly 28k lines of non-test Go, plus about 17k lines of tests.
 
 ## How a turn flows
 

@@ -6,11 +6,14 @@
 | ---------------------------- | --------------------------------------------------------- |
 | `Enter`                      | send                                                      |
 | `Shift+Enter` / `Alt+Enter`  | newline                                                   |
-| `↑` / `↓`                    | recall previous / next input                              |
+| `↑` / `↓`                    | recall previous / next input (single-line input only)     |
 | Mouse wheel, `PgUp`, `PgDn`  | scroll the conversation                                   |
-| `Shift+↑` / `Shift+↓`        | scroll a single line                                      |
+| `Shift+↑` / `Shift+↓`        | scroll by two lines                                       |
+| `Shift+←` / `Shift+→`        | move between words in the input                           |
 | `Esc`                        | interrupt the turn (cancels generation and running `bash`) |
 | `Ctrl+O`                     | show/hide tool output (the `⤷` result preview)            |
+| `Ctrl+V`                     | paste, including an image from the clipboard              |
+| `Ctrl+T`                     | show/hide the todo panel                                  |
 | `Shift+Tab`                  | toggle auto mode                                          |
 | `Ctrl+C`                     | quit                                                      |
 
@@ -19,9 +22,17 @@ history and it stays put - the status bar shows `↑ N%` until you `PgDn` back d
 
 ## Confirmations and auto mode
 
-When a tool needs approval, a small box above the input offers `Once`, `Always`,
-and `Forbid`. Use `←`/`→` to select, `Enter` to confirm, `Esc` to forbid.
-`Always` and `Forbid` are remembered for the rest of the session.
+When a tool needs approval, a small box above the input asks. Use `←`/`→` to
+select and `Enter` to confirm. What it offers depends on what is being approved:
+
+| Situation                          | Options                                    | Remembered              |
+| ---------------------------------- | ------------------------------------------ | ----------------------- |
+| A confirm-gated tool               | `Once`, `Always`, `Forbid`                 | rest of the session      |
+| Reading a path outside the workdir | `Once`, `Always (this folder)`, `Deny`     | `Always` persists to disk |
+| Writing a path outside the workdir | `Once`, `Deny`                             | never                    |
+
+`Always (this folder)` is written to `path-grants.json` and so survives across
+sessions - see [the security model](security.md#the-filesystem-sandbox).
 
 `Shift+Tab` toggles **auto mode**, shown as `⇧⇥ auto` in the status bar. In auto
 mode every edit and safe command is approved automatically, so the agent runs
@@ -39,7 +50,11 @@ still stops for an explicit confirmation.
 | `/skill:<name>`     | run a skill directly                                |
 | `/agents`           | subagent list, and the web-search config editor     |
 | `/resume`           | pick a past session and continue it                 |
+| `/new`              | start a fresh conversation                          |
 | `/compact`          | summarize the conversation on demand                |
+| `/artifacts`        | browse files the session produced                   |
+| `/mcp`              | connected MCP servers                               |
+| `/mcp__<server>__<prompt>` | run a prompt exposed by an MCP server        |
 
 ## Sessions
 
@@ -47,8 +62,9 @@ Conversations are saved as JSON under `~/.local/state/aigem/sessions` (honoring
 `XDG_STATE_HOME`) after every turn. `/resume` picks a past session from a list and
 continues it; resumed sessions always run on the current system prompt.
 
-The status bar shows the model, server URL, and a context-usage gauge
-(`ctx used/window %`) that turns peach past 50% and red past 80%.
+The status bar shows an authentication dot, the model ref, a context-usage gauge
+(`ctx used/window %`) that turns peach past 50% and red past 80%, the ready or
+working state, and the `^O tools` hint.
 
 ## Context compaction
 
@@ -56,7 +72,8 @@ Long sessions are kept inside the context window by a three-stage cascade that
 escalates with pressure (used tokens / `--ctx-size`):
 
 1. At `--evict-at-pct` (default 50%) old `read_file` and tool outputs are replaced
-   with an `[output elided - re-run ...]` placeholder. The tool call itself is
+   with an `[output elided to save context - re-run <tool> to retrieve it]`
+   placeholder. The tool call itself is
    kept, and the most recent `--compact-keep-tools` results plus the verbatim tail
    stay intact.
 2. The same pass drops duplicate `read_file` outputs, keeping only the latest read
@@ -98,4 +115,6 @@ Completed assistant answers are rendered as Markdown via
 output stay plain.
 
 The interface uses the [Catppuccin Mocha](https://catppuccin.com/palette) palette
-on a solid `#1e1e2e` canvas. A truecolor terminal is recommended.
+on a solid `#181825` canvas - the mantle shade rather than the lighter `#1e1e2e`
+base, so the whole frame reads dark and flat. A truecolor terminal is
+recommended.

@@ -27,8 +27,14 @@ Drives Chrome/Chromium through the DevTools protocol:
   plus the page's links and search forms - so the model can read a found page and
   drive the site's own navigation instead of re-querying the engine.
 
-`open_url` only opens public web addresses. Internal hosts - localhost, private
-and link-local ranges - are refused.
+A third tool, `browser_action`, drives a page directly - clicking, typing, and
+observing named selectors - for flows a plain fetch cannot reach.
+
+`open_url` only opens public web addresses; internal hosts (localhost, private
+and link-local ranges) are refused. `browser_action` honors the same rule, with
+one deliberate exception: hosts you allowlist explicitly with
+`aigem search set browser --test-host HOST` are reachable, so a bot can drive an
+internal staging site you pointed it at.
 
 It uses an isolated profile; if `--profile-dir` is omitted, aigem creates one in
 its private state directory. Chrome/Chromium is auto-detected, and `--executable`

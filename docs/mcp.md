@@ -15,15 +15,19 @@ settings, in this order:
 5. `~/.config/aigem/settings.json`
 
 ```sh
-aigem mcp list             # configured servers and their status
+aigem mcp list             # configured servers: name, transport, command/URL
 aigem mcp add <name> ...   # add a server
 aigem mcp remove <name>    # remove one
 aigem mcp login <name>     # run an HTTP server's OAuth flow
 aigem mcp logout <name>    # clear its stored token
 ```
 
-These commands only manage configuration. The trust gate is applied when a chat
-front-end starts and would actually connect.
+`list`, `add`, and `remove` only manage configuration, and the trust gate is
+applied when a chat front-end starts and would actually connect.
+
+`login` is the exception: it dials the named HTTP server to run its OAuth flow,
+and it is **not** trust-gated. Only run `aigem mcp login` for a server you
+already trust in a project you already trust.
 
 ## Trust
 

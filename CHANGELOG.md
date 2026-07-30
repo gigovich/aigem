@@ -11,13 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Windows support. The process-group handling in the hook runner and the local
   llama.cpp daemon now has platform-specific implementations, so aigem builds and
-  runs on Windows (amd64 and arm64) alongside Linux, macOS, and FreeBSD.
+  runs on Windows (amd64 and arm64) alongside Linux and macOS. The `bash` tool
+  and shell hooks still require a `bash` on `PATH` there - see
+  [docs/tools.md](docs/tools.md#bash-on-windows) for why there is no automatic
+  PowerShell fallback.
 - `aigem version` reports a real version, stamped at release time, and also
   accepts `--version` / `-v`. Unstamped `go install` builds fall back to the
   module version from the build info.
 - Published release artifacts: cross-platform binaries with checksums, and a
   multi-arch container image on GitHub Container Registry.
 - Documentation site at [gigovich.github.io/aigem](https://gigovich.github.io/aigem/).
+
+### Security
+
+- Updated `golang.org/x/text` (infinite loop, GO-2026-5970), `goldmark` (XSS,
+  GO-2026-5320), and the minimum Go toolchain to 1.26.5 (crypto/tls ECH privacy
+  leak, GO-2026-5856). `govulncheck` now runs in CI.
+- Documented that both subscription logins reuse the vendor's own CLI OAuth
+  client and undocumented endpoints, and that API keys are the supported
+  alternative. Previously only the OpenAI path carried any warning.
 
 ### Fixed
 
@@ -37,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The module path is now `github.com/gigovich/aigem`, so
   `go install github.com/gigovich/aigem/cmd/aigem@latest` works.
 - The README is a landing page; the reference material it used to carry now lives
-  in [`docs/`](docs/).
+  in [`docs/`](docs/index.md).
 - Removed dead code: an unused sandbox path resolver, an unused turn-budget
   predicate, and two unused TUI formatting helpers.
 

@@ -2,6 +2,7 @@
 /aigem
 /bin/
 /dist/
+/site/
 
 # Local agent/editor state
 /.claude

@@ -1,12 +1,17 @@
 # Models and providers
 
-aigem talks to a local llama.cpp server by default, and can also use OpenAI -
-either a ChatGPT Plus/Pro subscription (via OAuth, through the Codex backend) or a
-plain OpenAI API key.
+aigem talks to a local llama.cpp server by default, and can also use hosted
+providers:
+
+| Provider | Authentication                                                    |
+| -------- | ----------------------------------------------------------------- |
+| `local`  | none - a llama.cpp server you run                                 |
+| `openai` | an API key, or a ChatGPT Plus/Pro subscription via OAuth          |
+| `xai`    | an API key, or a Grok subscription via device-code OAuth          |
 
 Models live in a registry: built-in presets (`local/...`, the OpenAI GPT-5.x
-family) plus anything you add in `~/.config/aigem/models.json` or a project
-`.aigem/models.json`.
+family, the xAI Grok family) plus anything you add in
+`~/.config/aigem/models.json` or a project `.aigem/models.json`.
 
 > A project file may add providers and tweak the models of an existing one, but
 > never its `base_url`, `api`, `auth`, or `headers`. It ships with a
@@ -21,9 +26,15 @@ aigem auth status                  # show which providers are authenticated
 aigem auth login openai            # ChatGPT subscription: opens the browser (OAuth)
 aigem auth login openai --api-key-stdin    # OpenAI API key from stdin (safer than argv)
 aigem auth login openai --api-key sk-...   # API key via argv (or set $OPENAI_API_KEY)
+aigem auth login xai               # Grok subscription: device code, approve in any browser
+aigem auth login xai --api-key-stdin       # xAI API key from stdin (or set $XAI_API_KEY)
 aigem auth logout openai           # clear the stored credential
 aigem --model openai/gpt-5.6-sol   # start on a specific model
+aigem --model xai/grok-4.3         # ... or an xAI one
 ```
+
+`/login` in the TUI covers the `openai` provider only; authenticate `xai` from
+the CLI.
 
 In the TUI, `/model` opens a fuzzy picker of every model grouped by provider. A
 model whose provider is not authenticated shows a lock and routes to `/login` on
@@ -34,9 +45,13 @@ token.
 
 ## Which model gets picked
 
-With no `--model`, aigem prefers an authenticated OpenAI model when one is
-configured, and otherwise the local model. A bare `--model <name>` keeps the old
-behavior: the local provider with that model name.
+With no `--model`, aigem first reuses **the model you last selected**, if it still
+resolves and is usable. Otherwise it takes the first authenticated provider in
+registry order - `local`, then `openai`, then `xai` - and falls back to the local
+model when nothing is authenticated.
+
+A bare `--model <name>` keeps the old behavior: the local provider with that model
+name.
 
 The ChatGPT subscription (Codex backend) only accepts Codex-supported models -
 currently `gpt-5.6-sol` (the default), `gpt-5.4`, `gpt-5.4-mini`, and
@@ -44,9 +59,24 @@ currently `gpt-5.6-sol` (the default), `gpt-5.4`, `gpt-5.4-mini`, and
 API key. If you have both a stored ChatGPT login and `$OPENAI_API_KEY`, aigem uses
 the API key automatically for models outside the Codex allow-list.
 
-> The ChatGPT subscription path uses OpenAI's undocumented Codex backend and is
-> governed by their terms of service. The API-key path is the OpenAI-supported
-> alternative.
+## Subscription logins: read this first
+
+Both subscription paths - ChatGPT and Grok - work by reusing the vendor's own CLI
+OAuth client, and the ChatGPT path additionally identifies itself to OpenAI's
+undocumented Codex endpoint as that CLI (an `originator: codex_cli_rs` header).
+
+That means:
+
+- You are using an **undocumented endpoint** that the vendor can change or close
+  at any time, and whose use is governed by their terms of service rather than a
+  published API contract.
+- Your **subscription account** carries the risk. If a vendor decides this is not
+  acceptable use, the consequence lands on the account you logged in with, up to
+  suspension.
+
+The **API-key paths are the supported alternatives** and carry none of this. Use
+`--api-key-stdin`, or `$OPENAI_API_KEY` / `$XAI_API_KEY`, if that matters to you -
+which for anything you depend on, it probably should.
 
 Credentials are stored `0600` in `~/.local/state/aigem/auth.json` and are never
 logged.
@@ -58,9 +88,11 @@ The local model is set up the first time you select it. Pick `local/...` via
 initialized, aigem runs a short wizard and then spawns `llama-server` as a
 detached daemon - it survives aigem exiting and is reused next launch.
 
-Startup never prompts you to set up the local model. If you have other models
-configured, just use them. If the local model is the startup selection but is not
-set up, the TUI shows a hint pointing at `/model`.
+Startup never silently downloads anything. If you have other models configured,
+just use them. If the local model is the startup selection but is not set up, the
+TUI shows a "Local model not set up" alert naming the file, with a
+**Set up & download** action you have to choose - the multi-gigabyte download
+never starts on its own.
 
 ```sh
 aigem models                 # list providers/models

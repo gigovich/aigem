@@ -24,6 +24,12 @@ profiles instead:
 `workspace-write` is the default. Under it, `-y` can approve file edits but
 cannot silently approve shell, because `bash` is not in the toolset at all.
 
+"File writes" above means *workspace* files. A bot's own tools (`memory`,
+`schedule`, `save_skill`, `delete_skill`) are present in every profile including
+`read-only`, and they do persist under `~/.config/aigem/bots/<name>/`. A
+`read-only` bot cannot touch your repository, but it can still write its own
+memory and skills.
+
 `shell` is the explicit opt-in for unattended non-destructive shell; destructive
 commands (`rm`, `git reset --hard`, `git clean`, ...) are still denied.
 `dangerous-shell` is the opt-in for unattended destructive shell - and even then,
@@ -32,8 +38,10 @@ catastrophic hard-deny patterns are blocked by the `bash` tool itself.
 ### Turn budgets
 
 Unattended turns also carry runaway budgets: 20 minutes wall-clock, 40 model
-rounds, 120 tool calls, and 8 identical tool calls. Exhausting one returns a
-final `Budget exhausted: ...` answer and emits a notice. Tune them with
+rounds, 120 tool calls, and 8 identical tool calls. Exhausting one ends the turn
+with a final answer and a notice. Hitting the **model-round** cap asks the model
+for a short wrap-up - what it did and what is left - and returns that; the other
+three return a canned `Budget exhausted: ...` line. Tune them with
 `--turn-timeout`, `--max-model-rounds`, `--max-tool-calls`, and
 `--max-repeat-tool-calls`, or set a value to `0` to disable that budget.
 
