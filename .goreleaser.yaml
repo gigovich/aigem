@@ -41,7 +41,8 @@ archives:
       - NOTICE
       - README.md
       - CHANGELOG.md
-      - src: docs/**/*
+      - src: docs/*.md
+        dst: docs
 
 checksum:
   name_template: checksums.txt
