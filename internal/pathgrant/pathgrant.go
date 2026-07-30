@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gigovich/aigem/internal/config"
+	"github.com/gigovich/aigem/internal/pathutil"
 )
 
 // Grant is one approved directory, and everything beneath it.
@@ -201,14 +202,11 @@ func canonical(p string) (string, error) {
 	if p == "" {
 		return "", errors.New("path is required")
 	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
-	}
-	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = real
-	}
-	return filepath.Clean(abs), nil
+	// Resolving the deepest existing ancestor, rather than requiring the whole
+	// path to exist, is what keeps one directory from being stored under two
+	// spellings - which on macOS (/var -> /private/var) made grants silently
+	// stop matching once a path was recorded before it existed.
+	return pathutil.Canonical(p)
 }
 
 func grantFile() (string, error) {

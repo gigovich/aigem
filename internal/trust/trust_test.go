@@ -214,7 +214,9 @@ func TestFileLockExcludesAndReleases(t *testing.T) {
 	}
 
 	ran := make(chan struct{})
+	returned := make(chan struct{})
 	go func() {
+		defer close(returned)
 		withFileLock(func() error { close(ran); return nil })
 	}()
 	select {
@@ -227,6 +229,13 @@ func TestFileLockExcludesAndReleases(t *testing.T) {
 	case <-ran:
 	case <-time.After(lockWait):
 		t.Fatal("fn never ran after the lock was released")
+	}
+	// fn signals from inside the critical section, so the release happens after
+	// it returns. Wait for withFileLock itself, or this races the unlock.
+	select {
+	case <-returned:
+	case <-time.After(lockWait):
+		t.Fatal("withFileLock never returned")
 	}
 	if _, err := os.Stat(lock); !os.IsNotExist(err) {
 		t.Error("the lock was not released")

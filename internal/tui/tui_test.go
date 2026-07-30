@@ -1378,7 +1378,10 @@ func TestSkillTrustPromptApprovesAndLoads(t *testing.T) {
 		agent.DefaultSubagents(), "", skills, nil, nil, "", agent.CompactConfig{}, nil)
 	m.SetSystemRebuilder(func() string { return "sys\n\n" + skills.Prompt() })
 	m.SetPendingSkills(cwd, pending)
-	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	// Wide enough for the temp path to be shown in full: the overlay truncates
+	// Dir to fit, and t.TempDir() is far longer on some platforms (macOS hands
+	// back /var/folders/...) than the 80 columns a narrower window would give.
+	m = step(m, tea.WindowSizeMsg{Width: len(cwd) + 40, Height: 24})
 
 	// The prompt is a modal: it owns the keyboard and names the withheld skill.
 	view := m.View()
