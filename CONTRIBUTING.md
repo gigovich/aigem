@@ -53,6 +53,23 @@ handling is the usual culprit; the platform-specific pieces live in
 `procgroup_unix.go` / `procgroup_windows.go` under `internal/hooks` and
 `internal/local`.
 
+## Documentation
+
+The site at [gigovich.github.io/aigem](https://gigovich.github.io/aigem/) is built
+from [`docs/`](docs/) with [MkDocs Material](https://squidfunk.github.io/mkdocs-material/).
+Preview it locally:
+
+```sh
+pip install -r docs/requirements.txt
+make docs        # serves on http://127.0.0.1:8000
+```
+
+A push to `main` that touches `docs/`, `mkdocs.yml`, or the workflow rebuilds and
+deploys it. Pull requests build it too, with `--strict`, so a broken internal
+link fails the check instead of silently shipping. New pages must be added to the
+`nav:` in `mkdocs.yml` - a page that is not in the nav is a build warning, and
+under `--strict` a build failure.
+
 ## House style
 
 - **Comments explain "why", not "what".** The code should already say what it

@@ -56,10 +56,12 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      # enablement:true turns Pages on for the repo, so the very first run does
-      # not fail on a repo where Settings -> Pages was never touched.
+      # Pages must already be enabled with "GitHub Actions" as the source. The
+      # workflow cannot do it: creating a Pages site needs admin, which the
+      # Actions token does not have, and enablement:true fails with
+      # "Resource not accessible by integration". Enable it once, either in
+      # Settings -> Pages or with:
+      #   gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - id: deployment
         uses: actions/deploy-pages@v4
