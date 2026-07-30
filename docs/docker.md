@@ -43,6 +43,10 @@ and **`/state/aigem`** - bind-mount the host dirs onto those paths (mind the `ai
 A `developer`/`tester` bot's workdir (`.`) is the container's `WORKDIR /workspace`; bind-mount
 the repo it edits there.
 
+The image ships `bash` and `git`, but a bot only reaches them if its
+`capabilityProfile` is `shell` or `dangerous-shell`. The default
+`workspace-write` has no `bash` at all - the role does not grant shell.
+
 ## Run
 
 One bot per container; select it with `BOT_NAME`:
@@ -92,10 +96,10 @@ after the copy.
 
 ## Left out by design
 
-- **No Go (or other language) toolchain.** A `developer`/`tester` bot can run `git` and shell
-  commands, but not `go build` of its project. Add the toolchain in a derived image or mount it.
+- **No Go (or other language) toolchain.** Even with a shell profile, a bot cannot
+  `go build` its project. Add the toolchain in a derived image or mount it.
 - **No browser.** `web_search` works through the Brave Search API (key in state); the browser
-  search backend and the `browse` tool do not.
+  search backend and its `open_url` / `browser_action` tools do not.
 - **No local llama.cpp.** The image targets a remote LLM (e.g. OpenAI credentials in
   `auth.json`). Local models need a `llama-server` binary, which is not included.
 

@@ -27,12 +27,15 @@ profiles instead:
 `workspace-write` is the default. Under it, `-y` can approve file edits but
 cannot silently approve shell, because `bash` is not in the toolset at all.
 
-The table describes the **workspace** file tools. A bot's own tools are present in
-every profile, including `read-only`, and some of them act on the outside world:
-`memory`, `schedule`, `save_skill`, and `delete_skill` persist under
-`~/.config/aigem/bots/<name>/`, while `post_message` and `handoff` write to chat
-and `browser_action` can drive a real browser session. A `read-only` bot cannot
-modify your repository, but it is not inert.
+The table describes the **workspace** file tools. Two things it does not cover:
+
+- `browser_action` is a built-in read tool present in every profile, so even
+  `read-only` can drive a browser session - clicking and submitting forms.
+- A bot's own tools are also in every profile: `memory`, `schedule`,
+  `save_skill`, and `delete_skill` persist under
+  `~/.config/aigem/bots/<name>/`, and `post_message` and `handoff` write to chat.
+
+A `read-only` bot cannot modify your repository, but it is not inert.
 
 `shell` is the explicit opt-in for unattended non-destructive shell; destructive
 commands (`rm`, `git reset --hard`, `git clean`, ...) are still denied.

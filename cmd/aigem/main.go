@@ -58,6 +58,21 @@ func versionString() string {
 	return v
 }
 
+const topLevelUsage = `usage:
+  aigem [flags]              open the TUI in the current directory
+  aigem -p '<prompt>'        run one prompt non-interactively and exit
+
+  aigem auth ...             manage provider credentials
+  aigem models ...           list models; set up and control the local server
+  aigem usage ...            report token usage and remaining quota
+  aigem search ...           configure the web-search backend
+  aigem mcp ...              manage MCP servers
+  aigem paths ...            manage approved paths outside the working directory
+  aigem bot ...              define and run unattended chat bots
+  aigem version              print the version
+
+flags:`
+
 // Built-in local-provider defaults, shared by the flag defaults and the
 // auth/models subcommands so the two never drift.
 const (
@@ -167,6 +182,18 @@ func main() {
 				fatal(err)
 			}
 			return
+		case "help":
+			fmt.Println(topLevelUsage)
+			flag.CommandLine.SetOutput(os.Stdout)
+			flag.PrintDefaults()
+			return
+		default:
+			// A bare word that is not a subcommand is a typo, not a request to
+			// open an interactive session in this directory. Flags still fall
+			// through to the chat front-ends below.
+			if !strings.HasPrefix(os.Args[1], "-") {
+				fatal(fmt.Errorf("unknown command %q\n\n%s", os.Args[1], topLevelUsage))
+			}
 		}
 	}
 
@@ -189,8 +216,8 @@ func main() {
 	trustProjectSkills := flag.Bool("trust-project-skills", false,
 		"trust this project's current local skill definitions")
 	compactAuto := flag.Bool("compact-auto", true, "enable automatic context compaction")
-	compactAtPct := flag.Int("compact-at-pct", 70, "context %% at which to summarize (stage 3)")
-	evictAtPct := flag.Int("evict-at-pct", 50, "context %% at which to evict old tool output (stage 1+2)")
+	compactAtPct := flag.Int("compact-at-pct", 70, "context % at which to summarize (stage 3)")
+	evictAtPct := flag.Int("evict-at-pct", 50, "context % at which to evict old tool output (stage 1+2)")
 	keepTurns := flag.Int("compact-keep-turns", 10, "recent user turns kept verbatim across summarization")
 	keepTools := flag.Int("compact-keep-tools", 4, "recent tool results kept verbatim during eviction")
 	turnTimeout := flag.Duration("turn-timeout", agent.DefaultBudgetMaxDuration, "wall-clock budget for one -p turn (0 disables)")
@@ -581,7 +608,10 @@ func runPrint(client *llm.Ref, reg *tools.Registry, temp float64, prompt string,
 			fmt.Fprintf(os.Stderr, "  [denied] %s %s (pass -y to allow within --capability-profile %s)\n", name, string(args), capProfile.Name)
 			return false
 		}
-		if name == "bash" {
+		// The bare name, not the "<agent> › bash" a subagent is announced under:
+		// matching the decorated form would skip both gates below for exactly the
+		// calls the profile is meant to constrain.
+		if tools.BaseToolName(name) == "bash" {
 			if !capProfile.AutoApproveBash {
 				fmt.Fprintf(os.Stderr, "  [denied] %s %s (-y does not approve bash under --capability-profile %s; use shell or dangerous-shell)\n", name, string(args), capProfile.Name)
 				return false

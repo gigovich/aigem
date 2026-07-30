@@ -28,8 +28,9 @@ make check
 
 That is `fmt-check`, `vet`, `lint`, `race`, and `cross`. `make help` lists every
 target. CI additionally runs `govulncheck`, checks that `go mod tidy` is a no-op,
-lints under `GOOS=windows`, and builds on Windows - `make check-all` covers those
-too, if you have `govulncheck` installed.
+and lints under `GOOS=windows` - `make check-all` covers those too, if you have
+`govulncheck` installed. CI also compiles and vets on a real Windows runner,
+which nothing local can reproduce.
 
 If you would rather run them by hand:
 

@@ -2,7 +2,6 @@ package bot
 
 import (
 	"encoding/json"
-	"strings"
 
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/tools"
@@ -21,10 +20,7 @@ func AllowGate(profile tools.CapabilityProfile) agent.ConfirmFunc {
 		set[name] = true
 	}
 	return func(toolName string, args json.RawMessage) bool {
-		name := toolName
-		if i := strings.LastIndex(name, "›"); i >= 0 {
-			name = strings.TrimSpace(name[i+len("›"):])
-		}
+		name := tools.BaseToolName(toolName)
 		if !set[name] {
 			return false
 		}

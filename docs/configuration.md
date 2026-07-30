@@ -18,6 +18,10 @@ aigem honors the XDG base directories.
 | `~/.local/state/aigem/path-grants.json`   | approved read paths outside a working directory     |
 | `~/.local/state/aigem/project-trust.json` | approved project hooks, skills, and MCP targets     |
 | `~/.local/state/aigem/local.json`         | local llama.cpp server settings                     |
+| `~/.local/state/aigem/preferences.json`   | the model you last selected                         |
+| `~/.local/state/aigem/search.json`        | web-search backend and its API key (`0600`)         |
+| `~/.local/state/aigem/mcp-oauth/`         | MCP OAuth tokens, one file per server (`0600`)      |
+| `~/.local/state/aigem/browser-profile/`   | the isolated Chrome profile for browser search      |
 
 On macOS the config directory is `~/Library/Application Support/aigem`.
 

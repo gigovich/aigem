@@ -11,7 +11,7 @@ PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 win
 .PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs clean
 
 help: ## Show this help
-	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 build: ## Build the binary into bin/
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) $(PKG)

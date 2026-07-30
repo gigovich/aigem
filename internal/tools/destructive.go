@@ -7,12 +7,27 @@ import (
 )
 
 // IsDestructive reports whether a tool call performs an irreversible change that
+// attributionSep separates a subagent's display name from the tool it called,
+// as in "code-writer › bash".
+const attributionSep = "›"
+
+// BaseToolName strips the "<agent> › " attribution a subagent prepends to a tool
+// name for display. Every policy decision must be made on the bare name: a check
+// written as `name == "bash"` silently stops matching once a subagent makes the
+// call, which would exempt exactly the calls that most need the rule.
+func BaseToolName(name string) string {
+	if i := strings.LastIndex(name, attributionSep); i >= 0 {
+		return strings.TrimSpace(name[i+len(attributionSep):])
+	}
+	return strings.TrimSpace(name)
+}
+
 // cannot be reconstructed from the code in the working tree - the only class of
 // action that still needs explicit human approval under auto mode. Only bash is
 // classified: edit_file/write_file change tracked code (recoverable from git and
 // the session's recorded file changes), so they are considered reversible.
 func IsDestructive(name string, rawArgs json.RawMessage) bool {
-	if name != "bash" {
+	if BaseToolName(name) != "bash" {
 		return false
 	}
 	var a struct {

@@ -69,7 +69,9 @@ working state, and a `^O tools shown` / `^O tools hidden` hint.
 ## Context compaction
 
 Long sessions are kept inside the context window by a three-stage cascade that
-escalates with pressure (used tokens / `--ctx-size`):
+escalates with pressure - used tokens as a fraction of the model's context
+window. That window comes from the selected model and follows a `/model` switch;
+`--ctx-size` is only the fallback for a model that advertises none:
 
 1. At `--evict-at-pct` (default 50%) old `read_file` and tool outputs are replaced
    with an `[output elided to save context - re-run <tool> to retrieve it]`

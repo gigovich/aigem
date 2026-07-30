@@ -1,5 +1,6 @@
 # Build output
 /aigem
+/aigem.exe
 /bin/
 /dist/
 /site/

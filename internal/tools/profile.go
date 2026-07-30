@@ -88,8 +88,10 @@ func CapabilityProfileNames() []string {
 }
 
 func (p CapabilityProfile) Allows(name string) bool {
+	// Compare the bare name: a subagent's call arrives as "<agent> › bash".
+	bare := BaseToolName(name)
 	for _, allowed := range p.Allow {
-		if allowed == name {
+		if allowed == bare {
 			return true
 		}
 	}
