@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-31
+
+First public release.
+
 ### Added
 
 - Windows support. The process-group handling in the hook runner and the local
@@ -87,4 +91,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   infrastructure: the Helm chart, the Gitea CI workflow, and internal design and
   evaluation documents.
 
-[Unreleased]: https://github.com/gigovich/aigem/commits/main
+[Unreleased]: https://github.com/gigovich/aigem/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/gigovich/aigem/releases/tag/v0.1.0
