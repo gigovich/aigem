@@ -89,6 +89,18 @@ Unattended sessions behave differently, deliberately:
 - **`-p`** honors existing grants but cannot create new ones, and refuses
   anything not already granted.
 
+### What the sandbox does not defend against
+
+The check resolves a path and then the tool opens it, so it is not atomic. A
+process writing inside your working directory *at the same time* can replace a
+component with a symlink in between and land the write outside. Closing that
+properly needs per-component `openat2(RESOLVE_IN_ROOT)`, which is Linux-specific;
+aigem does not attempt it.
+
+In practice this needs an attacker who can already run code on your machine, at
+which point the sandbox is not the thing standing in their way. It is listed here
+because "path traversal is blocked" should not be read as more than it is.
+
 ## The `bash` caveat
 
 The sandbox constrains the *file tools*. The `bash` tool runs a real shell, so it

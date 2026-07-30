@@ -272,16 +272,16 @@ func (r *Registry) resolveFor(p string, intent PathIntent) (string, error) {
 		return clean, nil
 	case PathAllowDir:
 		if grants && !intent.Write {
-			// Grant the folder the confirmation box actually named. For a file
-			// that is its parent, but for a directory it is the directory itself:
-			// taking the parent unconditionally would turn "always allow
-			// /srv/data" into a grant over /srv and every sibling under it.
-			dir := filepath.Dir(clean)
-			if fi, err := os.Stat(clean); err == nil && fi.IsDir() {
-				dir = clean
-			}
-			if err := pathgrant.Add(r.root, dir); err != nil {
-				return "", fmt.Errorf("record path grant: %w", err)
+			// Grant the folder the confirmation box actually named, and only for
+			// a path that really exists. Taking the parent unconditionally would
+			// turn "always allow /srv/data" into a grant over /srv and every
+			// sibling; doing it for a path the model merely invented would let it
+			// farm grants over directories the box never named, on calls that go
+			// on to fail anyway.
+			if dir, ok := grantDir(clean); ok {
+				if err := pathgrant.Add(r.root, dir); err != nil {
+					return "", fmt.Errorf("record path grant: %w", err)
+				}
 			}
 		}
 		return clean, nil
@@ -301,7 +301,10 @@ func (r *Registry) locate(p string) (clean string, inside bool, err error) {
 	if !filepath.IsAbs(p) {
 		joined = filepath.Join(r.root, p)
 	}
-	clean = resolveDeepest(filepath.Clean(joined))
+	clean, err = resolveDeepest(filepath.Clean(joined))
+	if err != nil {
+		return "", false, err
+	}
 	rel, err := filepath.Rel(r.root, clean)
 	if err != nil {
 		return "", false, err
@@ -309,6 +312,10 @@ func (r *Registry) locate(p string) (clean string, inside bool, err error) {
 	escapes := rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	return clean, !escapes, nil
 }
+
+// maxSymlinkHops bounds manual link following, mirroring the kernel's ELOOP
+// limit so a cycle of dangling links cannot spin.
+const maxSymlinkHops = 40
 
 // resolveDeepest resolves symlinks in the deepest *existing* ancestor of p and
 // rejoins the components that do not exist yet.
@@ -319,22 +326,69 @@ func (r *Registry) locate(p string) (clean string, inside bool, err error) {
 // that actually lands outside the root. write_file's MkdirAll would create the
 // missing directories straight through the link. A repository can ship such a
 // symlink, so this has to hold for paths that do not exist yet.
-func resolveDeepest(p string) string {
+func resolveDeepest(p string) (string, error) { return resolveHops(p, 0) }
+
+func resolveHops(p string, hops int) (string, error) {
+	if hops > maxSymlinkHops {
+		return "", fmt.Errorf("too many levels of symbolic links resolving %q", p)
+	}
 	var missing []string
 	for cur := p; ; {
 		if real, err := filepath.EvalSymlinks(cur); err == nil {
-			for i := len(missing) - 1; i >= 0; i-- {
-				real = filepath.Join(real, missing[i])
+			return rejoin(real, missing), nil
+		}
+		// EvalSymlinks reports ENOENT both for a component that does not exist
+		// and for one that IS a symlink whose target does not exist. Lstat tells
+		// them apart. A dangling link has to be followed by hand: treating it as
+		// a plain missing name would rejoin it onto the resolved parent and hand
+		// back a path that sits lexically inside the root, while the kernel
+		// follows the link outside it the moment write_file creates the file.
+		if fi, err := os.Lstat(cur); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(cur)
+			if err != nil {
+				return "", err
 			}
-			return real
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(cur), target)
+			}
+			resolved, err := resolveHops(filepath.Clean(target), hops+1)
+			if err != nil {
+				return "", err
+			}
+			return rejoin(resolved, missing), nil
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			return p // walked to the filesystem root without finding anything
+			return p, nil // walked to the filesystem root without finding anything
 		}
 		missing = append(missing, filepath.Base(cur))
 		cur = parent
 	}
+}
+
+// grantDir returns the directory an "always allow this folder" approval should
+// record for an approved path, and whether anything should be recorded at all.
+// A path that does not exist grants nothing: there is no folder the user can be
+// said to have been shown.
+func grantDir(clean string) (string, bool) {
+	fi, err := os.Stat(clean)
+	switch {
+	case err != nil:
+		return "", false
+	case fi.IsDir():
+		return clean, true
+	default:
+		return filepath.Dir(clean), true
+	}
+}
+
+// rejoin appends the not-yet-existing components, outermost first, back onto a
+// resolved base.
+func rejoin(base string, missing []string) string {
+	for i := len(missing) - 1; i >= 0; i-- {
+		base = filepath.Join(base, missing[i])
+	}
+	return base
 }
 
 func outsideRootErr(p, root string) error {

@@ -34,9 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and let `write_file` create files outside the working directory. A cloned
   repository can ship such a symlink. Resolution now walks to the deepest
   existing ancestor, and the case is covered by tests.
+- Fixed a second escape of the same kind, via a *dangling* symlink.
+  `EvalSymlinks` reports ENOENT both for a name that is absent and for a symlink
+  whose target does not exist, so a link like `config.yaml -> /outside/target`
+  was treated as a missing name and `write_file` created the target outside the
+  sandbox - arbitrary file creation from nothing more than a `git clone`.
+  Dangling links are now followed explicitly, with a hop limit for cycles.
 - "Always (this folder)" no longer over-grants. Approving a *directory* recorded
-  its parent, so allowing `/srv/data` silently granted `/srv` and every sibling.
-  The grant is now the directory the confirmation box named.
+  its parent, so allowing `/srv/data` silently granted `/srv` and every sibling,
+  and approving a path that did not exist recorded its parent too - letting an
+  invented path farm a grant over a real directory. The grant is now the folder
+  the confirmation box named, and nothing is recorded for a path that does not
+  exist.
 - On Windows, stopping the local daemon verifies the process image against the
   configured binary before terminating it. Windows recycles PIDs, so a stale
   pidfile could otherwise have killed an unrelated process. A refused stop is now
