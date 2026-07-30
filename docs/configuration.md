@@ -36,12 +36,14 @@ At startup the harness discovers project instruction files and appends them to t
 system prompt - for the main agent and every subagent - rather than relying on the
 model to go find them:
 
-- `AGENTS.md` / `CLAUDE.md` at the git root, walking up from `--cwd`. If no
-  repository is found, at `--cwd` itself. If both exist as separate files, the
-  most recently modified one wins; if one is a symlink to the other, it is loaded
-  once.
-- `<cwd>/.claude/CLAUDE.md`, unless the root file already resolves to it.
-- `context.md` at the project root, which is injected in full.
+They are injected in this order:
+
+1. `AGENTS.md` / `CLAUDE.md` at the git root, walking up from `--cwd`. If no
+   repository is found, at `--cwd` itself. If both exist as separate files, the
+   most recently modified one wins; if one is a symlink to the other, it is
+   loaded once.
+2. `context.md` at the project root, injected in full.
+3. `<cwd>/.claude/CLAUDE.md`, unless the root file already resolves to it.
 
 These files are prompt-only text. They do not receive or confer executable trust.
 
@@ -49,8 +51,8 @@ These files are prompt-only text. They do not receive or confer executable trust
 
 | Variable            | Effect                                                              |
 | ------------------- | ------------------------------------------------------------------- |
-| `OPENAI_API_KEY`    | authenticates `openai`. With a stored ChatGPT login it is used for models outside the Codex allow-list; with no stored login it is used for every openai model |
-| `XAI_API_KEY`       | authenticates `xai`. Unlike the OpenAI one, it **overrides** a stored xAI OAuth record |
+| `OPENAI_API_KEY`    | authenticates `openai`. It overrides a stored openai *API-key* record; against a stored ChatGPT OAuth login it is used only for models outside the Codex allow-list |
+| `XAI_API_KEY`       | authenticates `xai`. It **overrides** a stored xAI OAuth record  |
 | `AIGEM_HOOKS_DEBUG` | any non-empty value logs every hook invocation to stderr            |
 | `XDG_CONFIG_HOME`   | overrides the config directory                                      |
 | `XDG_STATE_HOME`    | overrides the state directory                                       |

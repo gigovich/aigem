@@ -25,8 +25,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Updated `golang.org/x/text` (infinite loop, GO-2026-5970), `goldmark` (XSS,
-  GO-2026-5320), and the minimum Go toolchain to 1.26.5 (crypto/tls ECH privacy
-  leak, GO-2026-5856). `govulncheck` now runs in CI.
+  GO-2026-5320), and `golang.org/x/net`, and added a `toolchain go1.26.5`
+  directive for the crypto/tls ECH privacy leak (GO-2026-5856). All three were
+  reachable from aigem's own call paths. `govulncheck` now runs in CI.
+- Fixed a sandbox escape. The path check resolved symlinks for a path and its
+  immediate parent only, so a path with two or more not-yet-existing components
+  under a symlinked directory stayed unresolved, passed the containment check,
+  and let `write_file` create files outside the working directory. A cloned
+  repository can ship such a symlink. Resolution now walks to the deepest
+  existing ancestor, and the case is covered by tests.
+- "Always (this folder)" no longer over-grants. Approving a *directory* recorded
+  its parent, so allowing `/srv/data` silently granted `/srv` and every sibling.
+  The grant is now the directory the confirmation box named.
+- On Windows, stopping the local daemon verifies the process image against the
+  configured binary before terminating it. Windows recycles PIDs, so a stale
+  pidfile could otherwise have killed an unrelated process. A refused stop is now
+  reported instead of silently deleting the pidfile and orphaning the daemon.
 - Documented that both subscription logins reuse the vendor's own CLI OAuth
   client and undocumented endpoints, and that API keys are the supported
   alternative. Previously only the OpenAI path carried any warning.
@@ -43,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callers can use `errors.Is` against them.
 - Replaced deprecated Bubble Tea viewport calls (`LineUp`, `LineDown`, `ViewUp`,
   `ViewDown`) with their supported equivalents.
+- A hook that sets `shell` now gets the matching "run this string" flag, so
+  `cmd` receives `/c` and `powershell`/`pwsh` receive `-Command` instead of a
+  `bash`-style `-c` they reject.
+- A container started with neither a command nor `BOT_NAME` exits non-zero
+  instead of reporting success to whatever supervises it.
 
 ### Changed
 

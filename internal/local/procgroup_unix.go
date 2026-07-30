@@ -18,17 +18,22 @@ func detachAttrs() *syscall.SysProcAttr {
 // whose leader is pid, which a recycled pid is very unlikely to lead, and
 // SIGTERM is catchable - so the identity check the Windows build needs before
 // its unconditional kill would buy nothing.
-func terminateDaemon(pid int, binaryPath string) {
+//
+// The signals are best-effort, matching the long-standing behavior: a process
+// that is already gone is not an error.
+func terminateDaemon(pid int, binaryPath string) error {
 	// Negative pid targets the whole process group (Setpgid at spawn).
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 	if p, err := os.FindProcess(pid); err == nil {
 		_ = p.Signal(syscall.SIGTERM)
 	}
+	return nil
 }
 
-// processAlive reports whether pid is a live process. Signal 0 performs the
-// permission and existence checks without delivering anything.
-func processAlive(pid int) bool {
+// daemonAlive reports whether pid is a live process. Signal 0 performs the
+// permission and existence checks without delivering anything. binaryPath is
+// unused: see terminateDaemon for why the identity check is Windows-only.
+func daemonAlive(pid int, binaryPath string) bool {
 	p, err := os.FindProcess(pid)
 	if err != nil {
 		return false

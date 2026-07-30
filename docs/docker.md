@@ -14,13 +14,17 @@ Every tagged release publishes a multi-arch image (amd64 and arm64):
 docker pull ghcr.io/gigovich/aigem:latest
 ```
 
-Or build it yourself. The Dockerfile uses BuildKit features (`--platform`,
-`RUN --mount=type=cache`), so it needs `buildx` - the default on current Docker,
-but the legacy builder fails at the first line:
+Or build it yourself. The Dockerfile uses BuildKit features - `$BUILDPLATFORM`
+and `RUN --mount=type=cache` - so it needs `buildx`, the default on current
+Docker. The legacy builder expands `$BUILDPLATFORM` to an empty string and fails.
 
 ```
-docker buildx build -t aigem-bot .
+docker buildx build --load -t aigem-bot .
 ```
+
+`--load` puts the result in the local image store. Without it, a `docker-container`
+builder keeps the image in its own cache and `docker run aigem-bot` reports that
+the image cannot be found.
 
 Multi-stage: `golang:1.26-alpine` compiles a static, CGO-free binary; the runtime is
 `alpine:3.23` with `ca-certificates`, `bash`, `git`, `tzdata`, and `tini`. `tini` is PID 1 -

@@ -28,7 +28,9 @@ Drives Chrome/Chromium through the DevTools protocol:
   drive the site's own navigation instead of re-querying the engine.
 
 A third tool, `browser_action`, drives a page directly - clicking, typing, and
-observing named selectors - for flows a plain fetch cannot reach.
+observing named selectors - for flows a plain fetch cannot reach. Each call is an
+ephemeral session that has to start with its own `navigate` step; only the
+profile's cookies carry over between calls.
 
 `open_url` only opens public web addresses; internal hosts (localhost, private
 and link-local ranges) are refused. `browser_action` honors the same rule, with

@@ -9,7 +9,7 @@
 | `↑` / `↓`                    | recall previous / next input (single-line input only)     |
 | Mouse wheel, `PgUp`, `PgDn`  | scroll the conversation                                   |
 | `Shift+↑` / `Shift+↓`        | scroll by two lines                                       |
-| `Shift+←` / `Shift+→`        | move between words in the input                           |
+| `Shift+←` / `Shift+→`        | scroll a wide diff horizontally                           |
 | `Esc`                        | interrupt the turn (cancels generation and running `bash`) |
 | `Ctrl+O`                     | show/hide tool output (the `⤷` result preview)            |
 | `Ctrl+V`                     | paste, including an image from the clipboard              |
@@ -64,7 +64,7 @@ continues it; resumed sessions always run on the current system prompt.
 
 The status bar shows an authentication dot, the model ref, a context-usage gauge
 (`ctx used/window %`) that turns peach past 50% and red past 80%, the ready or
-working state, and the `^O tools` hint.
+working state, and a `^O tools shown` / `^O tools hidden` hint.
 
 ## Context compaction
 

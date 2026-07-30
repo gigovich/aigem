@@ -7,7 +7,7 @@ model you host yourself as happily as with a hosted one.
 ## Start here
 
 - **[Getting started](getting-started.md)** - install, first run, and every flag.
-- **[Models and providers](models.md)** - local llama.cpp, OpenAI, your own
+- **[Models and providers](models.md)** - local llama.cpp, OpenAI, xAI, your own
   endpoints, and how quota is tracked.
 - **[Security model](security.md)** - the sandbox, capability profiles, path
   grants, and project trust. Worth reading before you point it at a repository.

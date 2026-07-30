@@ -8,7 +8,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.dat
 # Every target the release builds, so a portability break shows up locally.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help build install run test race lint fmt fmt-check vet tidy check cross docs clean
+.PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -31,6 +31,12 @@ race: ## Run the test suite under the race detector
 lint: ## Run golangci-lint
 	golangci-lint run
 
+lint-windows: ## Lint the Windows-only sources (invisible to a linux lint run)
+	GOOS=windows golangci-lint run
+
+vuln: ## Scan for known vulnerabilities
+	govulncheck ./...
+
 fmt: ## Format the source
 	gofmt -w .
 
@@ -44,13 +50,18 @@ vet: ## Run go vet
 tidy: ## Tidy go.mod/go.sum
 	go mod tidy
 
+tidy-check: ## Fail if go.mod/go.sum are not tidy
+	go mod tidy -diff
+
 cross: ## Build every released target
 	@set -e; for t in $(PLATFORMS); do \
 		echo "==> $$t"; \
 		GOOS=$${t%/*} GOARCH=$${t#*/} go build -o /dev/null $(PKG); \
 	done
 
-check: fmt-check vet lint race cross ## Everything CI runs
+check: fmt-check vet lint race cross ## The usual pre-PR set
+
+check-all: check lint-windows vuln tidy-check ## Everything CI runs
 
 docs: ## Serve the documentation site locally
 	mkdocs serve

@@ -28,7 +28,7 @@ arm64.
 
 - **Go 1.26+**, if you are building from source or installing with `go install`.
   Prebuilt release binaries need no toolchain.
-- **A model.** Either a hosted provider (OpenAI, or anything OpenAI-compatible
+- **A model.** Either a hosted provider (OpenAI, xAI, or anything OpenAI-compatible
   you configure) or a local [llama.cpp](https://github.com/ggml-org/llama.cpp)
   server. See [Models and providers](models.md).
 
@@ -39,10 +39,16 @@ is what makes native tool calling work.
 
 ### On Windows
 
-aigem builds and runs on Windows, but the `bash` tool and shell-running hooks
-literally invoke `bash`, so they need one on your `PATH` - Git Bash, WSL, or
-MSYS2. Everything else (the TUI, file tools, search, models, MCP, skills) works
-without it. See [the note in Tools](tools.md#bash-on-windows).
+aigem builds and runs on Windows, but three things default to invoking `bash`, so
+they need one on your `PATH` - Git Bash, WSL, or MSYS2:
+
+- the `bash` tool,
+- hooks that run a shell command (unless the hook sets `shell:`),
+- skills that use dynamic `` !`cmd` `` injection (unless the skill sets
+  `shell: powershell`).
+
+The TUI, file tools, search, models, and MCP work without it. See
+[the note in Tools](tools.md#bash-on-windows).
 
 The default local server address is `http://127.0.0.1:9280`.
 
@@ -54,9 +60,17 @@ Just run it:
 aigem
 ```
 
-The very first run asks you to set up a web-search backend (a Brave API key, or
-Chrome automation). Search is optional - decline it and aigem starts normally;
-you can configure it later with `aigem search set`. See [Web search](search.md).
+Before the TUI opens, aigem asks you to set up a web-search backend (a Brave API
+key, or Chrome automation). Search is optional and declining it starts aigem
+normally - but skipping records nothing, so the prompt returns on every
+interactive launch until you either configure a backend or turn it off:
+
+```sh
+aigem search set brave --api-key-stdin   # or: aigem search set browser
+aigem search clear                       # explicitly no search backend
+```
+
+See [Web search](search.md).
 
 With no `--model`, aigem reuses the model you last selected, then falls back to
 the first authenticated provider, then to the local model. If nothing is set up,

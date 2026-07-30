@@ -1,6 +1,8 @@
 module github.com/gigovich/aigem
 
-go 1.26.5
+go 1.26
+
+toolchain go1.26.5
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0

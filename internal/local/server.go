@@ -82,11 +82,22 @@ func Running() bool {
 	if !ok {
 		return false
 	}
-	if !processAlive(pid) {
+	if !daemonAlive(pid, configuredBinary()) {
 		_ = removePidfile()
 		return false
 	}
 	return true
+}
+
+// configuredBinary returns the daemon's configured executable, falling back to
+// the default name. Load yields a zero Config when local.json is unreadable or
+// malformed, and an empty name would match nothing on Windows.
+func configuredBinary() string {
+	cfg, _, err := Load()
+	if err != nil || cfg.BinaryPath == "" {
+		return Defaults().BinaryPath
+	}
+	return cfg.BinaryPath
 }
 
 // Reachable returns true when the /health endpoint at baseURL responds 200 OK.
@@ -439,15 +450,11 @@ func Stop() error {
 	if !ok {
 		return nil
 	}
-	// Load returns a zero Config when the file is unreadable or malformed, and an
-	// empty binary would match nothing on Windows - leaving the daemon
-	// permanently unstoppable. Fall back to the default name in that case.
-	cfg, _, err := Load()
-	binary := cfg.BinaryPath
-	if err != nil || binary == "" {
-		binary = Defaults().BinaryPath
+	if err := terminateDaemon(pid, configuredBinary()); err != nil {
+		// Keep the pidfile: dropping it here would orphan a daemon that is still
+		// running and still holding the port, with nothing left to address it by.
+		return fmt.Errorf("stop llama-server (pid %d): %w", pid, err)
 	}
-	terminateDaemon(pid, binary)
 	return removePidfile()
 }
 

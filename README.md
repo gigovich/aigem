@@ -65,11 +65,12 @@ fingerprinted against their configuration - editing an approved hook invalidates
 it rather than grandfathering the new one in.
 → [Security model](docs/security.md)
 
-**Your model or theirs.** A local llama.cpp server (aigem downloads the weights
-and manages the daemon for you; you supply the `llama-server` binary), an OpenAI
-or xAI API key, a ChatGPT or Grok subscription, or any OpenAI-compatible endpoint
-you add. Token cost and remaining quota are tracked from real responses, so you
-can compare burn rate across models.
+**Your model or theirs.** A local llama.cpp server (you supply the
+`llama-server` binary; llama.cpp fetches the weights on first launch while aigem
+drives it, shows progress, and manages the daemon), an OpenAI or xAI API key, a
+ChatGPT or Grok subscription, or any OpenAI-compatible endpoint you add. Token
+cost and remaining quota are tracked from real responses, so you can compare burn
+rate across models.
 → [Models and providers](docs/models.md)
 
 **Parallel subagents.** The model delegates self-contained work to `scout`,
@@ -120,8 +121,9 @@ undocumented endpoints. They work well, but the risk lands on your subscription
 account, and API keys are the supported alternative.
 → [details](docs/models.md#subscription-logins-read-this-first)
 
-**On Windows, `bash` needs a `bash`.** Git Bash or WSL. Everything else works
-without one. → [why there is no PowerShell fallback](docs/tools.md#bash-on-windows)
+**On Windows, `bash` needs a `bash`.** Git Bash or WSL, for the `bash` tool and
+for hooks and skills that shell out. The rest works without one.
+→ [why there is no PowerShell fallback](docs/tools.md#bash-on-windows)
 
 aigem sends nothing anywhere you did not configure. There is no telemetry, and web
 search is off until you set up a backend.

@@ -11,7 +11,9 @@ go build ./cmd/aigem
 go test ./...
 ```
 
-Go 1.26 or newer is required - the version in [`go.mod`](go.mod) is the one CI uses.
+Go 1.26 or newer is required. `go.mod` also carries a `toolchain go1.26.5`
+directive, so the Go tool fetches that patch release automatically - it contains a
+`crypto/tls` fix aigem is affected by.
 
 You do not need a model to work on most of the codebase; the test suite is fully
 self-contained and never talks to a network.
@@ -24,9 +26,12 @@ Run what CI runs:
 make check
 ```
 
-That is `fmt-check`, `vet`, `lint`, `race`, and `cross` - the same set the CI
-workflow runs. `make help` lists every target. If you would rather run them by
-hand:
+That is `fmt-check`, `vet`, `lint`, `race`, and `cross`. `make help` lists every
+target. CI additionally runs `govulncheck`, checks that `go mod tidy` is a no-op,
+lints under `GOOS=windows`, and builds on Windows - `make check-all` covers those
+too, if you have `govulncheck` installed.
+
+If you would rather run them by hand:
 
 ```sh
 gofmt -l .            # must print nothing

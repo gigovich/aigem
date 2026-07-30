@@ -20,8 +20,10 @@ on:
 permissions:
   contents: read
 
+# Keyed by ref: a single global "pages" group would make concurrent PR docs
+# builds cancel one another, and queue a merge behind an in-flight PR build.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

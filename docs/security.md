@@ -8,8 +8,11 @@ hand it. To report a vulnerability, see
 ## Capability profiles and approvals
 
 **Interactive sessions** (the TUI and `--repl`) expose the full toolset and ask
-before confirm-gated tools. `Shift+Tab` auto mode approves edits and
-non-destructive shell commands, but still stops for irreversible actions.
+before confirm-gated tools. `Shift+Tab` auto mode approves every confirm-gated
+tool that is not classified destructive - which means file edits, non-destructive
+shell, and any confirm-gated MCP tool - and still stops for irreversible shell
+actions. Only `bash` is ever classified destructive, so an MCP tool that deletes
+something is auto-approved in auto mode.
 
 **Unattended sessions** (`-p` and bots) have nobody to ask, so they use capability
 profiles instead:
@@ -24,11 +27,12 @@ profiles instead:
 `workspace-write` is the default. Under it, `-y` can approve file edits but
 cannot silently approve shell, because `bash` is not in the toolset at all.
 
-"File writes" above means *workspace* files. A bot's own tools (`memory`,
-`schedule`, `save_skill`, `delete_skill`) are present in every profile including
-`read-only`, and they do persist under `~/.config/aigem/bots/<name>/`. A
-`read-only` bot cannot touch your repository, but it can still write its own
-memory and skills.
+The table describes the **workspace** file tools. A bot's own tools are present in
+every profile, including `read-only`, and some of them act on the outside world:
+`memory`, `schedule`, `save_skill`, and `delete_skill` persist under
+`~/.config/aigem/bots/<name>/`, while `post_message` and `handoff` write to chat
+and `browser_action` can drive a real browser session. A `read-only` bot cannot
+modify your repository, but it is not inert.
 
 `shell` is the explicit opt-in for unattended non-destructive shell; destructive
 commands (`rm`, `git reset --hard`, `git clean`, ...) are still denied.
@@ -41,9 +45,15 @@ Unattended turns also carry runaway budgets: 20 minutes wall-clock, 40 model
 rounds, 120 tool calls, and 8 identical tool calls. Exhausting one ends the turn
 with a final answer and a notice. Hitting the **model-round** cap asks the model
 for a short wrap-up - what it did and what is left - and returns that; the other
-three return a canned `Budget exhausted: ...` line. Tune them with
-`--turn-timeout`, `--max-model-rounds`, `--max-tool-calls`, and
-`--max-repeat-tool-calls`, or set a value to `0` to disable that budget.
+three return a canned `Budget exhausted: ...` line - as does the model-round case
+if the wrap-up call fails.
+
+For `-p`, tune them with `--turn-timeout`, `--max-model-rounds`,
+`--max-tool-calls`, and `--max-repeat-tool-calls`, or set a value to `0` to
+disable that budget. **Those flags do not reach bots**: a bot is configured by
+`turnBudget:` in its `bot.yaml`, and some roles ship with larger defaults than the
+figures above (the `developer` role starts at 45 minutes, 120 rounds, and 300 tool
+calls). See [Chat bots](bots.md#turn-budgets).
 
 ## The filesystem sandbox
 
@@ -52,9 +62,11 @@ symlinks.
 
 When a tool asks for a path outside the sandbox, an interactive session does not
 refuse outright: the confirmation box names the path and offers `Once`,
-`Always (this folder)`, and `Deny`. `Always` records that file's directory, and
-everything under it, as readable from this working directory - in this session
-and later ones. `--repl` asks the same question on stdin.
+`Always (this folder)`, and `Deny`. `Always` records a directory, and everything
+under it, as readable from this working directory - in this session and later
+ones. The directory recorded is the one the box named: the containing directory
+for a file, or the directory itself when the tool asked for a directory.
+`--repl` asks the same question on stdin.
 
 **Grants cover reads only.** A `write_file` or `edit_file` outside the working
 directory is asked about every time and is never remembered, so its box offers
@@ -118,8 +130,9 @@ to `project-trust.json`.
 
 ## Credentials
 
-Credentials are stored `0600` in `~/.local/state/aigem/auth.json` and are never
-logged.
+Credentials live under the state directory, all `0600`, and are never logged:
+`auth.json` for model providers, `search.json` for a search API key, and
+`mcp-oauth/<server>.json` for MCP OAuth tokens.
 
 A project-local `.aigem/models.json` may add providers and tweak an existing
 provider's models, but never its `base_url`, `api`, `auth`, or `headers`. That

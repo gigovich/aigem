@@ -46,9 +46,9 @@ token.
 ## Which model gets picked
 
 With no `--model`, aigem first reuses **the model you last selected**, if it still
-resolves and is usable. Otherwise it takes the first authenticated provider in
-registry order - `local`, then `openai`, then `xai` - and falls back to the local
-model when nothing is authenticated.
+resolves and is usable. Otherwise it takes the first authenticated provider that
+requires authentication, in registry order - `openai`, then `xai`, then anything
+you added - and falls back to the local model when none is authenticated.
 
 A bare `--model <name>` keeps the old behavior: the local provider with that model
 name.

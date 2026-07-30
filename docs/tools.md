@@ -7,7 +7,7 @@ The model can call these. All file paths are sandboxed under `--cwd` - see
 
 | Tool         | Purpose                                                       | Confirmation |
 | ------------ | ------------------------------------------------------------- | ------------ |
-| `read_file`  | Read a text file's exact contents                             | no           |
+| `read_file`  | Read a text file, line-numbered for precise edits              | no           |
 | `write_file` | Create a file or fully replace its contents                   | yes          |
 | `edit_file`  | Replace an exact text fragment in an existing file            | yes          |
 | `list_dir`   | List a directory                                              | no           |
@@ -17,14 +17,18 @@ The model can call these. All file paths are sandboxed under `--cwd` - see
 | `web_search` | Search current public web results (when configured)           | no           |
 | `open_url`   | Open a URL in the browser backend, return text + links/forms  | no           |
 | `browser_action` | Drive a page: click, type, observe (browser backend only) | no           |
-| `todo_write` | Keep a visible task list for the current turn                 | no           |
+| `todo_write` | Track a multi-step plan (kept until every item is done)        | no           |
 | `task`       | Delegate to a specialized subagent                            | no           |
 | `skill`      | Invoke a discovered skill                                     | no           |
 
-`web_search`, `open_url`, and `browser_action` appear only once a search backend
-is configured, and `skill` only when at least one model-invocable skill was
-discovered. Bots additionally get `memory`, `schedule`, `save_skill`, and
-`delete_skill`.
+Not every tool is always present. `web_search` appears once any search backend is
+configured; `open_url` and `browser_action` need the **browser** backend
+specifically, so they are absent when Brave is the provider. `skill` appears only
+when at least one model-invocable skill was discovered.
+
+Bots differ more than that: they get seven extra tools - `memory`, `schedule`,
+`save_skill`, `delete_skill`, `post_message`, `handoff`, and `read_chat` - and
+they get neither `task` nor `todo_write`.
 
 `write_file`, `edit_file`, and `bash` prompt for confirmation in the TUI before
 running. For changes to existing files the model uses `edit_file` (exact

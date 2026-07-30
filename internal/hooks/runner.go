@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -221,8 +220,16 @@ func parseOutput(s string) (hookOutput, bool) {
 // shellFlag returns the "run this string" flag for a shell. Getting this wrong
 // is silent: `cmd -c "..."` is rejected by cmd.exe, so a Windows hook that sets
 // `shell` would never run.
+//
+// Both separators are handled explicitly rather than via filepath.Base: the
+// configured value may be a Windows path, and filepath only splits on "\" when
+// the process itself runs on Windows.
 func shellFlag(shell string) string {
-	switch strings.ToLower(filepath.Base(shell)) {
+	name := strings.ToLower(strings.TrimSpace(shell))
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	switch name {
 	case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
 		return "-Command"
 	case "cmd", "cmd.exe":

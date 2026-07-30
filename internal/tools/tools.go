@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -271,7 +272,15 @@ func (r *Registry) resolveFor(p string, intent PathIntent) (string, error) {
 		return clean, nil
 	case PathAllowDir:
 		if grants && !intent.Write {
-			if err := pathgrant.Add(r.root, filepath.Dir(clean)); err != nil {
+			// Grant the folder the confirmation box actually named. For a file
+			// that is its parent, but for a directory it is the directory itself:
+			// taking the parent unconditionally would turn "always allow
+			// /srv/data" into a grant over /srv and every sibling under it.
+			dir := filepath.Dir(clean)
+			if fi, err := os.Stat(clean); err == nil && fi.IsDir() {
+				dir = clean
+			}
+			if err := pathgrant.Add(r.root, dir); err != nil {
 				return "", fmt.Errorf("record path grant: %w", err)
 			}
 		}
@@ -292,20 +301,40 @@ func (r *Registry) locate(p string) (clean string, inside bool, err error) {
 	if !filepath.IsAbs(p) {
 		joined = filepath.Join(r.root, p)
 	}
-	clean = filepath.Clean(joined)
-	// Follow symlinks of the deepest existing ancestor so a symlink inside the
-	// root cannot point the operation outside it.
-	if real, err := filepath.EvalSymlinks(clean); err == nil {
-		clean = real
-	} else if real, err := filepath.EvalSymlinks(filepath.Dir(clean)); err == nil {
-		clean = filepath.Join(real, filepath.Base(clean))
-	}
+	clean = resolveDeepest(filepath.Clean(joined))
 	rel, err := filepath.Rel(r.root, clean)
 	if err != nil {
 		return "", false, err
 	}
 	escapes := rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	return clean, !escapes, nil
+}
+
+// resolveDeepest resolves symlinks in the deepest *existing* ancestor of p and
+// rejoins the components that do not exist yet.
+//
+// Resolving only p and its immediate parent is not enough: as soon as two or
+// more trailing components are missing, both lookups fail with ENOENT, the path
+// stays unresolved, and a purely lexical containment check then accepts a path
+// that actually lands outside the root. write_file's MkdirAll would create the
+// missing directories straight through the link. A repository can ship such a
+// symlink, so this has to hold for paths that do not exist yet.
+func resolveDeepest(p string) string {
+	var missing []string
+	for cur := p; ; {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				real = filepath.Join(real, missing[i])
+			}
+			return real
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p // walked to the filesystem root without finding anything
+		}
+		missing = append(missing, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 func outsideRootErr(p, root string) error {

@@ -15,10 +15,14 @@ matching hook runs - in this load order:
 4. `~/.claude/settings.json`
 
 `"disableAllHooks": true` behaves differently depending on where it is set. In a
-**global** source (`~/.config/aigem/settings.json`, `~/.claude/settings.json`) it
-turns hooks off entirely. In a **project-local** source it only disables that
-project's own hooks - your global hooks still run, so a repository cannot switch
-off the hooks you rely on.
+**global** source it turns hooks off entirely; in a **project-local** source it
+only disables that project's own hooks, so a repository cannot switch off the
+hooks you rely on.
+
+"Project-local" is decided by path, not filename: a settings file counts as
+project-local when it lives under the resolved project directory. Running aigem
+with your home directory as the project therefore makes `~/.claude/settings.json`
+project-local, which inverts that guarantee.
 
 ## Events
 
@@ -54,8 +58,10 @@ stdout JSON:
   `updatedInput`, `updatedToolOutput`, or `additionalContext`.
 - **any other exit code** is a non-blocking notice.
 
-`tool_input` is the raw tool-argument JSON. `tool_response` is the tool's textual
-result - a plain string in aigem, not a structured object.
+`tool_input` is the raw tool-argument JSON, so its fields are the tool's own
+argument names - the `bash` tool's command is `.tool_input.cmd`, and the file
+tools use `.tool_input.path`. `tool_response` is the tool's textual result - a
+plain string in aigem, not a structured object.
 
 ## Trust
 
@@ -72,7 +78,10 @@ configuration changes.
 ## Troubleshooting
 
 Malformed hook entries - a bad matcher regexp, an unsupported `type`, an empty
-`command` - are reported as warnings at startup and skipped.
+`command` - are reported as warnings at startup. Treat the warning as an error:
+only a bad regexp actually stops the hook from matching. An entry declaring an
+unsupported `type` is still executed as a shell command, so fix what the warning
+names rather than relying on it being skipped.
 
 Set `AIGEM_HOOKS_DEBUG=1` to log each hook's event, command, exit code, and output
 to stderr.
@@ -90,7 +99,7 @@ A `<project>/.aigem/settings.json` that blocks `bash` calls touching `.env`:
         "hooks": [
           {
             "type": "command",
-            "command": "grep -q '\\.env' <<<\"$(jq -r .tool_input.command)\" && { echo 'no .env access' >&2; exit 2; } || exit 0"
+            "command": "grep -q '\\.env' <<<\"$(jq -r .tool_input.cmd)\" && { echo 'no .env access' >&2; exit 2; } || exit 0"
           }
         ]
       }

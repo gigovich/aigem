@@ -67,8 +67,11 @@ does not connect MCP servers.
 
 ### Turn budgets
 
-Bots use the same unattended defaults as `-p` and can override them per bot. Set
-any numeric budget to `0`, or `maxDuration: "0"`, to disable it explicitly.
+Each role has its own base budget - `developer`, for instance, starts at 45
+minutes, 120 model rounds, and 300 tool calls rather than the `-p` defaults. The
+`turnBudget:` block overrides whichever fields it sets; set any numeric budget to
+`0`, or `maxDuration: "0"`, to disable it explicitly. The `-p` budget flags do not
+apply to bots.
 
 ### Cron
 
@@ -81,8 +84,15 @@ to the same budgets. A job carries exactly one of:
   deletes itself from `bot.yaml`, so it needs a full timestamp
   (`"2026-08-01T09:00:00+04:00"`), not a time of day.
 
+Schedules are evaluated in the bot process's local timezone. A container sets no
+`TZ` by default, so a bot in Docker runs its cron in **UTC** - set `TZ` on the
+container if you want local times.
+
 A job whose `at:` or `expr:` does not parse is dropped with a warning at startup
-rather than failing the bot, so check the log after editing one.
+rather than failing the bot. Treat that warning as urgent: the dropped job is no
+longer in the scheduler's list, so the next time aigem rewrites `bot.yaml` the
+entry is **removed from the file**. Fix the expression before anything triggers a
+save, or keep a copy.
 
 ## Choosing a bot's model
 
