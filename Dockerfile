@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     -o /out/aigem ./cmd/aigem
 
 # ---- runtime: slim image for `aigem bot start` ----
-FROM alpine:3.23
+FROM alpine:3.24
 LABEL org.opencontainers.image.title="aigem" \
       org.opencontainers.image.description="Terminal AI coding agent in Go, with a Bubble Tea TUI and multi-agent chat bots." \
       org.opencontainers.image.source="https://github.com/gigovich/aigem" \
