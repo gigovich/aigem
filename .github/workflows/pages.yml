@@ -64,4 +64,4 @@ jobs:
       #   gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow
       - uses: actions/configure-pages@v6
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
