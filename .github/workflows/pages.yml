@@ -40,7 +40,7 @@ jobs:
       # --strict turns a broken internal link or a nav entry pointing at a
       # missing page into a failed build rather than a quietly broken site.
       - run: mkdocs build --strict
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
