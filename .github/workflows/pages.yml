@@ -62,6 +62,6 @@ jobs:
       # "Resource not accessible by integration". Enable it once, either in
       # Settings -> Pages or with:
       #   gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
       - id: deployment
         uses: actions/deploy-pages@v4
