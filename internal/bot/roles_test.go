@@ -63,9 +63,10 @@ func TestShippedPromptsAreDeploymentNeutral(t *testing.T) {
 	// naming one deployment's bots: the handoff tool used to say `to (the teammate's name,
 	// e.g. "jane")`, which no other user has.
 	for _, tl := range []tools.Tool{
-		NewHandoffTool(nil, nil),
-		NewPostMessageTool(nil, nil),
+		NewHandoffTool(nil, nil, nil),
+		NewPostMessageTool(nil, nil, nil),
 		NewReadChatTool(nil, nil),
+		NewTeamStatusTool("botname", NewFleet()),
 		NewMemoryTool(NewStore(t.TempDir())),
 		NewScheduleTool(nil),
 		NewSaveSkillTool(t.TempDir()),
@@ -112,7 +113,7 @@ func TestRolePromptsCarryExtractedLessons(t *testing.T) {
 			// Progress was judged by "did he answer my check-in", which a stalled bot passes.
 			"Judge progress by what moved, not by what you were told",
 		},
-		"researcher": {"hand that residue to whoever can close it"},
+		"researcher": {"hand that unfinished check to whoever can close it"},
 		"architect": {
 			"State the boundaries of a design",
 			"Do not re-open a decision you already recorded",
@@ -120,7 +121,7 @@ func TestRolePromptsCarryExtractedLessons(t *testing.T) {
 		"developer": {
 			"A push is not a result",
 			"Do not close your own work until someone else has independently verified it",
-			"remove its watchdog job",
+			"remove its check job",
 			// One human-blocked ticket used to silence the developer entirely: it removed its
 			// only wake-up and never looked at the rest of its assigned work.
 			"Being blocked on one ticket does not make you idle",

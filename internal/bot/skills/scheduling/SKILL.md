@@ -6,36 +6,43 @@ description: >-
   person, or thread.
 ---
 Use the schedule tool to run work on a timer:
-- set: create or replace a job - give it a short id, a 5-field cron expression
-  "minute hour day-of-month month day-of-week", and a prompt. Setting an id that exists
-  replaces it.
+- set: create or replace a job - a short id, a prompt, and either "expr" (a 5-field cron
+  expression "minute hour day-of-month month day-of-week", recurring) or "delay" (one-shot,
+  like "10m"/"2h"; runs once and deletes itself). Setting an existing id replaces it.
 - remove: delete a job by id.
-- list: show your jobs. Entries marked [built-in] are installed by the runtime; they cannot
-  be replaced or removed, and set/remove refuse their ids.
-A job is either recurring (an "expr" cron expression) or one-shot ("delay" like "10m"/"2h" - it
-runs once and then deletes itself). Each scheduled run starts a FRESH agent with no conversation
-history - only your memory - so write each job's prompt as a self-contained instruction and rely
-on memory for state. Avoid redundant or overlapping jobs.
+- list: show your jobs. Entries marked [built-in] are installed by the runtime; set/remove
+  refuse their ids.
+Each run starts a FRESH agent with no conversation history, only your memory, so write every
+job prompt as a self-contained instruction and rely on memory for state. Avoid overlapping
+jobs.
 
-Two built-in jobs are always present and always yours to rely on: `work-heartbeat`, which wakes
-you about every half hour to advance what you own (slowing down while you answer it `IDLE`),
-and `memory-review`, the daily memory pass. You cannot remove them, so you can never leave
-yourself with no way to wake up - which means your own jobs only need to cover wakes that must be
-sooner or more specific than the heartbeat, such as checking a CI run that will finish in fifteen
-minutes. Do not schedule minute-scale continuations of your own work: each fire rebuilds a fresh
-agent from memory, so slicing a task that way costs far more than it advances.
+Two built-in jobs are always present: `work-heartbeat`, which wakes you about every half hour
+to advance what you own (slowing down while you answer it `IDLE`), and `memory-review`, the
+daily memory pass. You cannot remove them, so you can never leave yourself with no way to wake
+up. Your own jobs only need to cover wakes that must be sooner or more specific, such as
+checking a CI run that finishes in fifteen minutes. Do not schedule minute-scale continuations
+of your own work: each fire rebuilds a fresh agent from memory, which costs far more than it
+advances.
 
-A job that comes due while a turn of yours is running waits for the next free minute, and only one
-scheduled job runs at a time, so a job you set for "15m" may run somewhat later if you are still
-busy then. Two things are exceptions: a message arriving mid-run always wakes you, and work held
-back for about an hour and a half by a turn that never ended is released anyway.
+A job due while a turn of yours is running waits for the next free minute, and only one
+scheduled job runs at a time, so a job set for "15m" may run later if you are still busy. Two
+exceptions: a message arriving mid-run always wakes you, and work held back about an hour and
+a half by a turn that never ended is released anyway.
+
+Two rules govern what a job may post:
+- A recurring status or follow-up job must post only when something changed or an action is
+  needed now. Keep the last reported state in memory, compare it with live state, and when
+  nothing changed, finish the run without calling post_message at all. Re-posting an unchanged
+  status is noise that teaches everyone to ignore you.
+- Do not poll for something that will arrive as a message: that answer wakes you by itself.
+  Schedule a continuation only for work YOU will advance when it fires, and keep at most one
+  slow check to notice a wait has gone on too long.
 
 Use the post_message tool to post to a channel you belong to, or to a person: this is how a
-scheduled run delivers its result, and how you proactively message a channel outside of replying
-to someone. It has no default channel, so always name the target; a scheduled job has no incoming
+scheduled run delivers its result, and how you message a channel outside of replying to
+someone. It has no default channel, so always name the target - a scheduled job has no incoming
 message to infer one from, so state the target in the job's prompt or keep it in memory. Pass a
-channel name for a channel, or "@username" to send a direct message (a DM conversation has no
-channel name, so a job continuing DM work must use "@username" of the person you were talking
-to). To make a deferred result land back in the thread it was requested in, pass that thread's
-root post id as "thread" to post_message - so record the channel name (or @username) and thread
-root id in the job's prompt when you schedule follow-up work.
+channel name for a channel, or "@username" for a direct message (a DM has no channel name, so a
+job continuing DM work must use "@username"). To land a deferred result back in the thread it
+was requested in, pass that thread's root post id as "thread" - so record the channel name or
+@username and the thread root id in the job's prompt when you schedule follow-up work.

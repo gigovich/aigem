@@ -15,28 +15,25 @@ const WorkHeartbeatJobID = "work-heartbeat"
 // runtime reads it to decide whether to back the interval off, so it must be an exact match.
 const HeartbeatIdleMarker = "IDLE"
 
-const workHeartbeatPrompt = "Work heartbeat: a timer woke you to make sure nothing you own is " +
-	"silently stalled. Nobody is reading this particular answer, so do not post a status to chat " +
-	"just because you woke up. Read your memory, then check the tracker for the work assigned to " +
-	"you and pick up the standing duties of your role. If something is yours to advance, advance " +
-	"it now - take the next concrete step rather than reporting that you would.\n\n" +
+const workHeartbeatPrompt = "Work heartbeat: a timer woke you to check that nothing you own is " +
+	"silently stalled. No human reads this answer, so do not post to chat just because you woke " +
+	"up. Read your memory, then check the tracker for the work assigned to you and the standing " +
+	"duties of your role. If something is yours to advance, advance it now - take the next " +
+	"concrete step rather than reporting that you would.\n\n" +
 	"Two things are never yours to advance on a wake-up: work under a hold nobody has explicitly " +
-	"lifted, and work whose blocking question you asked and never got answered. Neither the time " +
-	"that has passed nor how the tracker looks changes that - leave them and advance something " +
-	"else.\n\n" +
-	"Your answer to THIS prompt is not posted anywhere; it only tells the runtime how productive " +
-	"the wake was, which sets how soon you are woken again. So:\n" +
+	"lifted, and work whose blocking question you asked and never got answered. Neither passing " +
+	"time nor how the tracker looks changes that - leave them and advance something else.\n\n" +
+	"Your answer goes to the runtime, not to chat. It only says how productive this wake was, " +
+	"which sets how soon you are woken again:\n" +
 	"- If you advanced anything, answer with a one-line summary of what you actually did. An " +
-	"empty answer or NO_REPLY is read as \"nothing to advance\" and will slow your wake-ups down, " +
-	"so do not use them after real work.\n" +
-	"- If there is genuinely no step you could take on anything you own, answer with the single " +
-	"English word " + HeartbeatIdleMarker + " - whatever language you write in otherwise - " +
-	"optionally followed by a short reason on the same line.\n\n" +
-	"Before answering " + HeartbeatIdleMarker + ", make sure it is true and that being stuck is " +
-	"visible to someone other than you: for each item you own that you cannot move, its ticket " +
-	"must already record what it is waiting for, and whoever can clear that must already have " +
-	"been asked. If either is missing, doing that IS this wake's work - do it and report it. " +
-	"Waiting quietly while a ticket sits still is the one outcome this heartbeat exists to prevent."
+	"empty answer or NO_REPLY reads as \"nothing to advance\" and slows your wake-ups down.\n" +
+	"- If there is genuinely no step you could take on anything you own, start your answer " +
+	"with the English word " + HeartbeatIdleMarker + " (use it even if you normally write in " +
+	"another language); you may add a short reason after it on the same line.\n\n" +
+	"Before answering " + HeartbeatIdleMarker + ", make sure it is true and that being stuck " +
+	"is visible to someone other than you: each item you cannot move must have its ticket " +
+	"record what it waits for, and whoever can clear that must already have been asked. If " +
+	"either is missing, doing that IS this wake's work - do it and report it."
 
 // heartbeatCadences are the intervals the heartbeat backs off through, fastest first, while it
 // keeps finding nothing to do: every 30 minutes, hourly, every 2 hours, every 4 hours. Tier 0 is
@@ -79,6 +76,7 @@ type Heartbeat struct {
 	offset int
 
 	mu    sync.Mutex
+	log   *slog.Logger
 	idles int
 	armed string // cron expression currently installed
 }
@@ -110,7 +108,10 @@ func (h *Heartbeat) AfterCronRun(jobID, answer string) {
 	idle := IsIdleAnswer(answer)
 	h.observe(idle)
 	// How a wake was scored is the one thing needed to explain a bot's cadence after the fact.
-	slog.Info("heartbeat outcome", "idle", idle, "tier", h.Tier())
+	h.mu.Lock()
+	log := h.loggerLocked()
+	h.mu.Unlock()
+	log.Info("heartbeat outcome", "idle", idle, "tier", h.Tier())
 }
 
 // Addressed speeds the heartbeat up by one tier, because a bot someone is talking to is probably
@@ -150,7 +151,7 @@ func (h *Heartbeat) observe(idle bool) {
 
 func (h *Heartbeat) applyOrLogLocked() {
 	if err := h.applyLocked(); err != nil {
-		logHeartbeatArmFailure(err)
+		h.logArmFailure(err)
 	}
 }
 
@@ -165,7 +166,7 @@ func (h *Heartbeat) applyLocked() error {
 		return fmt.Errorf("arm work heartbeat at %q: %w", want, err)
 	}
 	h.armed = want
-	logHeartbeatArmed(want, h.tierLocked())
+	h.logArmed(want, h.tierLocked())
 	return nil
 }
 
@@ -229,12 +230,30 @@ func WorkHeartbeatJob(expr string) CronJob {
 	return CronJob{ID: WorkHeartbeatJobID, Expr: expr, Prompt: workHeartbeatPrompt}
 }
 
-func logHeartbeatArmed(expr string, tier int) {
-	slog.Info("work heartbeat armed", "expr", expr, "tier", tier)
+// SetLogger installs the logger the heartbeat reports through. Set before Arm.
+func (h *Heartbeat) SetLogger(l *slog.Logger) {
+	if l == nil {
+		return
+	}
+	h.mu.Lock()
+	h.log = l
+	h.mu.Unlock()
 }
 
-// logHeartbeatArmFailure reports a re-arm that did not take. The previous cadence stays in force,
+// loggerLocked is the installed logger, or the default. Caller holds h.mu.
+func (h *Heartbeat) loggerLocked() *slog.Logger {
+	if h.log == nil {
+		return slog.Default()
+	}
+	return h.log
+}
+
+func (h *Heartbeat) logArmed(expr string, tier int) {
+	h.loggerLocked().Info("work heartbeat armed", "expr", expr, "tier", tier)
+}
+
+// logArmFailure reports a re-arm that did not take. The previous cadence stays in force,
 // so the bot keeps waking - just not at the interval it now wants.
-func logHeartbeatArmFailure(err error) {
-	slog.Warn("could not re-arm the work heartbeat; the previous cadence stays in force", "err", err)
+func (h *Heartbeat) logArmFailure(err error) {
+	h.loggerLocked().Warn("could not re-arm the work heartbeat; the previous cadence stays in force", "err", err)
 }

@@ -152,7 +152,7 @@ func TestOperatingProtocolWarnsAgainstMentionLoops(t *testing.T) {
 	if !strings.Contains(got, "acknowledgement loop") {
 		t.Error("operating protocol must warn against bot-to-bot acknowledgement loops")
 	}
-	if !strings.Contains(got, "it wakes that participant") {
+	if !strings.Contains(got, "wakes that participant") {
 		t.Error("operating protocol must explain that an @mention wakes the mentioned bot")
 	}
 }
@@ -207,6 +207,25 @@ func TestOperatingProtocolTeachesIdentityAndSecrets(t *testing.T) {
 	}
 	if !strings.Contains(got, "never output") {
 		t.Error("protocol must forbid echoing credentials")
+	}
+}
+
+// TestOperatingProtocolObeysDirectHumanInstruction guards the escape hatch from the identity
+// default: a bot declined an explicit instruction to push with the owner's key, and the work
+// sat blocked for a day because no rule said the owner outranks the default.
+func TestOperatingProtocolObeysDirectHumanInstruction(t *testing.T) {
+	got := flat(operatingProtocol("amiran", mustRole(t, "developer")))
+	for _, want := range []string{
+		"The people you work for outrank this protocol",
+		"do not wait for a second confirmation",
+		"This is a default, not a wall",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("protocol must let a direct human instruction override a default, missing %q", want)
+		}
+	}
+	if !strings.Contains(got, "Humans only") {
+		t.Error("the override must not be available to another bot")
 	}
 }
 
