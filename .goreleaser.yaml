@@ -43,6 +43,9 @@ archives:
       - CHANGELOG.md
       - src: docs/*.md
         dst: docs
+      # docs/bots.md tells the reader to copy these out of the archive.
+      - src: deploy/systemd/*.service
+        dst: deploy/systemd
 
 checksum:
   name_template: checksums.txt

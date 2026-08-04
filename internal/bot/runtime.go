@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,17 @@ type Runtime struct {
 	transport Transport
 	mk        AgentFactory
 	sem       chan struct{}
+	log       *slog.Logger
+	// turnCap bounds concurrent turns across every bot in the process (not to be confused with
+	// Fleet, the roster). Nil means no fleet-wide cap, which is what a lone bot wants.
+	turnCap *TurnLimiter
+	// enqueued carries messages delivered in-process by a teammate rather than by
+	// the chat transport. Buffered so a delivering bot is never blocked by a
+	// receiving bot that is mid-turn.
+	enqueued chan Inbound
+	// stopped closes when Serve returns, so a delivery is refused instead of being
+	// queued into a runtime that has stopped reading.
+	stopped chan struct{}
 	// resumeDelay is how long an automatic continuation waits before re-running
 	// the thread after a budget stop or a transient provider failure. Set before
 	// Serve; tests shorten it.
@@ -46,10 +58,17 @@ type Runtime struct {
 	mu       sync.Mutex
 	threads  map[string]*threadState
 	inFlight int // turns currently running; the cron busy-gate reads this
+	// seenPosts remembers which chat posts have already been routed, so a message
+	// that arrives both through the fleet and through the websocket is acted on
+	// once. seenOrder bounds it.
+	seenPosts map[string]bool
+	seenOrder []string
 
 	// onAddressed, when set, is called whenever a human or teammate addresses the bot
 	// directly (mention or DM). The heartbeat uses it to drop back to its active interval.
 	onAddressed func()
+	// isTeammate reports whether an author is another bot in this process. Set before Serve.
+	isTeammate func(userID string) bool
 }
 
 type threadState struct {
@@ -57,22 +76,44 @@ type threadState struct {
 	lock   chan struct{} // capacity-1: single-flight per thread
 
 	mu      sync.Mutex
-	pending *Inbound // latest coalesced thread_update awaiting its turn
-	resumes int      // consecutive automatic resumes (budget stop / transient failure)
+	pending *Inbound  // latest coalesced thread_update awaiting its turn
+	resumes int       // consecutive automatic resumes (budget stop / transient failure)
+	touched time.Time // last time a turn was routed here, for eviction
 }
 
-// noteAddressed records that a human or teammate addressed the bot: it restores
-// the auto-resume allowance, so a thread whose resumes were exhausted gets its
-// full chain back on the ping the stalled note asks for - even if the turn it
-// lands in budget-stops again - and it drops the heartbeat back to its active
-// interval.
-func (r *Runtime) noteAddressed(st *threadState) {
-	st.mu.Lock()
-	st.resumes = 0
-	st.mu.Unlock()
+// maxThreads bounds how many conversations a bot keeps an agent for. Each one holds that
+// thread's whole message history, compacted only down to the model's context window, so the map
+// is the largest thing a long-lived bot accumulates. Evicting the coldest idle thread costs it
+// its in-context history - it rebuilds from memory and the thread itself on the next message, the
+// same as after a restart - which is much cheaper than the alternative now that every bot's
+// agents live in one heap and one OOM takes the whole team down.
+const maxThreads = 200
+
+// SetTeammateCheck installs the test for whether an author is another bot in this process. Set
+// before Serve.
+func (r *Runtime) SetTeammateCheck(fn func(userID string) bool) {
 	r.mu.Lock()
-	notify := r.onAddressed
+	r.isTeammate = fn
 	r.mu.Unlock()
+}
+
+// noteAddressed records that someone addressed the bot: it restores the auto-resume allowance, so
+// a thread whose resumes were exhausted gets its full chain back on the ping the stalled note asks
+// for - even if the turn it lands in budget-stops again - and it drops the heartbeat back to its
+// active interval.
+//
+// Only a person refills the allowance. maxAutoResumes is the only bound on a thread continuing
+// itself, and two bots handing off to each other in one thread would otherwise reset each other's
+// counter faster than it can run out, leaving nothing to stop the pair.
+func (r *Runtime) noteAddressed(st *threadState, in Inbound) {
+	r.mu.Lock()
+	notify, teammate := r.onAddressed, r.isTeammate
+	r.mu.Unlock()
+	if teammate == nil || !teammate(in.Author) {
+		st.mu.Lock()
+		st.resumes = 0
+		st.mu.Unlock()
+	}
 	if notify != nil {
 		notify()
 	}
@@ -123,9 +164,85 @@ func NewRuntime(t Transport, mk AgentFactory, workers int) *Runtime {
 		transport:   t,
 		mk:          mk,
 		sem:         make(chan struct{}, workers),
+		log:         slog.Default(),
+		enqueued:    make(chan Inbound, 16),
+		stopped:     make(chan struct{}),
 		resumeDelay: defaultResumeDelay,
 		threads:     map[string]*threadState{},
+		seenPosts:   map[string]bool{},
 	}
+}
+
+// SetLogger installs the logger every turn logs through. Bots share one process,
+// so without a logger carrying the bot's name their lines are indistinguishable.
+// Set before Serve.
+func (r *Runtime) SetLogger(l *slog.Logger) {
+	if l == nil {
+		return
+	}
+	r.mu.Lock()
+	r.log = l
+	r.mu.Unlock()
+}
+
+// SetTurnLimiter installs the fleet-wide turn cap. Set before Serve.
+func (r *Runtime) SetTurnLimiter(l *TurnLimiter) {
+	r.mu.Lock()
+	r.turnCap = l
+	r.mu.Unlock()
+}
+
+// Enqueue routes a message delivered in-process by a teammate. It reports whether the message
+// was accepted; a full queue or a stopped runtime returns false, and the caller's chat post is
+// then the only path - the same path it had before.
+//
+// It never blocks: a teammate handing off must not wait on the receiver's turn.
+func (r *Runtime) Enqueue(in Inbound) bool {
+	select {
+	case <-r.stopped:
+		return false
+	default:
+	}
+	select {
+	case r.enqueued <- in:
+		return true
+	default:
+		return false
+	}
+}
+
+// maxSeenPosts bounds the routed-post memory. It only has to outlive the gap
+// between a fleet delivery and the same post arriving over the websocket, which
+// is milliseconds; the cap exists so a long-lived bot does not grow the map
+// forever.
+const maxSeenPosts = 512
+
+// alreadyRouted reports whether this chat post was routed before, recording it
+// when it was not. Posts with no id (a synthetic resume, a thread update) are
+// never deduplicated: they have no identity to compare.
+func (r *Runtime) alreadyRouted(postID string) bool {
+	if postID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.seenPosts[postID] {
+		return true
+	}
+	r.seenPosts[postID] = true
+	r.seenOrder = append(r.seenOrder, postID)
+	if len(r.seenOrder) > maxSeenPosts {
+		delete(r.seenPosts, r.seenOrder[0])
+		r.seenOrder = r.seenOrder[1:]
+	}
+	return false
+}
+
+// logger returns the logger to use from a goroutine that does not hold r.mu.
+func (r *Runtime) logger() *slog.Logger {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.log
 }
 
 // Busy reports whether any agent work is in flight. Wire it into Scheduler.SetBusy so a scheduled
@@ -168,21 +285,68 @@ func threadKey(in Inbound) string {
 	return in.Thread.ChannelID + "/" + root
 }
 
+// state returns the thread's state, creating it on first sight. Building the agent reads the
+// workdir, the skills directory and the memory index, so it happens with r.mu released: Busy()
+// takes that lock, and a teammate asking the roster who is free must not queue behind one bot's
+// disk. Two goroutines racing to open the same thread build two agents and one is discarded,
+// which is cheaper than holding the lock across the I/O.
 func (r *Runtime) state(key string) *threadState {
+	now := time.Now()
+	r.mu.Lock()
+	st := r.threads[key]
+	if st != nil {
+		st.touched = now
+	}
+	r.mu.Unlock()
+	if st != nil {
+		return st
+	}
+	built := &threadState{runner: r.mk(key), lock: make(chan struct{}, 1), touched: now}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := r.threads[key]
-	if st == nil {
-		st = &threadState{runner: r.mk(key), lock: make(chan struct{}, 1)}
-		r.threads[key] = st
+	if st = r.threads[key]; st != nil {
+		st.touched = now
+		return st // another goroutine won the race; its agent is the thread's
 	}
-	return st
+	r.threads[key] = built
+	r.evictColdestLocked()
+	return built
+}
+
+// evictColdestLocked drops the least recently used idle thread once the map is over its cap. A
+// thread whose lock is held is running or queued and is never evicted; neither is one holding a
+// pending update, which would otherwise be silently dropped. Caller holds r.mu.
+func (r *Runtime) evictColdestLocked() {
+	for len(r.threads) > maxThreads {
+		oldest, found := "", false
+		var at time.Time
+		for k, st := range r.threads {
+			if len(st.lock) > 0 || st.hasPending() {
+				continue // busy or owed a turn
+			}
+			if !found || st.touched.Before(at) {
+				oldest, at, found = k, st.touched, true
+			}
+		}
+		if !found {
+			return // every thread is busy; the cap gives way rather than losing work
+		}
+		delete(r.threads, oldest)
+	}
 }
 
 // Serve consumes inbound events until the transport's channel closes or ctx is done.
 func (r *Runtime) Serve(ctx context.Context) error {
+	defer close(r.stopped)
 	var wg sync.WaitGroup
 	events := r.transport.Events()
+	dispatch := func(in Inbound) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.handle(ctx, in)
+		}()
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -193,11 +357,9 @@ func (r *Runtime) Serve(ctx context.Context) error {
 				wg.Wait()
 				return nil
 			}
-			wg.Add(1)
-			go func(in Inbound) {
-				defer wg.Done()
-				r.handle(ctx, in)
-			}(in)
+			dispatch(in)
+		case in := <-r.enqueued:
+			dispatch(in)
 		}
 	}
 }
@@ -245,21 +407,21 @@ func (r *Runtime) threadContext(ctx context.Context, in Inbound) string {
 	return th
 }
 
-const threadUpdatePreamble = "New replies have landed in a thread you are in. Read the whole " +
-	"thread and decide what, if anything, to do: answer, update memory, hand the work to someone " +
-	"else, or say nothing. Answer only if you have something to add. If you have already answered " +
-	"the substance, or there is nothing to add, reply with exactly NO_REPLY - that reply is not " +
-	"posted anywhere. Do not repeat or paraphrase what the thread already says, and never post a " +
-	"message whose only content is that you replied somewhere else.\n\n" +
+const threadUpdatePreamble = "New replies landed in a thread you are in. Read the whole thread " +
+	"and decide what to do, if anything: answer, save to memory, hand the work over, or say " +
+	"nothing. Answer only if you have something to add. If you already answered the substance, or " +
+	"there is nothing to add, reply with exactly NO_REPLY - that reply is posted nowhere. Do not " +
+	"repeat or reword what the thread already says, and never post a message whose only content " +
+	"is that you replied somewhere else.\n\n" +
 	"Thread:\n"
 
 // threadAddressedPreamble prefixes the thread an addressed message arrived in. The message itself
 // follows after the separator, so the agent answers the question in the context that produced it -
 // including a question that is an answer to something this bot asked earlier.
-const threadAddressedPreamble = "Someone has written to you in a thread. The whole thread is " +
-	"below; the message addressed to you follows the separator. Read the thread before you answer - " +
-	"the message may be the answer to a question you asked earlier, in which case answer that " +
-	"question rather than greeting them as if it were a new conversation.\n\nThread:\n"
+const threadAddressedPreamble = "Someone wrote to you in a thread. The whole thread is below; " +
+	"the message addressed to you follows the separator. Read the thread first - the message may " +
+	"be the answer to a question you asked earlier, in which case answer that question rather " +
+	"than greeting them as if this were a new conversation.\n\nThread:\n"
 
 // inputWithHistory prefixes recent unaddressed channel chatter to the message when the
 // transport can provide it, so the agent can answer questions about messages it was not
@@ -302,18 +464,20 @@ func (r *Runtime) keepTyping(ctx context.Context, in Inbound) func() {
 
 // CronEvents returns the same step logging a chat turn gets, tagged with a job id instead of a
 // thread key, so a timer-driven run is as visible in the log as an inbound one.
-func CronEvents(jobID string) agent.Events {
-	return stepEvents("cron:" + jobID)
+func CronEvents(log *slog.Logger, jobID string) agent.Events {
+	return stepEvents(log, "cron:"+jobID)
 }
 
 // logEvents returns agent.Events that log each meaningful step (not content/reasoning
 // deltas) through slog, tagged with the thread key.
 func (r *Runtime) logEvents(in Inbound) agent.Events {
-	return stepEvents(threadKey(in))
+	return stepEvents(r.logger(), threadKey(in))
 }
 
-func stepEvents(key string) agent.Events {
-	log := slog.Default()
+func stepEvents(log *slog.Logger, key string) agent.Events {
+	if log == nil {
+		log = slog.Default()
+	}
 	return agent.Events{
 		OnToolStart: func(name string, _ json.RawMessage) {
 			log.Info("tool start", "thread", key, "tool", name)
@@ -351,6 +515,21 @@ func stepEvents(key string) agent.Events {
 // near-identical turns. Addressed messages (mention/dm/broadcast/resume) carry
 // unique text, so they wait for the lock and run each.
 func (r *Runtime) handle(ctx context.Context, in Inbound) {
+	// Contain a panic here, in the goroutine that can actually recover it. Every turn runs on its
+	// own goroutine, and bots now share a process: an unrecovered panic in one bot's turn would
+	// take the whole team down, where before it cost one process out of several.
+	defer func() {
+		if p := recover(); p != nil {
+			r.logger().Error("turn panicked", "thread", threadKey(in), "kind", in.Kind,
+				"panic", p, "stack", string(debug.Stack()))
+		}
+	}()
+	// A teammate's message reaches this bot twice - once in-process, once when the
+	// chat server pushes the post back - and the copies race. Whichever lands
+	// first is the one acted on.
+	if r.alreadyRouted(in.PostID) {
+		return
+	}
 	key := threadKey(in)
 	st := r.state(key)
 	if in.Kind == "thread_update" {
@@ -362,8 +541,8 @@ func (r *Runtime) handle(ctx context.Context, in Inbound) {
 	// rather than behind it, and the model decides what it means.
 	if in.Kind == "mention" || in.Kind == "dm" {
 		if inj, ok := st.runner.(Injector); ok && inj.Inject(midTurnDelivery(r.authorName(ctx, in), in.Text)) {
-			slog.Info("delivered into the running turn", "thread", key, "author", in.Author)
-			r.noteAddressed(st)
+			r.logger().Info("delivered into the running turn", "thread", key, "author", in.Author)
+			r.noteAddressed(st, in)
 			return
 		}
 	}
@@ -434,13 +613,13 @@ const budgetStalledNote = "_Hit the work limit again and I am out of automatic c
 
 func budgetResumeInput(reason string) string {
 	return "Your previous turn in this thread stopped at a work limit (" + reason + "). Carry on " +
-		"from where you left off: take the next concrete step and report the result in this thread. " +
-		"If the work is already finished and there is nothing to add, reply with exactly NO_REPLY."
+		"from where you left off: take the next concrete step and report the result here. If the " +
+		"work is already finished, reply with exactly NO_REPLY."
 }
 
-const transientResumeInput = "Your previous answer in this thread was never produced, because the " +
-	"model provider failed briefly. Answer the last message addressed to you in this thread now. If " +
-	"that answer is no longer needed, reply with exactly NO_REPLY."
+const transientResumeInput = "Your previous answer was never produced: the model provider failed " +
+	"briefly. Answer the last message addressed to you in this thread now. If that answer is no " +
+	"longer needed, reply with exactly NO_REPLY."
 
 func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in Inbound) {
 	// Count the turn as in flight before queueing for the semaphore, not after: a turn waiting
@@ -449,16 +628,27 @@ func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in I
 	done := r.EnterTurn()
 	defer done()
 	select {
-	case r.sem <- struct{}{}: // bound total concurrency
+	case r.sem <- struct{}{}: // bound this bot's own concurrency
 	case <-ctx.Done():
 		return
 	}
 	defer func() { <-r.sem }()
 
-	slog.Info("inbound", "thread", key, "kind", in.Kind, "author", in.Author)
+	log := r.logger()
+	// Then queue for the fleet's cap, which is what bounds the whole process.
+	r.mu.Lock()
+	cap := r.turnCap
+	r.mu.Unlock()
+	release, err := cap.Acquire(ctx)
+	if err != nil {
+		return // shutdown while waiting for a slot
+	}
+	defer release()
+
+	log.Info("inbound", "thread", key, "kind", in.Kind, "author", in.Author)
 
 	if in.Kind == "mention" || in.Kind == "dm" {
-		r.noteAddressed(st)
+		r.noteAddressed(st, in)
 	}
 
 	stop := r.keepTyping(ctx, in)
@@ -477,7 +667,7 @@ func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in I
 		return
 	}
 	if isNoReply(answer) {
-		slog.Info("silent", "thread", key, "kind", in.Kind)
+		log.Info("silent", "thread", key, "kind", in.Kind)
 		answer = ""
 	}
 	// Budget notes ride on an answer the agent chose to post, or go to a thread
@@ -496,12 +686,12 @@ func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in I
 			st.mu.Unlock()
 		}
 	case r.scheduleResume(ctx, st, in, budgetResumeInput(budgetReason)):
-		slog.Warn("budget stop; auto-resume scheduled", "thread", key, "reason", budgetReason)
+		log.Warn("budget stop; auto-resume scheduled", "thread", key, "reason", budgetReason)
 		if noteworthy {
 			answer = appendNote(answer, budgetResumeNote)
 		}
 	default:
-		slog.Warn("budget stop; auto-resumes exhausted", "thread", key, "reason", budgetReason)
+		log.Warn("budget stop; auto-resumes exhausted", "thread", key, "reason", budgetReason)
 		if noteworthy {
 			answer = appendNote(answer, budgetStalledNote)
 		}
@@ -509,9 +699,9 @@ func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in I
 	if answer == "" {
 		return
 	}
-	slog.Info("reply", "thread", key, "chars", len(answer))
+	log.Info("reply", "thread", key, "chars", len(answer))
 	if err := r.transport.Reply(in.Thread, answer); err != nil {
-		slog.Error("reply failed", "thread", key, "chars", len(answer), "err", err)
+		log.Error("reply failed", "thread", key, "chars", len(answer), "err", err)
 	}
 }
 
@@ -554,7 +744,7 @@ func (r *Runtime) handleRunErr(ctx context.Context, key string, st *threadState,
 	if ctx.Err() != nil {
 		return // shutdown or turn cancellation, not a reportable failure
 	}
-	slog.Error("run failed", "thread", key, "kind", in.Kind, "err", err)
+	r.logger().Error("run failed", "thread", key, "kind", in.Kind, "err", err)
 	transient := llm.IsTransientErr(err)
 	resuming := transient && r.scheduleResume(ctx, st, in, transientResumeInput)
 	// Never echo the failure into the thread for our own proactive observation

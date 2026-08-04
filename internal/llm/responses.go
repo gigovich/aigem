@@ -41,7 +41,7 @@ func NewResponsesClient(cfg ResponsesConfig) *ResponsesClient {
 	}
 	return &ResponsesClient{
 		cfg:       cfg,
-		HTTP:      &http.Client{Timeout: 10 * time.Minute},
+		HTTP:      sharedHTTPClient(),
 		sessionID: newUUID(),
 	}
 }

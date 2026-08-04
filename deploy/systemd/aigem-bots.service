@@ -1,0 +1,66 @@
+[Unit]
+# The whole bot fleet in one process. Install as a user unit:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/aigem-bots.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now aigem-bots
+#   loginctl enable-linger "$USER"     # keep it running when you are not logged in
+#
+# Do not run this alongside aigem-bot@.service or a second copy elsewhere: one
+# Mattermost account allows one websocket, and two connections for one account
+# cause duplicate replies and authentication errors.
+Description=aigem chat bot fleet
+Documentation=https://gigovich.github.io/aigem/bots/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# No bot name: run every bot in ~/.config/aigem/bots. Name them to run a subset,
+# e.g. "%h/go/bin/aigem bot start jane kate".
+ExecStart=%h/go/bin/aigem bot start
+WorkingDirectory=%h/work
+
+# A unit gets a minimal environment, not your login shell's. The bash tool runs
+# non-interactively, so anything the bots build or test with has to be on this
+# PATH - a missing toolchain reads to a bot as "command not found", which is a
+# failure it cannot diagnose. Add version managers and language toolchains here.
+Environment=PATH=%h/go/bin:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=%h
+
+# Git over SSH needs an agent. The unit inherits SSH_AUTH_SOCK from the systemd
+# user manager, and on a desktop that usually points at gnome-keyring's agent
+# while your keys sit in the OpenSSH one. A bot then reports "the agent has no
+# identities" for a key you can see in your own terminal. Which socket holds the
+# keys is per-machine, so find yours by running these in a terminal, then
+# uncomment exactly one line below - systemd takes the last of two, which is how
+# you would land right back on the empty agent:
+#
+#   SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/openssh_agent ssh-add -l    # OpenSSH agent
+#   SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/gcr/ssh ssh-add -l          # gnome-keyring
+#
+#Environment=SSH_AUTH_SOCK=%t/openssh_agent
+#Environment=SSH_AUTH_SOCK=%t/gcr/ssh
+
+# aigem restarts a crashed bot on its own and keeps the others running, so this
+# only covers the process dying outright. The delay is long enough that a
+# configuration error does not become a restart loop.
+Restart=on-failure
+RestartSec=30s
+
+# SIGTERM is a clean shutdown: the runtime stops taking work and lets turns in
+# flight finish. Long enough for a turn to unwind, short enough that a stuck one
+# does not block a reboot.
+KillSignal=SIGTERM
+TimeoutStopSec=120s
+
+# Logs go to the journal: journalctl --user -u aigem-bots -f
+# Every line carries bot=<name>, so one bot reads with:
+#   journalctl --user -u aigem-bots -f | grep 'bot=jane'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aigem-bots
+
+[Install]
+WantedBy=default.target

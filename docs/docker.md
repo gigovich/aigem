@@ -1,8 +1,8 @@
 # Docker (bot mode)
 
-A small image for running a single bot non-interactively as `aigem bot start <name>`. The
-bot's config and state are bind-mounted, so the image carries only the binary plus the
-handful of runtime packages listed below.
+A small image for running bots non-interactively - one bot as `aigem bot start <name>`, or
+the whole team as `aigem bot start`. Config and state are bind-mounted, so the image carries
+only the binary plus the handful of runtime packages listed below.
 
 Files live at the repo root: `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore`.
 
@@ -49,7 +49,8 @@ The image ships `bash` and `git`, but a bot only reaches them if its
 
 ## Run
 
-One bot per container; select it with `BOT_NAME`:
+One bot per container; select it with `BOT_NAME`. To run the whole team in one
+container, pass the command instead (`bot start`) and leave `BOT_NAME` unset:
 
 ```
 docker run -d --name aigem-jane \

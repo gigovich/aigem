@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -33,7 +34,7 @@ func TestClearStaleProfileLocksDeadOwner(t *testing.T) {
 	// A pid far above pid_max cannot be a live process.
 	writeLock(t, dir, fmt.Sprintf("%s-%d", host, 1<<30))
 
-	if !clearStaleProfileLocks(dir) {
+	if !clearStaleProfileLocks(dir, slog.Default()) {
 		t.Fatal("dead-owner locks must be cleared")
 	}
 	for _, name := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie"} {
@@ -52,7 +53,7 @@ func TestClearStaleProfileLocksKeepsLiveOwner(t *testing.T) {
 	// Our own pid is definitely alive; the lock must survive.
 	lock := writeLock(t, dir, fmt.Sprintf("%s-%d", host, os.Getpid()))
 
-	if clearStaleProfileLocks(dir) {
+	if clearStaleProfileLocks(dir, slog.Default()) {
 		t.Fatal("live-owner locks must not be cleared")
 	}
 	if _, err := os.Lstat(lock); err != nil {
@@ -130,11 +131,11 @@ func TestLockProfileHonorsContext(t *testing.T) {
 
 func TestClearStaleProfileLocksForeignOrMissing(t *testing.T) {
 	dir := t.TempDir()
-	if clearStaleProfileLocks(dir) {
+	if clearStaleProfileLocks(dir, slog.Default()) {
 		t.Fatal("no lock: nothing to clear")
 	}
 	writeLock(t, dir, "otherhost-12345")
-	if clearStaleProfileLocks(dir) {
+	if clearStaleProfileLocks(dir, slog.Default()) {
 		t.Fatal("a foreign-host lock owner cannot be verified dead; keep it")
 	}
 }

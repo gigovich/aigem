@@ -54,7 +54,7 @@ func (b *busyProbe) counts() (int, int) {
 func TestCronRunnerCountsAsBusyAndReleases(t *testing.T) {
 	probe := &busyProbe{}
 	run := &scriptedRunner{answer: "did a thing"}
-	NewCronRunner(func() (Runner, error) { return run, nil }, nil, probe.enter)(
+	NewCronRunner(slog.Default(), func() (Runner, error) { return run, nil }, nil, probe.enter, nil)(
 		context.Background(), CronJob{ID: "j", Prompt: "p"})
 	if in, out := probe.counts(); in != 1 || out != 1 {
 		t.Fatalf("entered %d released %d, want 1 and 1", in, out)
@@ -73,7 +73,7 @@ func TestCronRunnerReleasesBusyOnEveryFailurePath(t *testing.T) {
 		{"run fails", func() (Runner, error) { return &scriptedRunner{err: errors.New("429")}, nil }},
 	} {
 		probe := &busyProbe{}
-		NewCronRunner(tc.build, nil, probe.enter)(context.Background(), CronJob{ID: "j"})
+		NewCronRunner(slog.Default(), tc.build, nil, probe.enter, nil)(context.Background(), CronJob{ID: "j"})
 		if in, out := probe.counts(); in != 1 || out != 1 {
 			t.Errorf("%s: entered %d released %d, want 1 and 1 (a leak wedges the gate forever)",
 				tc.name, in, out)
@@ -83,7 +83,7 @@ func TestCronRunnerReleasesBusyOnEveryFailurePath(t *testing.T) {
 
 func TestCronRunnerTagsRunsWithTheJobID(t *testing.T) {
 	run := &scriptedRunner{answer: "ok"}
-	NewCronRunner(func() (Runner, error) { return run, nil }, nil, nil)(
+	NewCronRunner(slog.Default(), func() (Runner, error) { return run, nil }, nil, nil, nil)(
 		context.Background(), CronJob{ID: "work-heartbeat", Prompt: "p"})
 	if run.events.OnToolStart == nil {
 		t.Fatal("a scheduled run must get step events, or it is invisible in the log")
@@ -98,8 +98,8 @@ func TestCronRunnerFeedsTheHeartbeat(t *testing.T) {
 	}
 	base := hb.Armed()
 	answer := HeartbeatIdleMarker
-	runner := NewCronRunner(func() (Runner, error) { return &scriptedRunner{answer: answer}, nil },
-		hb, nil)
+	runner := NewCronRunner(slog.Default(), func() (Runner, error) { return &scriptedRunner{answer: answer}, nil },
+		hb, nil, nil)
 
 	// Two idle heartbeat runs slow the cadence down.
 	runner(context.Background(), CronJob{ID: WorkHeartbeatJobID})
@@ -121,8 +121,8 @@ func TestCronRunnerIgnoresOtherJobsForTheHeartbeat(t *testing.T) {
 	if err := hb.Arm(); err != nil {
 		t.Fatal(err)
 	}
-	runner := NewCronRunner(
-		func() (Runner, error) { return &scriptedRunner{answer: HeartbeatIdleMarker}, nil }, hb, nil)
+	runner := NewCronRunner(slog.Default(),
+		func() (Runner, error) { return &scriptedRunner{answer: HeartbeatIdleMarker}, nil }, hb, nil, nil)
 	for i := 0; i < 6; i++ {
 		runner(context.Background(), CronJob{ID: MemoryReviewJobID})
 	}
@@ -139,9 +139,9 @@ func TestCronRunnerBacksOffOnRepeatedFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := hb.Armed()
-	runner := NewCronRunner(
+	runner := NewCronRunner(slog.Default(),
 		func() (Runner, error) { return &scriptedRunner{err: errors.New("429 usage limit")}, nil },
-		hb, nil)
+		hb, nil, nil)
 	runner(context.Background(), CronJob{ID: WorkHeartbeatJobID})
 	runner(context.Background(), CronJob{ID: WorkHeartbeatJobID})
 	if hb.Armed() == base {
@@ -185,8 +185,8 @@ func TestCronRunnerLogsTheScoredOutcome(t *testing.T) {
 	if err := hb.Arm(); err != nil {
 		t.Fatal(err)
 	}
-	NewCronRunner(func() (Runner, error) { return &scriptedRunner{answer: HeartbeatIdleMarker}, nil },
-		hb, nil)(context.Background(), CronJob{ID: WorkHeartbeatJobID})
+	NewCronRunner(slog.Default(), func() (Runner, error) { return &scriptedRunner{answer: HeartbeatIdleMarker}, nil },
+		hb, nil, nil)(context.Background(), CronJob{ID: WorkHeartbeatJobID})
 	out := buf.String()
 	if !strings.Contains(out, "heartbeat outcome") || !strings.Contains(out, "idle=true") {
 		t.Fatalf("the run's score must be logged, got %q", out)

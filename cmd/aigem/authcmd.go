@@ -90,6 +90,7 @@ func authLogin(args []string) error {
 		if err := auth.Put(provider, auth.Record{Kind: auth.KindAPIKey, Key: apiKey}); err != nil {
 			return err
 		}
+		auth.ResetSources()
 		fmt.Printf("stored API key for %q\n", provider)
 		return nil
 	}
@@ -102,6 +103,7 @@ func authLogin(args []string) error {
 		if err := auth.Put(provider, rec); err != nil {
 			return err
 		}
+		auth.ResetSources()
 		fmt.Printf("logged in to ChatGPT for %q\n", provider)
 		return nil
 	case llm.XAIProviderID:
@@ -112,6 +114,7 @@ func authLogin(args []string) error {
 		if err := auth.Put(provider, rec); err != nil {
 			return err
 		}
+		auth.ResetSources()
 		fmt.Printf("logged in to Grok subscription for %q\n", provider)
 		return nil
 	}
@@ -125,6 +128,7 @@ func authLogout(args []string) error {
 	if err := auth.Delete(args[0]); err != nil {
 		return err
 	}
+	auth.ResetSources()
 	fmt.Printf("cleared stored credential for %q\n", args[0])
 	return nil
 }

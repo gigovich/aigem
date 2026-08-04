@@ -2,8 +2,11 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"golang.org/x/oauth2"
@@ -170,7 +173,7 @@ func credential(ctx context.Context, provider, modelID string) (llm.Credential, 
 		if provider == llm.XAIProviderID {
 			oauthKind = llm.AuthOAuthXAI
 		}
-		src := refreshingSource(ctx, provider, rec)
+		src := sharedSource(ctx, provider, rec)
 		return llm.Credential{
 			Kind:      oauthKind,
 			AccountID: rec.AccountID,
@@ -218,6 +221,66 @@ func OpenModel(reg *llm.Registry, ref string, maxTokensFlag int) (llm.Backend, l
 	// smaller input window than the same model's API-key path - so report what
 	// was actually opened. Callers size the context gauge and compaction from it.
 	return b, p, b.Model(), nil
+}
+
+// sourceCache holds one token source per provider for the life of the process.
+//
+// Every bot in the process asks for the same provider's credential, and a source
+// per bot means several of them can refresh the same token at once. OpenAI's
+// refresh tokens are single-use, so the losers of that race get their token
+// rejected. One shared source per provider serializes refreshes behind its own
+// mutex and makes the race impossible rather than survivable.
+//
+// The cache is keyed by provider AND by the stored record, so a login that replaces the
+// credential is picked up at once. Keying by provider alone would let a source built from the old
+// record keep serving its unexpired access token after the operator logged in again - and
+// "log in again and restart me" is advice a bot gives itself, now answered by an in-process
+// restart that shares this cache.
+var (
+	sourceMu    sync.Mutex
+	sourceCache = map[string]oauth2.TokenSource{}
+)
+
+// sharedSource returns the process-wide token source for a provider, building it on first use.
+func sharedSource(ctx context.Context, provider string, rec Record) oauth2.TokenSource {
+	key := sourceKey(provider, rec)
+	sourceMu.Lock()
+	defer sourceMu.Unlock()
+	if src, ok := sourceCache[key]; ok {
+		return src
+	}
+	src := refreshingSource(ctx, provider, rec)
+	// Drop any source built from an older record for this provider: it is superseded, and keeping
+	// it would grow the map by one entry per token rotation.
+	for k := range sourceCache {
+		if strings.HasPrefix(k, provider+"\x00") {
+			delete(sourceCache, k)
+		}
+	}
+	sourceCache[key] = src
+	return src
+}
+
+// sourceKey identifies the credential a source was built from. The refresh token is the stable
+// half of the record - it survives access-token rotation, which the source performs itself - so a
+// key built from it changes exactly when the operator replaces the credential.
+func sourceKey(provider string, rec Record) string {
+	refresh := ""
+	if rec.Token != nil {
+		refresh = rec.Token.RefreshToken
+	}
+	sum := sha256.Sum256([]byte(refresh))
+	return provider + "\x00" + hex.EncodeToString(sum[:8])
+}
+
+// ResetSources drops cached token sources. A login or logout replaces the stored
+// record outright, and a source built from the old one would keep presenting a
+// credential the user just replaced. The refresh path does not call it: it
+// rewrites the record through the very source being cached.
+func ResetSources() {
+	sourceMu.Lock()
+	defer sourceMu.Unlock()
+	clear(sourceCache)
 }
 
 // refreshingSource returns a token source that refreshes before expiry and

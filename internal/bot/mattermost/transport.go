@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,28 @@ type Transport struct {
 
 	writeMu sync.Mutex   // serializes WebSocket client writes
 	seq     atomic.Int64 // client message seq (auth uses 1)
+
+	// log carries the bot's name. Every bot in the process has its own websocket,
+	// and a reconnect line that does not say whose is unreadable in a shared log.
+	log *slog.Logger
+}
+
+// recoverPanic contains a panic in one of the transport's own goroutines. The bot's event stream
+// ends, which its supervisor treats as a stopped bot and restarts - the other bots in the process
+// are untouched.
+func (t *Transport) recoverPanic(where string) {
+	if p := recover(); p != nil {
+		t.logger().Error("transport panicked", "where", where, "panic", p, "stack", string(debug.Stack()))
+	}
+}
+
+// logger is the bot's logger, or the default when none was wired in (tests build
+// the transport directly).
+func (t *Transport) logger() *slog.Logger {
+	if t.log == nil {
+		return slog.Default()
+	}
+	return t.log
 }
 
 // readWriter pairs a reader and a writer into an io.ReadWriter.
@@ -59,8 +82,12 @@ type readWriter struct {
 // Dial connects to the Mattermost WebSocket, authenticates with the token, and starts
 // streaming classified events. The read loop reconnects on its own if the connection later
 // drops, so a transient blip or a server restart does not kill the bot.
-func Dial(ctx context.Context, serverURL, token, botUserID string) (*Transport, error) {
+func Dial(ctx context.Context, serverURL, token, botUserID string, log *slog.Logger) (*Transport, error) {
+	if log == nil {
+		log = slog.Default()
+	}
 	t := &Transport{
+		log:       log,
 		client:    NewClient(serverURL, token),
 		botUserID: botUserID,
 		serverURL: serverURL,
@@ -229,6 +256,10 @@ const (
 // does not replay posts missed while disconnected, so a message that arrives during the gap is
 // lost; a user who needs an answer can re-send once the bot is back.
 func (t *Transport) run(ctx context.Context) {
+	// Bots share a process now, so a panic in this goroutine - which parses whatever the chat
+	// server sends - would take the whole team down. Contain it here, where it can be recovered,
+	// and let the loop end so the supervisor restarts this bot alone.
+	defer t.recoverPanic("websocket read loop")
 	// Stop the debouncer before closing events, so a thread timer firing during shutdown cannot
 	// send on a closed channel. This covers the ctx-cancel path where run returns on its own
 	// (Close did not drive it); stop is idempotent, so Close calling it too is harmless.
@@ -241,11 +272,11 @@ func (t *Transport) run(ctx context.Context) {
 		if t.stopping(ctx) {
 			return
 		}
-		slog.Warn("mattermost websocket dropped; reconnecting")
+		t.logger().Warn("mattermost websocket dropped; reconnecting")
 		if !t.reconnect(ctx) {
 			return
 		}
-		slog.Info("mattermost websocket reconnected")
+		t.logger().Info("mattermost websocket reconnected")
 	}
 }
 
@@ -278,10 +309,10 @@ func (t *Transport) reconnect(ctx context.Context) bool {
 		if err := t.connectFn(ctx); err != nil {
 			if errors.Is(err, errTokenRejected) {
 				// Retrying will not help until the token is fixed; make it loud, not a quiet WARN.
-				slog.Error("mattermost rejected the bot token; reconnect will keep retrying",
+				t.logger().Error("mattermost rejected the bot token; reconnect will keep retrying",
 					"err", err, "retry_in", backoff)
 			} else {
-				slog.Warn("mattermost reconnect failed", "err", err, "retry_in", backoff)
+				t.logger().Warn("mattermost reconnect failed", "err", err, "retry_in", backoff)
 			}
 			if backoff *= 2; backoff > maxBackoff {
 				backoff = maxBackoff
@@ -308,6 +339,7 @@ func (t *Transport) stopping(ctx context.Context) bool {
 // keepalive sends a periodic ping so an idle connection is not closed by the server or a proxy.
 // A failed ping is harmless: consume detects the dead conn and run reconnects.
 func (t *Transport) keepalive(ctx context.Context) {
+	defer t.recoverPanic("websocket keepalive")
 	tick := time.NewTicker(pingInterval)
 	defer tick.Stop()
 	for {
@@ -321,7 +353,7 @@ func (t *Transport) keepalive(ctx context.Context) {
 			err := wsutil.WriteClientMessage(t.conn, ws.OpPing, nil)
 			t.writeMu.Unlock()
 			if err != nil {
-				slog.Debug("mattermost websocket ping failed", "err", err)
+				t.logger().Debug("mattermost websocket ping failed", "err", err)
 			}
 		}
 	}
@@ -500,35 +532,63 @@ func splitForPost(text string, limit int) []string {
 // split into several posts chained under the same thread root.
 func (t *Transport) Reply(thread bot.ThreadRef, text string) error {
 	t.noteThread(thread.RootID)
-	rootID := thread.RootID
+	_, err := t.postChunks(thread.ChannelID, thread.RootID, text, false)
+	return err
+}
+
+// postChunks writes text as one or more posts, chaining every chunk after the
+// first under the first one, and returns the id of that first post. noteNewRoot
+// records a newly opened thread as one the bot owns; a reply into an existing
+// thread does not need it, because the caller already noted that thread.
+func (t *Transport) postChunks(channelID, rootID, text string, noteNewRoot bool) (string, error) {
+	ids, err := t.postChunkIDs(channelID, rootID, text, noteNewRoot)
+	if len(ids) == 0 {
+		return "", err
+	}
+	return ids[0], err
+}
+
+// postChunkIDs is postChunks, reporting every post it created rather than only the first.
+func (t *Transport) postChunkIDs(channelID, rootID, text string, noteNewRoot bool) ([]string, error) {
+	var ids []string
+	chain := rootID
 	for _, chunk := range splitForPost(text, maxPostChars) {
-		id, err := t.client.CreatePost(context.Background(), thread.ChannelID, rootID, chunk)
+		id, err := t.client.CreatePost(context.Background(), channelID, chain, chunk)
 		if err != nil {
-			return err
+			return ids, err
 		}
-		if rootID == "" && id != "" {
-			rootID = id // chain the remaining chunks under the first post
+		if id != "" {
+			ids = append(ids, id)
+		}
+		if chain == "" && id != "" {
+			chain = id // chain the remaining chunks under the first post
+			if noteNewRoot {
+				t.noteThread(id)
+			}
 		}
 	}
-	return nil
+	return ids, nil
+}
+
+// PostWithIDs posts like Post or PostToThread and returns the ids of every post it wrote - one
+// per chunk, since a long message is split. The fleet needs all of them: the same message is also
+// delivered to the teammate in-process, and each id is what lets them recognise the chat copy of
+// something they already acted on. Missing the ids of chunks 2..n would wake them again on a
+// partial copy.
+func (t *Transport) PostWithIDs(channelID, rootID, text string) ([]string, error) {
+	if rootID != "" {
+		t.noteThread(rootID)
+		return t.postChunkIDs(channelID, rootID, text, false)
+	}
+	return t.postChunkIDs(channelID, "", text, true)
 }
 
 // Post sends text to a channel id at root level and remembers the new post as a thread the bot
 // owns, so replies to it are observed even without an @mention - a scheduled run that posts a
 // status still hears the answers it asked for.
 func (t *Transport) Post(channelID, text string) error {
-	rootID := ""
-	for _, chunk := range splitForPost(text, maxPostChars) {
-		id, err := t.client.CreatePost(context.Background(), channelID, rootID, chunk)
-		if err != nil {
-			return err
-		}
-		if rootID == "" && id != "" {
-			rootID = id // start the thread at the first post, chain the rest under it
-			t.noteThread(id)
-		}
-	}
-	return nil
+	_, err := t.postChunks(channelID, "", text, true)
+	return err
 }
 
 // PostToThread posts text as a reply into an existing thread (rootID) of a channel, chunking and
@@ -696,7 +756,7 @@ func (t *Transport) ThreadHistory(ctx context.Context, channelID, rootID string)
 	if err != nil {
 		// Surface it: a swallowed fetch error would silently hand the agent an empty thread to
 		// "decide" on, making the whole thread_update a no-op no operator could explain.
-		slog.Warn("could not fetch thread for thread_update", "root", rootID, "err", err)
+		t.logger().Warn("could not fetch thread for thread_update", "root", rootID, "err", err)
 		return ""
 	}
 	return block
@@ -748,7 +808,7 @@ func (t *Transport) formatAuthored(ctx context.Context, authors, texts []string)
 			ids = append(ids, id)
 		}
 		if resolved, err := t.client.Usernames(ctx, ids); err != nil {
-			slog.Debug("could not resolve usernames; falling back to ids", "err", err)
+			t.logger().Debug("could not resolve usernames; falling back to ids", "err", err)
 		} else {
 			t.mu.Lock()
 			for id, name := range resolved {
@@ -795,7 +855,7 @@ func (t *Transport) Attachments(ctx context.Context, fileIDs []string) ([]llm.Im
 	for _, id := range fileIDs {
 		info, err := t.client.FileInfo(ctx, id)
 		if err != nil {
-			slog.Warn("could not resolve attachment", "file", id, "err", err)
+			t.logger().Warn("could not resolve attachment", "file", id, "err", err)
 			lines = append(lines, "- (attachment unavailable: its metadata could not be fetched)")
 			continue
 		}
@@ -811,7 +871,7 @@ func (t *Transport) Attachments(ctx context.Context, fileIDs []string) ([]llm.Im
 		default:
 			data, derr := t.client.DownloadFile(ctx, id, maxImageBytes)
 			if derr != nil {
-				slog.Warn("could not download attachment", "file", id, "err", derr)
+				t.logger().Warn("could not download attachment", "file", id, "err", derr)
 				lines = append(lines, "- "+label+" - could not be downloaded")
 				continue
 			}
@@ -912,7 +972,7 @@ func (t *Transport) AuthorName(ctx context.Context, userID string) string {
 	}
 	resolved, err := t.client.Usernames(ctx, []string{userID})
 	if err != nil {
-		slog.Debug("could not resolve username", "err", err)
+		t.logger().Debug("could not resolve username", "err", err)
 		return ""
 	}
 	t.mu.Lock()

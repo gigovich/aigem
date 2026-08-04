@@ -44,7 +44,7 @@ func (e errUnknownChannel) Error() string { return "not a member of " + e.name }
 
 func TestPostMessageNamedChannel(t *testing.T) {
 	fp := &fakePoster{}
-	tool := NewPostMessageTool(fp, fakeResolver{ids: map[string]string{"a": "id-a", "b": "id-b"}})
+	tool := NewPostMessageTool(fp, fakeResolver{ids: map[string]string{"a": "id-a", "b": "id-b"}}, nil)
 	if tool.Name() != "post_message" || tool.NeedsConfirm() {
 		t.Fatalf("name=%q needsConfirm=%v", tool.Name(), tool.NeedsConfirm())
 	}
@@ -59,7 +59,7 @@ func TestPostMessageNamedChannel(t *testing.T) {
 
 func TestPostMessageMissingChannelListsMembers(t *testing.T) {
 	fp := &fakePoster{}
-	tool := NewPostMessageTool(fp, fakeResolver{members: []string{"Tickets", "Bootcamp"}})
+	tool := NewPostMessageTool(fp, fakeResolver{members: []string{"Tickets", "Bootcamp"}}, nil)
 	_, err := tool.Run(context.Background(), json.RawMessage(`{"text":"x"}`))
 	if err == nil {
 		t.Fatal("missing channel should error")
@@ -74,7 +74,7 @@ func TestPostMessageMissingChannelListsMembers(t *testing.T) {
 
 func TestPostMessageErrors(t *testing.T) {
 	fp := &fakePoster{}
-	tool := NewPostMessageTool(fp, fakeResolver{ids: map[string]string{"a": "id-a"}})
+	tool := NewPostMessageTool(fp, fakeResolver{ids: map[string]string{"a": "id-a"}}, nil)
 	// Unknown channel.
 	if _, err := tool.Run(context.Background(),
 		json.RawMessage(`{"channel":"nope","text":"x"}`)); err == nil {

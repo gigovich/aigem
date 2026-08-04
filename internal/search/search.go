@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -57,6 +58,15 @@ type BrowserConfig struct {
 	// under test is usually on an internal host). Credentials for fill steps come
 	// from the agent itself (read from a local file or ticket, typed directly).
 	TestHosts []string `json:"test_hosts,omitempty"`
+
+	// Log names the bot whose turn is driving the browser, and the launch gate it
+	// waits on. Set at runtime by whoever builds the tools; never serialized.
+	Log *slog.Logger `json:"-"`
+	// Launches, when set, caps how many browsers start at once across the whole
+	// process. Chrome is not resident - it is spawned per call and torn down after -
+	// so the cost only shows up when several bots search at the same moment, and
+	// this is what bounds that peak. Nil means no cap.
+	Launches *LaunchGate `json:"-"`
 }
 
 // Result is one web-search hit.

@@ -23,12 +23,13 @@ const defaultHandoffChannel = "Tasks"
 type handoffTool struct {
 	poster   Poster
 	resolver ChannelResolver
+	local    *LocalDelivery
 }
 
 // NewHandoffTool lets the bot delegate a dependency to a teammate. Not confirm-gated; Mattermost
-// membership is the safety boundary, same as post_message.
-func NewHandoffTool(poster Poster, resolver ChannelResolver) tools.Tool {
-	return &handoffTool{poster: poster, resolver: resolver}
+// membership is the safety boundary, same as post_message. local may be nil.
+func NewHandoffTool(poster Poster, resolver ChannelResolver, local *LocalDelivery) tools.Tool {
+	return &handoffTool{poster: poster, resolver: resolver, local: local}
 }
 
 func (t *handoffTool) Name() string       { return "handoff" }
@@ -101,14 +102,21 @@ func (t *handoffTool) Run(ctx context.Context, rawArgs json.RawMessage) (string,
 		text += " [" + ticket + "]"
 	}
 	text += ": " + summary
-	if root := strings.TrimSpace(a.Thread); root != "" {
-		if err := t.poster.PostToThread(id, root, text); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("handed off to @%s in %q thread %s", to, channel, root), nil
-	}
-	if err := t.poster.Post(id, text); err != nil {
+	root := strings.TrimSpace(a.Thread)
+	// Read busy before delivering: afterwards the teammate may be busy precisely
+	// because of this handoff, which is not what the caller needs to be told.
+	note := t.local.busyNote(t.local.target(to))
+	delivered, err := postAndDeliver(ctx, t.poster, t.local, to, channel, id, root,
+		strings.HasPrefix(channel, "@"), text)
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("handed off to @%s in %q", to, channel), nil
+	where := fmt.Sprintf("in %q", channel)
+	if root != "" {
+		where = fmt.Sprintf("in %q thread %s", channel, root)
+	}
+	if delivered {
+		return fmt.Sprintf("handed off to @%s %s and woke them directly%s", to, where, note), nil
+	}
+	return fmt.Sprintf("handed off to @%s %s%s", to, where, note), nil
 }

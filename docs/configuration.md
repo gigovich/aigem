@@ -11,6 +11,7 @@ aigem honors the XDG base directories.
 | `~/.config/aigem/models.json`             | your own providers and models                       |
 | `~/.config/aigem/agents/*.md`             | custom subagents                                    |
 | `~/.config/aigem/skills/`                 | global skills                                       |
+| `~/.config/aigem/fleet.json`              | limits shared by every bot in one process           |
 | `~/.config/aigem/bots/<name>/bot.yaml`    | one bot's definition                                |
 | `~/.config/aigem/bots/<name>/memory/`     | that bot's persisted memory                         |
 | `~/.local/state/aigem/auth.json`          | credentials (`0600`)                                |

@@ -22,6 +22,11 @@ type Inbound struct {
 	Author  string
 	Text    string
 	FileIDs []string // transport ids of the message's file attachments
+	// PostID identifies the chat post this came from. A message a teammate
+	// delivers in-process carries the id of the post it also wrote to chat, so the
+	// runtime can tell the two copies apart from a genuinely new message. Empty
+	// for anything with no post behind it (a resume, a thread update).
+	PostID string
 }
 
 // Transport is a chat backend the bot communicates through.

@@ -27,12 +27,14 @@ type ChannelResolver interface {
 type postMessageTool struct {
 	poster   Poster
 	resolver ChannelResolver
+	local    *LocalDelivery
 }
 
 // NewPostMessageTool lets the bot post to one of the channels it belongs to. Not confirm-gated;
 // Mattermost membership is the safety boundary - the bot can only post where it was invited.
-func NewPostMessageTool(poster Poster, resolver ChannelResolver) tools.Tool {
-	return &postMessageTool{poster: poster, resolver: resolver}
+// local may be nil.
+func NewPostMessageTool(poster Poster, resolver ChannelResolver, local *LocalDelivery) tools.Tool {
+	return &postMessageTool{poster: poster, resolver: resolver, local: local}
 }
 
 func (t *postMessageTool) Name() string       { return "post_message" }
@@ -85,14 +87,25 @@ func (t *postMessageTool) Run(ctx context.Context, rawArgs json.RawMessage) (str
 	if err != nil {
 		return "", err
 	}
-	if root := strings.TrimSpace(a.Thread); root != "" {
-		if err := t.poster.PostToThread(id, root, a.Text); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("posted to %q thread %s", a.Channel, root), nil
+	// Only a direct message names its recipient unambiguously, so that is the one
+	// case delivered in-process; a channel post reaches whoever it mentions the
+	// way it always has.
+	to := ""
+	if user, ok := strings.CutPrefix(strings.TrimSpace(a.Channel), "@"); ok {
+		to = user
 	}
-	if err := t.poster.Post(id, a.Text); err != nil {
+	root := strings.TrimSpace(a.Thread)
+	note := t.local.busyNote(t.local.target(to))
+	delivered, err := postAndDeliver(ctx, t.poster, t.local, to, a.Channel, id, root, to != "", a.Text)
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("posted to %q", a.Channel), nil
+	where := fmt.Sprintf("to %q", a.Channel)
+	if root != "" {
+		where = fmt.Sprintf("to %q thread %s", a.Channel, root)
+	}
+	if delivered {
+		return fmt.Sprintf("posted %s and woke them directly%s", where, note), nil
+	}
+	return fmt.Sprintf("posted %s%s", where, note), nil
 }

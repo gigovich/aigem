@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-04
+
+### Added
+
+- `aigem bot start` now takes any number of bot names, and none at all. With no
+  name it runs every configured bot in one process; with names it runs exactly
+  those. Bots start one at a time, each connected before the next begins, because
+  one Mattermost account allows one websocket.
+- A fleet-wide cap on concurrent agent turns. Per-bot limits multiplied - five
+  bots at four threads each aimed twenty conversations at one provider account -
+  and nothing bounded the total. Scheduled runs take a slot too. A run of exactly
+  one bot skips the turn cap: it has nobody to contend with, and a cap it could
+  hit alone would only slow it down. One bot per unit (`aigem-bot@.service`) is
+  therefore several processes that do not share any of these caps.
+- A cap on how many browsers run at once across the process. Chrome is spawned
+  per tool call and closed after, so this bounds a peak rather than a resident
+  cost. Profiles stay per bot: they hold logins, and a shared profile would put
+  every search behind one browser.
+- `~/.config/aigem/fleet.json` sets both caps (`max_concurrent_turns`,
+  `max_concurrent_browsers`). Omitting a key, or setting it to `0`, means the
+  default - 6 turns and 2 browsers - and only a negative value means no cap.
+- systemd units under `deploy/systemd/`: `aigem-bots.service` for the whole fleet
+  in one process, and `aigem-bot@.service` for one unit per bot. The template
+  declares `Conflicts=aigem-bots.service`, which systemd applies both ways, so
+  the two cannot run together and open two websockets for one account.
+- `team_status`, a tool listing the teammates in the process and whether each is
+  working. A teammate that is mid-turn used to be indistinguishable from one that
+  never got the message, which is what made bots ping each other repeatedly.
+- A handoff or direct message to a teammate in the same process is now delivered
+  in-process as well as posted to chat, so it survives a websocket that is down
+  or reconnecting. Both copies carry the same post id and the teammate acts on
+  whichever arrives first. Delivery stays inside the boundary chat enforces: the
+  recipient confirms, with its own credentials, that it belongs to the channel
+  the message came from, and teammates are matched by chat username rather than
+  by aigem name.
+
+### Changed
+
+- Every LLM client in a process, the TUI's included, shares one HTTP connection
+  pool, and bots share one OAuth token source per provider. Separate processes
+  each refreshed the same token, which single-use refresh tokens do not tolerate.
+- `aigem auth login` and `aigem auth logout` now drop the cached token sources,
+  so a re-login takes effect without restarting the process.
+- Every log line from a bot now carries its name.
+- A bot keeps at most 200 per-thread agents, evicting the coldest idle one. The
+  map was unbounded, which used to cost one process; with every bot's agents in
+  one heap it would cost the whole team.
+- A panic no longer ends the process. In a turn or a scheduled run it is logged
+  and that one run is abandoned; the bot keeps serving. In a transport goroutine
+  it ends that bot's event stream, which its supervisor treats as a stop.
+- Each bot is supervised in-process and restarted when its stream ends, backing
+  off from 5s to 5min and resetting only once a bot has stayed up a minute. A bot
+  that cannot start is retried rather than taking the team down with it, so a
+  permanently broken bot no longer ends a multi-bot process.
+- The shipped system prompts are about a fifth shorter and rewritten in plainer
+  English. Every behavioural rule is unchanged; the cuts are repetition, nested
+  clauses, and rationale that restated its own rule.
+
+### Fixed
+
+- A bot under systemd could not use an SSH key its owner had loaded, and reported
+  "the agent has no identities" for a key `ssh-add -l` showed in their terminal.
+  The unit inherits `SSH_AUTH_SOCK` from the systemd user manager, which on a
+  desktop names gnome-keyring's agent while the keys are in the OpenSSH one. Both
+  units now carry a commented `Environment=SSH_AUTH_SOCK=` line for each of the
+  two common sockets, since which one holds the keys is per-machine.
+
 ## [0.2.0] - 2026-07-31
 
 ### Fixed
@@ -130,6 +197,7 @@ First public release.
   infrastructure: the Helm chart, the Gitea CI workflow, and internal design and
   evaluation documents.
 
-[Unreleased]: https://github.com/gigovich/aigem/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/gigovich/aigem/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gigovich/aigem/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/gigovich/aigem/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/gigovich/aigem/releases/tag/v0.1.0

@@ -35,10 +35,29 @@ type Store struct {
 	dir string
 	mu  sync.Mutex
 	now func() time.Time
+	log *slog.Logger
 }
 
 // NewStore binds a memory store to a directory (created lazily on first write).
 func NewStore(dir string) *Store { return &Store{dir: dir, now: time.Now} }
+
+// SetLogger installs the logger the store reports through. Set before use.
+func (s *Store) SetLogger(l *slog.Logger) {
+	if l == nil {
+		return
+	}
+	s.mu.Lock()
+	s.log = l
+	s.mu.Unlock()
+}
+
+// logger is the installed logger, or the default. Caller holds s.mu.
+func (s *Store) logger() *slog.Logger {
+	if s.log == nil {
+		return slog.Default()
+	}
+	return s.log
+}
 
 func (s *Store) stamp() string { return s.now().UTC().Format(time.RFC3339) }
 
@@ -131,7 +150,7 @@ func (s *Store) Read(name string) (string, error) {
 	// The stamp is telemetry, not the payload: a full or read-only disk must not make
 	// memory unreadable.
 	if err := writeFact(p, fact, body); err != nil {
-		slog.Warn("memory usage stamp failed", "fact", fact.Name, "err", err)
+		s.logger().Warn("memory usage stamp failed", "fact", fact.Name, "err", err)
 		return string(data), nil
 	}
 	return factContent(fact, body)

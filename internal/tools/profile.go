@@ -18,7 +18,10 @@ type CapabilityProfile struct {
 
 var baseReadTools = []string{"read_file", "list_dir", "grep", "fuzzy_find", "web_search", "open_url", "browser_action"}
 var baseWriteTools = []string{"write_file", "edit_file"}
-var botTools = []string{"memory", "schedule", "post_message", "handoff", "read_chat", "save_skill", "delete_skill", "skill"}
+var botTools = []string{
+	"memory", "schedule", "post_message", "handoff", "read_chat", "team_status",
+	"save_skill", "delete_skill", "skill",
+}
 
 // CapabilityProfiles are ordered from least to most permissive. The default for
 // non-interactive and bot use is workspace-write: filesystem edits are possible

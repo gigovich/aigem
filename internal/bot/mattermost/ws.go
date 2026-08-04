@@ -72,6 +72,7 @@ func classifyPost(p wsPost, channelType string, mentionsRaw json.RawMessage, bot
 		Author:  p.UserID,
 		Text:    p.Message,
 		FileIDs: p.FileIDs,
+		PostID:  p.ID,
 	}
 	if channelType == "D" {
 		in.Kind = "dm"

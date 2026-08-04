@@ -26,9 +26,9 @@ configured; `open_url` and `browser_action` need the **browser** backend
 specifically, so they are absent when Brave is the provider. `skill` appears only
 when at least one model-invocable skill was discovered.
 
-Bots differ more than that: they get seven extra tools - `memory`, `schedule`,
-`save_skill`, `delete_skill`, `post_message`, `handoff`, and `read_chat` - and
-they get neither `task` nor `todo_write`.
+Bots differ more than that: they get eight extra tools - `memory`, `schedule`,
+`save_skill`, `delete_skill`, `post_message`, `handoff`, `read_chat`, and
+`team_status` - and they get neither `task` nor `todo_write`.
 
 `write_file`, `edit_file`, and `bash` prompt for confirmation in the TUI before
 running. For changes to existing files the model uses `edit_file` (exact

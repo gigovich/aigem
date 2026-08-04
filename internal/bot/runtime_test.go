@@ -595,7 +595,7 @@ func TestCronEventsTagRunsWithTheJobID(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(old)
 
-	ev := CronEvents("work-heartbeat")
+	ev := CronEvents(slog.Default(), "work-heartbeat")
 	ev.OnToolStart("read_file", nil)
 	ev.OnToolEnd("read_file", "", nil)
 	ev.OnToolEnd("bash", "", errRefused{})

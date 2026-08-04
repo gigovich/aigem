@@ -104,7 +104,7 @@ func NewClient(cfg ClientConfig) *Client {
 	return &Client{
 		BaseURL:     strings.TrimRight(cfg.BaseURL, "/"),
 		MaxTokens:   cfg.MaxTokens,
-		HTTP:        &http.Client{Timeout: 10 * time.Minute},
+		HTTP:        sharedHTTPClient(),
 		info:        cfg.Info,
 		auth:        cfg.Auth,
 		headers:     cfg.Headers,

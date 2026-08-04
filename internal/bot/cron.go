@@ -60,6 +60,35 @@ type Scheduler struct {
 	run      RunFunc
 	busy     func() bool
 	deferred int // consecutive gated ticks, counting only while the gate stays closed
+	log      *slog.Logger
+}
+
+// SetLogger installs the logger the scheduler reports through. Every bot in the
+// process runs its own scheduler, so without a logger naming the bot a warning
+// about a wedged turn does not say whose. Set before Run.
+func (s *Scheduler) SetLogger(l *slog.Logger) {
+	if l == nil {
+		return
+	}
+	s.mu.Lock()
+	s.log = l
+	s.mu.Unlock()
+}
+
+// logger reports through the installed logger, falling back to the default.
+// Callers must not hold s.mu.
+func (s *Scheduler) logger() *slog.Logger {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loggerLocked()
+}
+
+// loggerLocked is logger for callers that already hold s.mu.
+func (s *Scheduler) loggerLocked() *slog.Logger {
+	if s.log == nil {
+		return slog.Default()
+	}
+	return s.log
 }
 
 // NewScheduler parses the given jobs (skipping and reporting any with a bad expression) and
@@ -157,7 +186,7 @@ func (s *Scheduler) SetBuiltin(job CronJob) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.jobs[job.ID]; ok && !existing.builtin {
-		slog.Warn("built-in job displaces a configured job with the same id; the configured job will "+
+		s.loggerLocked().Warn("built-in job displaces a configured job with the same id; the configured job will "+
 			"not fire and will be dropped from the persisted config", "id", job.ID)
 	}
 	s.insertLocked(sj)
@@ -257,7 +286,7 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		s.holdDueLocked(now)
 		s.mu.Unlock()
 		if n%deferredWarnEvery == 0 {
-			slog.Warn("scheduled work has been held back for a long stretch; a turn may be wedged",
+			s.logger().Warn("scheduled work has been held back for a long stretch; a turn may be wedged",
 				"gatedMinutes", n)
 		}
 		return
@@ -276,7 +305,7 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		// Past the ceiling we fire anyway. A turn that never ends must not silence the built-in
 		// heartbeat forever: a bot that cannot wake up at all is worse than two agents overlapping
 		// once, and this is the only way out that does not need an operator.
-		slog.Error("firing scheduled work while a turn is still running: work has been held back "+
+		s.logger().Error("firing scheduled work while a turn is still running: work has been held back "+
 			"far too long", "job", job.ID, "gatedMinutes", held)
 	}
 	go func() {
@@ -346,7 +375,7 @@ func (s *Scheduler) takeDueLocked(now time.Time) (CronJob, bool) {
 		// If this persist fails the job is gone in-memory but still on disk, so a restart could
 		// re-fire it. Nothing here can return the error, so surface it in the log.
 		if err := s.save(s.snapshot()); err != nil {
-			slog.Warn("could not persist one-shot removal", "job", chosen, "err", err)
+			s.loggerLocked().Warn("could not persist one-shot removal", "job", chosen, "err", err)
 		}
 	}
 	return sj.job, true
@@ -379,7 +408,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			// Wall time moved backwards (an NTP step, a corrected VM clock). Resynchronise to it
 			// rather than pressing on from a future bookkeeping minute, which would leave the
 			// minutes in between neither ticked nor carried forward.
-			slog.Warn("the clock moved backwards; resynchronising the scheduler",
+			s.logger().Warn("the clock moved backwards; resynchronising the scheduler",
 				"expected", next.Format("15:04"), "actual", now.Format("15:04"))
 			last = now
 			s.tick(ctx, now)
@@ -406,7 +435,7 @@ func (s *Scheduler) holdMissed(at time.Time) {
 	before := len(s.pending)
 	s.holdDueLocked(at)
 	if len(s.pending) > before {
-		slog.Warn("a scheduler minute went unticked; its due jobs were carried forward",
+		s.loggerLocked().Warn("a scheduler minute went unticked; its due jobs were carried forward",
 			"minute", at.Format("15:04"))
 	}
 }

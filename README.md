@@ -90,8 +90,9 @@ output, drops duplicate reads, and finally summarizes older turns - with the ful
 history backed up before every summarization.
 → [Compaction](docs/tui.md#context-compaction)
 
-**Chat bots.** The same agent, unattended, in a Mattermost workspace: one process
-per bot, per-bot models and budgets, cron prompts, and handoff between roles.
+**Chat bots.** The same agent, unattended, in a Mattermost workspace: run one bot
+or the whole team in a single process, with per-bot models and budgets, cron
+prompts, and handoff between roles.
 → [Chat bots](docs/bots.md)
 
 ## Documentation

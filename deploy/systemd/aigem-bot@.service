@@ -1,0 +1,45 @@
+[Unit]
+# One bot per unit, for when you want to restart or stop bots independently:
+#
+#   cp deploy/systemd/aigem-bot@.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now aigem-bot@jane aigem-bot@kate
+#
+# The trade-off against aigem-bots.service: separate processes cannot share a
+# connection pool, an OAuth token source, or the caps on concurrent turns and
+# browsers, so each bot's limits apply only to itself. Prefer the single unit
+# unless you need per-bot lifecycle control.
+#
+# Never run a bot here AND in aigem-bots.service. That unit starts every
+# configured bot, so the two overlap by default: one Mattermost account allows
+# one websocket, and two connections cause duplicate replies.
+Description=aigem chat bot %i
+Documentation=https://gigovich.github.io/aigem/bots/
+After=network-online.target
+Wants=network-online.target
+Conflicts=aigem-bots.service
+
+[Service]
+Type=simple
+ExecStart=%h/go/bin/aigem bot start %i
+WorkingDirectory=%h/work
+
+Environment=PATH=%h/go/bin:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=%h
+
+# See aigem-bots.service: the inherited SSH_AUTH_SOCK often names an agent with
+# no keys in it. Uncomment exactly one - whichever socket holds yours.
+#Environment=SSH_AUTH_SOCK=%t/openssh_agent
+#Environment=SSH_AUTH_SOCK=%t/gcr/ssh
+
+Restart=on-failure
+RestartSec=30s
+KillSignal=SIGTERM
+TimeoutStopSec=120s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aigem-bot-%i
+
+[Install]
+WantedBy=default.target

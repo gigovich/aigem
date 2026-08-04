@@ -9,7 +9,7 @@ import (
 
 func TestHandoffDefaultsToCoordinationChannel(t *testing.T) {
 	fp := &fakePoster{}
-	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{defaultHandoffChannel: "id-tasks"}})
+	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{defaultHandoffChannel: "id-tasks"}}, nil)
 	if tool.Name() != "handoff" || tool.NeedsConfirm() {
 		t.Fatalf("name=%q needsConfirm=%v", tool.Name(), tool.NeedsConfirm())
 	}
@@ -33,7 +33,7 @@ func TestHandoffDefaultsToCoordinationChannel(t *testing.T) {
 
 func TestHandoffNamedChannelTicketAndThread(t *testing.T) {
 	fp := &fakePoster{}
-	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{"Bootcamp": "id-bc"}})
+	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{"Bootcamp": "id-bc"}}, nil)
 	if _, err := tool.Run(context.Background(), json.RawMessage(
 		`{"to":"@@kate","summary":"review design","ticket":"AIGEM-4","channel":"Bootcamp","thread":"root1"}`,
 	)); err != nil {
@@ -53,7 +53,7 @@ func TestHandoffNamedChannelTicketAndThread(t *testing.T) {
 
 func TestHandoffRequiresToAndSummary(t *testing.T) {
 	fp := &fakePoster{}
-	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{defaultHandoffChannel: "id-tasks"}})
+	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{defaultHandoffChannel: "id-tasks"}}, nil)
 	if _, err := tool.Run(context.Background(),
 		json.RawMessage(`{"summary":"x"}`)); err == nil {
 		t.Error("missing to should error")
@@ -73,7 +73,7 @@ func TestHandoffRequiresToAndSummary(t *testing.T) {
 
 func TestHandoffUnknownChannelErrors(t *testing.T) {
 	fp := &fakePoster{}
-	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{defaultHandoffChannel: "id-tasks"}})
+	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{defaultHandoffChannel: "id-tasks"}}, nil)
 	if _, err := tool.Run(context.Background(),
 		json.RawMessage(`{"to":"jane","summary":"x","channel":"nope"}`)); err == nil {
 		t.Error("unknown channel should error")

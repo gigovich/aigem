@@ -3,16 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -23,7 +19,6 @@ import (
 	"github.com/gigovich/aigem/internal/config"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/local"
-	"github.com/gigovich/aigem/internal/search"
 	"github.com/gigovich/aigem/internal/tools"
 )
 
@@ -35,7 +30,7 @@ const botUsage = `usage:
   aigem bot create <name>   define a bot interactively
   aigem bot list            list configured bots
   aigem bot rm <name>       delete a bot
-  aigem bot start <name>    run a bot's chat loop
+  aigem bot start [<name>...]  run one bot, several, or the whole fleet
   aigem bot model [<name>] [<ref>]   show or switch the model a bot runs on
   aigem bot prompt <name>   print the bot's full assembled system prompt`
 
@@ -71,10 +66,7 @@ func runBotCommand(args []string) error {
 		}
 		return bot.Remove(args[1])
 	case "start":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: aigem bot start <name>")
-		}
-		return botStart(args[1])
+		return botStart(args[1:])
 	case "model":
 		return botModel(args[1:])
 	case "prompt":
@@ -302,7 +294,7 @@ func explainPinFailure(ref string, err error) error {
 // callback fires once per model call - per attempt of a retried one, since that
 // is what the provider charges for - and carries that call's own cost, so
 // concurrent threads cannot smear each other's numbers.
-func logUsagePerCall(client *llm.Ref) {
+func logUsagePerCall(log *slog.Logger, client *llm.Ref) {
 	rep, ok := llm.UsageOf(client)
 	if !ok {
 		return
@@ -324,7 +316,7 @@ func logUsagePerCall(client *llm.Ref) {
 				args = append(args, "remaining", w.Remaining)
 			}
 		}
-		slog.Info("llm usage", args...)
+		log.Info("llm usage", args...)
 	})
 
 	// Persisting hangs off the quota callback, not the usage one: a rejected call
@@ -339,7 +331,7 @@ func logUsagePerCall(client *llm.Ref) {
 		}
 		saved.Store(&now)
 		if serr := llm.SaveLimits(l); serr != nil {
-			slog.Debug("could not persist quota snapshot", "err", serr)
+			log.Debug("could not persist quota snapshot", "err", serr)
 		}
 	})
 }
@@ -551,220 +543,5 @@ func botPrompt(name string) error {
 	}
 
 	fmt.Println(bot.ComposeSystem(c, role, idx, skills.Prompt(), extra))
-	return nil
-}
-
-func botStart(name string) error {
-	c, err := bot.Load(name)
-	if err != nil {
-		return err
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	role, ok := bot.RoleByName(c.Role)
-	if !ok {
-		return fmt.Errorf("bot %q has unknown role %q", name, c.Role)
-	}
-	token, err := bot.LoadToken(name)
-	if err != nil {
-		return err
-	}
-
-	localCfg, _, _ := local.Load()
-	modelReg, modelWarns := llm.NewRegistry(c.Workdir, localProvider(localCfg, defaultMaxTokens))
-	warnModelsConfig(modelWarns)
-	// A configured model is binding: if it cannot be opened the bot refuses to
-	// start rather than silently running on whatever else is authenticated. It is
-	// trimmed first because a blank ref means "the default model" to Resolve,
-	// which would be exactly the silent fallback this is meant to prevent.
-	pinned := strings.TrimSpace(c.Model)
-	ref := pinned
-	if ref == "" {
-		if def, ok := modelReg.DefaultPreferring(auth.IsAuthenticated); ok {
-			ref = def.Ref()
-		}
-	}
-	backend, _, info, err := auth.OpenModel(modelReg, ref, defaultMaxTokens)
-	if err != nil {
-		if pinned != "" {
-			return fmt.Errorf("open model %s configured for bot %q (change it with `aigem bot model %s <ref>`): %w",
-				pinned, name, name, err)
-		}
-		return fmt.Errorf("open model: %w", err)
-	}
-	source := "auto"
-	if pinned != "" {
-		source = "configured"
-	}
-	slog.Info("model", "ref", info.Ref(), "ctx", info.ContextWindow, "source", source)
-	client := llm.NewRef(backend)
-
-	extra := config.ProjectInstructions(c.Workdir)
-	memDir, err := bot.MemoryDir(name)
-	if err != nil {
-		return err
-	}
-	store := bot.NewStore(memDir)
-	skillsDir, err := bot.SkillsDir(name)
-	if err != nil {
-		return err
-	}
-	capProfile, err := tools.ResolveCapabilityProfile(c.CapabilityProfile)
-	if err != nil {
-		return err
-	}
-	turnBudget, err := c.TurnBudget.ResolveTurnBudgetFor(bot.TurnBudgetForRole(role.Name))
-	if err != nil {
-		return err
-	}
-	gate := bot.AllowGate(capProfile)
-
-	// Throttle the request rate so unattended runs stay under provider limits,
-	// and ride out transient provider failures (429/5xx/dropped streams) with a
-	// few retries. Retrying wraps Paced - not the other way around - so a failed
-	// attempt returns immediately (Paced only pauses after a successful call) and
-	// the pacing pause is never multiplied by retry backoff. Both decorators are
-	// stateless, so the per-thread agents built below share them.
-	logUsagePerCall(client)
-	paceFactor := c.ResolveLLMPaceFactor()
-	paced := llm.NewRetrying(llm.NewPaced(client, paceFactor), llmRetryAttempts)
-	slog.Info("llm pacing", "factor", paceFactor, "retries", llmRetryAttempts)
-
-	if _, err := tools.NewRegistry(c.Workdir); err != nil {
-		return fmt.Errorf("workdir %q is not usable: %w", c.Workdir, err)
-	}
-
-	searchCfg, serr := search.Load()
-	if serr != nil {
-		fmt.Fprintln(os.Stderr, "warning: could not load search config:", serr)
-	}
-	// Give each bot its own browser profile. All bots run concurrently, and Chrome refuses to open
-	// the same user-data-dir twice (SingletonLock), so a shared profile makes every bot but the
-	// first fail web_search/open_url. Nest a per-bot dir under the configured (or default) profile.
-	if searchCfg.Browser != nil {
-		parent := searchCfg.Browser.ProfileDir
-		if parent == "" {
-			if d, derr := search.DefaultBrowserProfileDir(); derr == nil {
-				parent = d
-			}
-		}
-		if parent != "" {
-			searchCfg.Browser.ProfileDir = filepath.Join(parent, name)
-		}
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	tr, err := mattermost.Dial(ctx, c.Transport.ServerURL, token, c.Transport.BotUserID)
-	if err != nil {
-		return fmt.Errorf("connect mattermost: %w", err)
-	}
-	defer func() { _ = tr.Close() }()
-
-	if ts, terr := bot.NewThreadStore(name); terr != nil {
-		fmt.Fprintln(os.Stderr, "warning: thread state:", terr)
-	} else {
-		tr.SeedThreads(ts.Load())
-		tr.SetThreadSink(func(version uint64, ids []string) {
-			if err := ts.Save(version, ids); err != nil {
-				slog.Warn("could not persist followed threads", "err", err)
-			}
-		})
-	}
-
-	mmClient := mattermost.NewClient(c.Transport.ServerURL, token)
-	teamID, terr := mmClient.TeamID(ctx, c.Transport.Team)
-	if terr != nil {
-		fmt.Fprintln(os.Stderr, "warning: could not resolve team for posting:", terr)
-	}
-	resolver := mmResolver{client: mmClient, team: c.Transport.Team, teamID: teamID}
-
-	scheduler, cronWarns := bot.NewScheduler(c.Cron, saveCronJobs(name))
-	for _, w := range cronWarns {
-		fmt.Fprintln(os.Stderr, "warning:", w)
-	}
-	if err := scheduler.SetBuiltin(bot.MemoryReviewJob(name)); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: memory review job:", err)
-	}
-	heartbeat := bot.NewHeartbeat(name, scheduler)
-	// Fatal on purpose: without the heartbeat a bot that runs out of chat wake-ups has no way
-	// back to its own work, which is the exact stall this job exists to prevent.
-	if err := heartbeat.Arm(); err != nil {
-		return err
-	}
-
-	buildAgent := func() (*agent.Agent, func() string, error) {
-		reg, rerr := tools.NewRegistry(c.Workdir)
-		if rerr != nil {
-			return nil, nil, rerr
-		}
-		reg.Register(bot.NewMemoryTool(store))
-		reg.Register(bot.NewScheduleTool(scheduler))
-		reg.Register(bot.NewPostMessageTool(tr, resolver))
-		reg.Register(bot.NewHandoffTool(tr, resolver))
-		reg.Register(bot.NewReadChatTool(tr, resolver))
-		reg.Register(bot.NewSaveSkillTool(skillsDir))
-		reg.Register(bot.NewDeleteSkillTool(skillsDir))
-		skills, skillErrs := bot.DiscoverBotSkills(skillsDir)
-		for _, e := range skillErrs {
-			slog.Warn("skills discovery", "err", e)
-		}
-		if st := agent.NewSkillTool(skills, paced, reg, 0.3, gate); st != nil {
-			reg.Register(st)
-		}
-		if st := search.NewTool(searchCfg); st != nil {
-			reg.Register(st)
-		}
-		if bt := search.NewBrowseTool(searchCfg); bt != nil {
-			reg.Register(bt)
-		}
-		if at := search.NewBrowserActionTool(searchCfg); at != nil {
-			reg.Register(at)
-		}
-		sub := reg.Subset(intersectTools(role.Allow, capProfile.Allow))
-		catalog := skills.Prompt()
-		build := func() string {
-			idx, ierr := store.Index()
-			if ierr != nil {
-				fmt.Fprintln(os.Stderr, "warning: could not read memory index:", ierr)
-			}
-			return bot.ComposeSystem(c, role, idx, catalog, extra)
-		}
-		ag := agent.New(paced, sub, 0.3, gate, build())
-		ag.SetTurnBudget(turnBudget)
-		// Enable auto-compaction. Without this the per-thread agent accumulates every turn's
-		// tool output until it overflows the model context window and then fails every wake with
-		// context_length_exceeded. maybeCompact is a no-op unless CtxSize is set, so seed it from
-		// the model's own context window (falling back to the CLI default).
-		compactCfg := agent.DefaultCompactConfig()
-		compactCfg.CtxSize = defaultCtxSize
-		if cw := client.Model().ContextWindow; cw > 0 {
-			compactCfg.CtxSize = cw
-		}
-		ag.SetCompaction(compactCfg)
-		return ag, build, nil
-	}
-	mk := func(string) bot.Runner {
-		ag, build, aerr := buildAgent()
-		if aerr != nil {
-			return errRunner{err: fmt.Errorf("workdir %q became unusable: %w", c.Workdir, aerr)}
-		}
-		return bot.RefreshingRunner{Agent: ag, Build: build}
-	}
-	// Wire the runtime before the scheduler starts ticking: a job that fired in between would
-	// find no busy gate installed and could land on top of a live turn.
-	rt := bot.NewRuntime(tr, mk, 4)
-	scheduler.SetBusy(rt.Busy)
-	rt.SetOnAddressed(heartbeat.Addressed)
-	scheduler.SetRunner(bot.NewCronRunner(func() (bot.Runner, error) {
-		ag, _, aerr := buildAgent()
-		return ag, aerr
-	}, heartbeat, rt.EnterTurn))
-
-	go scheduler.Run(ctx)
-
-	fmt.Printf("bot %q running as %s; press Ctrl+C to stop\n", name, role.Name)
-	if err := rt.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		return err
-	}
 	return nil
 }
