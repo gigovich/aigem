@@ -199,8 +199,7 @@ func (m *Model) handleAgentEditKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.refresh()
 		}
 	default:
-		if msg.Text != "" {
-			b.typeConfigField(msg.Text)
+		if msg.Text != "" && b.typeConfigField(msg.Text) {
 			m.refresh()
 		}
 	}
@@ -267,13 +266,19 @@ func (b *agentBrowser) adjustConfigChoice(delta int) {
 	}
 }
 
-func (b *agentBrowser) typeConfigField(s string) {
+// typeConfigField appends to the selected field, reporting whether that field
+// takes text at all - the provider, engine and clear rows are choices, not
+// inputs, and a caller that cannot see the difference would swallow the text.
+func (b *agentBrowser) typeConfigField(s string) bool {
 	switch b.field {
 	case agentFieldBraveKey:
 		b.keyBuf += s
 	case agentFieldBrowserProfile:
 		b.profileBuf += s
+	default:
+		return false
 	}
+	return true
 }
 
 func (b *agentBrowser) backspaceConfigField() bool {

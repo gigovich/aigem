@@ -165,7 +165,7 @@ func TestCommandMenu(t *testing.T) {
 		t.Error("shift+tab with the command menu open did not toggle auto mode")
 	}
 	if m.input.Value() != before {
-		t.Errorf("shift+tab completed the command instead: %q -> %q", before, m.input.Value())
+		t.Errorf("shift+tab completed the command as well: %q -> %q", before, m.input.Value())
 	}
 
 	// A space ends the command token and closes the menu.
@@ -194,6 +194,155 @@ func TestPasteResizesInputAndOpensMenu(t *testing.T) {
 	m = step(m, tea.PasteMsg{Content: strings.Repeat("a", 500)})
 	if got := m.input.Height(); got != maxInputHeight {
 		t.Errorf("pasting past the cap left the input at %d rows, want %d", got, maxInputHeight)
+	}
+}
+
+// An overlay that collects text owns the keyboard, and a modal blurs the input
+// box - so a paste it does not claim is discarded outright. Pasting is how an
+// API key or a model path gets into these fields in the first place.
+func TestPasteReachesTextEntryOverlays(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	t.Run("model picker filter", func(t *testing.T) {
+		m := newTestModel(t)
+		m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+		// newTestModel carries no registry, so /model cannot build a picker; seed
+		// one the way TestLocalChoiceWidgetLayout does.
+		items := []modelItem{{ref: "openai/gpt-5.6-sol"}, {ref: "anthropic/claude"}}
+		m.models = &modelPicker{all: items, items: items}
+
+		m = step(m, tea.PasteMsg{Content: "gpt"})
+		if m.models.query != "gpt" {
+			t.Fatalf("paste did not reach the picker filter: query=%q", m.models.query)
+		}
+		if len(m.models.items) != 1 {
+			t.Errorf("pasted filter was not applied: %d items match %q", len(m.models.items), "gpt")
+		}
+		if m.input.Value() != "" {
+			t.Errorf("the overlay's paste also landed in the chat input: %q", m.input.Value())
+		}
+	})
+
+	t.Run("local wizard fields", func(t *testing.T) {
+		m := newTestModel(t)
+		m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+		m.localWiz = &localWizard{step: wizStepValue}
+
+		m = step(m, tea.PasteMsg{Content: "TheBloke/model-GGUF"})
+		if m.localWiz.value != "TheBloke/model-GGUF" {
+			t.Errorf("paste did not reach the repo field: value=%q", m.localWiz.value)
+		}
+
+		m.localWiz.step = wizStepBinary
+		m = step(m, tea.PasteMsg{Content: "/usr/local/bin/llama-server"})
+		if m.localWiz.binary != "/usr/local/bin/llama-server" {
+			t.Errorf("paste did not reach the binary field: binary=%q", m.localWiz.binary)
+		}
+
+		// The source and confirm steps take no text, so a paste there is refused
+		// rather than swallowed - and must not reach the blurred chat input either.
+		m.localWiz.step = wizStepConfirm
+		m = step(m, tea.PasteMsg{Content: "junk"})
+		if m.localWiz.value != "TheBloke/model-GGUF" || m.localWiz.binary != "/usr/local/bin/llama-server" {
+			t.Error("a paste on the confirm step wrote into a field")
+		}
+		if m.input.Value() != "" {
+			t.Errorf("a refused paste leaked into the chat input: %q", m.input.Value())
+		}
+	})
+
+	t.Run("agent config editor", func(t *testing.T) {
+		m := newTestModel(t)
+		m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = typeEnter(m, "/agents")
+		if m.agentBr == nil {
+			t.Fatal("/agents did not open the browser")
+		}
+		for m.agentBr.cursor < len(m.agentBr.items)-1 {
+			m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // web-search is last
+		}
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // detail
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // config editor
+		if !m.agentBr.editing {
+			t.Fatal("expected the web-search config editor to open")
+		}
+		// The editor opens on the provider row, which is a choice and not an input.
+		// A paste there must be refused outright, not silently eaten.
+		m = step(m, tea.PasteMsg{Content: "BSA-lost"})
+		if m.agentBr.keyBuf != "" {
+			t.Errorf("paste on the provider row wrote a field: keyBuf=%q", m.agentBr.keyBuf)
+		}
+
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // API key field
+		m = step(m, tea.PasteMsg{Content: "BSA-secret\n"})
+		if m.agentBr.keyBuf != "BSA-secret" {
+			t.Errorf("paste did not reach the API key field, or kept its newline: keyBuf=%q",
+				m.agentBr.keyBuf)
+		}
+		if m.input.Value() != "" {
+			t.Errorf("the overlay's paste also landed in the chat input: %q", m.input.Value())
+		}
+
+		// While a key is being verified the editor is drawn inert and drops typing;
+		// a paste must not append to the key already in flight.
+		m.agentBr.saving = true
+		m = step(m, tea.PasteMsg{Content: "-extra"})
+		if m.agentBr.keyBuf != "BSA-secret" {
+			t.Errorf("paste changed the key mid-verification: keyBuf=%q", m.agentBr.keyBuf)
+		}
+	})
+}
+
+// Caps Lock and Num Lock ride along on ordinary key presses - Caps Lock on
+// Windows, Num Lock under the Kitty protocol, which Bubble Tea always requests.
+// Treating any modifier as disqualifying would stop Enter, Esc and the arrows
+// from doing anything at all for a user who happens to have a lock on.
+func TestLockModifiersDoNotDisableKeys(t *testing.T) {
+	for _, lock := range []struct {
+		name string
+		mod  tea.KeyMod
+	}{
+		{"caps lock", tea.ModCapsLock},
+		{"num lock", tea.ModNumLock},
+		{"both", tea.ModCapsLock | tea.ModNumLock},
+	} {
+		t.Run(lock.name, func(t *testing.T) {
+			// Through the real key path, not just the helper: Enter must still
+			// answer an overlay with the lock engaged.
+			m := newTestModel(t)
+			m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+			item := modelItem{ref: "local/demo.gguf", provider: llm.LocalProviderID}
+			m.models = &modelPicker{all: []modelItem{item}, items: []modelItem{item}}
+
+			m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: lock.mod})
+			if m.localChoice == nil {
+				t.Errorf("enter with %s selected nothing in the model picker", lock.name)
+			}
+		})
+	}
+	// Alt is not part of the key in v1's model either, so alt+backspace still
+	// erases wherever backspace does.
+	if got := bareCode(tea.KeyPressMsg{Code: tea.KeyBackspace, Mod: tea.ModAlt}); got != tea.KeyBackspace {
+		t.Errorf("alt+backspace decoded as %q, want backspace", got)
+	}
+	// Enter is the exception: alt+enter is its own binding, and a stray Esc
+	// followed by Enter folds into it, which must not answer a confirmation.
+	if got := bareCode(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}); got != 0 {
+		t.Errorf("alt+enter decoded as %q, want no match", got)
+	}
+	// Modifiers that do change which key it is must all still disqualify.
+	for _, mod := range []tea.KeyMod{tea.ModCtrl, tea.ModShift, tea.ModMeta, tea.ModSuper, tea.ModHyper} {
+		if got := bareCode(tea.KeyPressMsg{Code: tea.KeyTab, Mod: mod}); got != 0 {
+			t.Errorf("tab with mod %v decoded as %q, want no match", mod, got)
+		}
+	}
+	// The Kitty protocol reports the keypad separately; without it a terminal
+	// sends the main-block code, which is the only one handlers know.
+	for kp, want := range keypadCodes {
+		if got := bareCode(tea.KeyPressMsg{Code: kp}); got != want {
+			t.Errorf("keypad key %q decoded as %q, want %q", kp, got, want)
+		}
 	}
 }
 
