@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // artifact is one file the agent created or modified this session. orig is the
@@ -28,8 +28,8 @@ type artifactBrowser struct {
 }
 
 var (
-	cDiffDelBg = lipgloss.Color("#3a2a32")
-	cDiffAddBg = lipgloss.Color("#2a3530")
+	cDiffDelBg = hexColor("#3a2a32")
+	cDiffAddBg = hexColor("#2a3530")
 
 	diffDelStyle = lipgloss.NewStyle().Foreground(cRed).Background(cDiffDelBg)
 	diffAddStyle = lipgloss.NewStyle().Foreground(cGreen).Background(cDiffAddBg)
@@ -90,9 +90,9 @@ func (m *Model) closeArtifacts() {
 	}
 }
 
-func (m *Model) handleArtifactKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleArtifactKey(msg tea.KeyPressMsg) tea.Cmd {
 	br := m.artBr
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyUp:
 		if br.cursor > 0 {
 			br.cursor--

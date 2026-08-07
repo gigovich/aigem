@@ -15,13 +15,13 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"github.com/sahilm/fuzzy"
@@ -43,27 +43,27 @@ import (
 // the mantle shade (not the lighter #1e1e2e base) so the whole frame reads dark
 // and flat; the chat, markdown prose, input box, and plan panel all share it.
 const (
-	cBase     = lipgloss.Color("#181825")
-	cMantle   = lipgloss.Color("#181825")
-	cCrust    = lipgloss.Color("#11111b")
-	cSurface0 = lipgloss.Color("#313244")
-	cSurface1 = lipgloss.Color("#45475a")
-	cSurface2 = lipgloss.Color("#585b70")
-	cOverlay0 = lipgloss.Color("#6c7086")
-	cOverlay1 = lipgloss.Color("#7f849c")
-	cSubtext0 = lipgloss.Color("#a6adc8")
-	cSubtext1 = lipgloss.Color("#bac2de")
-	cText     = lipgloss.Color("#cdd6f4")
-	cBlue     = lipgloss.Color("#89b4fa")
-	cLavender = lipgloss.Color("#b4befe")
-	cSapphire = lipgloss.Color("#74c7ec")
-	cTeal     = lipgloss.Color("#94e2d5")
-	cGreen    = lipgloss.Color("#a6e3a1")
-	cYellow   = lipgloss.Color("#f9e2af")
-	cPeach    = lipgloss.Color("#fab387")
-	cRed      = lipgloss.Color("#f38ba8")
-	cMauve    = lipgloss.Color("#cba6f7")
-	cPink     = lipgloss.Color("#f5c2e7")
+	cBase     = hexColor("#181825")
+	cMantle   = hexColor("#181825")
+	cCrust    = hexColor("#11111b")
+	cSurface0 = hexColor("#313244")
+	cSurface1 = hexColor("#45475a")
+	cSurface2 = hexColor("#585b70")
+	cOverlay0 = hexColor("#6c7086")
+	cOverlay1 = hexColor("#7f849c")
+	cSubtext0 = hexColor("#a6adc8")
+	cSubtext1 = hexColor("#bac2de")
+	cText     = hexColor("#cdd6f4")
+	cBlue     = hexColor("#89b4fa")
+	cLavender = hexColor("#b4befe")
+	cSapphire = hexColor("#74c7ec")
+	cTeal     = hexColor("#94e2d5")
+	cGreen    = hexColor("#a6e3a1")
+	cYellow   = hexColor("#f9e2af")
+	cPeach    = hexColor("#fab387")
+	cRed      = hexColor("#f38ba8")
+	cMauve    = hexColor("#cba6f7")
+	cPink     = hexColor("#f5c2e7")
 )
 
 var (
@@ -581,15 +581,17 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 	ta.ShowLineNumbers = false
 	ta.MaxHeight = maxInputHeight
 	ta.SetHeight(1)
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(cBase)
-	ta.FocusedStyle.Base = lipgloss.NewStyle().Background(cBase)
-	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(cText).Background(cBase)
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(cOverlay0).Background(cBase)
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(cBlue).Background(cBase).Bold(true)
+	taStyles := ta.Styles()
+	taStyles.Focused.CursorLine = lipgloss.NewStyle().Background(cBase)
+	taStyles.Focused.Base = lipgloss.NewStyle().Background(cBase)
+	taStyles.Focused.Text = lipgloss.NewStyle().Foreground(cText).Background(cBase)
+	taStyles.Focused.Placeholder = lipgloss.NewStyle().Foreground(cOverlay0).Background(cBase)
+	taStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(cBlue).Background(cBase).Bold(true)
 	// Mirror the focused look onto the blurred state so that blurring the input
 	// (done while an overlay is open) only drops the blinking cursor, without
 	// recoloring the box to the gray default blurred theme.
-	ta.BlurredStyle = ta.FocusedStyle
+	taStyles.Blurred = taStyles.Focused
+	ta.SetStyles(taStyles)
 	ta.Focus()
 
 	sp := spinner.New()
@@ -603,8 +605,10 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 	// Availability of the active model is checked asynchronously after launch (see
 	// Init/checkActiveAvailability), so a reachability probe never delays startup.
 	return Model{
-		localProgIdx:   -1,
-		prog:           progress.New(progress.WithDefaultGradient()),
+		localProgIdx: -1,
+		// v2 defaults to half-block fill characters, which reads as a different
+		// widget; keep the solid blocks the download bar has always drawn.
+		prog:           progress.New(progress.WithDefaultBlend(), progress.WithFillCharacters('█', '░')),
 		agent:          ag,
 		backend:        client,
 		modelReg:       modelReg,
@@ -712,7 +716,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		m.layout()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if cmd, handled := m.handleKey(msg); handled {
 			return m, tea.Batch(cmd, m.reconcileFocus())
 		}
@@ -876,7 +880,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case localProgressMsg:
 		if m.localProgIdx >= 0 && m.localProgIdx < len(m.blocks) {
-			m.prog.Width = max(20, min(48, m.width-30))
+			m.prog.SetWidth(max(20, min(48, m.width-30)))
 			m.blocks[m.localProgIdx].text = m.downloadBlockText(local.Progress(msg))
 		}
 		m.refresh()
@@ -908,7 +912,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Keep the input interactive. Keys are NOT forwarded to the viewport: its
 	// default keymap binds plain letters (j/k/d/u/f/b/space) which would scroll
 	// while typing - scrolling is handled explicitly in handleKey and via mouse.
-	_, isKey := msg.(tea.KeyMsg)
+	// A bracketed paste counts too: it changes the input's content, so it owes
+	// the same resize and menu sync a keystroke does.
+	var isKey bool
+	switch msg.(type) {
+	case tea.KeyPressMsg, tea.PasteMsg:
+		isKey = true
+	}
 
 	// Size the textarea to its full height before it handles the key. The
 	// textarea scrolls its own viewport to keep the cursor visible; against a
@@ -959,36 +969,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // plan panel toggles its collapse, and a left-drag selects text in the chat and
 // auto-copies it to the clipboard on release.
 func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
-		var cmd tea.Cmd
-		m.vp, cmd = m.vp.Update(msg)
-		return cmd
-	}
-	if msg.Button != tea.MouseButtonLeft {
+	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+		// Drive the scroll directly rather than handing the viewport the raw
+		// event: it also pans horizontally on wheel-left/right and shift+wheel,
+		// and nothing in the chat can undo a pan once xOffset has moved.
+		switch wheel.Button {
+		case tea.MouseWheelUp:
+			m.vp.ScrollUp(m.vp.MouseWheelDelta)
+		case tea.MouseWheelDown:
+			m.vp.ScrollDown(m.vp.MouseWheelDelta)
+		}
 		return nil
 	}
-	if msg.Action == tea.MouseActionPress &&
-		m.sidebarVisible() && msg.X >= m.width-sidebarWidth && msg.Y < len(m.sidebarLines()) {
-		m.todoCollapsed = !m.todoCollapsed
-		m.selecting, m.selActive = false, false
+	if msg.Mouse().Button != tea.MouseLeft {
 		return nil
 	}
 	// Selection state lives only in the View; it changes no content, so it needs
 	// no refresh - Bubble Tea re-renders the View after every event.
-	switch msg.Action {
-	case tea.MouseActionPress:
+	switch msg := msg.(type) {
+	case tea.MouseClickMsg:
+		if m.sidebarVisible() && msg.X >= m.width-sidebarWidth && msg.Y < len(m.sidebarLines()) {
+			m.todoCollapsed = !m.todoCollapsed
+			m.selecting, m.selActive = false, false
+			return nil
+		}
 		if p, ok := m.pointAt(msg.X, msg.Y); ok {
 			m.selecting, m.selActive = true, false
 			m.selAnchor, m.selHead = p, p
 		}
-	case tea.MouseActionMotion:
+	case tea.MouseMotionMsg:
 		if m.selecting {
 			if p, ok := m.pointAt(msg.X, msg.Y); ok {
 				m.selHead = p
 				m.selActive = m.selAnchor != m.selHead
 			}
 		}
-	case tea.MouseActionRelease:
+	case tea.MouseReleaseMsg:
 		if m.selecting {
 			m.selecting = false
 			if m.selActive {
@@ -1005,10 +1021,10 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 // pointAt maps a screen cell to a content coordinate, or reports false when the
 // cell is outside the chat viewport.
 func (m Model) pointAt(x, y int) (selPoint, bool) {
-	if x < 0 || y < 0 || y >= m.vp.Height {
+	if x < 0 || y < 0 || y >= m.vp.Height() {
 		return selPoint{}, false
 	}
-	return selPoint{line: m.vp.YOffset + y, col: x}, true
+	return selPoint{line: m.vp.YOffset() + y, col: x}, true
 }
 
 // clearSelection drops any in-progress or highlighted selection. The View picks
@@ -1068,7 +1084,7 @@ func (m Model) highlightSelection(chat string) string {
 	a, b := m.selBounds()
 	lines := strings.Split(chat, "\n")
 	for y := range lines {
-		cl := m.vp.YOffset + y
+		cl := m.vp.YOffset() + y
 		if cl < a.line || cl > b.line {
 			continue
 		}
@@ -1092,7 +1108,19 @@ func (m Model) highlightSelection(chat string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+// bareCode is the key's code when it was pressed with no modifier, and 0
+// otherwise. Bubble Tea v1 gave shift+tab, shift+up and ctrl+up key types of
+// their own; v2 reports them as the plain code plus a modifier, so a handler
+// switching on the code alone would answer to all of them. Shifted printable
+// characters are unaffected - they arrive through Key.Text, not the code.
+func bareCode(msg tea.KeyPressMsg) rune {
+	if msg.Mod != 0 {
+		return 0
+	}
+	return msg.Code
+}
+
+func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if m.trustAsk {
 		return m.handleTrustKey(msg), true
 	}
@@ -1173,10 +1201,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case "shift+right":
 		m.scrollDiff(diffScrollStep)
 		return nil, true
-	}
-
-	switch msg.Type {
-	case tea.KeyCtrlC:
+	case "ctrl+c":
 		if m.cancel != nil {
 			m.cancel()
 		}
@@ -1192,6 +1217,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			close(m.done)
 		}
 		return tea.Quit, true
+	case "ctrl+o":
+		m.showToolOutput = !m.showToolOutput
+		m.refresh()
+		return nil, true
+	case "ctrl+t":
+		if len(m.todos) > 0 {
+			m.todoCollapsed = !m.todoCollapsed
+		}
+		return nil, true
+	}
+
+	switch bareCode(msg) {
 	case tea.KeyEsc:
 		if m.busy && m.cancel != nil {
 			m.cancel()
@@ -1203,15 +1240,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			m.input.CursorEnd()
 			m.blocks = append(m.blocks, block{kind: bkNotice, text: "cleared attached images"})
 			m.refresh()
-		}
-		return nil, true
-	case tea.KeyCtrlO:
-		m.showToolOutput = !m.showToolOutput
-		m.refresh()
-		return nil, true
-	case tea.KeyCtrlT:
-		if len(m.todos) > 0 {
-			m.todoCollapsed = !m.todoCollapsed
 		}
 		return nil, true
 	case tea.KeyPgUp:
@@ -1507,7 +1535,7 @@ func (m *Model) appendToGroup(id string, b block) {
 
 // handleTrustKey resolves the startup prompt asking whether to run this
 // project's local hooks. y trusts and persists; any other key leaves them off.
-func (m *Model) handleTrustKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleTrustKey(msg tea.KeyPressMsg) tea.Cmd {
 	m.trustAsk = false
 	switch strings.ToLower(msg.String()) {
 	case "y":
@@ -1541,10 +1569,10 @@ func (m Model) trustView() string {
 // handleSkillTrustKey resolves the startup prompt asking whether to load this
 // project's local skills. y approves their current definitions and folds them
 // into the running session; any other key leaves them out.
-func (m *Model) handleSkillTrustKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleSkillTrustKey(msg tea.KeyPressMsg) tea.Cmd {
 	// Quitting is not a decision, so it takes the ordinary exit path rather than
 	// falling through to the decline branch below.
-	if msg.Type == tea.KeyCtrlC {
+	if msg.String() == "ctrl+c" {
 		m.skillAsk = nil
 		cmd, _ := m.handleKey(msg)
 		return cmd
@@ -1754,9 +1782,9 @@ func (m Model) confirmOptions() []string {
 	}
 }
 
-func (m *Model) handleConfirmKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleConfirmKey(msg tea.KeyPressMsg) tea.Cmd {
 	last := confirmChoice(len(m.confirmOptions()) - 1)
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyLeft:
 		if m.confirmIdx > choiceOnce {
 			m.confirmIdx--
@@ -1771,8 +1799,8 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) tea.Cmd {
 		m.answerConfirm(m.confirmIdx)
 	case tea.KeyEsc:
 		m.answerConfirm(last)
-	case tea.KeyRunes:
-		switch strings.ToLower(string(msg.Runes)) {
+	default:
+		switch strings.ToLower(msg.Text) {
 		case "y", "o", "1":
 			m.answerConfirm(choiceOnce)
 		case "a", "2":
@@ -1886,8 +1914,8 @@ func (m *Model) openPicker() {
 	m.layout()
 }
 
-func (m *Model) handlePickerKey(msg tea.KeyMsg) tea.Cmd {
-	switch msg.Type {
+func (m *Model) handlePickerKey(msg tea.KeyPressMsg) tea.Cmd {
+	switch bareCode(msg) {
 	case tea.KeyUp:
 		if m.picker.cursor > 0 {
 			m.picker.cursor--
@@ -1921,9 +1949,9 @@ func (m *Model) openSkills() {
 	m.layout()
 }
 
-func (m *Model) handleSkillKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleSkillKey(msg tea.KeyPressMsg) tea.Cmd {
 	b := m.browser
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyUp:
 		if !b.detail && b.cursor > 0 {
 			b.cursor--
@@ -1982,16 +2010,16 @@ func (m *Model) openMcp() {
 	m.layout()
 }
 
-func (m *Model) handleMcpKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleMcpKey(msg tea.KeyPressMsg) tea.Cmd {
 	b := m.mcp
 	if b.preview != "" || b.loading {
-		if msg.Type == tea.KeyEsc {
+		if bareCode(msg) == tea.KeyEsc {
 			b.preview, b.loading = "", false
 			m.layout()
 		}
 		return nil
 	}
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyUp:
 		if b.cursor > 0 {
 			b.cursor--
@@ -2114,9 +2142,9 @@ func (m *Model) closeCommandMenu() {
 	}
 }
 
-func (m *Model) handleCmdMenuKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+func (m *Model) handleCmdMenuKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	menu := m.cmdMenu
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyUp:
 		if menu.cursor > 0 {
 			menu.cursor--
@@ -2226,9 +2254,9 @@ func (mp *modelPicker) filter() {
 	}
 }
 
-func (m *Model) handleModelKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleModelKey(msg tea.KeyPressMsg) tea.Cmd {
 	mp := m.models
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyUp:
 		if mp.cursor > 0 {
 			mp.cursor--
@@ -2266,10 +2294,12 @@ func (m *Model) handleModelKey(msg tea.KeyMsg) tea.Cmd {
 			mp.filter()
 			m.refresh()
 		}
-	case tea.KeyRunes:
-		mp.query += string(msg.Runes)
-		mp.filter()
-		m.refresh()
+	default:
+		if msg.Text != "" {
+			mp.query += msg.Text
+			mp.filter()
+			m.refresh()
+		}
 	}
 	return nil
 }
@@ -2357,10 +2387,10 @@ func (w *localWizard) config() local.Config {
 
 // handleKey advances the wizard through the text-entry steps. The confirm step
 // is handled by the caller (handleLocalWizardKey), which saves and starts.
-func (w *localWizard) handleKey(msg tea.KeyMsg) {
+func (w *localWizard) handleKey(msg tea.KeyPressMsg) {
 	switch w.step {
 	case wizStepSource:
-		switch msg.Type {
+		switch bareCode(msg) {
 		case tea.KeyUp:
 			if w.srcCur > 0 {
 				w.srcCur--
@@ -2379,26 +2409,26 @@ func (w *localWizard) handleKey(msg tea.KeyMsg) {
 			w.step = wizStepValue
 		}
 	case wizStepValue:
-		switch msg.Type {
+		switch bareCode(msg) {
 		case tea.KeyEnter:
 			w.step = wizStepBinary
 		case tea.KeyBackspace:
 			if w.value != "" {
 				w.value = w.value[:len(w.value)-1]
 			}
-		case tea.KeyRunes:
-			w.value += string(msg.Runes)
+		default:
+			w.value += msg.Text
 		}
 	case wizStepBinary:
-		switch msg.Type {
+		switch bareCode(msg) {
 		case tea.KeyEnter:
 			w.step = wizStepConfirm
 		case tea.KeyBackspace:
 			if w.binary != "" {
 				w.binary = w.binary[:len(w.binary)-1]
 			}
-		case tea.KeyRunes:
-			w.binary += string(msg.Runes)
+		default:
+			w.binary += msg.Text
 		}
 	}
 }
@@ -2413,9 +2443,9 @@ func (m *Model) openLocalWizard() {
 
 // handleLocalChoiceKey drives the local-model action widget: ←/→ or Tab move
 // focus, Enter (or the u/c/d shortcuts) confirm the focused action.
-func (m *Model) handleLocalChoiceKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleLocalChoiceKey(msg tea.KeyPressMsg) tea.Cmd {
 	lc := m.localChoice
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyLeft:
 		if lc.idx > 0 {
 			lc.idx--
@@ -2430,8 +2460,8 @@ func (m *Model) handleLocalChoiceKey(msg tea.KeyMsg) tea.Cmd {
 		return m.applyLocalChoice(lc.ref, lc.idx)
 	case tea.KeyEsc:
 		m.closeLocalChoice()
-	case tea.KeyRunes:
-		switch strings.ToLower(string(msg.Runes)) {
+	default:
+		switch strings.ToLower(msg.Text) {
 		case "u":
 			return m.applyLocalChoice(lc.ref, 0)
 		case "c":
@@ -2527,14 +2557,14 @@ func (m *Model) selectLocal(ref string) tea.Cmd {
 
 // handleLocalWizardKey routes overlay keys: Esc cancels, Enter on the confirm
 // step saves and starts, all other keys advance the wizard.
-func (m *Model) handleLocalWizardKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleLocalWizardKey(msg tea.KeyPressMsg) tea.Cmd {
 	w := m.localWiz
-	if msg.Type == tea.KeyEsc {
+	if bareCode(msg) == tea.KeyEsc {
 		m.localWiz = nil
 		m.layout()
 		return nil
 	}
-	if w.step == wizStepConfirm && msg.Type == tea.KeyEnter {
+	if w.step == wizStepConfirm && bareCode(msg) == tea.KeyEnter {
 		cfg := w.config()
 		if err := cfg.Validate(); err != nil {
 			w.errText = err.Error()
@@ -2637,14 +2667,14 @@ func (m *Model) downloadBlockText(p local.Progress) string {
 // once the server is confirmed up. It works even when the size was unknown or
 // the model came from cache, where no live frame ever reaches a full bar.
 func (m *Model) downloadDoneText() string {
-	m.prog.Width = max(20, min(48, m.width-30))
+	m.prog.SetWidth(max(20, min(48, m.width-30)))
 	return dlHeadStyle.Render("✓ "+m.dlName+" ready") + "\n  " + m.prog.ViewAs(1)
 }
 
 // handleAlertKey runs the warning box's confirm action on Enter, or dismisses it.
-func (m *Model) handleAlertKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleAlertKey(msg tea.KeyPressMsg) tea.Cmd {
 	a := m.alert
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyEnter:
 		m.alert = nil
 		m.layout()
@@ -3024,7 +3054,10 @@ func (m *Model) layout() {
 	m.input.SetWidth(max(10, m.width-4))
 	m.resizeInputHeight()
 	inputH := m.input.Height() + 2 // textarea + rounded border
-	m.vp = viewport.New(m.width, max(1, m.height-inputH-statusH-overlayH))
+	m.vp = viewport.New(
+		viewport.WithWidth(m.width),
+		viewport.WithHeight(max(1, m.height-inputH-statusH-overlayH)),
+	)
 	m.md = newGlamour(catppuccinProse, m.width)
 	m.mdCode = newGlamour(catppuccinCode, m.width)
 	if m.curStableLen > 0 {
@@ -3201,18 +3234,21 @@ func padCodePanel(s string, w int) string {
 // line to width w and re-asserts bg at the start of the line and after each SGR
 // reset, so unstyled regions (glamour's table borders and column padding, which
 // carry no background) show the panel color instead of the terminal default.
-func solidPanel(s string, w int, bg lipgloss.Color) string {
+func solidPanel(s string, w int, bg hexColor) string {
 	seq := colorProfile.Color(string(bg)).Sequence(true)
 	if seq == "" { // no-color profile (e.g. tests): nothing to re-assert
 		return s
 	}
 	open := "\x1b[" + seq + "m"
-	fill := lipgloss.NewStyle().Background(bg)
 	lines := strings.Split(s, "\n")
 	for i, ln := range lines {
 		ln = open + strings.ReplaceAll(ln, "\x1b[0m", "\x1b[0m"+open)
+		// Pad with the same sequence rather than a lipgloss style: lipgloss emits
+		// truecolor that Bubble Tea quantizes with a different rounding than the
+		// termenv one glamour and `open` use, which seams the panel on a
+		// 256-color terminal.
 		if gap := w - lipgloss.Width(ln); gap > 0 {
-			ln += fill.Render(strings.Repeat(" ", gap))
+			ln += open + strings.Repeat(" ", gap) + "\x1b[0m"
 		}
 		lines[i] = ln
 	}
@@ -3362,8 +3398,8 @@ func (m *Model) refresh() {
 	}
 	if len(m.blocks) == 0 && m.curContent == "" && !m.busy {
 		m.vp.SetContent(lipgloss.Place(
-			m.vp.Width, m.vp.Height, lipgloss.Center, lipgloss.Center, m.welcome(),
-			lipgloss.WithWhitespaceBackground(cBase)))
+			m.vp.Width(), m.vp.Height(), lipgloss.Center, lipgloss.Center, m.welcome(),
+			lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(cBase))))
 		return
 	}
 
@@ -3387,7 +3423,7 @@ func (m *Model) refresh() {
 	// Stay pinned to the bottom only when already there; if the user scrolled up
 	// to read history, keep their position as new content streams in.
 	following := m.vp.AtBottom()
-	m.vpContent = fillWidth(b.String(), m.vp.Width)
+	m.vpContent = fillWidth(b.String(), m.vp.Width())
 	m.vp.SetContent(m.vpContent)
 	if following {
 		m.vp.GotoBottom()
@@ -3487,7 +3523,7 @@ func (m *Model) renderAgentHeader(g *agentRun) string {
 // welcome is the centered banner shown before the first message.
 func (m Model) welcome() string {
 	// Block "aigem" logo, one Catppuccin hue per letter (mauve→blue→sapphire→teal→green).
-	letter := func(c lipgloss.Color, rows ...string) string {
+	letter := func(c hexColor, rows ...string) string {
 		st := lipgloss.NewStyle().Foreground(c).Background(cBase)
 		out := make([]string, len(rows))
 		for i, r := range rows {
@@ -3527,7 +3563,7 @@ func (m Model) welcome() string {
 		w = max(w, lipgloss.Width(l))
 	}
 	for i, l := range lines {
-		lines[i] = lipgloss.PlaceHorizontal(w, lipgloss.Center, l, lipgloss.WithWhitespaceBackground(cBase))
+		lines[i] = lipgloss.PlaceHorizontal(w, lipgloss.Center, l, lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(cBase)))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
@@ -3570,7 +3606,7 @@ func (m Model) overlay() string {
 // padLine pads a single (possibly pre-styled) line to width w, filling the
 // trailing space with bg. Single-line width padding is reliable, unlike a
 // block Width over JoinVertical'd content.
-func padLine(s string, w int, bg lipgloss.Color) string {
+func padLine(s string, w int, bg hexColor) string {
 	return lipgloss.NewStyle().Background(bg).Width(w).MaxWidth(w).Render(s)
 }
 
@@ -3800,7 +3836,17 @@ func firstNLines(s string, n int) []string {
 	return lines
 }
 
-func (m Model) View() string {
+// View wraps the rendered frame in the terminal modes the TUI needs. Bubble Tea
+// v2 takes them per frame rather than as program options, so they are declared
+// here instead of at tea.NewProgram.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+func (m Model) render() string {
 	if !m.ready {
 		return "starting aigem..."
 	}
@@ -3919,7 +3965,7 @@ func (m Model) quotaSegment() (string, float64) {
 
 // statusLine builds the colored bottom bar: model, server, context gauge, state, tools.
 func (m Model) statusLine() string {
-	seg := func(c lipgloss.Color, s string) string {
+	seg := func(c hexColor, s string) string {
 		return lipgloss.NewStyle().Foreground(c).Background(cMantle).Render(s)
 	}
 	sep := seg(cOverlay0, " · ")
@@ -4107,8 +4153,7 @@ func indent(s, prefix string) string {
 
 // Run starts the Bubble Tea program.
 func Run(m Model) error {
-	lipgloss.SetColorProfile(colorProfile)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithColorProfile(teaColorProfile()))
 	_, err := p.Run()
 	return err
 }
