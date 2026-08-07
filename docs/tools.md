@@ -84,3 +84,27 @@ tools: read_file, grep, bash
 ---
 The system prompt for the agent goes here.
 ```
+
+### Measuring delegation
+
+Whether the machinery works is a unit-test question, and it is covered. Whether
+the model *chooses* to delegate - and picks the right agent, and batches
+independent calls into one response - is a property of the prompt, and it needs
+a measurement rather than an opinion.
+
+`--trace-json` records a `-p` run as JSONL: every tool call, every delegation,
+and, uniquely, which calls the model emitted **together** in one assistant
+message. Three `task` calls in three consecutive responses look identical to
+three in one until you record that grouping, and only the second is parallel.
+
+```sh
+aigem -p 'explore each service under services/' --trace-json run.jsonl
+```
+
+The file holds the prompt, the final answer, and each tool's arguments and
+result clipped to 400 bytes, so it is written `0600` like the credential store.
+
+`evals/` builds on it: fixture workspaces, scenarios that declare whether
+delegation is required, forbidden, or optional, and a runner that reports
+recall, precision, agent-type accuracy, and parallel compliance across repeated
+runs. See [`evals/README.md`](https://github.com/gigovich/aigem/blob/main/evals/README.md).

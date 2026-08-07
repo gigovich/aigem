@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The delegation guidance moved out of the built-in system prompt and is now
+  appended alongside the skill, search and MCP blocks. It used to vanish behind a
+  custom `~/.config/aigem/SYSTEM.md` while the `task` tool stayed registered,
+  which left the model a capability nothing explained. It is also built from the
+  agent registry now, so custom subagents appear in it instead of the four
+  built-in names being hardcoded, and it says outright when NOT to delegate -
+  the missing half of the advice, since a second context costs more than reading
+  one file.
+
+### Added
+
+- `--trace-json` records a `-p` run's tool and delegation activity as JSONL. The
+  human-readable stderr output was the only machine-adjacent record, and parsing
+  it back is guesswork: it truncates, and it cannot show which calls the model
+  emitted together in one assistant message - the difference between three
+  subagents running in parallel and three running one after another. Each batch
+  carries its calls' ids, so a nested run can be traced back to the call that
+  started it: a delegated subagent and a forked skill announce themselves
+  identically, and only the id tells them apart.
+- A delegation eval harness in `evals/`. Fixture workspaces, scenarios that
+  declare whether delegating is required, forbidden, or optional, and a runner
+  that reports delegation recall and precision, agent-type accuracy, and parallel
+  compliance over repeated runs. The unit tests prove the `task` tool works; this
+  measures whether the model chooses to use it, which is a property of the prompt
+  and was previously untested in any form. Every scenario must also assert that
+  the work happened, or "did not over-delegate" would be a score a model wins by
+  doing nothing.
+
 ## [0.3.0] - 2026-08-04
 
 ### Added

@@ -8,7 +8,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.dat
 # Every target the release builds, so a portability break shows up locally.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs clean
+.PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs evals clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -65,6 +65,11 @@ check-all: check lint-windows vuln tidy-check ## Everything CI runs
 
 docs: ## Serve the documentation site locally
 	mkdocs serve
+
+# Real model calls, so it is deliberately outside `check`. EVAL_ARGS passes
+# through, e.g. `make evals EVAL_ARGS='-model openai/gpt-5.6-sol -n 5'`.
+evals: build ## Score subagent delegation against a live model (see evals/README.md)
+	go run ./evals/runner $(EVAL_ARGS)
 
 clean: ## Remove build output
 	rm -rf bin dist site

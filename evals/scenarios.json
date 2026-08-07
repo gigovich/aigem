@@ -1,0 +1,94 @@
+[
+  {
+    "name": "answer-one-file",
+    "fixture": "notes",
+    "prompt": "What does Flush do in flush.go, and when does it drop a batch of notes?",
+    "why": "One file in a 100-line project. Delegating costs a whole extra context for nothing, so this catches over-delegation. The answer check keeps 'did not delegate' from also covering 'did not read'.",
+    "expect": {
+      "delegate": "forbidden",
+      "answer_contains": ["flushMaxAttempts"],
+      "unchanged": true
+    }
+  },
+  {
+    "name": "trivial-edit",
+    "fixture": "notes",
+    "prompt": "There is a typo in README.md - the word 'recieve'. Fix it.",
+    "why": "A one-word edit. A model that spawns code-writer here has learned 'delegate' without learning 'when'.",
+    "expect": {
+      "delegate": "forbidden",
+      "file_contains": { "README.md": "receive" },
+      "file_absent": { "README.md": "recieve" }
+    }
+  },
+  {
+    "name": "recon-wide",
+    "fixture": "services",
+    "prompt": "Find every timeout and every retry limit defined anywhere under services/. Report each one with a path:line reference.",
+    "why": "Optional, not required: across 18 runs of an earlier revision no model ever delegated this, because at 700 lines a grep genuinely is cheaper than a second context - the expectation was wrong, not the behavior. What it still scores is that a read-only sweep, when delegated, goes to scout, and that the answer names constants living in three different packages.",
+    "expect": {
+      "delegate": "optional",
+      "agents": ["scout"],
+      "max_tasks": 4,
+      "answer_contains": ["maxRetries", "payAttempts", "deliveryAttempts"],
+      "unchanged": true
+    }
+  },
+  {
+    "name": "parallel-two-services",
+    "fixture": "services",
+    "prompt": "Review the public HTTP API of services/alpha and services/beta. Do the two reviews in parallel.",
+    "why": "Explicit 'in parallel' plus two named targets, each a few hundred lines. Both calls must arrive in one response or nothing ran concurrently. The answer check asks for the domain words, not literal route strings: an earlier revision demanded '/v1/accounts' and failed correct summaries that said 'account endpoints', which then dropped those runs out of the parallelism rate entirely.",
+    "expect": {
+      "delegate": "required",
+      "min_parallel": 2,
+      "answer_contains": ["account", "invoice"],
+      "unchanged": true
+    }
+  },
+  {
+    "name": "parallel-three-services",
+    "fixture": "services",
+    "prompt": "Explore each of the three services under services/ and summarize what each one exposes and how it stores its data.",
+    "why": "Three targets, but nobody asked for parallel work, and at this size delegating is not obviously right: across 16 runs the delegating ones peaked at 12.4k context against 10.5k for the ones that just read the code, because each summary is nearly as long as the package behind it. So this scores how the run delegates, not whether - if it starts more than one subagent, they belong in one response.",
+    "expect": {
+      "delegate": "optional",
+      "batched": true,
+      "answer_contains": ["alpha", "beta", "gamma"],
+      "unchanged": true
+    }
+  },
+  {
+    "name": "independent-review",
+    "fixture": "notes",
+    "prompt": "I want an independent review of flush.go: correctness, edge cases, and anything that could lose notes. Do not change the code.",
+    "why": "The request names the reviewer agent's exact job. Here the trigger is what was asked for, not the size of the code, and 'do not change' is worth checking as well as scoring.",
+    "expect": {
+      "delegate": "required",
+      "agents": ["reviewer"],
+      "answer_contains": ["flush"],
+      "unchanged": true
+    }
+  },
+  {
+    "name": "simplify-duplication",
+    "fixture": "notes",
+    "prompt": "The backoff logic is duplicated between store.go and flush.go. Remove the duplication without changing behavior.",
+    "why": "Delegating is defensible either way at this size, and which of the two identical helpers survives is the model's call, so only the edit itself is asserted. No agent expectation: runs that made the edit and then delegated a review of it were being failed for the review, with the refactor correctly done.",
+    "expect": {
+      "delegate": "optional",
+      "changed": true
+    }
+  },
+  {
+    "name": "implement-maxage",
+    "fixture": "notes",
+    "prompt": "Add a MaxAge field to Store. Flush must drop notes older than MaxAge instead of sending them, and a zero MaxAge must keep the current behavior.",
+    "why": "A self-contained implementation task. No agent expectation, because the run may reasonably implement it directly and delegate only a review of the result - which an earlier revision failed as a wrong agent choice while MaxAge was sitting in the file. What matters is that the field appears and the behavior is wired, and that is asserted.",
+    "expect": {
+      "delegate": "optional",
+      "file_contains": { "store.go": "MaxAge" },
+      "changed": true
+    }
+  }
+]

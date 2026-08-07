@@ -46,6 +46,13 @@ type streamer interface {
 // ConfirmFunc asks the user to approve a tool call. Return false to deny.
 type ConfirmFunc func(toolName string, args json.RawMessage) bool
 
+// ToolCallRef identifies one call within a batch: the tool it invokes and the
+// id that every event from it is tagged with.
+type ToolCallRef struct {
+	ID   string
+	Name string
+}
+
 // Events surfaces what happens during a Run so a UI can render it. Any callback
 // may be nil.
 type Events struct {
@@ -57,9 +64,17 @@ type Events struct {
 	// and clears its live preview, so a premature or mid-turn answer does not
 	// linger as the streaming tail beneath later tool output.
 	OnAssistantMessage func(content string)
-	OnToolStart        func(name string, args json.RawMessage)
-	OnToolEnd          func(name, result string, err error)
-	OnNotice           func(text string)
+	// OnToolBatch fires once per assistant message that carries tool calls, with
+	// the model round and every call in it. It is the only place the batching is
+	// visible: the per-call events that follow cannot tell a batch of three from
+	// three consecutive single calls, and that difference is exactly what
+	// parallel delegation means. The ids match the ones OnAgent*/OnSub* are
+	// tagged with, so a nested run can be traced back to the call that started
+	// it - which is what tells a delegated subagent apart from a forked skill.
+	OnToolBatch func(round int, calls []ToolCallRef)
+	OnToolStart func(name string, args json.RawMessage)
+	OnToolEnd   func(name, result string, err error)
+	OnNotice    func(text string)
 	// OnBudgetExhausted fires when the turn is stopped by a runaway-protection
 	// budget (model rounds, tool calls, wall clock). The turn still returns a
 	// normal answer (a wrap-up when possible); the callback lets an unattended
@@ -513,7 +528,15 @@ func (a *Agent) RunWithImages(ctx context.Context, userInput string, images []ll
 		// render, so it sits above them (as a reloaded session would) instead of
 		// lingering as the live tail beneath later tool output.
 		stepDone(ev, assistant.Content)
-		results := a.runToolCalls(ctx, assistant.ToolCalls, ev)
+		// Ids are assigned here, once, rather than inside each call: the batch
+		// event and the nested events it explains have to agree on them, and a
+		// provider that omits ids would otherwise have one side see a synthesized
+		// id and the other an empty string.
+		calls := a.callRefs(assistant.ToolCalls)
+		if ev.OnToolBatch != nil {
+			ev.OnToolBatch(modelRounds, calls)
+		}
+		results := a.runToolCalls(ctx, assistant.ToolCalls, calls, ev)
 		for i, tc := range assistant.ToolCalls {
 			a.messages = append(a.messages, llm.Message{
 				Role:       llm.RoleTool,
@@ -762,13 +785,28 @@ func normalizeTool(name string) string {
 	return name
 }
 
+// callRefs pairs each call with the id its nested events will carry, filling in
+// one for a provider that does not supply ids.
+func (a *Agent) callRefs(tcs []llm.ToolCall) []ToolCallRef {
+	out := make([]ToolCallRef, len(tcs))
+	for i, tc := range tcs {
+		id := tc.ID
+		if id == "" {
+			id = "call-" + strconv.FormatUint(a.callSeq.Add(1), 10)
+		}
+		out[i] = ToolCallRef{ID: id, Name: tc.Function.Name}
+	}
+	return out
+}
+
 // runToolCalls executes a batch of tool calls from one assistant message. A
 // single call runs inline; multiple run concurrently (bounded), since the model
 // is expected to batch only independent calls. Results keep the input order.
-func (a *Agent) runToolCalls(ctx context.Context, calls []llm.ToolCall, ev Events) []string {
+// refs carries the id for each call, positionally.
+func (a *Agent) runToolCalls(ctx context.Context, calls []llm.ToolCall, refs []ToolCallRef, ev Events) []string {
 	results := make([]string, len(calls))
 	if len(calls) == 1 {
-		results[0] = a.runToolCall(ctx, calls[0], ev)
+		results[0] = a.runToolCall(ctx, calls[0], refs[0].ID, ev)
 		return results
 	}
 	var wg sync.WaitGroup
@@ -779,14 +817,14 @@ func (a *Agent) runToolCalls(ctx context.Context, calls []llm.ToolCall, ev Event
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = a.runToolCall(ctx, tc, ev)
+			results[i] = a.runToolCall(ctx, tc, refs[i].ID, ev)
 		}(i, tc)
 	}
 	wg.Wait()
 	return results
 }
 
-func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, ev Events) string {
+func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, groupID string, ev Events) string {
 	name := tc.Function.Name
 	rawArgs := json.RawMessage(tc.Function.Arguments)
 	if name != TaskToolName && ev.OnToolStart != nil {
@@ -872,10 +910,6 @@ func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, ev Events) str
 		return denied
 	}
 
-	groupID := tc.ID
-	if groupID == "" {
-		groupID = "call-" + strconv.FormatUint(a.callSeq.Add(1), 10)
-	}
 	ctx = WithSink(ctx, evSink{ev: ev, callID: groupID})
 	ctx = WithActivation(ctx, agentActivation{a})
 	ctx = WithHooks(ctx, a.hooks)

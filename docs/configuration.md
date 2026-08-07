@@ -35,6 +35,12 @@ Project-local configuration lives in `<project>/.aigem/` and, for compatibility,
 The agent ships with a built-in prompt. To replace it entirely, create
 `~/.config/aigem/SYSTEM.md`; its contents become the system prompt.
 
+Replacing it does not leave the agent unable to use its tools. What a capability
+is and when to reach for it - the subagents, the skill catalog, web search, MCP
+servers, the project's own instruction files - is appended to whichever prompt
+is in effect, because a tool the model can call but nothing explains is worse
+than no tool at all. `SYSTEM.md` governs how the agent works, not what it has.
+
 ## Project conventions
 
 At startup the harness discovers project instruction files and appends them to the

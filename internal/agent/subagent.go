@@ -185,6 +185,57 @@ func parseSubagent(s string) (SubagentDef, bool) {
 	return def, true
 }
 
+// DelegationPrompt is the system-prompt block describing when to hand work to a
+// subagent. It is appended by the front-end that registers the task tool, the
+// way the skill and search blocks are, rather than living in the base prompt:
+// there it disappeared behind a user's custom SYSTEM.md while the tool itself
+// stayed registered, leaving the model a capability nothing explained. Building
+// it from the registry also keeps custom agents from being invisible here.
+//
+// It deliberately carries no "do not over-delegate" rule. One was tried and
+// measured (evals/): it never moved delegation precision, which the suite
+// already scored at 100% without it, while on the built-in prompt it cut
+// delegation on an explicit "I want an independent review" to zero. The base
+// prompt already says to answer small things directly, and a second copy of
+// that advice here only tips the balance.
+//
+// The batching rule likewise says how to delegate several pieces, not that
+// several targets oblige you to delegate at all. Measured on three small
+// packages, one subagent per package cost about 2k tokens MORE than reading
+// them directly - each summary is nearly as long as the file behind it - so a
+// model that declined was right, and the rule that ordered it to is not.
+func DelegationPrompt(r *SubagentRegistry) string {
+	if r == nil || len(r.Names()) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`# Delegation and parallelism
+
+You can hand a self-contained piece of work to a specialized agent with the task tool. It runs in
+its own context and reports back a summary, so everything it read stays out of this conversation.
+
+- Delegate work that is heavy or self-contained: a sweep whose intermediate output you do not
+  need, an implementation task you can state completely, a review of code you just wrote.
+- Delegate whenever the user ASKS for something an agent below exists for - an independent
+  review, a second opinion, a look at each of several things. There the separate context IS what
+  was asked for, so the size of the job does not matter.
+- A sub-agent cannot see this conversation and cannot delegate further, and you get back only its
+  final text. Give it a complete, standalone prompt.
+- The agents available to you:
+`)
+	for _, d := range r.List() {
+		fmt.Fprintf(&b, "  - %s: %s\n", d.Name, d.Description)
+	}
+	b.WriteString(`- Independent tool calls you put in a SINGLE response run in parallel; calls in separate
+  responses run one after another. That is true of every tool, not just task, so to run work
+  concurrently you MUST emit all the calls in one response.
+- Once you have decided to delegate several independent pieces, emit one task call PER piece, all
+  together in your VERY NEXT single response - never one, wait for it, then the next.
+- When the user asks for work to be done "in parallel", the decision is already made for you: one
+  task call per target, in one response.`)
+	return b.String()
+}
+
 // ---- delegation tool ----
 
 // TaskToolName is the delegation tool's name, exported so front-ends can

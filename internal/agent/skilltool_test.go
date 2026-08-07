@@ -91,12 +91,12 @@ func TestPathActivationHint(t *testing.T) {
 	ag.activated = map[string]bool{}
 
 	tc := llm.ToolCall{ID: "1", Function: llm.FunctionCall{Name: "read_file", Arguments: `{"path":"foo.go"}`}}
-	res := ag.runToolCall(context.Background(), tc, Events{})
+	res := ag.runToolCall(context.Background(), tc, "call-test", Events{})
 	if !strings.Contains(res, "gohelp") || !strings.Contains(res, "skill now relevant") {
 		t.Fatalf("expected path-activation hint, got:\n%s", res)
 	}
 	// Only fires once per turn.
-	res2 := ag.runToolCall(context.Background(), tc, Events{})
+	res2 := ag.runToolCall(context.Background(), tc, "call-test", Events{})
 	if strings.Contains(res2, "skill now relevant") {
 		t.Fatal("hint should fire only once per turn")
 	}

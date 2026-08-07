@@ -127,6 +127,125 @@ func TestParallelDelegationRun(t *testing.T) {
 	}
 }
 
+// The per-call events cannot distinguish two task calls batched into one
+// assistant message from two emitted in consecutive rounds, and that difference
+// IS parallel delegation. OnToolBatch is what carries it.
+func TestToolBatchReportsCallsGroupedByRound(t *testing.T) {
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := &parallelFake{}
+	reg.Register(NewTaskTool(fc, reg, 0.3, nil, DefaultSubagents(), ""))
+
+	var mu sync.Mutex
+	var batches [][]ToolCallRef
+	var rounds []int
+	ev := Events{OnToolBatch: func(round int, calls []ToolCallRef) {
+		mu.Lock()
+		defer mu.Unlock()
+		batches = append(batches, calls)
+		rounds = append(rounds, round)
+	}}
+	// The ids the batch reports have to be the ones the nested runs are tagged
+	// with, or nothing downstream can tie a subagent back to the call that
+	// started it.
+	var startIDs []string
+	ev.OnAgentStart = func(id, _, _ string) {
+		mu.Lock()
+		defer mu.Unlock()
+		startIDs = append(startIDs, id)
+	}
+
+	if _, err := New(fc, reg, 0.3, nil, "").Run(context.Background(), "go", ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 1 {
+		t.Fatalf("expected one batch, got %d: %v", len(batches), batches)
+	}
+	if len(batches[0]) != 2 || batches[0][0].Name != TaskToolName || batches[0][1].Name != TaskToolName {
+		t.Fatalf("expected both task calls in one batch, got %v", batches[0])
+	}
+	if rounds[0] != 1 {
+		t.Fatalf("expected batch in model round 1, got %d", rounds[0])
+	}
+	inBatch := map[string]bool{}
+	for _, c := range batches[0] {
+		if c.ID == "" {
+			t.Fatal("a batched call was reported without an id")
+		}
+		inBatch[c.ID] = true
+	}
+	for _, id := range startIDs {
+		if !inBatch[id] {
+			t.Fatalf("subagent started under id %q, which the batch never reported: %v", id, batches[0])
+		}
+	}
+	if len(startIDs) != 2 {
+		t.Fatalf("expected two subagent starts, got %d", len(startIDs))
+	}
+}
+
+// A provider that omits call ids must still produce ids the two sides agree on,
+// or matching a nested run to its call silently fails.
+func TestCallRefsFillInMissingIDs(t *testing.T) {
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := New(&fakeClient{final: "done"}, reg, 0.3, nil, "")
+	refs := ag.callRefs([]llm.ToolCall{
+		{Function: llm.FunctionCall{Name: "grep"}},
+		{ID: "given", Function: llm.FunctionCall{Name: "task"}},
+		{Function: llm.FunctionCall{Name: "task"}},
+	})
+	if refs[1].ID != "given" {
+		t.Errorf("an id the provider supplied must be kept, got %q", refs[1].ID)
+	}
+	if refs[0].ID == "" || refs[2].ID == "" || refs[0].ID == refs[2].ID {
+		t.Errorf("missing ids must be filled in, and distinctly: %+v", refs)
+	}
+}
+
+// The block used to live in the base system prompt, where a user's custom
+// SYSTEM.md replaced it wholesale while the task tool stayed registered. Built
+// from the registry, it also describes custom agents, which the old hardcoded
+// list could not.
+func TestDelegationPromptDescribesTheRegisteredAgents(t *testing.T) {
+	agents := DefaultSubagents()
+	agents.Add(SubagentDef{Name: "researcher", Description: "digs through the docs", Tools: readOnlyTools})
+
+	got := DelegationPrompt(agents)
+	for _, want := range []string{"scout", "code-writer", "simplifier", "reviewer",
+		"researcher: digs through the docs"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("delegation prompt never mentions %q", want)
+		}
+	}
+	// The two rules the harness scores, plus the one that keeps an explicit
+	// request from being reasoned away.
+	for _, want := range []string{"SINGLE response", "PER piece", "user ASKS"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("delegation prompt lost the %q rule", want)
+		}
+	}
+	// A "do not over-delegate" rule was tried and measured to cost delegation
+	// without improving precision; the base prompt carries that advice already.
+	// Re-adding one here is a decision to make against fresh numbers, not by
+	// reflex, so the absence is pinned.
+	for _, unwanted := range []string{"Do NOT delegate", "as wrong as delegating nothing"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("delegation prompt regained the %q guard - see evals/ before keeping it", unwanted)
+		}
+	}
+	if DelegationPrompt(NewSubagentRegistry()) != "" {
+		t.Error("with no agents registered the block must be empty, not a promise of nothing")
+	}
+	if DelegationPrompt(nil) != "" {
+		t.Error("a nil registry must yield no block")
+	}
+}
+
 func TestTaskToolScopesTools(t *testing.T) {
 	reg, err := tools.NewRegistry(t.TempDir())
 	if err != nil {

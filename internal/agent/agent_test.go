@@ -58,7 +58,7 @@ func TestRunToolCallsParallel(t *testing.T) {
 	}()
 
 	done := make(chan []string, 1)
-	go func() { done <- ag.runToolCalls(context.Background(), calls, Events{}) }()
+	go func() { done <- ag.runToolCalls(context.Background(), calls, ag.callRefs(calls), Events{}) }()
 
 	select {
 	case res := <-done:

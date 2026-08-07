@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 	"github.com/gigovich/aigem/internal/search"
 	"github.com/gigovich/aigem/internal/skill"
 	"github.com/gigovich/aigem/internal/tools"
+	"github.com/gigovich/aigem/internal/trace"
 	"github.com/gigovich/aigem/internal/tui"
 )
 
@@ -207,6 +209,8 @@ func main() {
 	repl := flag.Bool("repl", false, "run the plain CLI REPL instead of the TUI")
 	prompt := flag.String("p", "", "run a single prompt non-interactively and exit")
 	yes := flag.Bool("y", false, "auto-approve confirm-gated tools in -p mode (bash requires --capability-profile shell or dangerous-shell)")
+	traceJSON := flag.String("trace-json", "",
+		"record the run's tool and delegation activity as JSONL to this file (-p mode only)")
 	capProfileName := flag.String("capability-profile", tools.DefaultCapabilityProfile,
 		"non-interactive capability profile: read-only, workspace-write, shell, or dangerous-shell")
 	trustProject := flag.Bool("trust-project-hooks", false,
@@ -225,6 +229,13 @@ func main() {
 	maxToolCalls := flag.Int("max-tool-calls", agent.DefaultBudgetMaxToolCalls, "max tool calls for one -p turn (0 disables)")
 	maxRepeatToolCalls := flag.Int("max-repeat-tool-calls", agent.DefaultBudgetMaxRepeatedToolCalls, "max identical tool calls for one -p turn (0 disables)")
 	flag.Parse()
+
+	// Refused rather than ignored: an interactive front-end would print a warning
+	// and then paint over it, so the flag would look like it worked. Checked here,
+	// before startup opens a model, dials MCP servers, and runs SessionStart.
+	if *traceJSON != "" && *prompt == "" {
+		fatal(errors.New("--trace-json records a -p run; it has no effect on the TUI or --repl"))
+	}
 
 	// Resolve the model from the registry. A bare --model name configures the
 	// local provider (back-compat); a provider/id ref selects another provider;
@@ -413,6 +424,12 @@ func main() {
 			// Those files are now in context; read_file should not re-emit them.
 			reg.MarkInContext(config.InstructionPaths(*cwd))
 		}
+		// Every front-end below registers the task tool, so the block always
+		// applies here. It is appended rather than baked into the base prompt so
+		// a custom SYSTEM.md cannot leave the tool present but unexplained.
+		if d := agent.DelegationPrompt(agents); d != "" {
+			sp += "\n\n" + d
+		}
 		if sk := skills.Prompt(); sk != "" {
 			sp += "\n\n" + sk
 		}
@@ -443,7 +460,12 @@ func main() {
 			MaxRepeatedToolCalls: *maxRepeatToolCalls,
 			MaxDuration:          *turnTimeout,
 		}
-		runPrint(ref, reg, *temp, *prompt, *yes, capProfile, turnBudget, sysPrompt, agents, project, skills, runner, compactCfg)
+		runPrint(printRun{
+			client: ref, reg: reg, temp: *temp, prompt: *prompt, autoApprove: *yes,
+			capProfile: capProfile, turnBudget: turnBudget, sysPrompt: sysPrompt,
+			agents: agents, project: project, skills: skills, hooks: runner,
+			compactCfg: compactCfg, tracePath: *traceJSON,
+		})
 		return
 	}
 	if *repl {
@@ -598,13 +620,32 @@ func runREPL(client *llm.Ref, reg *tools.Registry, temp float64, sysPrompt strin
 	}
 }
 
+// printRun is everything one non-interactive run needs. It is a struct because
+// the positional form had grown past a dozen arguments, where the compiler stops
+// catching a swapped pair.
+type printRun struct {
+	client      *llm.Ref
+	reg         *tools.Registry
+	temp        float64
+	prompt      string
+	autoApprove bool
+	capProfile  tools.CapabilityProfile
+	turnBudget  agent.TurnBudget
+	sysPrompt   string
+	agents      *agent.SubagentRegistry
+	project     string
+	skills      *skill.Registry
+	hooks       *hooks.Runner
+	compactCfg  agent.CompactConfig
+	tracePath   string
+}
+
 // runPrint executes one prompt non-interactively. Tool activity is written to
 // stderr so stdout carries only the model's final answer.
-func runPrint(client *llm.Ref, reg *tools.Registry, temp float64, prompt string, autoApprove bool,
-	capProfile tools.CapabilityProfile, turnBudget agent.TurnBudget, sysPrompt string, agents *agent.SubagentRegistry, project string, skills *skill.Registry,
-	runner *hooks.Runner, compactCfg agent.CompactConfig) {
+func runPrint(o printRun) {
+	client, reg, temp, capProfile := o.client, o.reg, o.temp, o.capProfile
 	confirm := func(name string, args json.RawMessage) bool {
-		if !autoApprove {
+		if !o.autoApprove {
 			fmt.Fprintf(os.Stderr, "  [denied] %s %s (pass -y to allow within --capability-profile %s)\n", name, string(args), capProfile.Name)
 			return false
 		}
@@ -624,14 +665,14 @@ func runPrint(client *llm.Ref, reg *tools.Registry, temp float64, prompt string,
 		return true
 	}
 	stream := retrying(client, func(text string) { fmt.Fprintf(os.Stderr, "  ⚠ %s\n", text) })
-	reg.Register(agent.NewTaskTool(stream, reg, temp, confirm, agents, project))
-	registerSkillTool(reg, skills, stream, temp, confirm)
-	ag := agent.New(stream, reg, temp, confirm, sysPrompt)
+	reg.Register(agent.NewTaskTool(stream, reg, temp, confirm, o.agents, o.project))
+	registerSkillTool(reg, o.skills, stream, temp, confirm)
+	ag := agent.New(stream, reg, temp, confirm, o.sysPrompt)
 	reg.Register(agent.NewTodoTool(ag))
-	ag.SetHooks(runner)
-	ag.SetTurnBudget(turnBudget)
-	ag.SetCompaction(compactCfg)
-	ag.WatchSkills(skills.Conditional())
+	ag.SetHooks(o.hooks)
+	ag.SetTurnBudget(o.turnBudget)
+	ag.SetCompaction(o.compactCfg)
+	ag.WatchSkills(o.skills.Conditional())
 
 	ev := agent.Events{
 		OnContent: func(d string) { fmt.Print(d) },
@@ -662,10 +703,31 @@ func runPrint(client *llm.Ref, reg *tools.Registry, temp float64, prompt string,
 		},
 		OnSubNotice: func(id, ag, text string) { fmt.Fprintf(os.Stderr, "    ⚠ %s: %s\n", ag, text) },
 	}
-	if _, err := ag.Run(context.Background(), prompt, ev); err != nil {
+
+	var rec *trace.Recorder
+	if o.tracePath != "" {
+		r, err := trace.Create(o.tracePath)
+		if err != nil {
+			fatal(fmt.Errorf("--trace-json %s: %w", o.tracePath, err))
+		}
+		rec = r
+		rec.Start(o.prompt, client.Model().ID)
+		ev = rec.Wrap(ev)
+	}
+
+	answer, err := ag.Run(context.Background(), o.prompt, ev)
+	rec.End(answer, err)
+	// Closed before fatal exits, or the trace of a failed run is lost - which is
+	// the run most worth having. A trace that could not be written is fatal in
+	// its own right: a truncated one reads as a run that simply did less.
+	cerr := rec.Close()
+	if err != nil {
 		fatal(err)
 	}
-	runner.Run(context.Background(), hooks.EventSessionEnd, hooks.Input{Source: "exit"})
+	if cerr != nil {
+		fatal(fmt.Errorf("--trace-json %s: %w", o.tracePath, cerr))
+	}
+	o.hooks.Run(context.Background(), hooks.EventSessionEnd, hooks.Input{Source: "exit"})
 	fmt.Println()
 }
 

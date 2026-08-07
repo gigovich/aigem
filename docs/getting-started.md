@@ -119,6 +119,7 @@ part worth understanding before automating anything.
 | `-p`                     | -                       | run a single prompt non-interactively and exit                      |
 | `-y`                     | `false`                 | auto-approve confirm-gated tools in `-p`, within the active profile  |
 | `--capability-profile`   | `workspace-write`       | `read-only`, `workspace-write`, `shell`, or `dangerous-shell`        |
+| `--trace-json`           | -                       | record a `-p` run's tool and delegation activity as JSONL            |
 | `--repl`                 | `false`                 | plain line-based REPL instead of the TUI                            |
 
 `aigem version` is a subcommand, not a flag, and prints the version. `--version`
