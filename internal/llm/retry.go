@@ -67,12 +67,33 @@ func IsRequestShapeErr(err error) bool {
 	return false
 }
 
+// retryAfterEmitKey marks a stream whose deltas reach no one.
+type retryAfterEmitKey struct{}
+
+// WithRetryAfterEmit lets a stream be retried even after it has emitted text.
+// The no-retry-after-emit rule exists so a caller is not shown the same deltas
+// twice, which presumes the caller is showing them. A subagent's are not shown
+// anywhere - its Events carry no content callback - and its partial answer is
+// discarded when the run fails, so refusing the retry protects nothing and
+// turns a transient provider hiccup into a failed delegation. On a reasoning
+// model, where deltas start immediately, that is nearly every hiccup.
+func WithRetryAfterEmit(ctx context.Context) context.Context {
+	return context.WithValue(ctx, retryAfterEmitKey{}, true)
+}
+
+// RetryAfterEmit reports whether ctx was marked by WithRetryAfterEmit.
+func RetryAfterEmit(ctx context.Context) bool {
+	on, _ := ctx.Value(retryAfterEmitKey{}).(bool)
+	return on
+}
+
 // Retrying re-issues a Stream that failed with a transient provider error
 // (429/5xx, an aborted stream, a network hiccup) with exponential backoff, so
 // an unattended bot rides out a hiccup instead of surfacing it into chat. A
-// call that already streamed content to the caller is never retried - the
-// deltas were delivered and a retry would duplicate them - and neither is a
-// cancelled context or a non-transient error.
+// call that already streamed content to the caller is not retried - the deltas
+// were delivered and a retry would duplicate them - unless the context says
+// nobody received them (see WithRetryAfterEmit). A cancelled context or a
+// non-transient error is never retried.
 type Retrying struct {
 	inner    streamer
 	attempts int           // total tries, including the first
@@ -137,7 +158,8 @@ func (r *Retrying) Stream(ctx context.Context, messages []Message, tools []Tool,
 		if err == nil {
 			return msg, nil
 		}
-		if attempt >= r.attempts || emitted || ctx.Err() != nil || !IsTransientErr(err) {
+		if attempt >= r.attempts || (emitted && !RetryAfterEmit(ctx)) ||
+			ctx.Err() != nil || !IsTransientErr(err) {
 			return msg, err
 		}
 		r.notify(RetryNotice{Attempt: attempt, Attempts: r.attempts, Delay: delay, Err: err})

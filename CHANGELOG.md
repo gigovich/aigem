@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A transient provider error during a delegated subagent or a forked skill is
+  retried again. The retry decorator refuses to re-issue a stream that already
+  emitted text, so the caller is not shown the same deltas twice - but a nested
+  run's deltas are shown nowhere, and its partial answer is discarded when the
+  run fails, so the rule protected nothing there and turned a 5xx into a failed
+  delegation. On a reasoning model, whose deltas start immediately, that was
+  nearly every hiccup.
+
 ### Changed
 
 - The delegation guidance moved out of the built-in system prompt and is now

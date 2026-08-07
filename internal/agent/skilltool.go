@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gigovich/aigem/internal/hooks"
+	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/skill"
 	"github.com/gigovich/aigem/internal/tools"
 )
@@ -139,7 +140,9 @@ func (t *skillTool) runFork(ctx context.Context, s *skill.Skill, body string,
 		ev.OnToolEnd = func(name, result string, err error) { sink.SubToolEnd(s.Name, name, result, err) }
 		ev.OnNotice = func(text string) { sink.SubNotice(s.Name, text) }
 	}
-	answer, err := sub.Run(ctx, body, ev)
+	// Same as a delegated subagent: nothing displays a forked skill's deltas, so
+	// a mid-stream hiccup is worth retrying rather than surfacing.
+	answer, err := sub.Run(llm.WithRetryAfterEmit(ctx), body, ev)
 	if sink != nil {
 		sink.AgentEnd(answer, err)
 	}

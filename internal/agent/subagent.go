@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/tools"
 )
 
@@ -336,7 +337,10 @@ func (t *taskTool) Run(ctx context.Context, args json.RawMessage) (string, error
 		ev.OnNotice = func(text string) { sink.SubNotice(def.Name, text) }
 	}
 
-	answer, err := sub.Run(ctx, a.Prompt, ev)
+	// A subagent's deltas are shown nowhere and its partial answer is dropped on
+	// error, so a transient provider failure mid-stream should cost a retry, not
+	// the whole delegation.
+	answer, err := sub.Run(llm.WithRetryAfterEmit(ctx), a.Prompt, ev)
 	if sink != nil {
 		sink.AgentEnd(answer, err)
 	}

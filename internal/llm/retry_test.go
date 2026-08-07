@@ -118,6 +118,57 @@ func TestRetryingDoesNotRetryAfterEmittedContent(t *testing.T) {
 	}
 }
 
+// The no-retry-after-emit rule protects a caller from seeing the same deltas
+// twice, which presumes a caller that shows them. A subagent's are shown
+// nowhere and its partial answer is dropped on failure, so there the rule only
+// converted a transient provider error into a failed delegation - and on a
+// reasoning model, whose deltas start at once, into nearly every one.
+func TestRetryingRetriesAfterEmitWhenNobodySawIt(t *testing.T) {
+	f := &flakyStreamer{failures: 1, emit: true, err: errors.New("llm: status 500: server_error")}
+	r := newTestRetrying(f, 3)
+
+	msg, err := r.Stream(WithRetryAfterEmit(context.Background()), nil, nil, 0, func(StreamEvent) {})
+	if err != nil {
+		t.Fatalf("expected the retry to succeed: %v", err)
+	}
+	if msg.Content != "ok" {
+		t.Fatalf("content = %q, want the retried answer", msg.Content)
+	}
+	if f.calls != 2 {
+		t.Fatalf("calls = %d, want 2", f.calls)
+	}
+}
+
+// The mark does not make anything else retryable.
+func TestRetryAfterEmitStillRespectsTheOtherLimits(t *testing.T) {
+	fatal := &flakyStreamer{failures: 10, emit: true, err: errors.New("llm: status 401: unauthorized")}
+	r := newTestRetrying(fatal, 3)
+	if _, err := r.Stream(WithRetryAfterEmit(context.Background()), nil, nil, 0, nil); err == nil {
+		t.Fatal("expected error")
+	}
+	if fatal.calls != 1 {
+		t.Fatalf("calls = %d, want 1 - an auth failure is still terminal", fatal.calls)
+	}
+
+	transient := &flakyStreamer{failures: 10, emit: true, err: errors.New("llm: status 503")}
+	r = newTestRetrying(transient, 3)
+	if _, err := r.Stream(WithRetryAfterEmit(context.Background()), nil, nil, 0, nil); err == nil {
+		t.Fatal("expected error")
+	}
+	if transient.calls != 3 {
+		t.Fatalf("calls = %d, want the attempt cap of 3", transient.calls)
+	}
+}
+
+func TestRetryAfterEmitDefaultsOff(t *testing.T) {
+	if RetryAfterEmit(context.Background()) {
+		t.Fatal("a plain context must not enable retry-after-emit")
+	}
+	if !RetryAfterEmit(WithRetryAfterEmit(context.Background())) {
+		t.Fatal("the mark did not take")
+	}
+}
+
 func TestIsAuthErr(t *testing.T) {
 	// Terminal auth failures: not retryable, not a context overflow.
 	auth := []string{

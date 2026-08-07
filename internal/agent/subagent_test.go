@@ -246,6 +246,66 @@ func TestDelegationPromptDescribesTheRegisteredAgents(t *testing.T) {
 	}
 }
 
+// ctxProbe delegates once, then answers, and records whether the subagent's own
+// stream was marked retryable after emitting.
+type ctxProbe struct {
+	mu        sync.Mutex
+	mainTurns int
+	sawMark   bool
+	toolSeen  bool
+}
+
+func (p *ctxProbe) Stream(ctx context.Context, _ []llm.Message, defs []llm.Tool, _ float64,
+	_ func(llm.StreamEvent)) (llm.Message, error) {
+	hasTask := false
+	for _, d := range defs {
+		if d.Function.Name == TaskToolName {
+			hasTask = true
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !hasTask {
+		// The subagent's own call: no task tool is offered to it.
+		if llm.RetryAfterEmit(ctx) {
+			p.sawMark = true
+		}
+		return llm.Message{Role: llm.RoleAssistant, Content: "sub done"}, nil
+	}
+	p.toolSeen = true
+	if p.mainTurns > 0 {
+		return llm.Message{Role: llm.RoleAssistant, Content: "all done"}, nil
+	}
+	p.mainTurns++
+	return llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{
+		ID: "a", Type: "function",
+		Function: llm.FunctionCall{Name: TaskToolName, Arguments: `{"agent_type":"scout","prompt":"A"}`},
+	}}}, nil
+}
+
+// The retry-after-emit fix in internal/llm only bites if delegation actually
+// marks the context; without this the two halves can drift apart silently and a
+// transient provider error keeps killing whole delegations.
+func TestDelegatedRunMayBeRetriedAfterEmitting(t *testing.T) {
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &ctxProbe{}
+	reg.Register(NewTaskTool(p, reg, 0.3, nil, DefaultSubagents(), ""))
+
+	if _, err := New(p, reg, 0.3, nil, "").Run(context.Background(), "go", Events{}); err != nil {
+		t.Fatal(err)
+	}
+	if !p.toolSeen {
+		t.Fatal("the main agent never got the task tool; the test proves nothing")
+	}
+	if !p.sawMark {
+		t.Fatal("a subagent's stream was not marked retryable after emitting - " +
+			"its deltas reach no one, so a transient failure should cost a retry, not the delegation")
+	}
+}
+
 func TestTaskToolScopesTools(t *testing.T) {
 	reg, err := tools.NewRegistry(t.TempDir())
 	if err != nil {
