@@ -435,9 +435,10 @@ type Model struct {
 	sessionTitle   string
 	sessionStart   time.Time
 
-	history   []string // submitted prompts, for up/down recall
-	histIdx   int      // == len(history) means "current draft"
-	histDraft string
+	historyRoot string   // canonical working directory that owns the input history
+	history     []string // submitted prompts, for up/down recall
+	histIdx     int      // == len(history) means "current draft"
+	histDraft   string
 
 	blocks        []block          // persisted conversation
 	todos         []agent.TodoItem // model's working plan, shown in the right sidebar
@@ -602,6 +603,12 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		ctxSize = 8192
 	}
 	_, searchOn := reg.Get("web_search")
+	historyRoot := reg.Root()
+	history, historyErr := loadInputHistory(historyRoot)
+	var startupBlocks []block
+	if historyErr != nil {
+		startupBlocks = append(startupBlocks, block{kind: bkNotice, text: "could not load input history: " + historyErr.Error()})
+	}
 	// Availability of the active model is checked asynchronously after launch (see
 	// Init/checkActiveAvailability), so a reachability probe never delays startup.
 	return Model{
@@ -619,6 +626,10 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		done:           done,
 		input:          ta,
 		spin:           sp,
+		blocks:         startupBlocks,
+		historyRoot:    historyRoot,
+		history:        history,
+		histIdx:        len(history),
 		toolPolicy:     map[string]string{},
 		groups:         map[string]*agentRun{},
 		artIndex:       map[string]*artifact{},
@@ -1273,11 +1284,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 
 // dispatch routes a submitted line to a slash command or the agent.
 func (m *Model) dispatch(input string) tea.Cmd {
-	m.history = append(m.history, input)
-	m.histIdx = len(m.history)
+	historyErr := m.recordInputHistory(input)
+	if historyErr != nil && input != "/new" {
+		m.showInputHistoryError(historyErr)
+	}
 	switch {
 	case input == "/new":
 		m.newSession()
+		if historyErr != nil {
+			m.showInputHistoryError(historyErr)
+		}
 		return nil
 	case input == "/resume":
 		m.input.Reset()
@@ -1324,6 +1340,25 @@ func (m *Model) dispatch(input string) tea.Cmd {
 		return nil
 	}
 	return m.submit(input)
+}
+
+func (m *Model) recordInputHistory(input string) error {
+	history, err := appendInputHistory(m.historyRoot, input)
+	if err == nil {
+		m.history = history
+	} else {
+		m.history = append(m.history, input)
+		if len(m.history) > inputHistoryLimit {
+			m.history = m.history[len(m.history)-inputHistoryLimit:]
+		}
+	}
+	m.histIdx = len(m.history)
+	return err
+}
+
+func (m *Model) showInputHistoryError(err error) {
+	m.blocks = append(m.blocks, block{kind: bkNotice, text: "could not save input history: " + err.Error()})
+	m.refresh()
 }
 
 // providerArg returns the provider named after a slash command, defaulting to
@@ -2924,8 +2959,7 @@ func (m *Model) newSession() {
 	m.ctxTokens = 0
 	m.pendingImages = nil
 	m.pastingImage = false
-	m.history = nil
-	m.histIdx = 0
+	m.histIdx = len(m.history)
 	m.histDraft = ""
 	if m.hooks != nil {
 		m.hooks.SetSession("", "")

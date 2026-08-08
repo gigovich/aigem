@@ -26,6 +26,25 @@ import (
 	"github.com/gigovich/aigem/internal/tools"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv("AIGEM_HISTORY_HELPER") != "" {
+		os.Exit(m.Run())
+	}
+	state, err := os.MkdirTemp("", "aigem-tui-test-state-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("XDG_STATE_HOME", state); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	if err := os.RemoveAll(state); err != nil {
+		fmt.Fprintln(os.Stderr, "remove test state:", err)
+		code = 1
+	}
+	os.Exit(code)
+}
+
 func typeEnter(m Model, s string) Model {
 	m = typeRunes(m, s)
 	return step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -841,9 +860,11 @@ func TestNewSessionClears(t *testing.T) {
 	if m.sessionID != "" || m.sessionTitle != "" || !m.sessionStart.IsZero() {
 		t.Fatal("session identity should be cleared")
 	}
-	if len(m.todos) != 0 || m.ctxTokens != 0 || len(m.history) != 0 {
-		t.Fatalf("todos/ctx/history should be cleared: todos=%d ctx=%d history=%d",
-			len(m.todos), m.ctxTokens, len(m.history))
+	if len(m.todos) != 0 || m.ctxTokens != 0 {
+		t.Fatalf("todos/ctx should be cleared: todos=%d ctx=%d", len(m.todos), m.ctxTokens)
+	}
+	if len(m.history) < 2 || m.history[len(m.history)-2] != "hello" || m.history[len(m.history)-1] != "/new" {
+		t.Fatalf("input history should survive /new, got %#v", m.history)
 	}
 	if msgs := m.agent.Messages(); len(msgs) != 1 || msgs[0].Role != llm.RoleSystem {
 		t.Fatalf("agent should hold only the system prompt, got %+v", msgs)
