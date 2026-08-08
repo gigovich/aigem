@@ -732,6 +732,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, m.reconcileFocus())
 		}
 
+	case tea.PasteMsg:
+		if m.handlePaste(msg.Content) {
+			return m, m.reconcileFocus()
+		}
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
@@ -1119,16 +1124,107 @@ func (m Model) highlightSelection(chat string) string {
 	return strings.Join(lines, "\n")
 }
 
-// bareCode is the key's code when it was pressed with no modifier, and 0
+// ignoredMods are the modifiers that do not change which key was pressed. The
+// locks ride along on ordinary presses - Caps Lock on Windows, Num Lock under the
+// Kitty protocol Bubble Tea always requests - so testing them would strand the
+// whole keyboard; Key.Keystroke() ignores them for the same reason. Alt is here
+// on different grounds: v1 carried it beside the key type rather than inside it,
+// so alt+backspace erased a character exactly like backspace.
+const ignoredMods = tea.ModAlt | tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock
+
+// keypadCodes maps the Kitty protocol's separate keypad codes onto the main-block
+// key they duplicate. Without the protocol a terminal reports both as the same
+// code, which is what v1 always saw, so handlers only ever learned the main one.
+var keypadCodes = map[rune]rune{
+	tea.KeyKpEnter:  tea.KeyEnter,
+	tea.KeyKpUp:     tea.KeyUp,
+	tea.KeyKpDown:   tea.KeyDown,
+	tea.KeyKpLeft:   tea.KeyLeft,
+	tea.KeyKpRight:  tea.KeyRight,
+	tea.KeyKpPgUp:   tea.KeyPgUp,
+	tea.KeyKpPgDown: tea.KeyPgDown,
+}
+
+// bareCode is the key's code when nothing but ignoredMods was held, and 0
 // otherwise. Bubble Tea v1 gave shift+tab, shift+up and ctrl+up key types of
 // their own; v2 reports them as the plain code plus a modifier, so a handler
 // switching on the code alone would answer to all of them. Shifted printable
 // characters are unaffected - they arrive through Key.Text, not the code.
 func bareCode(msg tea.KeyPressMsg) rune {
-	if msg.Mod != 0 {
+	if msg.Mod&^ignoredMods != 0 {
 		return 0
 	}
-	return msg.Code
+	code := msg.Code
+	if kp, ok := keypadCodes[code]; ok {
+		code = kp
+	}
+	// Alt is tolerated above so alt+backspace still erases, but alt+enter is a
+	// binding of its own here (insert a newline), and a stray Esc followed by
+	// Enter folds into it - which must not answer a confirmation for the user.
+	if code == tea.KeyEnter && msg.Mod&tea.ModAlt != 0 {
+		return 0
+	}
+	return code
+}
+
+// flattenPaste reduces pasted text to what typing into a single-line overlay
+// field could have produced. A paste is the only way a newline or a tab reaches
+// these fields, and one embedded newline makes a one-row overlay render as two,
+// past the height the last layout reserved for it.
+func flattenPaste(text string) string {
+	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
+		text = text[:i]
+	}
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+// handlePaste hands bracketed-paste text to whichever overlay owns text entry,
+// reporting whether one took it. Bubble Tea v1 delivered a paste as a runes key
+// event, so it reached each overlay's text arm; v2 gives it a message of its own
+// that reaches nothing, and a modal blurs the input box, so an unrouted paste is
+// dropped on the floor - which is how you lose a pasted API key or model path.
+// A paste is text, so it goes only where typing goes, never to a key action.
+//
+// The overlay precedence here mirrors handleKey's. Only one modal is open at a
+// time today, so the two orders cannot disagree in practice - but they are two
+// copies of one rule, and a future overlay has to be added to both.
+func (m *Model) handlePaste(text string) bool {
+	text = flattenPaste(text)
+	if text == "" {
+		return false
+	}
+	switch {
+	case m.agentBr != nil && m.agentBr.editing:
+		// A verify or save is in flight and the editor is drawn inert; typing is
+		// dropped here too, and a second paste would otherwise append to the key
+		// already being checked.
+		if m.agentBr.saving || !m.agentBr.typeConfigField(text) {
+			return false
+		}
+	case m.models != nil:
+		m.models.query += text
+		m.models.filter()
+	case m.localWiz != nil:
+		switch m.localWiz.step {
+		case wizStepValue:
+			m.localWiz.value += text
+		case wizStepBinary:
+			m.localWiz.binary += text
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+	// layout, not refresh: a paste can change an overlay's height by many rows at
+	// once (a filter collapsing the model list), and the viewport is sized from it.
+	m.layout()
+	return true
 }
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
@@ -2682,7 +2778,7 @@ func (m *Model) startLocal(cfg local.Config) tea.Cmd {
 
 // downloadBlockText renders the live download block: the model name, a progress
 // bar with percentage when the size is known, and the byte/speed detail. The
-// caller sets m.prog.Width beforehand.
+// caller sizes m.prog beforehand.
 func (m *Model) downloadBlockText(p local.Progress) string {
 	head := dlHeadStyle.Render("⬇ downloading " + m.dlName)
 	frac := p.Fraction()
