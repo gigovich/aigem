@@ -1292,6 +1292,35 @@ func TestLayoutKeepsScrollPosition(t *testing.T) {
 	}
 }
 
+// The other half of the same rule: a reader who is following the end must keep
+// following it. A relayout that takes rows away - an overlay opening, the input
+// box growing - raises the bottom offset without moving the viewport, so being
+// pinned to the end silently becomes being scrolled up unless layout says so.
+func TestLayoutKeepsFollowingTheEnd(t *testing.T) {
+	m := newTestModel(t)
+	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	for i := 0; i < 60; i++ {
+		m = step(m, toolStartMsg{name: "read_file", args: `{"path":"f.go"}`})
+	}
+	if !m.vp.AtBottom() {
+		t.Fatal("should start pinned to the bottom")
+	}
+
+	m = typeRunes(m, strings.Repeat("a", 120)) // wraps the input to a second row
+	if !m.vp.AtBottom() {
+		t.Error("growing the input box stopped the chat following the end")
+	}
+
+	m.input.Reset()
+	m = typeRunes(m, "/") // the command menu takes ~8 rows off the viewport
+	if m.cmdMenu == nil {
+		t.Fatal("typing / did not open the command menu")
+	}
+	if !m.vp.AtBottom() {
+		t.Error("opening the command menu stopped the chat following the end")
+	}
+}
+
 // TestResumedSessionScrollable verifies that a session restored via /resume is
 // rendered into the viewport, anchored at the bottom, and scrollable.
 func TestResumedSessionScrollable(t *testing.T) {

@@ -3094,6 +3094,11 @@ func (m *Model) loadSession(id string) {
 	}
 	m.ctxTokens = m.agent.ContextTokens()
 	m.resetStream()
+	// A resumed conversation opens at its end, the way it looked when you left.
+	// The offset carried over from whatever was on screen means nothing against
+	// the restored content, and the viewport no longer resets itself on relayout.
+	m.layout()
+	m.vp.GotoBottom()
 }
 
 // reconstructBlocks rebuilds the visible history from a saved message list.
@@ -3182,6 +3187,10 @@ func (m *Model) layout() {
 	if m.overlay() == "" {
 		overlayH = 0
 	}
+	// Whether the reader is following the end has to be read before the resize:
+	// losing rows to an overlay raises the bottom offset without moving the
+	// viewport, so afterwards someone pinned to the end looks scrolled up.
+	following := m.vp.AtBottom()
 	m.input.SetWidth(max(10, m.width-4))
 	m.resizeInputHeight()
 	inputH := m.input.Height() + 2 // textarea + rounded border
@@ -3197,6 +3206,9 @@ func (m *Model) layout() {
 		m.curStableRender = m.renderMarkdown(m.curContent[:m.curStableLen])
 	}
 	m.refresh()
+	if following {
+		m.vp.GotoBottom()
+	}
 }
 
 func (m *Model) resizeInputHeight() bool {
