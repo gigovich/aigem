@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/gigovich/aigem/internal/search"
 )
@@ -106,12 +106,12 @@ func (m *Model) initAgentConfigEditor() {
 	b.field = agentFieldProvider
 }
 
-func (m *Model) handleAgentKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleAgentKey(msg tea.KeyPressMsg) tea.Cmd {
 	b := m.agentBr
 	if b.editing {
 		return m.handleAgentEditKey(msg)
 	}
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyUp:
 		if !b.detail && b.cursor > 0 {
 			b.cursor--
@@ -149,12 +149,12 @@ func (m *Model) handleAgentKey(msg tea.KeyMsg) tea.Cmd {
 
 // handleAgentEditKey drives the web-search config editor: it switches providers,
 // collects provider-specific fields, and saves the config in the background.
-func (m *Model) handleAgentEditKey(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) handleAgentEditKey(msg tea.KeyPressMsg) tea.Cmd {
 	b := m.agentBr
 	if b.saving {
 		return nil // ignore input while validation/probe runs
 	}
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyEnter:
 		if b.field == agentFieldClearProvider {
 			b.saving = true
@@ -198,9 +198,10 @@ func (m *Model) handleAgentEditKey(msg tea.KeyMsg) tea.Cmd {
 		if b.backspaceConfigField() {
 			m.refresh()
 		}
-	case tea.KeyRunes:
-		b.typeConfigField(string(msg.Runes))
-		m.refresh()
+	default:
+		if msg.Text != "" && b.typeConfigField(msg.Text) {
+			m.refresh()
+		}
 	}
 	return nil
 }
@@ -265,13 +266,19 @@ func (b *agentBrowser) adjustConfigChoice(delta int) {
 	}
 }
 
-func (b *agentBrowser) typeConfigField(s string) {
+// typeConfigField appends to the selected field, reporting whether that field
+// takes text at all - the provider, engine and clear rows are choices, not
+// inputs, and a caller that cannot see the difference would swallow the text.
+func (b *agentBrowser) typeConfigField(s string) bool {
 	switch b.field {
 	case agentFieldBraveKey:
 		b.keyBuf += s
 	case agentFieldBrowserProfile:
 		b.profileBuf += s
+	default:
+		return false
 	}
+	return true
 }
 
 func (b *agentBrowser) backspaceConfigField() bool {

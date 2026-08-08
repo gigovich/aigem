@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/sahilm/fuzzy"
 )
 
@@ -174,9 +174,9 @@ func (m *Model) completeFile(submit bool) {
 	}
 }
 
-func (m *Model) handleFileMenuKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+func (m *Model) handleFileMenuKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	menu := m.fileMenu
-	switch msg.Type {
+	switch bareCode(msg) {
 	case tea.KeyUp:
 		if menu.cursor > 0 {
 			menu.cursor--

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Scrolling up to read history survives typing. Every relayout - a row gained by
+  the input box, an arrow key inside an overlay - rebuilt the chat viewport, and
+  a fresh one reads as "at the bottom", so the next redraw jumped to the end.
+  The viewport is resized in place now.
+
+- Scrolling the chat fast no longer types escape sequences into the input box.
+  A quick wheel spin arrives as one dense burst of SGR mouse reports, and Bubble
+  Tea v1 read stdin in 256-byte chunks: whenever a report straddled that
+  boundary, its tail was handed on as literal text and the textarea typed it.
+
 - A transient provider error during a delegated subagent or a forked skill is
   retried again. The retry decorator refuses to re-issue a stream that already
   emitted text, so the caller is not shown the same deltas twice - but a nested
@@ -18,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nearly every hiccup.
 
 ### Changed
+
+- The TUI moved from Bubble Tea, Bubbles and Lip Gloss v1 to v2
+  (`charm.land/*/v2`), which is where the input parser above is fixed. Key
+  events now carry a code plus modifiers instead of a type per combination, and
+  mouse events are one message type per action. Glamour still renders markdown
+  through Lip Gloss v1, so both major versions are in the build.
 
 - The delegation guidance moved out of the built-in system prompt and is now
   appended alongside the skill, search and MCP blocks. It used to vanish behind a

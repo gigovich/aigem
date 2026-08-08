@@ -1,9 +1,10 @@
 package tui
 
 import (
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
 
@@ -32,10 +33,25 @@ const (
 )
 
 // colorProfile is the single source of truth for terminal color depth. We
-// detect it once and force it on both lipgloss and glamour so neither degrades
+// detect it once and force it on both Bubble Tea and glamour so neither degrades
 // truecolor to the 256-color palette independently (glamour's chroma code
 // highlighter otherwise defaults to terminal256 regardless of the profile).
 var colorProfile = termenv.ColorProfile()
+
+// teaColorProfile restates colorProfile in Bubble Tea's own profile type, so the
+// frame Bubble Tea paints and the markdown glamour renders agree on color depth.
+func teaColorProfile() colorprofile.Profile {
+	switch colorProfile {
+	case termenv.TrueColor:
+		return colorprofile.TrueColor
+	case termenv.ANSI256:
+		return colorprofile.ANSI256
+	case termenv.ANSI:
+		return colorprofile.ANSI
+	default:
+		return colorprofile.Ascii
+	}
+}
 
 // chromaFormatter picks the chroma code formatter matching the color depth so
 // syntax highlighting is emitted at full fidelity when truecolor is available.
@@ -46,12 +62,19 @@ func chromaFormatter() string {
 	return "terminal256"
 }
 
+// hexColor is one palette entry. It satisfies color.Color for lipgloss v2 styles
+// while keeping its hex text, which glamour's StyleConfig wants as a plain string.
+// Being a string type also keeps the palette declarable as constants.
+type hexColor string
+
+func (c hexColor) RGBA() (r, g, b, a uint32) { return lipgloss.Color(string(c)).RGBA() }
+
 // col, strPtr, boolPtr, uintPtr build the pointer values glamour's StyleConfig
 // expects, reusing the shared Catppuccin Mocha palette so colors live in one place.
-func col(c lipgloss.Color) *string { s := string(c); return &s }
-func strPtr(s string) *string      { return &s }
-func boolPtr(v bool) *bool         { return &v }
-func uintPtr(v uint) *uint         { return &v }
+func col(c hexColor) *string  { s := string(c); return &s }
+func strPtr(s string) *string { return &s }
+func boolPtr(v bool) *bool    { return &v }
+func uintPtr(v uint) *uint    { return &v }
 
 // Two Catppuccin Mocha themes for glamour, differing only in fill color.
 var (
@@ -62,7 +85,7 @@ var (
 	catppuccinCode  = buildCatppuccinStyle(cCodeBg)
 )
 
-func buildCatppuccinStyle(bg lipgloss.Color) ansi.StyleConfig {
+func buildCatppuccinStyle(bg hexColor) ansi.StyleConfig {
 	fill := col(bg)
 	st := ansi.StyleConfig{
 		Document: ansi.StyleBlock{

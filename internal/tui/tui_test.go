@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/gigovich/aigem/internal/agent"
@@ -26,9 +26,33 @@ import (
 	"github.com/gigovich/aigem/internal/tools"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv("AIGEM_HISTORY_HELPER") != "" {
+		os.Exit(m.Run())
+	}
+	state, err := os.MkdirTemp("", "aigem-tui-test-state-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("XDG_STATE_HOME", state); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	if err := os.RemoveAll(state); err != nil {
+		fmt.Fprintln(os.Stderr, "remove test state:", err)
+		code = 1
+	}
+	os.Exit(code)
+}
+
 func typeEnter(m Model, s string) Model {
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)})
-	return step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = typeRunes(m, s)
+	return step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
+// keyPress builds the key event a terminal delivers for a printable rune.
+func keyPress(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }
 
 // trustedSkillProject returns a temp project holding .skills/<name>/SKILL.md, with HOME and
@@ -68,12 +92,12 @@ func TestSkillsBrowserAndDispatch(t *testing.T) {
 	if m.browser == nil || len(m.browser.items) != 1 {
 		t.Fatalf("expected browser with 1 skill, got %+v", m.browser)
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if !m.browser.detail || !strings.Contains(m.View(), "say hi nicely") {
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.browser.detail || !strings.Contains(m.render(), "say hi nicely") {
 		t.Fatalf("expected detail view with description")
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEsc}) // back to list
-	m = step(m, tea.KeyMsg{Type: tea.KeyEsc}) // close
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // back to list
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // close
 	if m.browser != nil {
 		t.Fatal("browser should close")
 	}
@@ -113,23 +137,23 @@ func TestCommandMenu(t *testing.T) {
 
 	// A bare "/" lists every command (/new, /model, /login, /logout, /resume,
 	// /skills, /agents, /artifacts, /compact, /skill:greet).
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = typeRunes(m, "/")
 	if m.cmdMenu == nil || len(m.cmdMenu.items) != 10 {
 		t.Fatalf("expected menu with 10 commands, got %+v", m.cmdMenu)
 	}
 
 	// Typing fuzzy-filters: "sk" keeps /skills and /skill:greet, drops /resume.
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("sk")})
+	m = typeRunes(m, "sk")
 	if m.cmdMenu == nil || len(m.cmdMenu.items) != 2 {
 		t.Fatalf("expected 2 matches for /sk, got %+v", m.cmdMenu)
 	}
-	if !strings.Contains(m.View(), "Commands") {
+	if !strings.Contains(m.render(), "Commands") {
 		t.Fatal("expected command menu in view")
 	}
 
 	// Down then Enter runs the second match (/skill:greet).
-	m = step(m, tea.KeyMsg{Type: tea.KeyDown})
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.cmdMenu != nil {
 		t.Fatal("menu should close after Enter")
 	}
@@ -145,16 +169,199 @@ func TestCommandMenu(t *testing.T) {
 	}
 
 	// Tab completes the input to the highlighted command without running it.
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/res")})
-	m = step(m, tea.KeyMsg{Type: tea.KeyTab})
+	m = typeRunes(m, "/res")
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyTab})
 	if m.input.Value() != "/resume" {
 		t.Fatalf("expected Tab to complete to /resume, got %q", m.input.Value())
 	}
 
+	// Shift+Tab belongs to the auto-mode toggle, not to the menu's completion.
+	// Bubble Tea v2 reports it as Tab plus a modifier, so a menu matching on the
+	// key code alone would swallow it and leave the toggle looking dead.
+	before := m.input.Value()
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if !m.autoMode {
+		t.Error("shift+tab with the command menu open did not toggle auto mode")
+	}
+	if m.input.Value() != before {
+		t.Errorf("shift+tab completed the command as well: %q -> %q", before, m.input.Value())
+	}
+
 	// A space ends the command token and closes the menu.
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	m = typeRunes(m, " ")
 	if m.cmdMenu != nil {
 		t.Fatal("menu should close once a space is typed")
+	}
+}
+
+// A bracketed paste changes the input's contents just as typing does, so it owes
+// the same box resize and command-menu sync. Bubble Tea v1 delivered it as a key
+// event; v2 gives it its own message type, which is easy to drop on the floor.
+func TestPasteResizesInputAndOpensMenu(t *testing.T) {
+	m := newTestModel(t)
+	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m = step(m, tea.PasteMsg{Content: "/mod"})
+	if m.input.Value() != "/mod" {
+		t.Fatalf("paste did not reach the textarea: %q", m.input.Value())
+	}
+	if m.cmdMenu == nil {
+		t.Error("pasting a slash command did not open the command menu")
+	}
+
+	m.input.Reset()
+	m = step(m, tea.PasteMsg{Content: strings.Repeat("a", 500)})
+	if got := m.input.Height(); got != maxInputHeight {
+		t.Errorf("pasting past the cap left the input at %d rows, want %d", got, maxInputHeight)
+	}
+}
+
+// An overlay that collects text owns the keyboard, and a modal blurs the input
+// box - so a paste it does not claim is discarded outright. Pasting is how an
+// API key or a model path gets into these fields in the first place.
+func TestPasteReachesTextEntryOverlays(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	t.Run("model picker filter", func(t *testing.T) {
+		m := newTestModel(t)
+		m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+		// newTestModel carries no registry, so /model cannot build a picker; seed
+		// one the way TestLocalChoiceWidgetLayout does.
+		items := []modelItem{{ref: "openai/gpt-5.6-sol"}, {ref: "anthropic/claude"}}
+		m.models = &modelPicker{all: items, items: items}
+
+		m = step(m, tea.PasteMsg{Content: "gpt"})
+		if m.models.query != "gpt" {
+			t.Fatalf("paste did not reach the picker filter: query=%q", m.models.query)
+		}
+		if len(m.models.items) != 1 {
+			t.Errorf("pasted filter was not applied: %d items match %q", len(m.models.items), "gpt")
+		}
+		if m.input.Value() != "" {
+			t.Errorf("the overlay's paste also landed in the chat input: %q", m.input.Value())
+		}
+	})
+
+	t.Run("local wizard fields", func(t *testing.T) {
+		m := newTestModel(t)
+		m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+		m.localWiz = &localWizard{step: wizStepValue}
+
+		m = step(m, tea.PasteMsg{Content: "TheBloke/model-GGUF"})
+		if m.localWiz.value != "TheBloke/model-GGUF" {
+			t.Errorf("paste did not reach the repo field: value=%q", m.localWiz.value)
+		}
+
+		m.localWiz.step = wizStepBinary
+		m = step(m, tea.PasteMsg{Content: "/usr/local/bin/llama-server"})
+		if m.localWiz.binary != "/usr/local/bin/llama-server" {
+			t.Errorf("paste did not reach the binary field: binary=%q", m.localWiz.binary)
+		}
+
+		// The source and confirm steps take no text, so a paste there is refused
+		// rather than swallowed - and must not reach the blurred chat input either.
+		m.localWiz.step = wizStepConfirm
+		m = step(m, tea.PasteMsg{Content: "junk"})
+		if m.localWiz.value != "TheBloke/model-GGUF" || m.localWiz.binary != "/usr/local/bin/llama-server" {
+			t.Error("a paste on the confirm step wrote into a field")
+		}
+		if m.input.Value() != "" {
+			t.Errorf("a refused paste leaked into the chat input: %q", m.input.Value())
+		}
+	})
+
+	t.Run("agent config editor", func(t *testing.T) {
+		m := newTestModel(t)
+		m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = typeEnter(m, "/agents")
+		if m.agentBr == nil {
+			t.Fatal("/agents did not open the browser")
+		}
+		for m.agentBr.cursor < len(m.agentBr.items)-1 {
+			m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // web-search is last
+		}
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // detail
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // config editor
+		if !m.agentBr.editing {
+			t.Fatal("expected the web-search config editor to open")
+		}
+		// The editor opens on the provider row, which is a choice and not an input.
+		// A paste there must be refused outright, not silently eaten.
+		m = step(m, tea.PasteMsg{Content: "BSA-lost"})
+		if m.agentBr.keyBuf != "" {
+			t.Errorf("paste on the provider row wrote a field: keyBuf=%q", m.agentBr.keyBuf)
+		}
+
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // API key field
+		m = step(m, tea.PasteMsg{Content: "BSA-secret\n"})
+		if m.agentBr.keyBuf != "BSA-secret" {
+			t.Errorf("paste did not reach the API key field, or kept its newline: keyBuf=%q",
+				m.agentBr.keyBuf)
+		}
+		if m.input.Value() != "" {
+			t.Errorf("the overlay's paste also landed in the chat input: %q", m.input.Value())
+		}
+
+		// While a key is being verified the editor is drawn inert and drops typing;
+		// a paste must not append to the key already in flight.
+		m.agentBr.saving = true
+		m = step(m, tea.PasteMsg{Content: "-extra"})
+		if m.agentBr.keyBuf != "BSA-secret" {
+			t.Errorf("paste changed the key mid-verification: keyBuf=%q", m.agentBr.keyBuf)
+		}
+	})
+}
+
+// Caps Lock and Num Lock ride along on ordinary key presses - Caps Lock on
+// Windows, Num Lock under the Kitty protocol, which Bubble Tea always requests.
+// Treating any modifier as disqualifying would stop Enter, Esc and the arrows
+// from doing anything at all for a user who happens to have a lock on.
+func TestLockModifiersDoNotDisableKeys(t *testing.T) {
+	for _, lock := range []struct {
+		name string
+		mod  tea.KeyMod
+	}{
+		{"caps lock", tea.ModCapsLock},
+		{"num lock", tea.ModNumLock},
+		{"both", tea.ModCapsLock | tea.ModNumLock},
+	} {
+		t.Run(lock.name, func(t *testing.T) {
+			// Through the real key path, not just the helper: Enter must still
+			// answer an overlay with the lock engaged.
+			m := newTestModel(t)
+			m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+			item := modelItem{ref: "local/demo.gguf", provider: llm.LocalProviderID}
+			m.models = &modelPicker{all: []modelItem{item}, items: []modelItem{item}}
+
+			m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: lock.mod})
+			if m.localChoice == nil {
+				t.Errorf("enter with %s selected nothing in the model picker", lock.name)
+			}
+		})
+	}
+	// Alt is not part of the key in v1's model either, so alt+backspace still
+	// erases wherever backspace does.
+	if got := bareCode(tea.KeyPressMsg{Code: tea.KeyBackspace, Mod: tea.ModAlt}); got != tea.KeyBackspace {
+		t.Errorf("alt+backspace decoded as %q, want backspace", got)
+	}
+	// Enter is the exception: alt+enter is its own binding, and a stray Esc
+	// followed by Enter folds into it, which must not answer a confirmation.
+	if got := bareCode(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}); got != 0 {
+		t.Errorf("alt+enter decoded as %q, want no match", got)
+	}
+	// Modifiers that do change which key it is must all still disqualify.
+	for _, mod := range []tea.KeyMod{tea.ModCtrl, tea.ModShift, tea.ModMeta, tea.ModSuper, tea.ModHyper} {
+		if got := bareCode(tea.KeyPressMsg{Code: tea.KeyTab, Mod: mod}); got != 0 {
+			t.Errorf("tab with mod %v decoded as %q, want no match", mod, got)
+		}
+	}
+	// The Kitty protocol reports the keypad separately; without it a terminal
+	// sends the main-block code, which is the only one handlers know.
+	for kp, want := range keypadCodes {
+		if got := bareCode(tea.KeyPressMsg{Code: kp}); got != want {
+			t.Errorf("keypad key %q decoded as %q, want %q", kp, got, want)
+		}
 	}
 }
 
@@ -179,60 +386,60 @@ func TestLocalChoiceWidgetLayout(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir()) // never touch the real local-model config
 	m := newTestModel(t)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	full := m.vp.Height
+	full := m.vp.Height()
 
 	// Picking a local model in /model opens the widget through the real key path.
 	// It must relayout so the overlay fits on screen instead of pushing the
 	// conversation off the top.
 	item := modelItem{ref: "local/demo.gguf", provider: llm.LocalProviderID}
 	m.models = &modelPicker{all: []modelItem{item}, items: []modelItem{item}}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.localChoice == nil {
 		t.Fatal("selecting a local model should open the action widget")
 	}
-	if m.vp.Height >= full {
-		t.Fatalf("viewport should shrink for the overlay: full=%d open=%d", full, m.vp.Height)
+	if m.vp.Height() >= full {
+		t.Fatalf("viewport should shrink for the overlay: full=%d open=%d", full, m.vp.Height())
 	}
-	if h := lipgloss.Height(m.View()); h != m.height {
+	if h := lipgloss.Height(m.render()); h != m.height {
 		t.Fatalf("widget View overflows screen: height=%d want=%d", h, m.height)
 	}
 
 	// Height stays constant as focus moves across the three actions.
 	for _, idx := range []int{0, 1, 2} {
 		m.localChoice.idx = idx
-		if h := lipgloss.Height(m.View()); h != m.height {
+		if h := lipgloss.Height(m.render()); h != m.height {
 			t.Fatalf("widget View overflows at idx %d: height=%d want=%d", idx, h, m.height)
 		}
 	}
 
 	// Tab cycles focus and clamps at the last action; Esc closes and restores layout.
 	m.localChoice.idx = 0
-	m = step(m, tea.KeyMsg{Type: tea.KeyTab})
-	m = step(m, tea.KeyMsg{Type: tea.KeyTab})
-	m = step(m, tea.KeyMsg{Type: tea.KeyTab})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyTab})
 	if m.localChoice.idx != 2 {
 		t.Fatalf("Tab should clamp at Drop (idx 2), got %d", m.localChoice.idx)
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.localChoice != nil {
 		t.Fatal("Esc should close the widget")
 	}
-	if m.vp.Height != full {
-		t.Fatalf("closing should restore viewport: full=%d now=%d", full, m.vp.Height)
+	if m.vp.Height() != full {
+		t.Fatalf("closing should restore viewport: full=%d now=%d", full, m.vp.Height())
 	}
 
 	// Confirming Drop must not delete immediately - it opens a confirmation alert.
 	m.models = &modelPicker{all: []modelItem{item}, items: []modelItem{item}}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m.localChoice.idx = 2
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.localChoice != nil {
 		t.Fatal("confirming Drop should close the widget")
 	}
 	if m.alert == nil || m.alert.action != alertLocalDrop {
 		t.Fatalf("Drop should open a confirmation alert, got %+v", m.alert)
 	}
-	if h := lipgloss.Height(m.View()); h != m.height {
+	if h := lipgloss.Height(m.render()); h != m.height {
 		t.Fatalf("drop-confirm alert overflows screen: height=%d want=%d", h, m.height)
 	}
 }
@@ -279,14 +486,14 @@ func TestInputAutoExpandsAndCapsAtFourLines(t *testing.T) {
 	if m.input.Height() != 1 {
 		t.Fatalf("expected initial input height 1, got %d", m.input.Height())
 	}
-	initialVPHeight := m.vp.Height
+	initialVPHeight := m.vp.Height()
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(strings.Repeat("a", 80))})
+	m = typeRunes(m, strings.Repeat("a", 80))
 	if m.input.Height() != maxInputHeight {
 		t.Fatalf("expected input height %d, got %d", maxInputHeight, m.input.Height())
 	}
-	if m.vp.Height != initialVPHeight-(maxInputHeight-1) {
-		t.Fatalf("expected viewport to shrink with input, was %d now %d", initialVPHeight, m.vp.Height)
+	if m.vp.Height() != initialVPHeight-(maxInputHeight-1) {
+		t.Fatalf("expected viewport to shrink with input, was %d now %d", initialVPHeight, m.vp.Height())
 	}
 
 	m.input.Reset()
@@ -301,8 +508,8 @@ func TestInputAutoExpandsAndCapsAtFourLines(t *testing.T) {
 // stale scroll observable.
 func typeRunes(m Model, s string) Model {
 	for _, r := range s {
-		m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		_ = m.View()
+		m = step(m, keyPress(r))
+		_ = m.render()
 	}
 	return m
 }
@@ -363,8 +570,8 @@ func TestInputShrinksBackToTopAfterOverflow(t *testing.T) {
 	// overflow would clip the first line under the top border.
 	fitSeen := false
 	for i := 0; i < 300 && len(m.input.Value()) > 5; i++ {
-		m = step(m, tea.KeyMsg{Type: tea.KeyBackspace})
-		_ = m.View()
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+		_ = m.render()
 		if inputRows(m.input.Value(), m.input.Width()) > maxInputHeight {
 			continue // still overflowing - the viewport correctly follows the cursor
 		}
@@ -382,7 +589,7 @@ func TestInputShrinksBackToTopAfterOverflow(t *testing.T) {
 func TestImagePasteInsertsInputMarker(t *testing.T) {
 	m := newTestModel(t)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("look")})
+	m = typeRunes(m, "look")
 
 	m = step(m, imagePasteMsg{image: llm.Image{MediaType: "image/png", Data: "AAA="}})
 	if got := m.input.Value(); got != "look [image:1] " {
@@ -392,7 +599,7 @@ func TestImagePasteInsertsInputMarker(t *testing.T) {
 		t.Fatalf("pendingImages = %d, want 1", len(m.pendingImages))
 	}
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if got := m.input.Value(); got != "look" {
 		t.Fatalf("Esc should remove image markers, got %q", got)
 	}
@@ -447,7 +654,7 @@ func TestUpdateNoPanic(t *testing.T) {
 	m = step(m, contentMsg("world"))
 	m = step(m, turnDoneMsg{answer: "hello world"})
 
-	view := m.View()
+	view := m.render()
 	if !strings.Contains(view, "read_file") {
 		t.Fatalf("expected tool call in view, got:\n%s", view)
 	}
@@ -491,8 +698,8 @@ func TestModelPickerSwitchAndLock(t *testing.T) {
 
 	// Filter to an OpenAI model and select it: locked entry routes to login
 	// (busy set), not a model switch; the backend stays local.
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("openai/gpt-5.6-sol")})
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = typeRunes(m, "openai/gpt-5.6-sol")
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.models != nil {
 		t.Fatal("picker should close on select")
 	}
@@ -606,23 +813,23 @@ func TestAgentsBrowserAndConfig(t *testing.T) {
 
 	// Move to web-search, open detail, then the config editor.
 	for i := 0; i < 4; i++ {
-		m = step(m, tea.KeyMsg{Type: tea.KeyDown})
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter}) // detail
-	if !m.agentBr.detail || !strings.Contains(m.View(), "Enter configure") {
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // detail
+	if !m.agentBr.detail || !strings.Contains(m.render(), "Enter configure") {
 		t.Fatal("expected configurable detail view")
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter}) // editor
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // editor
 	if !m.agentBr.editing {
 		t.Fatal("expected the config editor to open")
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyDown}) // API key field
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abc")})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // API key field
+	m = typeRunes(m, "abc")
 	if m.agentBr.keyBuf != "abc" {
 		t.Fatalf("expected keyBuf abc, got %q", m.agentBr.keyBuf)
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyBackspace})
-	if m.agentBr.keyBuf != "ab" || !strings.Contains(m.View(), "••") {
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if m.agentBr.keyBuf != "ab" || !strings.Contains(m.render(), "••") {
 		t.Fatalf("expected masked keyBuf ab, got %q", m.agentBr.keyBuf)
 	}
 
@@ -668,19 +875,19 @@ func TestAgentsBrowserConfiguresBrowserSearch(t *testing.T) {
 
 	m = typeEnter(m, "/agents")
 	for i := 0; i < 4; i++ {
-		m = step(m, tea.KeyMsg{Type: tea.KeyDown})
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter}) // detail
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter}) // editor
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // detail
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // editor
 	if m.agentBr.provider != search.ProviderBrave {
 		t.Fatalf("default editor provider = %q", m.agentBr.provider)
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyRight}) // switch provider to browser
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyRight}) // switch provider to browser
 	if m.agentBr.provider != search.ProviderBrowser {
 		t.Fatalf("expected browser provider, got %q", m.agentBr.provider)
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyDown}) // engine (duckduckgo by default)
-	m = step(m, tea.KeyMsg{Type: tea.KeyDown}) // optional profile
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // engine (duckduckgo by default)
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // optional profile
 
 	cfg, err := m.agentBr.searchConfig()
 	if err != nil {
@@ -727,17 +934,17 @@ func TestAgentsBrowserClearsSelectedSearchProvider(t *testing.T) {
 	}
 	m = typeEnter(m, "/agents")
 	for i := 0; i < 4; i++ {
-		m = step(m, tea.KeyMsg{Type: tea.KeyDown})
+		m = step(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter}) // detail
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter}) // editor
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // detail
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // editor
 	if m.agentBr.provider != search.ProviderBrowser {
 		t.Fatalf("expected browser provider from saved config, got %q", m.agentBr.provider)
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyDown}) // engine
-	m = step(m, tea.KeyMsg{Type: tea.KeyDown}) // profile
-	m = step(m, tea.KeyMsg{Type: tea.KeyDown}) // clear provider
-	cmd := m.handleAgentEditKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // engine
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // profile
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyDown}) // clear provider
+	cmd := m.handleAgentEditKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected clear command")
 	}
@@ -802,14 +1009,16 @@ func TestNewSessionClears(t *testing.T) {
 	if m.sessionID != "" || m.sessionTitle != "" || !m.sessionStart.IsZero() {
 		t.Fatal("session identity should be cleared")
 	}
-	if len(m.todos) != 0 || m.ctxTokens != 0 || len(m.history) != 0 {
-		t.Fatalf("todos/ctx/history should be cleared: todos=%d ctx=%d history=%d",
-			len(m.todos), m.ctxTokens, len(m.history))
+	if len(m.todos) != 0 || m.ctxTokens != 0 {
+		t.Fatalf("todos/ctx should be cleared: todos=%d ctx=%d", len(m.todos), m.ctxTokens)
+	}
+	if len(m.history) < 2 || m.history[len(m.history)-2] != "hello" || m.history[len(m.history)-1] != "/new" {
+		t.Fatalf("input history should survive /new, got %#v", m.history)
 	}
 	if msgs := m.agent.Messages(); len(msgs) != 1 || msgs[0].Role != llm.RoleSystem {
 		t.Fatalf("agent should hold only the system prompt, got %+v", msgs)
 	}
-	if !strings.Contains(m.View(), "minimal local coding agent") {
+	if !strings.Contains(m.render(), "minimal local coding agent") {
 		t.Fatal("the welcome banner should be shown after /new")
 	}
 }
@@ -855,17 +1064,17 @@ func TestToolOutputToggle(t *testing.T) {
 	m = step(m, toolStartMsg{name: "read_file", args: `{"path":"go.mod"}`})
 	m = step(m, toolEndMsg{name: "read_file", result: "module aigem\ngo 1.24"})
 
-	if strings.Contains(m.View(), "module aigem") {
+	if strings.Contains(m.render(), "module aigem") {
 		t.Fatal("tool output should be hidden by default")
 	}
 	// Ctrl+O toggles it on.
-	m = step(m, tea.KeyMsg{Type: tea.KeyCtrlO})
-	if !strings.Contains(m.View(), "module aigem") {
+	m = step(m, tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	if !strings.Contains(m.render(), "module aigem") {
 		t.Fatal("tool output should be visible after toggle")
 	}
 	// The call line is always shown regardless of the toggle.
-	m = step(m, tea.KeyMsg{Type: tea.KeyCtrlO})
-	if !strings.Contains(m.View(), "read_file") {
+	m = step(m, tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	if !strings.Contains(m.render(), "read_file") {
 		t.Fatal("tool call line should always be visible")
 	}
 
@@ -875,7 +1084,7 @@ func TestToolOutputToggle(t *testing.T) {
 		t.Fatal("expected output hidden at this point")
 	}
 	m = step(m, toolEndMsg{name: "write_file", err: errWrite})
-	if !strings.Contains(m.View(), "boom") {
+	if !strings.Contains(m.render(), "boom") {
 		t.Fatal("tool errors must be visible even when output is hidden")
 	}
 }
@@ -900,8 +1109,8 @@ func TestPlanSidebar(t *testing.T) {
 	// Expanded: header + items, each row exactly sidebarWidth wide, content-height
 	// (no padding to the full viewport).
 	side := m.sidebarLines()
-	if len(side) >= m.vp.Height {
-		t.Fatalf("expanded panel should be content-height, got %d rows for vp %d", len(side), m.vp.Height)
+	if len(side) >= m.vp.Height() {
+		t.Fatalf("expanded panel should be content-height, got %d rows for vp %d", len(side), m.vp.Height())
 	}
 	joined := strings.Join(side, "\n")
 	if !strings.Contains(joined, "▾ Plan  1/3") {
@@ -924,14 +1133,14 @@ func TestPlanSidebar(t *testing.T) {
 	}
 
 	// Ctrl+T collapses to just the framed title (top + title + bottom).
-	m = step(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	m = step(m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
 	if !m.todoCollapsed {
 		t.Fatal("Ctrl+T should collapse the panel")
 	}
 	if c := m.sidebarLines(); len(c) != 3 || !strings.Contains(c[1], "▸ Plan  1/3") {
 		t.Fatalf("collapsed panel should be a 3-row framed title with a ▸ chevron, got %#v", c)
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	m = step(m, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
 	if m.todoCollapsed {
 		t.Fatal("Ctrl+T should expand the panel again")
 	}
@@ -958,11 +1167,11 @@ func TestConfirmFlow(t *testing.T) {
 	if m.pending == nil {
 		t.Fatal("expected pending confirmation")
 	}
-	if !strings.Contains(m.View(), "Once") {
+	if !strings.Contains(m.render(), "Once") {
 		t.Fatal("expected confirm box in view")
 	}
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = step(m, keyPress('y'))
 	if m.pending != nil {
 		t.Fatal("expected confirmation cleared after answer")
 	}
@@ -978,7 +1187,7 @@ func TestOverlayBlursInput(t *testing.T) {
 	m := newTestModel(t)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("draft")})
+	m = typeRunes(m, "draft")
 	if !m.input.Focused() {
 		t.Fatal("input should be focused while typing")
 	}
@@ -989,7 +1198,7 @@ func TestOverlayBlursInput(t *testing.T) {
 		t.Fatal("input should be blurred while a modal dialog is open")
 	}
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = step(m, keyPress('y'))
 	<-resp
 	if !m.input.Focused() {
 		t.Fatal("input should regain focus after the dialog closes")
@@ -998,7 +1207,7 @@ func TestOverlayBlursInput(t *testing.T) {
 	// The command menu is an autocomplete popup driven by the input text, so the
 	// input must stay focused (and editable) while it is open.
 	m.input.Reset()
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = typeRunes(m, "/")
 	if m.cmdMenu == nil {
 		t.Fatal("expected command menu to open")
 	}
@@ -1024,7 +1233,7 @@ func TestScrollStickyBottom(t *testing.T) {
 	}
 
 	// Scroll up a page.
-	m = step(m, tea.KeyMsg{Type: tea.KeyPgUp})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if m.vp.AtBottom() {
 		t.Fatal("PgUp should scroll up off the bottom")
 	}
@@ -1036,10 +1245,79 @@ func TestScrollStickyBottom(t *testing.T) {
 	}
 
 	// Sending a message re-anchors to the bottom.
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = typeRunes(m, "hi")
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.vp.AtBottom() {
 		t.Fatal("submitting a message should re-anchor to the bottom")
+	}
+}
+
+// layout() runs on far more than a window resize: every row the input box gains
+// while typing, and every arrow key inside an overlay. It must not cost the
+// reader their place - which it did while it rebuilt the viewport, because a
+// fresh one reports AtBottom and refresh then jumps to the end.
+func TestLayoutKeepsScrollPosition(t *testing.T) {
+	m := newTestModel(t)
+	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	for i := 0; i < 60; i++ {
+		m = step(m, toolStartMsg{name: "read_file", args: `{"path":"f.go"}`})
+	}
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if m.vp.AtBottom() {
+		t.Fatal("PgUp should scroll up off the bottom")
+	}
+	off := m.vp.YOffset()
+
+	// Typing until the input wraps to a second row relayouts the frame.
+	m = typeRunes(m, strings.Repeat("a", 120))
+	if m.input.Height() < 2 {
+		t.Fatalf("expected the input to have grown a row, height=%d", m.input.Height())
+	}
+	if m.vp.AtBottom() {
+		t.Error("growing the input box scrolled the chat to the bottom")
+	}
+	if got := m.vp.YOffset(); got != off {
+		t.Errorf("growing the input box moved the chat: offset %d -> %d", off, got)
+	}
+
+	// So does opening an overlay and moving inside it.
+	m.input.Reset()
+	m = typeEnter(m, "/agents")
+	if m.agentBr == nil {
+		t.Fatal("/agents did not open the browser")
+	}
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.vp.AtBottom() {
+		t.Error("navigating an overlay scrolled the chat to the bottom")
+	}
+}
+
+// The other half of the same rule: a reader who is following the end must keep
+// following it. A relayout that takes rows away - an overlay opening, the input
+// box growing - raises the bottom offset without moving the viewport, so being
+// pinned to the end silently becomes being scrolled up unless layout says so.
+func TestLayoutKeepsFollowingTheEnd(t *testing.T) {
+	m := newTestModel(t)
+	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	for i := 0; i < 60; i++ {
+		m = step(m, toolStartMsg{name: "read_file", args: `{"path":"f.go"}`})
+	}
+	if !m.vp.AtBottom() {
+		t.Fatal("should start pinned to the bottom")
+	}
+
+	m = typeRunes(m, strings.Repeat("a", 120)) // wraps the input to a second row
+	if !m.vp.AtBottom() {
+		t.Error("growing the input box stopped the chat following the end")
+	}
+
+	m.input.Reset()
+	m = typeRunes(m, "/") // the command menu takes ~8 rows off the viewport
+	if m.cmdMenu == nil {
+		t.Fatal("typing / did not open the command menu")
+	}
+	if !m.vp.AtBottom() {
+		t.Error("opening the command menu stopped the chat following the end")
 	}
 }
 
@@ -1066,12 +1344,12 @@ func TestResumedSessionScrollable(t *testing.T) {
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	// Type /resume and open the picker, then load the (only) session.
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/resume")})
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = typeRunes(m, "/resume")
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.picker == nil {
 		t.Fatal("/resume should open the session picker")
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.picker != nil {
 		t.Fatal("picker should close after selecting a session")
 	}
@@ -1083,7 +1361,7 @@ func TestResumedSessionScrollable(t *testing.T) {
 		t.Fatal("resumed session should anchor at the bottom")
 	}
 	// The restored history must be scrollable.
-	m = step(m, tea.KeyMsg{Type: tea.KeyPgUp})
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if m.vp.AtBottom() {
 		t.Fatal("PgUp should scroll through the restored history")
 	}
@@ -1107,7 +1385,7 @@ func TestSubagentGrouping(t *testing.T) {
 	if g := m.groups["2"]; g == nil || len(g.lines) != 1 || g.done {
 		t.Fatalf("reviewer group wrong: %+v", m.groups["2"])
 	}
-	view := m.View()
+	view := m.render()
 	for _, want := range []string{"scout", "reviewer", "grep", "read_file", "list_dir"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
@@ -1133,7 +1411,7 @@ func TestConfirmQueue(t *testing.T) {
 		t.Fatalf("expected one queued confirm, got %d", len(m.pendingQueue))
 	}
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = step(m, keyPress('y'))
 	if got := <-r1; !got {
 		t.Fatal("expected bash approved")
 	}
@@ -1143,7 +1421,7 @@ func TestConfirmQueue(t *testing.T) {
 	if len(m.pendingQueue) != 0 {
 		t.Fatal("queue should be empty")
 	}
-	step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	step(m, keyPress('y'))
 	if got := <-r2; !got {
 		t.Fatal("expected write_file approved")
 	}
@@ -1158,7 +1436,7 @@ func TestConfirmAlwaysPolicy(t *testing.T) {
 	resp := make(chan bool, 1)
 	m = step(m, confirmReqMsg{name: "bash", args: `{"cmd":"ls"}`, resp: resp})
 	// Select "Always" and confirm.
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = step(m, keyPress('a'))
 	if got := <-resp; got != true {
 		t.Fatal("expected approval")
 	}
@@ -1244,17 +1522,17 @@ func TestLocalWizardProducesConfig(t *testing.T) {
 	w.init() // step 0, defaults loaded
 
 	// Step 0: keep default source (HF) -> Enter.
-	w.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	w.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	// Step 1: clear and type a custom repo.
 	for range w.value {
-		w.handleKey(tea.KeyMsg{Type: tea.KeyBackspace})
+		w.handleKey(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
 	for _, r := range "me/repo:Q4" {
-		w.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		w.handleKey(keyPress(r))
 	}
-	w.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	w.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	// Step 2: keep default binary -> Enter.
-	w.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	w.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	cfg := w.config()
 	if cfg.SourceKind != local.SourceHF {
@@ -1384,7 +1662,7 @@ func TestSkillTrustPromptApprovesAndLoads(t *testing.T) {
 	m = step(m, tea.WindowSizeMsg{Width: len(cwd) + 40, Height: 24})
 
 	// The prompt is a modal: it owns the keyboard and names the withheld skill.
-	view := m.View()
+	view := m.render()
 	for _, want := range []string{"Load this project's skills?", cwd, "1 skill(s):", "gitea",
 		"pre-approve tools", "y trust (persisted) · ctrl+c quit · any other key skip"} {
 		if !strings.Contains(view, want) {
@@ -1395,7 +1673,7 @@ func TestSkillTrustPromptApprovesAndLoads(t *testing.T) {
 		t.Error("the trust prompt must be modal and blur the input")
 	}
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = step(m, keyPress('y'))
 
 	if m.skillAsk != nil {
 		t.Error("prompt must close after a decision")
@@ -1441,7 +1719,7 @@ func TestSkillTrustPromptDeclineLeavesSkillsOut(t *testing.T) {
 	m.SetPendingSkills(cwd, pending)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = step(m, keyPress('n'))
 
 	if m.skillAsk != nil {
 		t.Error("prompt must close after a decision")
@@ -1449,8 +1727,8 @@ func TestSkillTrustPromptDeclineLeavesSkillsOut(t *testing.T) {
 	if m.skills.Len() != 0 {
 		t.Errorf("declined skills must stay out, got %d", m.skills.Len())
 	}
-	if !strings.Contains(m.View(), "restart to be asked again") {
-		t.Errorf("declining must say how to get asked again, and fit the terminal: %s", m.View())
+	if !strings.Contains(m.render(), "restart to be asked again") {
+		t.Errorf("declining must say how to get asked again, and fit the terminal: %s", m.render())
 	}
 	// Declining is not persisted as a denial: the next launch asks again.
 	if p, _ := skill.Pending(cwd); p == nil {
@@ -1482,12 +1760,12 @@ func TestHookTrustPromptPrecedesSkillTrustPrompt(t *testing.T) {
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	// Both are armed; the hook prompt renders first, then the skill one.
-	if !strings.Contains(m.View(), "Trust this project's hooks?") {
-		t.Fatalf("hook prompt should come first: %s", m.View())
+	if !strings.Contains(m.render(), "Trust this project's hooks?") {
+		t.Fatalf("hook prompt should come first: %s", m.render())
 	}
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	if !strings.Contains(m.View(), "Load this project's skills?") {
-		t.Fatalf("skill prompt should follow the hook one: %s", m.View())
+	m = step(m, keyPress('n'))
+	if !strings.Contains(m.render(), "Load this project's skills?") {
+		t.Fatalf("skill prompt should follow the hook one: %s", m.render())
 	}
 }
 
@@ -1525,7 +1803,7 @@ func TestSkillTrustApprovalReachesAlreadyRegisteredSkillTool(t *testing.T) {
 		t.Fatal("precondition: the untrusted skill must not be advertised yet")
 	}
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = step(m, keyPress('y'))
 
 	// Same tool instance: it must see the new set through the shared pointer.
 	if !strings.Contains(st.Description(), "gitea") {
@@ -1549,7 +1827,7 @@ func TestSkillTrustApprovalRearmsConditionalSkills(t *testing.T) {
 		agent.DefaultSubagents(), "", skills, nil, nil, "", agent.CompactConfig{}, nil)
 	m.SetPendingSkills(cwd, pending)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = step(m, keyPress('y'))
 
 	if got := m.skills.Conditional(); len(got) != 1 || got[0].Name != "golang" {
 		t.Fatalf("conditional skill not loaded: %+v", got)
@@ -1583,13 +1861,13 @@ func TestSkillTrustApprovalFailureSurfaces(t *testing.T) {
 	}
 	t.Setenv("XDG_STATE_HOME", blocked)
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = step(m, keyPress('y'))
 
 	if m.skills.Len() != 0 {
 		t.Errorf("nothing should load when the approval could not be persisted, got %d", m.skills.Len())
 	}
-	if !strings.Contains(m.View(), "could not trust project skills") {
-		t.Errorf("the failure was not surfaced: %s", m.View())
+	if !strings.Contains(m.render(), "could not trust project skills") {
+		t.Errorf("the failure was not surfaced: %s", m.render())
 	}
 }
 
@@ -1604,7 +1882,7 @@ func TestSkillTrustPromptCtrlCQuits(t *testing.T) {
 	m.SetPendingSkills(cwd, pending)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("ctrl+c at the trust prompt must quit, not silently decline")
 	}
@@ -1720,7 +1998,7 @@ func TestSkillTrustOverlayHeightIsBounded(t *testing.T) {
 	m.SetPendingSkills(cwd, pending)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	view := m.View()
+	view := m.render()
 	for _, l := range strings.Split(view, "\n") {
 		if ansi.StringWidth(l) > 80 {
 			t.Fatalf("view line is %d cells wide, terminal is 80: %q", ansi.StringWidth(l), l)
@@ -1757,7 +2035,7 @@ func TestSkillTrustPromptReportsChangedDefinitions(t *testing.T) {
 	m.SetPendingSkills(cwd, pending)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	view := m.View()
+	view := m.render()
 	for _, want := range []string{"Reload this project's changed skills?", "changed since you approved them"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("invalidated overlay is missing %q: %s", want, view)
@@ -1777,17 +2055,17 @@ func TestSkillTrustApprovalNoticeSanitizesNames(t *testing.T) {
 		agent.DefaultSubagents(), "", skills, nil, nil, "", agent.CompactConfig{}, nil)
 	m.SetPendingSkills(cwd, pending)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = step(m, keyPress('y'))
 
 	if m.skills.Len() != 1 {
 		t.Fatalf("the skill should still load, got %d", m.skills.Len())
 	}
-	if !strings.Contains(m.View(), "project skills trusted and loaded:") {
-		t.Fatalf("approval notice not shown: %s", m.View())
+	if !strings.Contains(m.render(), "project skills trusted and loaded:") {
+		t.Fatalf("approval notice not shown: %s", m.render())
 	}
 	// Strip the styling the TUI emits itself, then check nothing the skill chose
 	// survived: the escape is gone and its inert residue is all that is left.
-	plain := ansiRE.ReplaceAllString(m.View(), "")
+	plain := ansiRE.ReplaceAllString(m.render(), "")
 	if strings.ContainsRune(plain, 0x1b) {
 		t.Error("an escape from the skill name reached the terminal after approval")
 	}
