@@ -1252,6 +1252,46 @@ func TestScrollStickyBottom(t *testing.T) {
 	}
 }
 
+// layout() runs on far more than a window resize: every row the input box gains
+// while typing, and every arrow key inside an overlay. It must not cost the
+// reader their place - which it did while it rebuilt the viewport, because a
+// fresh one reports AtBottom and refresh then jumps to the end.
+func TestLayoutKeepsScrollPosition(t *testing.T) {
+	m := newTestModel(t)
+	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	for i := 0; i < 60; i++ {
+		m = step(m, toolStartMsg{name: "read_file", args: `{"path":"f.go"}`})
+	}
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if m.vp.AtBottom() {
+		t.Fatal("PgUp should scroll up off the bottom")
+	}
+	off := m.vp.YOffset()
+
+	// Typing until the input wraps to a second row relayouts the frame.
+	m = typeRunes(m, strings.Repeat("a", 120))
+	if m.input.Height() < 2 {
+		t.Fatalf("expected the input to have grown a row, height=%d", m.input.Height())
+	}
+	if m.vp.AtBottom() {
+		t.Error("growing the input box scrolled the chat to the bottom")
+	}
+	if got := m.vp.YOffset(); got != off {
+		t.Errorf("growing the input box moved the chat: offset %d -> %d", off, got)
+	}
+
+	// So does opening an overlay and moving inside it.
+	m.input.Reset()
+	m = typeEnter(m, "/agents")
+	if m.agentBr == nil {
+		t.Fatal("/agents did not open the browser")
+	}
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.vp.AtBottom() {
+		t.Error("navigating an overlay scrolled the chat to the bottom")
+	}
+}
+
 // TestResumedSessionScrollable verifies that a session restored via /resume is
 // rendered into the viewport, anchored at the bottom, and scrollable.
 func TestResumedSessionScrollable(t *testing.T) {

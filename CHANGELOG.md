@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Scrolling up to read history survives typing. Every relayout - a row gained by
+  the input box, an arrow key inside an overlay - rebuilt the chat viewport, and
+  a fresh one reads as "at the bottom", so the next redraw jumped to the end.
+  The viewport is resized in place now.
+
 - Scrolling the chat fast no longer types escape sequences into the input box.
   A quick wheel spin arrives as one dense burst of SGR mouse reports, and Bubble
   Tea v1 read stdin in 256-byte chunks: whenever a report straddled that

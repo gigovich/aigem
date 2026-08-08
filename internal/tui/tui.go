@@ -626,6 +626,7 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		done:           done,
 		input:          ta,
 		spin:           sp,
+		vp:             viewport.New(),
 		blocks:         startupBlocks,
 		historyRoot:    historyRoot,
 		history:        history,
@@ -3184,10 +3185,12 @@ func (m *Model) layout() {
 	m.input.SetWidth(max(10, m.width-4))
 	m.resizeInputHeight()
 	inputH := m.input.Height() + 2 // textarea + rounded border
-	m.vp = viewport.New(
-		viewport.WithWidth(m.width),
-		viewport.WithHeight(max(1, m.height-inputH-statusH-overlayH)),
-	)
+	// Resize in place. Replacing the viewport would reset its scroll offset, and
+	// layout runs on far more than a window resize - every arrow key inside an
+	// overlay, every row the input box gains while typing - so a fresh viewport
+	// would read as "at the bottom" to refresh below and yank the reader there.
+	m.vp.SetWidth(m.width)
+	m.vp.SetHeight(max(1, m.height-inputH-statusH-overlayH))
 	m.md = newGlamour(catppuccinProse, m.width)
 	m.mdCode = newGlamour(catppuccinCode, m.width)
 	if m.curStableLen > 0 {
