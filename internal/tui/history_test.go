@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,29 +14,48 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// record submits input for recall the way dispatch does, and runs the write the
+// returned command performs - persisting happens off the update loop now, so a
+// test that only calls dispatch would assert against an unwritten file.
+func record(t *testing.T, m *Model, input string) {
+	t.Helper()
+	cmd := m.recordInputHistory(input)
+	if cmd == nil {
+		return
+	}
+	msg, ok := cmd().(inputHistorySavedMsg)
+	if !ok {
+		t.Fatalf("recording %q produced %T, want inputHistorySavedMsg", input, msg)
+	}
+	if msg.err != nil {
+		t.Fatalf("recording %q: %v", input, msg.err)
+	}
+	m.applyInputHistorySaved(msg)
+}
+
 func TestInputHistorySurvivesRestart(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
 
 	m := newTestModel(t)
-	m.dispatch("/artifacts")
-	m.dispatch("/new")
+	record(t, &m, "fix the parser")
+	record(t, &m, "add a test for it")
 
 	restarted := newTestModel(t)
-	if got, want := restarted.history, []string{"/artifacts", "/new"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if got, want := restarted.history, []string{"fix the parser", "add a test for it"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("restored history = %#v, want %#v", got, want)
 	}
 
 	restarted = step(restarted, tea.KeyPressMsg{Code: tea.KeyUp})
-	if got := restarted.input.Value(); got != "/new" {
+	if got := restarted.input.Value(); got != "add a test for it" {
 		t.Fatalf("Up recalled %q, want latest input", got)
 	}
 	restarted = step(restarted, tea.KeyPressMsg{Code: tea.KeyUp})
-	if got := restarted.input.Value(); got != "/artifacts" {
+	if got := restarted.input.Value(); got != "fix the parser" {
 		t.Fatalf("second Up recalled %q, want older input", got)
 	}
 	restarted = step(restarted, tea.KeyPressMsg{Code: tea.KeyDown})
-	if got := restarted.input.Value(); got != "/new" {
+	if got := restarted.input.Value(); got != "add a test for it" {
 		t.Fatalf("Down recalled %q, want newer input", got)
 	}
 
@@ -335,24 +355,61 @@ func TestInputHistoryFailedReplacePreservesPreviousFile(t *testing.T) {
 	}
 }
 
-func TestInputHistoryRejectsCorruptAndOversizedFiles(t *testing.T) {
+// A recall cache that cannot be read is discarded and rebuilt. Reporting the
+// error instead would disable saving for good - the same read runs inside the
+// write path - and put a notice in the chat on every prompt from then on.
+func TestInputHistoryHealsUnusableFile(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	root := t.TempDir()
 	path, err := inputHistoryPath(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadInputHistory(root); err == nil {
-		t.Fatal("corrupt history was accepted")
-	}
-	if err := os.Truncate(path, inputHistoryMaxBytes+1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadInputHistory(root); err == nil {
-		t.Fatal("oversized history was accepted")
+
+	for _, tc := range []struct {
+		name  string
+		write func(t *testing.T)
+	}{
+		{"corrupt", func(t *testing.T) {
+			if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"oversized", func(t *testing.T) {
+			if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(path, inputHistoryMaxBytes+1); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"another directory", func(t *testing.T) {
+			if err := writeInputHistoryFile(path, inputHistoryState{
+				Root: "/somewhere/else", Entries: []string{"theirs"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.write(t)
+
+			got, err := loadInputHistory(root)
+			if err != nil {
+				t.Fatalf("loading a %s file errored instead of starting over: %v", tc.name, err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("loading a %s file returned %#v, want nothing", tc.name, got)
+			}
+
+			entries, err := appendInputHistory(root, "after")
+			if err != nil {
+				t.Fatalf("saving over a %s file failed: %v", tc.name, err)
+			}
+			if len(entries) != 1 || entries[0] != "after" {
+				t.Fatalf("saving over a %s file produced %#v, want just the new entry", tc.name, entries)
+			}
+		})
 	}
 }
 
@@ -383,16 +440,46 @@ func TestInputHistoryKeepsMostRecentEntries(t *testing.T) {
 	}
 }
 
-func TestNewShowsInputHistorySaveError(t *testing.T) {
+// A save failure is reported, but once per session: every cause of one is
+// persistent - an unwritable state dir, a full disk - so a notice per prompt
+// would bury the conversation it is trying to warn about.
+func TestInputHistorySaveErrorIsReportedOnce(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	m := newTestModel(t)
 	oldReplace := replaceHistoryFile
 	replaceHistoryFile = func(string, string) error { return errors.New("replace failed") }
 	t.Cleanup(func() { replaceHistoryFile = oldReplace })
 
-	m.dispatch("/new")
+	failing := func(input string) {
+		t.Helper()
+		cmd := m.recordInputHistory(input)
+		if cmd == nil {
+			t.Fatalf("recording %q produced no command", input)
+		}
+		msg, ok := cmd().(inputHistorySavedMsg)
+		if !ok {
+			t.Fatalf("recording %q produced %T", input, msg)
+		}
+		if msg.err == nil {
+			t.Fatalf("recording %q unexpectedly succeeded", input)
+		}
+		m.applyInputHistorySaved(msg)
+	}
+
+	failing("first prompt")
 	if !hasBlock(m, bkNotice, "could not save input history") {
-		t.Fatalf("/new discarded the history save error: %#v", m.blocks)
+		t.Fatalf("a failed save was not reported: %#v", m.blocks)
+	}
+	before := len(m.blocks)
+	failing("second prompt")
+	failing("third prompt")
+	if len(m.blocks) != before {
+		t.Fatalf("a failed save was reported again: %d blocks, want %d", len(m.blocks), before)
+	}
+
+	// Recall still works in memory; only the on-disk copy is missing.
+	if len(m.history) != 3 || m.history[2] != "third prompt" {
+		t.Fatalf("failing to save cost the in-memory recall list: %#v", m.history)
 	}
 }
 
@@ -405,5 +492,109 @@ func TestInputHistoryFileNameDoesNotExposeWorkingDirectory(t *testing.T) {
 	}
 	if filepath.Base(path) == filepath.Base(root)+".json" {
 		t.Fatalf("history filename exposes working directory: %s", path)
+	}
+}
+
+// Recall is for prompts you would arrow back to. A slash command is not one -
+// /new is the last thing most sessions see, so it would be the first thing the
+// next one offers - and neither is a bare Enter sent with an image attached, nor
+// a paste far too long to scroll through.
+func TestInputHistoryRecordsOnlyRecallableInput(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"prompt", "fix the parser", true},
+		{"slash command", "/new", false},
+		{"slash command with args", "/model openai/gpt-5.6-sol", false},
+		{"empty", "", false},
+		{"whitespace only", "   \n ", false},
+		{"at the entry cap", strings.Repeat("a", inputHistoryMaxEntryBytes), true},
+		{"past the entry cap", strings.Repeat("a", inputHistoryMaxEntryBytes+1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := recordsInputHistory(tc.input); got != tc.want {
+				t.Errorf("recordsInputHistory(%.20q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// Persisting takes a cross-process lock and two fsyncs. On the update goroutine
+// a second instance mid-write froze this one for the lock timeout, with no
+// redraw and no keys accepted, so the work has to happen in a command.
+func TestInputHistoryWriteDoesNotBlockTheUpdateLoop(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := newTestModel(t)
+
+	path, err := inputHistoryPath(m.historyRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hold the lock the way another aigem instance would.
+	held := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = withInputHistoryLock(path+".lock", func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+	defer close(release)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if cmd := m.recordInputHistory("while the lock is held"); cmd == nil {
+			t.Error("recording produced no command")
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(historyLockTimeout):
+		t.Fatal("recording an input blocked on the history lock instead of deferring it")
+	}
+	if len(m.history) != 1 || m.history[0] != "while the lock is held" {
+		t.Fatalf("recall did not update immediately: %#v", m.history)
+	}
+}
+
+// A killed writer leaves a temp file holding prompts, and nothing else prunes
+// the directory.
+func TestInputHistorySweepsAbandonedTempFiles(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	path, err := inputHistoryPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(path)
+
+	stale := filepath.Join(dir, ".history-stale.json.tmp")
+	fresh := filepath.Join(dir, ".history-fresh.json.tmp")
+	for _, name := range []string{stale, fresh} {
+		if err := os.WriteFile(name, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * inputHistoryTempMaxAge)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := appendInputHistory(root, "entry"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("abandoned temp file survived: %v", err)
+	}
+	// A temp file young enough to belong to a live writer is left alone.
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("a live writer's temp file was removed: %v", err)
 	}
 }

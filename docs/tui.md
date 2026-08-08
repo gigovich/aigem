@@ -58,11 +58,18 @@ still stops for an explicit confirmation.
 
 ## Sessions
 
-The last 500 submitted inputs for each working directory are saved verbatim in a
-private file under `~/.local/state/aigem/input-history/`. Up/Down recall therefore
-continues after restarting aigem and across `/new` sessions, but input from one
-working directory is never offered in another. Avoid entering secrets that should
-not be retained on disk.
+The last 500 submitted prompts for each working directory are saved verbatim in a
+private file under `~/.local/state/aigem/input-history/`, named after a hash of
+the directory rather than its path. Up/Down recall therefore continues after
+restarting aigem and across `/new` sessions, but input from one working directory
+is never offered in another. Avoid entering secrets that should not be retained on
+disk; to clear the list, delete the file.
+
+Slash commands are not recalled, nor is anything longer than 16 KiB - the point
+of the list is prompts you would arrow back to. Several aigem instances open on
+the same directory share one list, so a prompt submitted in one appears in the
+others' recall. A file that cannot be read back is discarded and rebuilt rather
+than reported.
 
 Conversations are saved as JSON under `~/.local/state/aigem/sessions` (honoring
 `XDG_STATE_HOME`) after every turn. `/resume` picks a past session from a list and

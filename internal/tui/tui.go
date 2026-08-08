@@ -342,6 +342,13 @@ type localProgressMsg local.Progress
 // alert is nil when the model is available.
 type availabilityMsg struct{ alert *alertBox }
 
+// inputHistorySavedMsg carries the result of persisting a submitted line,
+// including the list the writer read back under the lock.
+type inputHistorySavedMsg struct {
+	entries []string
+	err     error
+}
+
 // alertAction is what an alertBox's confirm button does.
 type alertAction int
 
@@ -435,10 +442,11 @@ type Model struct {
 	sessionTitle   string
 	sessionStart   time.Time
 
-	historyRoot string   // canonical working directory that owns the input history
-	history     []string // submitted prompts, for up/down recall
-	histIdx     int      // == len(history) means "current draft"
-	histDraft   string
+	historyRoot   string   // canonical working directory that owns the input history
+	history       []string // submitted prompts, for up/down recall
+	histIdx       int      // == len(history) means "current draft"
+	histDraft     string
+	historyWarned bool // a save already failed and was reported once
 
 	blocks        []block          // persisted conversation
 	todos         []agent.TodoItem // model's working plan, shown in the right sidebar
@@ -604,11 +612,10 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 	}
 	_, searchOn := reg.Get("web_search")
 	historyRoot := reg.Root()
-	history, historyErr := loadInputHistory(historyRoot)
-	var startupBlocks []block
-	if historyErr != nil {
-		startupBlocks = append(startupBlocks, block{kind: bkNotice, text: "could not load input history: " + historyErr.Error()})
-	}
+	// A recall list that will not load is not worth a startup notice: it would
+	// take the place of the welcome screen, which only shows while there are no
+	// blocks. Recall simply starts empty, and a save that also fails says so.
+	history, _ := loadInputHistory(historyRoot)
 	// Availability of the active model is checked asynchronously after launch (see
 	// Init/checkActiveAvailability), so a reachability probe never delays startup.
 	return Model{
@@ -627,7 +634,6 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		input:          ta,
 		spin:           sp,
 		vp:             viewport.New(),
-		blocks:         startupBlocks,
 		historyRoot:    historyRoot,
 		history:        history,
 		histIdx:        len(history),
@@ -737,6 +743,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.handlePaste(msg.Content) {
 			return m, m.reconcileFocus()
 		}
+
+	case inputHistorySavedMsg:
+		// Delivered by the recordInputHistory tea.Cmd, not the event bridge.
+		m.applyInputHistorySaved(msg)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -1379,18 +1389,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// dispatch routes a submitted line to a slash command or the agent.
+// dispatch routes a submitted line to a slash command or the agent, and records
+// it for recall alongside.
 func (m *Model) dispatch(input string) tea.Cmd {
-	historyErr := m.recordInputHistory(input)
-	if historyErr != nil && input != "/new" {
-		m.showInputHistoryError(historyErr)
-	}
+	return tea.Batch(m.recordInputHistory(input), m.runInput(input))
+}
+
+func (m *Model) runInput(input string) tea.Cmd {
 	switch {
 	case input == "/new":
 		m.newSession()
-		if historyErr != nil {
-			m.showInputHistoryError(historyErr)
-		}
 		return nil
 	case input == "/resume":
 		m.input.Reset()
@@ -1439,23 +1447,46 @@ func (m *Model) dispatch(input string) tea.Cmd {
 	return m.submit(input)
 }
 
-func (m *Model) recordInputHistory(input string) error {
-	history, err := appendInputHistory(m.historyRoot, input)
-	if err == nil {
-		m.history = history
-	} else {
-		m.history = append(m.history, input)
-		if len(m.history) > inputHistoryLimit {
-			m.history = m.history[len(m.history)-inputHistoryLimit:]
-		}
+// recordInputHistory adds a submitted line to the in-memory recall list and
+// returns the command that persists it. Persisting takes a cross-process lock
+// and two fsyncs, which is a wait no keystroke can be behind: on the update
+// goroutine a second instance mid-write froze this one for the lock timeout.
+func (m *Model) recordInputHistory(input string) tea.Cmd {
+	if !recordsInputHistory(input) {
+		return nil
+	}
+	m.history = append(m.history, input)
+	if len(m.history) > inputHistoryLimit {
+		m.history = m.history[len(m.history)-inputHistoryLimit:]
 	}
 	m.histIdx = len(m.history)
-	return err
+
+	root := m.historyRoot
+	return func() tea.Msg {
+		entries, err := appendInputHistory(root, input)
+		return inputHistorySavedMsg{entries: entries, err: err}
+	}
 }
 
-func (m *Model) showInputHistoryError(err error) {
-	m.blocks = append(m.blocks, block{kind: bkNotice, text: "could not save input history: " + err.Error()})
-	m.refresh()
+// applyInputHistorySaved adopts what the writer read back, so entries submitted
+// in another instance in this directory join the recall list. It leaves the list
+// alone mid-recall, where replacing it would move what Up and Down show.
+func (m *Model) applyInputHistorySaved(msg inputHistorySavedMsg) {
+	if msg.err != nil {
+		// One notice per failing session, not one per submitted prompt: the
+		// causes are all persistent (unwritable state dir, a full disk).
+		if !m.historyWarned {
+			m.historyWarned = true
+			m.blocks = append(m.blocks,
+				block{kind: bkNotice, text: "could not save input history: " + msg.err.Error()})
+			m.refresh()
+		}
+		return
+	}
+	if m.histIdx == len(m.history) {
+		m.history = msg.entries
+		m.histIdx = len(m.history)
+	}
 }
 
 // providerArg returns the provider named after a slash command, defaulting to

@@ -9,6 +9,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// openNoFollow has no Windows equivalent; the directory ACL below is what keeps
+// other users out.
+const openNoFollow = 0
+
 func replaceInputHistoryFile(from, to string) error {
 	fromp, err := windows.UTF16PtrFromString(from)
 	if err != nil {
@@ -36,7 +40,7 @@ func unlockInputHistoryFile(file *os.File) error {
 }
 
 func secureInputHistoryDir(path string) error {
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;SY)(A;;FA;;;OW)")
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;OW)")
 	if err != nil {
 		return err
 	}

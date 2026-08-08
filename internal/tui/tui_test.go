@@ -1012,7 +1012,9 @@ func TestNewSessionClears(t *testing.T) {
 	if len(m.todos) != 0 || m.ctxTokens != 0 {
 		t.Fatalf("todos/ctx should be cleared: todos=%d ctx=%d", len(m.todos), m.ctxTokens)
 	}
-	if len(m.history) < 2 || m.history[len(m.history)-2] != "hello" || m.history[len(m.history)-1] != "/new" {
+	// Recall survives /new. The slash command itself is not recalled: it is the
+	// last thing most sessions see, so it would be the first thing Up offers.
+	if len(m.history) < 1 || m.history[len(m.history)-1] != "hello" {
 		t.Fatalf("input history should survive /new, got %#v", m.history)
 	}
 	if msgs := m.agent.Messages(); len(msgs) != 1 || msgs[0].Role != llm.RoleSystem {

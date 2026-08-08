@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Saving the input-history file no longer happens on the render loop. It takes a
+  cross-process lock and two fsyncs, so a second aigem open on the same directory
+  could freeze this one for the lock timeout - no redraw, no keys - and then
+  print the timeout into the chat. Recall updates immediately and the write is a
+  background command.
+
+- A history file that cannot be read back is discarded and rebuilt. The same read
+  runs inside the write path, so a corrupt or oversized one used to disable
+  saving for good, put an error in the chat on every prompt, and - by leaving a
+  block behind at startup - displace the welcome screen permanently.
+
 - Scrolling up to read history survives typing. Every relayout - a row gained by
   the input box, an arrow key inside an overlay - rebuilt the chat viewport, and
   a fresh one reads as "at the bottom", so the next redraw jumped to the end.
@@ -28,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nearly every hiccup.
 
 ### Changed
+
+- Input history records prompts only: slash commands are skipped, since `/new` is
+  the last thing most sessions see and would be the first thing Up offered, and
+  so are empty submissions and anything past 16 KiB. Abandoned temp files are
+  swept, and the directory and lock file are opened without following symlinks.
 
 - The TUI moved from Bubble Tea, Bubbles and Lip Gloss v1 to v2
   (`charm.land/*/v2`), which is where the input parser above is fixed. Key

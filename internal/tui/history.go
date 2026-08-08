@@ -9,16 +9,30 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gigovich/aigem/internal/config"
 )
 
 const (
-	inputHistoryLimit    = 500
-	inputHistoryMaxBytes = 16 << 20
-	historyLockTimeout   = 2 * time.Second
+	inputHistoryLimit = 500
+	// One recalled entry is something you scroll back to with an arrow key, so a
+	// pasted document is not one. Capping the entry keeps a single paste from
+	// sitting in the file forever and being re-read on every submission.
+	inputHistoryMaxEntryBytes = 16 << 10
+	inputHistoryMaxBytes      = 16 << 20
+	historyLockTimeout        = 2 * time.Second
+	// Temp files are removed on every failure path, so one on disk means a
+	// process died mid-write. Old enough that a live writer's file is never hit.
+	inputHistoryTempMaxAge = time.Hour
 )
+
+// errUnusableHistory marks a history file that cannot be read back but is also
+// not worth an error: corrupt, oversized, or left by another directory that
+// happened to collide. It is a recall cache, so the answer is to start over
+// rather than to disable saving and complain on every submission.
+var errUnusableHistory = errors.New("input history file is unusable")
 
 type inputHistoryState struct {
 	Root    string   `json:"root"`
@@ -41,12 +55,19 @@ func inputHistoryPath(root string) (string, error) {
 	return filepath.Join(dir, hex.EncodeToString(sum[:])+".json"), nil
 }
 
+// loadInputHistory reads the recall list for root. An unusable file reads as an
+// empty history: startup must not be interrupted, and must not open with a
+// notice block either - one would displace the welcome screen for good.
 func loadInputHistory(root string) ([]string, error) {
 	path, err := inputHistoryPath(root)
 	if err != nil {
 		return nil, err
 	}
-	return loadInputHistoryFile(path, root)
+	entries, err := loadInputHistoryFile(path, root)
+	if errors.Is(err, errUnusableHistory) {
+		return nil, nil
+	}
+	return entries, err
 }
 
 func loadInputHistoryFile(path, root string) ([]string, error) {
@@ -63,21 +84,21 @@ func loadInputHistoryFile(path, root string) ([]string, error) {
 		return nil, err
 	}
 	if info.Size() > inputHistoryMaxBytes {
-		return nil, fmt.Errorf("input history exceeds %d bytes", inputHistoryMaxBytes)
+		return nil, fmt.Errorf("%w: exceeds %d bytes", errUnusableHistory, inputHistoryMaxBytes)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, inputHistoryMaxBytes+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(data) > inputHistoryMaxBytes {
-		return nil, fmt.Errorf("input history exceeds %d bytes", inputHistoryMaxBytes)
+		return nil, fmt.Errorf("%w: exceeds %d bytes", errUnusableHistory, inputHistoryMaxBytes)
 	}
 	var state inputHistoryState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errUnusableHistory, err)
 	}
 	if state.Root != root {
-		return nil, fmt.Errorf("input history belongs to a different working directory")
+		return nil, fmt.Errorf("%w: belongs to a different working directory", errUnusableHistory)
 	}
 	if len(state.Entries) > inputHistoryLimit {
 		state.Entries = state.Entries[len(state.Entries)-inputHistoryLimit:]
@@ -96,9 +117,14 @@ func appendInputHistory(root, entry string) ([]string, error) {
 	err = withInputHistoryLock(path+".lock", func() error {
 		var err error
 		entries, err = loadInputHistoryFile(path, root)
+		if errors.Is(err, errUnusableHistory) {
+			// Overwrite it rather than refusing to save from here on.
+			entries, err = nil, nil
+		}
 		if err != nil {
 			return err
 		}
+		sweepInputHistoryTemps(filepath.Dir(path))
 		entries = append(entries, entry)
 		if len(entries) > inputHistoryLimit {
 			entries = entries[len(entries)-inputHistoryLimit:]
@@ -106,6 +132,23 @@ func appendInputHistory(root, entry string) ([]string, error) {
 		return writeInputHistoryFile(path, inputHistoryState{Root: root, Entries: entries})
 	})
 	return entries, err
+}
+
+// sweepInputHistoryTemps removes temp files a killed writer left behind. They
+// hold prompts, and nothing else ever prunes the directory. Best effort: a temp
+// that cannot be removed is not worth failing a save over.
+func sweepInputHistoryTemps(dir string) {
+	names, err := filepath.Glob(filepath.Join(dir, ".history-*.json.tmp"))
+	if err != nil {
+		return
+	}
+	for _, name := range names {
+		info, err := os.Stat(name)
+		if err != nil || time.Since(info.ModTime()) < inputHistoryTempMaxAge {
+			continue
+		}
+		_ = os.Remove(name)
+	}
 }
 
 func writeInputHistoryFile(path string, state inputHistoryState) (retErr error) {
@@ -143,8 +186,21 @@ func writeInputHistoryFile(path string, state inputHistoryState) (retErr error) 
 
 var replaceHistoryFile = replaceInputHistoryFile
 
+// recordsInputHistory reports whether an submitted line is worth recalling.
+// A slash command is not: /new is the last thing most sessions see, and it
+// would be the first thing the next one offers on Up. Neither is a bare Enter
+// sent with an attached image, nor a paste far too long to arrow back to.
+func recordsInputHistory(input string) bool {
+	return strings.TrimSpace(input) != "" &&
+		!strings.HasPrefix(input, "/") &&
+		len(input) <= inputHistoryMaxEntryBytes
+}
+
 func withInputHistoryLock(path string, fn func() error) (retErr error) {
-	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	// O_NOFOLLOW where the platform has it: the lock file sits in a directory
+	// this process created, but a symlink planted there would otherwise have its
+	// target chmod'd below.
+	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|openNoFollow, 0o600)
 	if err != nil {
 		return err
 	}
