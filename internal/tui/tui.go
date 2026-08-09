@@ -2930,7 +2930,6 @@ func (m *Model) finishTurn(msg turnDoneMsg) {
 	}
 	m.busy = false
 	m.resetStream()
-	m.saveSession()
 	// Persist the quota reading this turn's responses carried, so `aigem usage`
 	// can report it later without spending a request to ask.
 	if rep, ok := llm.UsageOf(m.backend); ok {

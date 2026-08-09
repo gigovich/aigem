@@ -546,3 +546,31 @@ func (b *blockingClient) Stream(ctx context.Context, _ []llm.Message, _ []llm.To
 	}
 	return llm.Message{Role: llm.RoleAssistant, Content: "done"}, nil
 }
+
+// Subscribing after a burst must deliver the whole backlog before the tail, in
+// order and without dropping the front of it. The queue is handed to the pump
+// as a slice and appended to concurrently, which is exactly the shape that
+// loses its head if the two disagree about where it starts.
+func TestSubscribeDeliversWholeBacklog(t *testing.T) {
+	l := newSession(t)
+	const n = 15
+	for range n {
+		l.emit(Event{Kind: KindNotice})
+	}
+	ch, stop, err := l.Subscribe(Client{ID: "late"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	l.emit(Event{Kind: KindNotice})
+
+	var got []uint64
+	for len(got) < n+2 { // the backlog, the presence on subscribe, and the tail
+		got = append(got, recv(t, ch).Seq)
+	}
+	for i, seq := range got {
+		if seq != uint64(i+1) {
+			t.Fatalf("delivered %v; the stream must start at 1 and be contiguous", got)
+		}
+	}
+}

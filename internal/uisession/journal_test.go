@@ -30,7 +30,11 @@ func journalSession(t *testing.T, ring int) *Local {
 // A client away longer than the retained history is served from the journal
 // rather than told to reload, which is the whole point of writing one.
 func TestReplayFallsBackToJournal(t *testing.T) {
-	l := journalSession(t, 4)
+	// The ring has to outlast the turn - a subscriber that falls behind its own
+	// queue is dropped, and this test is about the journal, not backpressure -
+	// so it is evicted deliberately below instead of by being too small.
+	const ring = 64
+	l := journalSession(t, ring)
 	ch, stop, err := l.Subscribe(Client{ID: "c"}, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +46,7 @@ func TestReplayFallsBackToJournal(t *testing.T) {
 	stop()
 
 	// Push the early events out of the ring.
-	for range 20 {
+	for range ring * 2 {
 		l.emit(Event{Kind: KindNotice, Text: "filler"})
 	}
 	evs, err := l.Replay(1)

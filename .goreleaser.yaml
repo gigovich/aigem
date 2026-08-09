@@ -5,6 +5,9 @@ project_name: aigem
 before:
   hooks:
     - go mod tidy
+    # Release binaries carry the web UI; a plain `go build` does not, because
+    # `go install` has to keep working without a node toolchain.
+    - make web
 
 builds:
   - id: aigem

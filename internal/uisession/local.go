@@ -275,6 +275,14 @@ func (l *Local) emitLocked(ev Event) {
 	}
 }
 
+// Seq is the sequence number of the most recent event, which is what a client
+// passes back as since to resume from.
+func (l *Local) Seq() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.seq
+}
+
 // firstSeqLocked is the oldest sequence number still retained, or 0 when
 // nothing has been emitted.
 func (l *Local) firstSeqLocked() uint64 {
@@ -466,7 +474,6 @@ func (l *Local) startLocked(display, title string, images int,
 
 func (l *Local) finishTurn(answer string, err error) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.running = false
 	l.cancel = nil
 	out := Event{Kind: KindTurnEnd, Text: answer}
@@ -477,6 +484,22 @@ func (l *Local) finishTurn(answer string, err error) {
 		out.Error = err.Error()
 	}
 	l.emitLocked(out)
+	l.mu.Unlock()
+
+	// Persist at the end of every turn rather than only when a front-end
+	// remembers to. A conversation the daemon is holding has no one to save it
+	// on the way out if the process dies, and a turn that took a minute to
+	// produce should not be lost to a crash in the next one.
+	if saveErr := l.Save(); saveErr != nil {
+		l.Notice("could not save session: " + saveErr.Error())
+	}
+}
+
+// Notice publishes a line of prose to the session. It is how something outside
+// the agent - a provider retry, a failed save - says so where the conversation
+// can show it.
+func (l *Local) Notice(text string) {
+	l.emit(Event{Kind: KindNotice, Text: text})
 }
 
 // Interrupt cancels the running turn. It is a no-op when nothing is running.

@@ -71,6 +71,7 @@ const topLevelUsage = `usage:
   aigem mcp ...              manage MCP servers
   aigem paths ...            manage approved paths outside the working directory
   aigem bot ...              define and run unattended chat bots
+  aigem web run              serve the web UI on 127.0.0.1
   aigem version              print the version
 
 flags:`
@@ -144,8 +145,19 @@ func ensureLocalReady(cfg local.Config, nonInteractive bool) {
 func main() {
 	// "aigem mcp ..." and "aigem auth ..." manage config and exit before the flag
 	// parser (which is tuned for the chat front-ends) ever runs.
+	// webMode is set by the "web" subcommand, which then falls through to the
+	// same startup as the chat front-ends: a web session has to be assembled the
+	// same way a terminal one is, and duplicating that assembly is how the two
+	// would drift.
+	var webMode bool
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "web":
+			if len(os.Args) < 3 || os.Args[2] != "run" {
+				fatal(errors.New(strings.TrimSpace(webUsage)))
+			}
+			webMode = true
+			os.Args = append(os.Args[:1], os.Args[3:]...)
 		case "mcp":
 			if err := runMCPCommand(os.Args[2:]); err != nil {
 				fatal(err)
@@ -207,6 +219,8 @@ func main() {
 	maxTokens := flag.Int("max-tokens", defaultMaxTokens, "cap tokens per response (bounds runaway generation; 0 = no cap)")
 	ctxSize := flag.Int("ctx-size", defaultCtxSize, "model context window in tokens (for the usage gauge)")
 	repl := flag.Bool("repl", false, "run the plain CLI REPL instead of the TUI")
+	webAddr := flag.String("listen", "127.0.0.1:0",
+		"address for `aigem web run` (loopback by default; see docs/web-ui.md before changing it)")
 	prompt := flag.String("p", "", "run a single prompt non-interactively and exit")
 	yes := flag.Bool("y", false, "auto-approve confirm-gated tools in -p mode (bash requires --capability-profile shell or dangerous-shell)")
 	traceJSON := flag.String("trace-json", "",
@@ -470,6 +484,15 @@ func main() {
 	}
 	if *repl {
 		runREPL(ref, reg, *temp, sysPrompt, agents, project, skills, runner, compactCfg)
+		return
+	}
+	if webMode {
+		runWeb(webRun{
+			client: ref, reg: reg, temp: *temp, sysPrompt: sysPrompt, buildSys: buildSystem,
+			agents: agents, project: project, skills: skills, hooks: runner, mcpMgr: mcpMgr,
+			compactCfg: compactCfg, modelReg: modelReg, maxTokens: *maxTokens,
+			ctxSize: *ctxSize, addr: *webAddr, cwd: *cwd,
+		})
 		return
 	}
 	m := tui.New(ref, reg, *temp, modelLabel, urlLabel, sysPrompt, *ctxSize, *maxTokens, agents, project, skills, runner, mcpMgr, dec.SessionTitle, compactCfg, modelReg)

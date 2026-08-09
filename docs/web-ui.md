@@ -2,11 +2,11 @@
 
 !!! note "Partly built"
 
-    Steps 0 to 3 of the work breakdown have landed: call ids on tool events,
-    `internal/uisession`, the terminal ported onto it, and the journal. Nothing
-    web-facing exists yet - there is no daemon, no protocol implementation and no
-    UI. The design below is kept in step with the code as it is written, and the
-    places where building it changed the design say so.
+    Steps 0 to 4 of the work breakdown have landed: call ids on tool events,
+    `internal/uisession`, the terminal ported onto it, the journal, and the
+    daemon with its protocol. There is no UI yet: `aigem web run` serves the API
+    and says so. The design below is kept in step with the code as it is
+    written, and the places where building it changed the design say so.
 
 aigem's terminal front-end is one way to drive the agent, not the only possible
 one. This design adds a second, independent front-end: a browser UI served by a
@@ -465,6 +465,29 @@ approval, answer - and a second connection with `since` gets an identical
 timeline. Also when a request with a bad `Origin` or no token is rejected, which
 is a test worth writing before the UI makes it easy to forget.
 
+One conversation at a time, for now. Sessions built against a single tool
+registry are not independent: registering the delegation tool binds it to the
+confirmation function of whichever session registered it last, so a tool call in
+one conversation would ask another conversation's clients for approval. Giving a
+session its own registry means resolving skills, project instructions, path
+grants and trust per root, which is the same work as serving a second directory
+- so both wait for step 8, and until then a second request is refused with a
+409 rather than quietly cross-wired.
+
+Three things a websocket needs that an HTTP handler does not. The connection is
+hijacked, so the http server can no longer close it: when the session ends
+first, the write side has to close the connection or the read side sits on a
+read that never returns and shutdown hangs. And closing has to be serialised
+with writing, or a close partway through a frame leaves the client reading the
+tail of one frame as the header of the next - which it reports as a reserved
+opcode, a confusing way to learn about a race.
+
+And a client must read from the buffer its handshake left behind, not from the
+connection: a dialer reads ahead, so frames the server sent right after the
+upgrade are already in that buffer. Reading past it loses the start of the
+stream and picks it up mid-frame. This bit the daemon's own tests before it
+could bite a front-end, which is the useful order for it to happen in.
+
 ### 5. Frontend scaffolding
 
 Vite, React, TypeScript, Tailwind, shadcn/ui in `internal/web/ui/`. `make web`,
@@ -474,6 +497,10 @@ the error message for a build without assets.
 *Done when* `make web && make build && aigem web run` serves a page that streams
 one turn, and a plain `go build` still produces a working binary that refuses
 `web run` with the intended message.
+
+The embedding, the `.gitkeep`, the `make web` target, the goreleaser hook and
+the message for a build with no assets landed with step 4, so this step is the
+frontend itself.
 
 ### 6. Web UI v1
 
