@@ -732,8 +732,8 @@ func TestModelSwitchUpdatesGauge(t *testing.T) {
 	if m.backend.Model().Ref() != "openai/gpt-5.6-sol" {
 		t.Fatalf("backend not switched: %q", m.backend.Model().Ref())
 	}
-	if m.ctxSize != 400000 || m.compactCfg.CtxSize != 400000 {
-		t.Fatalf("gauge/compaction window not updated: ctx=%d compact=%d", m.ctxSize, m.compactCfg.CtxSize)
+	if ctx, comp := m.sess.CtxSize(), m.sess.CompactConfig().CtxSize; ctx != 400000 || comp != 400000 {
+		t.Fatalf("gauge/compaction window not updated: ctx=%d compact=%d", ctx, comp)
 	}
 	if m.model != "openai/gpt-5.6-sol" {
 		t.Fatalf("status model label = %q", m.model)

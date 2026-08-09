@@ -28,7 +28,6 @@ import (
 
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/auth"
-	"github.com/gigovich/aigem/internal/config"
 	"github.com/gigovich/aigem/internal/hooks"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/local"
@@ -372,15 +371,14 @@ type Model struct {
 	// sess owns the turn, the approval queue and the session tool policy, and
 	// publishes the event stream this model renders. Everything below it here is
 	// presentation state.
-	sess       *uisession.Local
-	agent      *agent.Agent
-	backend    *llm.Ref
-	modelReg   *llm.Registry
-	compactCfg agent.CompactConfig
-	model      string
-	url        string
-	events     chan tea.Msg
-	done       chan struct{} // closed on quit to unblock the event bridge
+	sess     *uisession.Local
+	agent    *agent.Agent
+	backend  *llm.Ref
+	modelReg *llm.Registry
+	model    string
+	url      string
+	events   chan tea.Msg
+	done     chan struct{} // closed on quit to unblock the event bridge
 
 	vp             viewport.Model
 	input          textarea.Model
@@ -429,15 +427,12 @@ type Model struct {
 	filePaths      []string   // files' paths, cached for per-keystroke fuzzy matching
 	filesIndexed   bool
 
-	artBr          *artifactBrowser     // /artifacts picker, nil when closed
-	artifacts      []*artifact          // files changed this session, in first-touch order
-	artIndex       map[string]*artifact // rel path -> artifact, to merge repeat edits
-	diffScrollX    int                  // horizontal scroll offset shared by all diff blocks
-	diffMaxLen     int                  // longest diff content line, to bound horizontal scroll
-	ctxSize        int
-	defaultCtxSize int // fallback gauge window for models with no ContextWindow
-	ctxTokens      int
-	maxTokens      int
+	artBr       *artifactBrowser     // /artifacts picker, nil when closed
+	artifacts   []*artifact          // files changed this session, in first-touch order
+	artIndex    map[string]*artifact // rel path -> artifact, to merge repeat edits
+	diffScrollX int                  // horizontal scroll offset shared by all diff blocks
+	diffMaxLen  int                  // longest diff content line, to bound horizontal scroll
+	ctxTokens   int
 
 	historyRoot   string   // canonical working directory that owns the input history
 	history       []string // submitted prompts, for up/down recall
@@ -516,15 +511,23 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		case <-done:
 		}
 	})
+	if ctxSize <= 0 {
+		ctxSize = 8192
+	}
 	// The session builds the agent, because the confirmation function it is
 	// constructed with belongs to the session: it is what parks a tool call on
 	// the approval queue that every attached front-end can answer.
 	var regSkillTool func(*skill.Registry)
 	sess := uisession.New(uisession.Config{
-		Tools:    reg,
-		Hooks:    runner,
-		Title:    sessionTitle,
-		ModelRef: func() string { return client.Model().Ref() },
+		Tools:     reg,
+		Hooks:     runner,
+		Title:     sessionTitle,
+		ModelRef:  func() string { return client.Model().Ref() },
+		Models:    modelReg,
+		Backend:   client,
+		MaxTokens: maxTokens,
+		CtxSize:   ctxSize,
+		Compact:   compactCfg,
 		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
 			if agents != nil {
 				reg.Register(agent.NewTaskTool(stream, reg, temp, confirm, agents, project))
@@ -582,9 +585,6 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(cMauve).Background(cBase)
 
-	if ctxSize <= 0 {
-		ctxSize = 8192
-	}
 	_, searchOn := reg.Get("web_search")
 	historyRoot := reg.Root()
 	// A recall list that will not load is not worth a startup notice: it would
@@ -602,7 +602,6 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		agent:          ag,
 		backend:        client,
 		modelReg:       modelReg,
-		compactCfg:     compactCfg,
 		model:          modelName,
 		url:            url,
 		events:         events,
@@ -624,9 +623,6 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		hooks:          runner,
 		trustAsk:       runner != nil && runner.HasUntrustedProjectHooks(),
 		regSkillTool:   regSkillTool,
-		ctxSize:        ctxSize,
-		defaultCtxSize: ctxSize,
-		maxTokens:      maxTokens,
 	}
 }
 
@@ -904,7 +900,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.localProgIdx = -1
 		m.dlName = ""
-		m.modelReg.ReplaceLocal(llm.LocalProvider(msg.cfg.BaseURL(), msg.cfg.ModelName, msg.cfg.CtxSize, m.maxTokens))
+		m.modelReg.ReplaceLocal(llm.LocalProvider(msg.cfg.BaseURL(), msg.cfg.ModelName,
+			msg.cfg.CtxSize, m.sess.MaxTokens()))
 		m.blocks = append(m.blocks, block{kind: bkNotice, text: "llama-server is up"})
 		m.switchModel(llm.LocalProviderID+"/"+msg.cfg.ModelName, true)
 		return m, nil
@@ -2317,29 +2314,14 @@ func (m *Model) handleModelKey(msg tea.KeyPressMsg) tea.Cmd {
 // false when restoring a resumed session's model (which must not redefine the
 // global default).
 func (m *Model) switchModel(ref string, persist bool) {
-	b, _, info, err := auth.OpenModel(m.modelReg, ref, m.maxTokens)
+	info, err := m.sess.SwitchModel(ref, persist)
 	if err != nil {
 		m.blocks = append(m.blocks, block{kind: bkError, text: "switch model: " + err.Error()})
 		m.refresh()
 		return
 	}
-	m.backend.Set(b)
 	m.model = info.Ref()
-	m.url = b.Endpoint()
-	if persist {
-		_ = config.SaveModelPref(info.Ref()) // best-effort; a failed write must not interrupt
-	}
-
-	// A model without its own context window falls back to the startup default,
-	// never silently keeps the previous model's window.
-	cw := info.ContextWindow
-	if cw <= 0 {
-		cw = m.defaultCtxSize
-	}
-	m.ctxSize = cw
-	m.compactCfg.CtxSize = cw
-	m.agent.SetCompaction(m.compactCfg)
-	m.ctxTokens = m.agent.ContextTokens()
+	m.url = m.backend.Endpoint()
 	m.blocks = append(m.blocks, block{kind: bkNotice, text: "switched to " + info.Ref()})
 	m.refresh()
 }
@@ -2951,7 +2933,7 @@ func (m *Model) loadSession(id string) {
 			}
 		}
 	}
-	m.ctxTokens = m.agent.ContextTokens()
+	m.ctxTokens = m.sess.ContextTokens()
 	m.resetStream()
 	// A resumed conversation opens at its end, the way it looked when you left.
 	// The offset carried over from whatever was on screen means nothing against
@@ -3962,8 +3944,9 @@ func (m Model) statusLine() string {
 	sep := seg(cOverlay0, " · ")
 
 	pct := 0
-	if m.ctxSize > 0 {
-		pct = m.ctxTokens * 100 / m.ctxSize
+	ctxSize := m.sess.CtxSize()
+	if ctxSize > 0 {
+		pct = m.ctxTokens * 100 / ctxSize
 	}
 	ctxColor := cTeal
 	switch {
@@ -3972,7 +3955,7 @@ func (m Model) statusLine() string {
 	case pct >= 50:
 		ctxColor = cPeach
 	}
-	ctx := seg(ctxColor, fmt.Sprintf("ctx %s/%s %d%%", humanTokens(m.ctxTokens), humanTokens(m.ctxSize), pct))
+	ctx := seg(ctxColor, fmt.Sprintf("ctx %s/%s %d%%", humanTokens(m.ctxTokens), humanTokens(ctxSize), pct))
 	if q, qpct := m.quotaSegment(); q != "" {
 		qColor := cTeal
 		switch {

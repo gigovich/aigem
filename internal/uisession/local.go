@@ -85,6 +85,17 @@ type Config struct {
 	// conversation starts, so edits to the project instruction files take effect
 	// without a restart.
 	RebuildSystem func() string
+
+	// Models resolves a model reference; Backend is the shared handle every
+	// caller streams through, so switching model swaps what is inside it rather
+	// than replacing the handle.
+	Models  *llm.Registry
+	Backend *llm.Ref
+	// MaxTokens caps one response. CtxSize is the context window to fall back on
+	// for a model that declares none.
+	MaxTokens int
+	CtxSize   int
+	Compact   agent.CompactConfig
 }
 
 // Local is a session whose agent runs in this process.
@@ -121,6 +132,13 @@ type Local struct {
 	modelRef      func() string
 	rebuildSystem func() string
 
+	models     *llm.Registry
+	backend    *llm.Ref
+	maxTokens  int
+	defaultCtx int
+	ctxSize    int
+	compact    agent.CompactConfig
+
 	running bool
 	cancel  context.CancelFunc
 
@@ -150,6 +168,13 @@ func New(cfg Config) *Local {
 		hooks:         cfg.Hooks,
 		modelRef:      cfg.ModelRef,
 		rebuildSystem: cfg.RebuildSystem,
+
+		models:     cfg.Models,
+		backend:    cfg.Backend,
+		maxTokens:  cfg.MaxTokens,
+		defaultCtx: cfg.CtxSize,
+		ctxSize:    cfg.CtxSize,
+		compact:    cfg.Compact,
 	}
 	if cfg.NewAgent != nil {
 		l.ag = cfg.NewAgent(l.confirmTool)
