@@ -279,16 +279,10 @@ type mcpPreviewMsg struct {
 	err  error
 }
 
-// commandItem is one entry in the slash-command autocomplete menu.
-type commandItem struct {
-	name string
-	desc string
-}
-
 // commandMenu is the live fuzzy-filtered list shown while the user types a
 // slash command in the input.
 type commandMenu struct {
-	items  []commandItem
+	items  []uisession.Command
 	cursor int
 }
 
@@ -421,7 +415,7 @@ type Model struct {
 	prog           progress.Model    // progress bar for local downloads
 	alert          *alertBox         // active-model-unavailable warning, nil when none
 	cmdMenu        *commandMenu
-	commands       []commandItem
+	commands       []uisession.Command
 	fileMenu       *fileMenu  // @-path autocomplete, nil when closed
 	files          []fileItem // lazily-built project file index
 	filePaths      []string   // files' paths, cached for per-keystroke fuzzy matching
@@ -619,7 +613,7 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		reg:            reg,
 		searchPrompted: searchOn,
 		mcpMgr:         mcpMgr,
-		commands:       buildCommands(skills, mcpMgr),
+		commands:       uisession.Commands(skills, mcpMgr),
 		hooks:          runner,
 		trustAsk:       runner != nil && runner.HasUntrustedProjectHooks(),
 		regSkillTool:   regSkillTool,
@@ -1729,7 +1723,7 @@ func (m *Model) adoptProjectSkills() ([]string, error) {
 		m.regSkillTool(m.skills)
 	}
 	m.agent.WatchSkills(m.skills.Conditional())
-	m.commands = buildCommands(m.skills, m.mcpMgr)
+	m.commands = uisession.Commands(m.skills, m.mcpMgr)
 	// The launch-time system prompt listed only the trusted skills, so without
 	// this the model still cannot see the ones just approved.
 	m.sess.RebuildSystem()
@@ -2058,58 +2052,6 @@ func (m *Model) loadMcpPreview(it mcpResItem) tea.Cmd {
 
 // ---- command menu ----
 
-// buildCommands lists the slash commands offered by the autocomplete menu: the
-// built-in commands, one entry per user-invocable skill, and (when MCP servers
-// are connected) the /mcp browser plus one entry per MCP prompt.
-func buildCommands(skills *skill.Registry, mcpMgr *mcp.Manager) []commandItem {
-	cmds := []commandItem{
-		{name: "/new", desc: "Start a fresh session (clears the conversation)"},
-		{name: "/model", desc: "Switch the active model"},
-		{name: "/login", desc: "Authenticate a provider (e.g. /login openai)"},
-		{name: "/logout", desc: "Clear a provider's stored credential"},
-		{name: "/resume", desc: "Resume a saved session"},
-		{name: "/skills", desc: "Browse available skills"},
-		{name: "/agents", desc: "Browse and configure agents"},
-		{name: "/artifacts", desc: "Review files changed this session"},
-		{name: "/compact", desc: "Summarize the conversation to free context"},
-	}
-	if skills != nil {
-		for _, s := range skills.List() {
-			if s.UserInvocable {
-				cmds = append(cmds, commandItem{name: "/skill:" + s.Name, desc: oneLine(s.Description)})
-			}
-		}
-	}
-	if !mcpMgr.Empty() {
-		cmds = append(cmds, commandItem{name: "/mcp", desc: "Browse MCP servers and resources"})
-		for _, p := range mcpMgr.PromptCommands() {
-			desc := oneLine(p.Desc)
-			if len(p.Args) > 0 {
-				desc = "args: " + strings.Join(p.Args, " ") + "  " + desc
-			}
-			cmds = append(cmds, commandItem{name: "/" + p.Name, desc: desc})
-		}
-	}
-	return cmds
-}
-
-// filterCommands ranks commands against the typed query with a fuzzy match.
-// A bare "/" (or empty) shows every command in definition order.
-func filterCommands(cmds []commandItem, query string) []commandItem {
-	if query == "" || query == "/" {
-		return cmds
-	}
-	names := make([]string, len(cmds))
-	for i, c := range cmds {
-		names[i] = c.name
-	}
-	out := make([]commandItem, 0, len(cmds))
-	for _, mt := range fuzzy.Find(query, names) {
-		out = append(out, cmds[mt.Index])
-	}
-	return out
-}
-
 // syncCommandMenu opens, updates, or closes the autocomplete menu based on the
 // current input: it shows while the line is a slash command still being typed
 // (starts with '/', single token, no space) and there is at least one match.
@@ -2119,7 +2061,7 @@ func (m *Model) syncCommandMenu() {
 		m.closeCommandMenu()
 		return
 	}
-	matches := filterCommands(m.commands, val)
+	matches := uisession.FilterCommands(m.commands, val)
 	if len(matches) == 0 {
 		m.closeCommandMenu()
 		return
@@ -2160,7 +2102,7 @@ func (m *Model) handleCmdMenuKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.refresh()
 		return nil, true
 	case tea.KeyTab:
-		m.input.SetValue(menu.items[menu.cursor].name)
+		m.input.SetValue(menu.items[menu.cursor].Name)
 		m.input.CursorEnd()
 		m.syncCommandMenu()
 		return nil, true
@@ -2168,7 +2110,7 @@ func (m *Model) handleCmdMenuKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		if m.busy {
 			return nil, true
 		}
-		name := menu.items[menu.cursor].name
+		name := menu.items[menu.cursor].Name
 		m.input.SetValue(name)
 		m.closeCommandMenu()
 		return m.dispatch(name), true
@@ -2193,8 +2135,8 @@ func (m Model) cmdMenuView() string {
 	rows := []string{padLine(title, w, cSurface0)}
 	for i := start; i < len(menu.items) && i < start+maxRows; i++ {
 		c := menu.items[i]
-		line := fmt.Sprintf(" %-*s  %s", nameW, truncate(c.name, nameW),
-			truncate(c.desc, max(8, w-nameW-4)))
+		line := fmt.Sprintf(" %-*s  %s", nameW, truncate(c.Name, nameW),
+			truncate(c.Desc, max(8, w-nameW-4)))
 		if i == menu.cursor {
 			rows = append(rows, pickSelStyle.Width(w).MaxWidth(w).Render(line))
 		} else {

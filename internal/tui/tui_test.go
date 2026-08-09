@@ -1637,7 +1637,7 @@ func TestSkillTrustPromptApprovesAndLoads(t *testing.T) {
 	}
 	var hasCmd bool
 	for _, c := range m.commands {
-		if c.name == "/skill:gitea" {
+		if c.Name == "/skill:gitea" {
 			hasCmd = true
 		}
 	}
