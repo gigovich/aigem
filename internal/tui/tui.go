@@ -438,9 +438,6 @@ type Model struct {
 	defaultCtxSize int // fallback gauge window for models with no ContextWindow
 	ctxTokens      int
 	maxTokens      int
-	sessionID      string
-	sessionTitle   string
-	sessionStart   time.Time
 
 	historyRoot   string   // canonical working directory that owns the input history
 	history       []string // submitted prompts, for up/down recall
@@ -469,10 +466,6 @@ type Model struct {
 	selAnchor selPoint // where the drag began
 	selHead   selPoint // where the cursor is now
 
-	// rebuildSystem re-assembles the system prompt from the current on-disk
-	// project instructions (AGENTS.md/CLAUDE.md/context.md) so /new picks up edits
-	// made since launch. nil leaves the launch-time prompt in place.
-	rebuildSystem func() string
 }
 
 // selPoint is a position in the viewport content: an absolute line index and a
@@ -482,7 +475,7 @@ type selPoint struct{ line, col int }
 // SetSystemRebuilder registers a closure that rebuilds the system prompt from
 // the current on-disk project instructions; /new calls it so edits to
 // AGENTS.md/CLAUDE.md/context.md take effect without a full restart.
-func (m *Model) SetSystemRebuilder(f func() string) { m.rebuildSystem = f }
+func (m *Model) SetSystemRebuilder(f func() string) { m.sess.SetRebuildSystem(f) }
 
 // SetStartupNotices seeds the chat with warnings raised before the program
 // started. They are also on stderr, but the alt screen wipes that on the first
@@ -528,7 +521,10 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 	// the approval queue that every attached front-end can answer.
 	var regSkillTool func(*skill.Registry)
 	sess := uisession.New(uisession.Config{
-		Tools: reg,
+		Tools:    reg,
+		Hooks:    runner,
+		Title:    sessionTitle,
+		ModelRef: func() string { return client.Model().Ref() },
 		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
 			if agents != nil {
 				reg.Register(agent.NewTaskTool(stream, reg, temp, confirm, agents, project))
@@ -628,7 +624,6 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		hooks:          runner,
 		trustAsk:       runner != nil && runner.HasUntrustedProjectHooks(),
 		regSkillTool:   regSkillTool,
-		sessionTitle:   sessionTitle,
 		ctxSize:        ctxSize,
 		defaultCtxSize: ctxSize,
 		maxTokens:      maxTokens,
@@ -1539,7 +1534,7 @@ func (m *Model) runSkill(rest string) tea.Cmd {
 		return nil
 	}
 	display := strings.TrimSpace(name + " " + args)
-	sid := m.sessionID
+	sid := m.sess.Meta().ID
 	return m.startTurn(block{kind: bkSkill, text: display}, session.Title("/skill:"+display),
 		func(ctx context.Context, ev agent.Events) (string, error) {
 			body, err := sk.Render(ctx, args, skill.RenderOpts{SessionID: sid})
@@ -1573,7 +1568,7 @@ func (m *Model) runCompact(instructions string) tea.Cmd {
 	if instructions != "" {
 		display += " " + instructions
 	}
-	return m.startTurn(block{kind: bkNotice, text: display}, m.sessionTitle,
+	return m.startTurn(block{kind: bkNotice, text: display}, m.sess.Meta().Title,
 		func(ctx context.Context, ev agent.Events) (string, error) {
 			// The status is surfaced via OnNotice during the run; returning it
 			// again would duplicate the final notice as an assistant block.
@@ -1593,24 +1588,13 @@ func (m *Model) startTurn(display block, title string,
 	}
 	m.busy = true
 	m.resetStream()
-	if m.sessionID == "" {
-		m.sessionStart = time.Now()
-		m.sessionID = session.NewID(m.sessionStart)
-		if m.sessionTitle == "" { // keep a SessionStart-hook title if one was set
-			m.sessionTitle = title
-		}
-		if m.hooks != nil {
-			m.hooks.SetSession(m.sessionID, "")
-		}
-		m.agent.SetSessionID(m.sessionID)
-	}
 	m.refresh()
 	m.vp.GotoBottom() // a new turn re-anchors the view to the bottom
 
 	// The session runs the turn and publishes what happens in it; the display
 	// line above is this front-end's own richer rendering of the prompt, which
 	// is why the session's user_message event is not drawn a second time.
-	if err := m.sess.Run(display.text, run); err != nil {
+	if err := m.sess.Run(display.text, title, run); err != nil {
 		m.busy = false
 		m.blocks = append(m.blocks, block{kind: bkError, text: err.Error()})
 		m.refresh()
@@ -1751,9 +1735,7 @@ func (m *Model) adoptProjectSkills() ([]string, error) {
 	m.commands = buildCommands(m.skills, m.mcpMgr)
 	// The launch-time system prompt listed only the trusted skills, so without
 	// this the model still cannot see the ones just approved.
-	if m.rebuildSystem != nil {
-		m.agent.SetSystem(m.rebuildSystem())
-	}
+	m.sess.RebuildSystem()
 	var loaded []string
 	for _, s := range m.skills.List() {
 		if s.ProjectLocal {
@@ -2927,31 +2909,22 @@ func (m Model) localWizardView() string {
 // AGENTS.md/CLAUDE.md/context.md since launch take effect; the launch-time
 // SessionStart hook context and connected MCP servers are not re-run.
 func (m *Model) newSession() {
-	m.saveSession()
-	m.agent.Reset()
-	if m.rebuildSystem != nil {
-		m.agent.SetSystem(m.rebuildSystem())
+	if err := m.sess.Reset(); err != nil {
+		m.blocks = append(m.blocks, block{kind: bkNotice, text: "could not save session: " + err.Error()})
 	}
 	m.blocks = nil
 	m.groups = map[string]*agentRun{}
-	m.sess.ResetPolicy()
 	m.artifacts = nil
 	m.artIndex = map[string]*artifact{}
 	m.diffScrollX = 0
 	m.diffMaxLen = 0
 	m.todos = nil
 	m.todoCollapsed = false
-	m.sessionID = ""
-	m.sessionTitle = ""
-	m.sessionStart = time.Time{}
 	m.ctxTokens = 0
 	m.pendingImages = nil
 	m.pastingImage = false
 	m.histIdx = len(m.history)
 	m.histDraft = ""
-	if m.hooks != nil {
-		m.hooks.SetSession("", "")
-	}
 	m.clearSelection()
 	m.resetStream()
 	m.input.Reset()
@@ -2960,17 +2933,12 @@ func (m *Model) newSession() {
 }
 
 func (m *Model) loadSession(id string) {
-	s, err := session.Load(id)
+	s, err := m.sess.Load(id)
 	if err != nil {
 		m.blocks = append(m.blocks, block{kind: bkError, text: "load session: " + err.Error()})
 		return
 	}
-	m.agent.SetMessages(s.Messages)
-	m.agent.SetSessionID(s.ID)
 	m.blocks = reconstructBlocks(s.Messages)
-	m.sessionID = s.ID
-	m.sessionTitle = s.Title
-	m.sessionStart = s.Created
 	// Restore the model the session used (best-effort): a removed model leaves the
 	// current backend in place with a soft notice rather than an error.
 	if s.Model != "" && s.Model != m.backend.Model().Ref() {
@@ -3015,19 +2983,7 @@ func reconstructBlocks(msgs []llm.Message) []block {
 }
 
 func (m *Model) saveSession() {
-	if m.sessionID == "" {
-		return
-	}
-	s := &session.Session{
-		Meta: session.Meta{
-			ID:      m.sessionID,
-			Title:   m.sessionTitle,
-			Created: m.sessionStart,
-			Model:   m.backend.Model().Ref(),
-		},
-		Messages: m.agent.Messages(),
-	}
-	if err := session.Save(s, time.Now()); err != nil {
+	if err := m.sess.Save(); err != nil {
 		m.blocks = append(m.blocks, block{kind: bkNotice, text: "could not save session: " + err.Error()})
 	}
 }

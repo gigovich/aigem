@@ -43,6 +43,7 @@ const (
 	KindFileChanged      Kind = "file_changed"
 	KindApprovalRequest  Kind = "approval_request"
 	KindApprovalResolved Kind = "approval_resolved"
+	KindSessionMeta      Kind = "session_meta"
 	KindPresence         Kind = "presence"
 	KindDesync           Kind = "desync"
 )

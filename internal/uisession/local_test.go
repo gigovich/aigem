@@ -357,6 +357,68 @@ func TestReplayTruncated(t *testing.T) {
 	}
 }
 
+// ---- persistence ----
+
+// A conversation is saved under the id its first turn minted, restores with its
+// messages and its name, and a fresh one keeps the old one resumable.
+func TestSaveLoadAndReset(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := New(Config{
+		Tools: reg,
+		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
+			return agent.New(&scriptedClient{}, reg, 0.3, confirm, "")
+		},
+		ModelRef: func() string { return "test/model" },
+		Ring:     128,
+	})
+	t.Cleanup(l.Close)
+
+	ch, stop, err := l.Subscribe(Client{ID: "c"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	if got := l.Meta().ID; got != "" {
+		t.Fatalf("a session with no turns has id %q; it should not have one yet", got)
+	}
+	if err := l.Submit("remember this", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, KindTurnEnd)
+
+	meta := l.Meta()
+	if meta.ID == "" || meta.Title != "remember this" || meta.Model != "test/model" {
+		t.Fatalf("meta after the first turn = %+v", meta)
+	}
+	if err := l.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh conversation saves the old one on the way out and keeps nothing.
+	if err := l.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.Meta(); got.ID != "" || got.Title != "" {
+		t.Fatalf("meta after Reset = %+v, want empty", got)
+	}
+
+	restored, err := l.Load(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Title != "remember this" || len(restored.Messages) == 0 {
+		t.Fatalf("restored %+v, want the saved conversation", restored.Meta)
+	}
+	if got := l.Meta().ID; got != meta.ID {
+		t.Fatalf("session id after Load = %q, want %q", got, meta.ID)
+	}
+}
+
 // ---- turns ----
 
 // scriptedClient answers with one tool call, then prose.

@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/gigovich/aigem/internal/agent"
+	"github.com/gigovich/aigem/internal/hooks"
 	"github.com/gigovich/aigem/internal/llm"
+	"github.com/gigovich/aigem/internal/session"
 	"github.com/gigovich/aigem/internal/tools"
 )
 
@@ -68,6 +70,21 @@ type Config struct {
 	AutoMode bool
 	// Ring bounds the retained event history; zero picks a default.
 	Ring int
+
+	// Hooks is told the session id as conversations start and end, so a hook can
+	// attribute what it sees.
+	Hooks *hooks.Runner
+	// Title names the conversation before its first turn does; a SessionStart
+	// hook is the only thing that supplies one.
+	Title string
+	// ModelRef reports the model reference to record with a saved session, so it
+	// can be restored on resume. The model can change during a session, which is
+	// why this is a function rather than a value.
+	ModelRef func() string
+	// RebuildSystem reassembles the system prompt. It is called when a fresh
+	// conversation starts, so edits to the project instruction files take effect
+	// without a restart.
+	RebuildSystem func() string
 }
 
 // Local is a session whose agent runs in this process.
@@ -94,6 +111,16 @@ type Local struct {
 
 	commands map[string]CommandFunc
 
+	// Conversation identity. The id is assigned on the first turn; see
+	// beginLocked.
+	id    string
+	title string
+	start time.Time
+
+	hooks         *hooks.Runner
+	modelRef      func() string
+	rebuildSystem func() string
+
 	running bool
 	cancel  context.CancelFunc
 
@@ -118,6 +145,11 @@ func New(cfg Config) *Local {
 		artifacts:  map[string]tools.FileChange{},
 		commands:   map[string]CommandFunc{},
 		done:       make(chan struct{}),
+
+		title:         cfg.Title,
+		hooks:         cfg.Hooks,
+		modelRef:      cfg.ModelRef,
+		rebuildSystem: cfg.RebuildSystem,
 	}
 	if cfg.NewAgent != nil {
 		l.ag = cfg.NewAgent(l.confirmTool)
@@ -333,9 +365,10 @@ func (l *Local) Submit(text string, images []llm.Image) error {
 			return ErrBusy
 		}
 	}
-	l.startLocked(text, len(images), func(ctx context.Context, ev agent.Events) (string, error) {
-		return l.ag.RunWithImages(ctx, text, images, ev)
-	})
+	l.startLocked(text, session.Title(text), len(images),
+		func(ctx context.Context, ev agent.Events) (string, error) {
+			return l.ag.RunWithImages(ctx, text, images, ev)
+		})
 	l.mu.Unlock()
 	return nil
 }
@@ -361,8 +394,9 @@ func (l *Local) injectInto(ag *agent.Agent, text string) bool {
 }
 
 // Run starts a turn from something other than a typed message - a skill, an MCP
-// prompt, a compaction - with display standing in for the user line.
-func (l *Local) Run(display string, run func(context.Context, agent.Events) (string, error)) error {
+// prompt, a compaction - with display standing in for the user line and title
+// naming the conversation if this is its first turn.
+func (l *Local) Run(display, title string, run func(context.Context, agent.Events) (string, error)) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
@@ -371,12 +405,13 @@ func (l *Local) Run(display string, run func(context.Context, agent.Events) (str
 	if l.running {
 		return ErrBusy
 	}
-	l.startLocked(display, 0, run)
+	l.startLocked(display, title, 0, run)
 	return nil
 }
 
-func (l *Local) startLocked(display string, images int,
+func (l *Local) startLocked(display, title string, images int,
 	run func(context.Context, agent.Events) (string, error)) {
+	l.beginLocked(title)
 	l.running = true
 	ctx, cancel := context.WithCancel(context.Background())
 	l.cancel = cancel

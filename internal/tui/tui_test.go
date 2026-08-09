@@ -988,11 +988,11 @@ func TestNewSessionClears(t *testing.T) {
 		}
 	}
 	m = step(m, todoUpdateMsg{{Text: "step", Status: agent.TodoPending}})
-	savedID := m.sessionID
+	savedID := m.sess.Meta().ID
 
-	if len(m.blocks) == 0 || m.sessionID == "" || len(m.history) == 0 || len(m.todos) == 0 {
+	if len(m.blocks) == 0 || savedID == "" || len(m.history) == 0 || len(m.todos) == 0 {
 		t.Fatalf("precondition: expected populated state, got blocks=%d session=%q history=%d todos=%d",
-			len(m.blocks), m.sessionID, len(m.history), len(m.todos))
+			len(m.blocks), savedID, len(m.history), len(m.todos))
 	}
 
 	// /new wipes everything back to a fresh start.
@@ -1004,7 +1004,7 @@ func TestNewSessionClears(t *testing.T) {
 	if len(m.blocks) != 0 {
 		t.Fatalf("blocks should be cleared, got %+v", m.blocks)
 	}
-	if m.sessionID != "" || m.sessionTitle != "" || !m.sessionStart.IsZero() {
+	if meta := m.sess.Meta(); meta.ID != "" || meta.Title != "" || !meta.Created.IsZero() {
 		t.Fatal("session identity should be cleared")
 	}
 	if len(m.todos) != 0 || m.ctxTokens != 0 {
