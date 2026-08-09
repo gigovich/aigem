@@ -23,6 +23,14 @@ func (l *Local) beginLocked(title string) {
 		l.hooks.SetSession(l.id, "")
 	}
 	l.ag.SetSessionID(l.id)
+	// Events emitted before the id existed - a client attaching, its presence -
+	// belong to this conversation too, so the journal starts with them.
+	if j, err := openJournal(l.id); err == nil {
+		l.journal = j
+		for _, ev := range l.ring {
+			j.append(ev)
+		}
+	}
 	l.emitLocked(l.metaEventLocked())
 }
 
@@ -85,6 +93,7 @@ func (l *Local) Load(id string) (*session.Session, error) {
 	l.ag.SetMessages(s.Messages)
 	l.ag.SetSessionID(s.ID)
 	l.id, l.title, l.start = s.ID, s.Title, s.Created
+	l.reopenJournalLocked()
 	if l.hooks != nil {
 		l.hooks.SetSession(l.id, "")
 	}
@@ -109,12 +118,48 @@ func (l *Local) Reset() error {
 	}
 	l.toolPolicy = map[string]string{}
 	l.artifacts = map[string]tools.FileChange{}
+	l.journal.close()
+	l.journal = nil
 	l.id, l.title, l.start = "", "", time.Time{}
 	if l.hooks != nil {
 		l.hooks.SetSession("", "")
 	}
 	l.emitLocked(l.metaEventLocked())
 	return err
+}
+
+// reopenJournalLocked attaches to a resumed conversation's journal and picks the
+// sequence up where it left off. Numbering restarts at 1 in every process, so
+// appending without this would write a second event under a number the file
+// already uses, and a client asking for everything after it would get the wrong
+// half of two conversations.
+func (l *Local) reopenJournalLocked() {
+	l.journal.close()
+	l.journal = nil
+	// The in-memory history describes the conversation just replaced, so it is
+	// dropped rather than spliced onto the one being resumed.
+	l.ring = nil
+	if prior, err := readJournal(l.id, 0); err == nil && len(prior) > 0 {
+		if last := prior[len(prior)-1].Seq; last > l.seq {
+			l.seq = last
+		}
+	}
+	if j, err := openJournal(l.id); err == nil {
+		l.journal = j
+	}
+}
+
+// Timeline returns what was recorded for the conversation now loaded, oldest
+// first. It is the timeline a front-end draws on resume: the saved messages say
+// what the agent remembers, and this says what happened.
+func (l *Local) Timeline() ([]Event, error) {
+	l.mu.Lock()
+	id := l.id
+	l.mu.Unlock()
+	if id == "" {
+		return nil, nil
+	}
+	return readJournal(id, 0)
 }
 
 // SetRebuildSystem installs the system-prompt assembler after construction,

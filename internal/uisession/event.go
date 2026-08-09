@@ -81,6 +81,12 @@ type Event struct {
 	Args  json.RawMessage `json:"args,omitempty"`
 	Error string          `json:"error,omitempty"`
 
+	// Bytes is the full size of a tool result whose stored form was trimmed, and
+	// Blob says the whole of it is kept beside the journal under this event's
+	// seq. Both are absent on the live event, which carries the result whole.
+	Bytes int  `json:"bytes,omitempty"`
+	Blob  bool `json:"blob,omitempty"`
+
 	Round  int              `json:"round,omitempty"`
 	Calls  []Call           `json:"calls,omitempty"`
 	Tokens int              `json:"tokens,omitempty"`

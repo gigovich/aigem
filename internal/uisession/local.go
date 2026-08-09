@@ -142,6 +142,8 @@ type Local struct {
 	running bool
 	cancel  context.CancelFunc
 
+	journal *journal
+
 	done   chan struct{}
 	closed bool
 }
@@ -226,6 +228,7 @@ func (l *Local) Close() {
 		l.cancel()
 	}
 	l.failPendingLocked()
+	l.journal.close()
 	subs := l.subs
 	l.subs = map[string]*subscriber{}
 	l.mu.Unlock()
@@ -259,7 +262,11 @@ func (l *Local) emitLocked(ev Event) {
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
-	l.ring = append(l.ring, ev)
+	// Subscribers get the event whole; what is kept is trimmed, so an oversized
+	// tool result does not sit in memory or ship on every reconnect.
+	kept := l.journalled(ev)
+	l.journal.append(kept)
+	l.ring = append(l.ring, kept)
 	if len(l.ring) > l.ringCap {
 		l.ring = l.ring[len(l.ring)-l.ringCap:]
 	}
@@ -289,6 +296,13 @@ func (l *Local) Replay(since uint64) ([]Event, error) {
 func (l *Local) replayLocked(since uint64) ([]Event, error) {
 	first := l.firstSeqLocked()
 	if first > since+1 {
+		// Beyond what is held in memory, the journal is the record. Only a session
+		// that never reached its first turn has none.
+		if l.id != "" {
+			if evs, err := readJournal(l.id, since); err == nil {
+				return evs, nil
+			}
+		}
 		return nil, ErrTruncated
 	}
 	out := make([]Event, 0, len(l.ring))

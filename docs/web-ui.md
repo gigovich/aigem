@@ -1,9 +1,12 @@
 # Web UI (design)
 
-!!! warning "Not implemented"
+!!! note "Partly built"
 
-    This document describes a design that has not been built yet. Nothing here
-    ships in any release. It exists to be reviewed before the code is written.
+    Steps 0 to 3 of the work breakdown have landed: call ids on tool events,
+    `internal/uisession`, the terminal ported onto it, and the journal. Nothing
+    web-facing exists yet - there is no daemon, no protocol implementation and no
+    UI. The design below is kept in step with the code as it is written, and the
+    places where building it changed the design say so.
 
 aigem's terminal front-end is one way to drive the agent, not the only possible
 one. This design adds a second, independent front-end: a browser UI served by a
@@ -91,12 +94,19 @@ adds the events that belong to the session rather than to a turn.
 
 ```go
 type Event struct {
-    Seq  uint64          `json:"seq"`
-    Time time.Time       `json:"time"`
-    Kind string          `json:"kind"`
-    Data json.RawMessage `json:"data"`
+    Seq  uint64    `json:"seq"`
+    Time time.Time `json:"time"`
+    Kind Kind      `json:"kind"`
+    // ... the fields each kind uses, omitted when they do not apply
 }
 ```
+
+It is a flat struct rather than a kind-tagged `Data json.RawMessage`, which is
+what the design first called for. The same value is written to the journal,
+handed to an in-process front-end, and decoded on the far side of a websocket;
+a flat struct costs nothing in all three, while a nested payload would mean
+marshalling every streamed delta just to hand it to a renderer in the same
+process. `internal/trace` already stores events this way.
 
 `Seq` is monotonic per session and assigned under the same lock that appends to
 the journal, so the journal order and the subscriber order can never disagree.
@@ -135,7 +145,8 @@ interleaved waterfall the terminal is stuck with.
 
 ### Prerequisite: call ids on tool events
 
-The two rows marked `*` cannot be produced today. `OnToolStart` and `OnToolEnd`
+*Done in step 0.* The two rows marked `*` could not be produced when this was
+written. `OnToolStart` and `OnToolEnd`
 carry only `(name, args)` and `(name, result, err)`; the per-call ids exist, but
 only inside `OnToolBatch`, whose own comment notes that the per-call events
 which follow "cannot tell a batch of three from three consecutive single calls".
@@ -147,10 +158,11 @@ web UI cannot: it needs to attach a result to the card of the call that produced
 it, and the blob store is keyed by call id. Correlating by arrival order is
 wrong the moment a batch runs concurrently, which is the normal case.
 
-So `internal/agent` gains the call id on those four callbacks. It is a small
-change to `runToolCall`, which already has the id in hand, but it touches six
-call sites across `agent`, `tui`, `bot` and `cmd/aigem`, and it lands before the
-extraction rather than during it.
+So `internal/agent` gained the call id on those four callbacks. It is a small
+change to `runToolCall`, which already had the id in hand, but it touched
+`internal/trace` as well as the six call sites across `agent`, `tui`, `bot` and
+`cmd/aigem` - traces now record which call produced which result, rather than
+only the order the lines landed in.
 
 ### Approvals
 
@@ -201,21 +213,38 @@ history. That is what the agent needs to resume; it is not enough to rebuild a
 timeline, because it has no tool calls, no subagent structure and no artifacts.
 Compaction also evicts messages the timeline should still show.
 
-So the two are separated, and a session becomes a directory:
+So the two are separated. The journal is a parallel tree rather than a
+restructuring of the existing one:
 
 ```
-sessions/<id>/session.json    Meta + []llm.Message   (agent state, as today)
-sessions/<id>/events.jsonl    one Event per line     (UI state)
-sessions/<id>/blobs/<seq>     untruncated tool output
+sessions/<id>.json            Meta + []llm.Message   (agent state, unchanged)
+journal/<id>/events.jsonl     one Event per line     (UI state)
+journal/<id>/blobs/<seq>      the tail of a large tool result
 ```
 
-The flat `sessions/<id>.json` layout is still read, so existing sessions resume.
+The design first called for a directory per session holding both. Keeping them
+apart turned out to be strictly better: `internal/session` is used by the bots
+and by `cmd/aigem` as well as here, and nothing about the timeline requires
+moving the file they all read. Existing sessions resume with no migration and
+no back-compat branch, which is the cheapest possible answer to a requirement
+that was only ever "the journal persists".
+
+Sequence numbers restart at 1 in each process, so resuming a conversation picks
+the sequence up after the journal's last entry. Appending without that would
+write a second event under a number the file already uses, and a client asking
+for everything after it would be served halves of two conversations.
 
 `events.jsonl` is append-only and is the source of truth for any client catching
-up. A tool result is journalled in the same truncated form the model sees
-(`clipToolResult`); the full body goes to `blobs/` and is fetched lazily when
-someone expands the call. Without that split, one `grep` over a large tree puts
-tens of megabytes into the journal and into every reconnect.
+up. A large tool result is stored as its head, with the rest beside it in
+`blobs/`, fetched when someone expands the call; live subscribers get the event
+whole. Without that split, one `grep` over a large tree sits in the journal and
+ships again on every reconnect.
+
+The design assumed the untruncated body would be available to store. It is not:
+`clipToolResult` runs inside the agent before the event is published, so what
+reaches the session is already bounded. The "full" body in `blobs/` is therefore
+the model-visible result, which is the thing worth inspecting anyway - the
+inline head only has to be small enough that a reconnect stays cheap.
 
 Blobs are keyed by event seq rather than by call id. A call id is only unique
 within the agent that issued it: when a provider supplies none, `callRefs` falls
@@ -223,6 +252,10 @@ back to a counter that is per-`Agent`, so two concurrent subagents can both
 produce `call-1`. Grouping in the UI is unambiguous because a nested call is
 identified by its run id together with its call id, but a flat filename is not,
 and the seq already is.
+
+A session that cannot open a journal keeps working. The in-memory history still
+serves a reconnect within the process, and losing the ability to replay across a
+restart is not a reason to refuse to run.
 
 ## Websocket protocol
 
@@ -410,8 +443,17 @@ not change at all.
 Directory-per-session, `events.jsonl`, `blobs/`, and back-compat reading of the
 flat `sessions/<id>.json`. `Replay` switches from the ring to the file.
 
-*Done when* `/resume` rebuilds a timeline including tool calls and subagent
-groups, which today it cannot, and an old flat session still resumes.
+*Done when* a client beyond the retained history is served from the journal
+instead of being told to reload, an oversized tool result is stored as a head
+plus a blob, and a resumed conversation continues the sequence rather than
+reusing numbers.
+
+Drawing the restored timeline is the other half, and it belongs to the
+front-ends: `Timeline()` returns what was recorded, and a front-end decides what
+to do with it. The terminal still rebuilds its history from the saved messages,
+which is why it still shows no tool calls on resume; the browser reads the
+timeline from the start, and the terminal can follow once there is something to
+compare it against.
 
 ### 4. The daemon, without a UI
 
