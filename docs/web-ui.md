@@ -1,0 +1,490 @@
+# Web UI (design)
+
+!!! warning "Not implemented"
+
+    This document describes a design that has not been built yet. Nothing here
+    ships in any release. It exists to be reviewed before the code is written.
+
+aigem's terminal front-end is one way to drive the agent, not the only possible
+one. This design adds a second, independent front-end: a browser UI served by a
+long-lived local daemon, reachable from a laptop and from a phone on the same
+tailnet.
+
+The goal is not to put the TUI in a browser. It is to have a front-end where
+diffs, file trees, dashboards and push notifications are natural, and to make
+that the place new features land first.
+
+## Shape
+
+Three processes, two of which are optional.
+
+```
+aigem                      TUI, own session, own process, no daemon involved
+aigem web run              daemon: owns sessions, serves the browser UI
+aigem attach <session-id>  TUI as a client of the daemon
+```
+
+The daemon owns the sessions because the mobile story requires it: start a turn
+on the laptop, close the lid, open the phone, watch it finish. A session that
+lives in a terminal process cannot do that.
+
+A browser and a TUI may be attached to the same session at once. That falls out
+of the design rather than being built for; see [Approvals](#approvals).
+
+`aigem attach` finds the daemon the same way the local model daemon is found
+today: a small state file next to `local.json`.
+
+```
+$STATE_DIR/web.json   {"pid": ..., "addr": "127.0.0.1:9290", "token": "..."}
+```
+
+It is written on start, removed on clean exit, and treated as stale when the
+pid is gone. `aigem web run` refuses to start a second daemon over a live one.
+
+## `internal/uisession`
+
+Today `internal/tui` holds both the rendering and the session logic: slash
+commands, model switching, compaction, session persistence, the confirmation
+queue, artifact tracking. A second front-end would have to duplicate all of it,
+and the two would drift within a month.
+
+So the logic moves into `internal/uisession`, and `Session` is an interface:
+
+```go
+type Session interface {
+    // Subscribe attaches a client and returns its event channel plus a function
+    // to detach. The backlog after since is loaded before the subscriber goes
+    // live, so no event falls between the replay and the tail.
+    Subscribe(c Client, since uint64) (<-chan Event, func(), error)
+    // Replay returns journalled events after since, for a client that is not
+    // holding a subscription open.
+    Replay(since uint64) ([]Event, error)
+
+    Submit(text string, images []llm.Image) error
+    Interrupt()
+    Command(name, args string) error
+    // Resolve answers the open approval; by labels who answered.
+    Resolve(id string, d Decision, by string) error
+}
+```
+
+Two implementations:
+
+- **`uisession.Local`** runs the agent in this process. Used by `aigem` and by
+  the daemon.
+- **`uisession.Remote`** speaks the websocket protocol below. Used by
+  `aigem attach`.
+
+`internal/tui` is written against the interface and keeps only rendering, key
+handling, layout and the viewport. It gets `attach` for free: there is no second
+protocol and no RPC layer, because the event stream *is* the protocol.
+
+The existing TUI test suite is the acceptance criterion for the extraction. It
+covers the behaviour being moved, and it must stay green through it.
+
+## Events
+
+`internal/agent` already publishes everything a UI needs through `agent.Events`
+(`OnContent`, `OnToolBatch`, `OnAgentStart`, `OnTodoUpdate`, `OnUsage`, ...).
+That callback struct is the existing UI contract; `uisession` serialises it and
+adds the events that belong to the session rather than to a turn.
+
+```go
+type Event struct {
+    Seq  uint64          `json:"seq"`
+    Time time.Time       `json:"time"`
+    Kind string          `json:"kind"`
+    Data json.RawMessage `json:"data"`
+}
+```
+
+`Seq` is monotonic per session and assigned under the same lock that appends to
+the journal, so the journal order and the subscriber order can never disagree.
+
+| Kind                | Payload                                     | Source          |
+| ------------------- | ------------------------------------------- | --------------- |
+| `user_message`      | `text`, `images`                            | `uisession`     |
+| `turn_start`        | `turn`                                      | `uisession`     |
+| `turn_end`          | `turn`, `error`                             | `uisession`     |
+| `content`           | `delta`                                     | `agent.Events`  |
+| `reasoning`         | `delta`                                     | `agent.Events`  |
+| `assistant_message` | `text`                                      | `agent.Events`  |
+| `tool_batch`        | `round`, `calls[]{id,name}`                 | `agent.Events`  |
+| `tool_start`        | `id`, `name`, `args`                        | `agent.Events`* |
+| `tool_end`          | `id`, `name`, `result`, `blob`, `error`     | `agent.Events`* |
+| `agent_start`       | `id`, `agent`, `prompt`                     | `agent.Events`  |
+| `agent_end`         | `id`, `result`, `error`                     | `agent.Events`  |
+| `sub_tool_start`    | `id`, `agent`, `tool`, `args`               | `agent.Events`  |
+| `sub_tool_end`      | `id`, `agent`, `tool`, `result`, `error`    | `agent.Events`  |
+| `sub_notice`        | `id`, `agent`, `text`                       | `agent.Events`  |
+| `notice`            | `text`                                      | `agent.Events`  |
+| `usage`             | `tokens`                                    | `agent.Events`  |
+| `todo`              | `items[]`                                   | `agent.Events`  |
+| `budget_exhausted`  | `reason`                                    | `agent.Events`  |
+| `file_changed`      | `path`                                      | `uisession`     |
+| `approval_request`  | see below                                   | `uisession`     |
+| `approval_resolved` | see below                                   | `uisession`     |
+| `session_meta`      | `title`, `model`, `cwd`, `profile`, `ctx`   | `uisession`     |
+| `presence`          | `clients[]{id,kind,label}`                  | `uisession`     |
+| `desync`            | `from`                                      | server          |
+
+The `id` on `agent_*` and `sub_*` is the parent `task` tool call's id, which is
+what keeps concurrent subagent runs correctly grouped no matter how their events
+interleave. The web UI renders them as parallel lanes rather than as the
+interleaved waterfall the terminal is stuck with.
+
+### Prerequisite: call ids on tool events
+
+The two rows marked `*` cannot be produced today. `OnToolStart` and `OnToolEnd`
+carry only `(name, args)` and `(name, result, err)`; the per-call ids exist, but
+only inside `OnToolBatch`, whose own comment notes that the per-call events
+which follow "cannot tell a batch of three from three consecutive single calls".
+`OnSubToolStart`/`OnSubToolEnd` have the same gap one level down: their id is
+the parent `task` call, not the individual nested call.
+
+The terminal gets away with this because it appends lines in arrival order. A
+web UI cannot: it needs to attach a result to the card of the call that produced
+it, and the blob store is keyed by call id. Correlating by arrival order is
+wrong the moment a batch runs concurrently, which is the normal case.
+
+So `internal/agent` gains the call id on those four callbacks. It is a small
+change to `runToolCall`, which already has the id in hand, but it touches six
+call sites across `agent`, `tui`, `bot` and `cmd/aigem`, and it lands before the
+extraction rather than during it.
+
+### Approvals
+
+The TUI currently carries the response channel inside the message:
+
+```go
+type confirmReqMsg struct {
+    name, args string
+    resp       chan bool
+    ...
+}
+```
+
+That works for exactly one in-process consumer. With several clients the channel
+moves into a private table owned by `uisession`, keyed by an id that goes out in
+the event:
+
+```jsonc
+// approval_request
+{"id": "ap_7", "kind": "tool", "tool": "bash",
+ "args": {...}, "options": ["once", "always", "forbid"]}
+
+// approval_request, path variant
+{"id": "ap_8", "kind": "path", "tool": "read_file",
+ "path": "/etc/hosts", "write": false, "options": ["once", "always", "no"]}
+
+// approval_resolved
+{"id": "ap_7", "decision": "once", "by": "phone"}
+```
+
+`Resolve` takes the lock, removes the entry, and sends on the parked channel.
+A second `Resolve` for the same id finds nothing and returns `ErrAlreadyDecided`.
+`approval_resolved` is broadcast to **every** subscriber, so the other clients
+close their dialog showing who answered rather than reporting an error. That is
+the whole of the race handling: first responder wins, everyone else is told.
+
+The queue of approvals waiting behind the current one already exists in the TUI
+and moves across unchanged.
+
+`presence` matters more than it looks. An unanswered approval blocks the turn,
+and without knowing whether anyone is watching, a client cannot tell "thinking"
+from "waiting for a human who left".
+
+## Journal
+
+Sessions today are a flat `sessions/<id>.json` holding `Meta` plus the message
+history. That is what the agent needs to resume; it is not enough to rebuild a
+timeline, because it has no tool calls, no subagent structure and no artifacts.
+Compaction also evicts messages the timeline should still show.
+
+So the two are separated, and a session becomes a directory:
+
+```
+sessions/<id>/session.json    Meta + []llm.Message   (agent state, as today)
+sessions/<id>/events.jsonl    one Event per line     (UI state)
+sessions/<id>/blobs/<seq>     untruncated tool output
+```
+
+The flat `sessions/<id>.json` layout is still read, so existing sessions resume.
+
+`events.jsonl` is append-only and is the source of truth for any client catching
+up. A tool result is journalled in the same truncated form the model sees
+(`clipToolResult`); the full body goes to `blobs/` and is fetched lazily when
+someone expands the call. Without that split, one `grep` over a large tree puts
+tens of megabytes into the journal and into every reconnect.
+
+Blobs are keyed by event seq rather than by call id. A call id is only unique
+within the agent that issued it: when a provider supplies none, `callRefs` falls
+back to a counter that is per-`Agent`, so two concurrent subagents can both
+produce `call-1`. Grouping in the UI is unambiguous because a nested call is
+identified by its run id together with its call id, but a flat filename is not,
+and the seq already is.
+
+## Websocket protocol
+
+One connection per attached session.
+
+```
+GET /api/sessions/{id}/socket?since=<seq>&token=<token>
+```
+
+On connect the server replays `Replay(since)` and then switches to the live
+tail, so a client that slept through a tunnel, a lift or a phone lock reconnects
+with its last seq and misses nothing.
+
+Client to server:
+
+```jsonc
+{"op": "submit",    "text": "...", "images": [...]}
+{"op": "interrupt"}
+{"op": "resolve",   "id": "ap_7", "decision": "once"}
+{"op": "command",   "name": "compact", "args": ""}
+```
+
+Server to client: `Event`, verbatim.
+
+**Backpressure.** A phone on a bad connection must not stall the agent. Each
+subscriber has a bounded buffer; on overflow the server drops the subscriber
+with a `desync` event carrying the last seq it definitely delivered, and closes.
+The client reconnects with `since` and catches up from the journal. Blocking the
+event fan-out on the slowest reader would let one stuck tab hang a turn.
+
+The token travels in the query string because browsers cannot set headers on a
+websocket handshake. On loopback that is acceptable; it is worth revisiting
+before any `--listen` beyond `127.0.0.1`, since query strings leak into logs and
+referrers.
+
+## HTTP API
+
+```
+GET    /api/sessions                    list
+POST   /api/sessions                    create {cwd, model, profile}
+DELETE /api/sessions/{id}               close and archive
+GET    /api/sessions/{id}/events?since= replay (non-websocket clients, debugging)
+GET    /api/sessions/{id}/blobs/{call}  untruncated tool output
+GET    /api/models                      registry + which are authenticated
+POST   /api/auth/login/{provider}       begin a login, returns a flow id
+GET    /api/auth/login/{flow}           poll: pending / done / error
+POST   /api/auth/login/{flow}/paste     redirect-URL fallback (see below)
+GET    /healthz
+```
+
+HTTP uses `Authorization: Bearer <token>`.
+
+### Provider login from the browser
+
+The two flows in `internal/auth` behave differently once the browser is not on
+the same machine as the daemon:
+
+- **xAI (`LoginXAIDevice`)** is a device-code flow. The UI shows the URL and the
+  user code, the daemon polls. Works from anywhere, including a phone.
+- **ChatGPT (`LoginChatGPT`)** is authorization-code with a hardcoded
+  `http://localhost:1455/auth/callback` redirect. From a laptop browser on the
+  same machine this works unchanged. From a phone it cannot: the provider
+  redirects the *phone's* browser to the phone's own localhost.
+
+The fallback for that already exists. `startCallback` accepts a paste of the
+redirected URL (`allowStdinPaste`), and in the browser that becomes a text field
+instead of a stdin read. The work is decoupling `callbackServer` from the
+assumption that stdin is a terminal, not inventing a new flow.
+
+## Security
+
+The daemon binds `127.0.0.1` by default. Loopback keeps the network out, but it
+does not keep browsers out: any page in any open tab can issue requests to
+`127.0.0.1`, and DNS rebinding defeats the same-origin policy. Behind this
+endpoint sits an agent with `bash` and filesystem writes, and, once the login
+flows above land, the credential store as well.
+
+Therefore, from the first commit:
+
+- **A token**, generated at startup and printed in the URL, in the style of
+  `jupyter`. Checked on every HTTP request and on the websocket handshake.
+- **`Origin` and `Host` allowlists** on the handshake, matched exactly rather
+  than by prefix. No CORS headers are emitted at all.
+- **A capability profile per session**, resolved at creation through the
+  existing `tools.ResolveCapabilityProfile`. The daemon does not get a way to
+  escalate a session mid-flight, in line with the existing rule that unattended
+  paths never escalate.
+
+Exposing the daemon beyond loopback is deliberately a separate, later decision.
+The two candidates are `tailscale serve` in front of it, or `tsnet` inside it
+for tailnet identity and TLS without configuration; the second costs a large
+dependency and is not worth it until the rest works.
+
+## Build and distribution
+
+The front-end is React, Vite, TypeScript, Tailwind and shadcn/ui. Its sources
+live in `internal/web/ui/` and take no part in a Go build.
+
+```
+make web    npm ci && npm run build  ->  internal/web/dist/
+```
+
+`internal/web/dist/` is committed containing only `.gitkeep`, so `//go:embed
+all:dist` compiles whether or not the UI was built. At runtime the server checks
+for `index.html` and, when it is absent, fails with a message rather than
+serving a blank page:
+
+```
+$ aigem web run
+aigem: this build has no web UI (built without `make web`).
+Download a release binary, or run `make web && make build`.
+```
+
+This is a deliberate trade. `go install github.com/gigovich/aigem/cmd/aigem@latest`
+is the first line of the README and must keep working on a machine with no
+node toolchain, so the built assets are not committed. Release binaries carry
+the UI because goreleaser runs `make web` in its `before` hooks.
+
+## Work breakdown
+
+Each step is meant to be one reviewable change that leaves `main` shippable.
+The ordering is chosen so the risky part (step 2) is the only one that can
+regress behaviour users already have, and so it lands against a test suite that
+has not moved.
+
+### 0. Call ids on tool events
+
+`agent.Events` gains the call id on `OnToolStart`, `OnToolEnd`,
+`OnSubToolStart`, `OnSubToolEnd`. `runToolCall` already holds it.
+
+Touches `internal/agent/{agent,subagent,skilltool}.go`, `internal/bot/runtime.go`,
+`internal/tui/tui.go`, `cmd/aigem/main.go`. Six call sites, no behaviour change.
+
+*Done when* the suite is green and a new agent test asserts that a batch of
+three concurrent calls produces start/end pairs that can be matched by id.
+
+### 1. `internal/uisession`, standalone
+
+The package with no consumers yet: `Event`, `Decision`, the `Session`
+interface, and `Local` wrapping `agent` + `tools` + the retrying stream. The
+approval table, `Subscribe`/`Replay` with an in-memory ring, and the
+backpressure rule.
+
+*Done when* unit tests cover the three things that are hard to get right and
+impossible to test through a UI: two `Resolve` calls for one id (second gets
+`ErrAlreadyDecided`, both clients see `approval_resolved`), a slow subscriber
+being dropped with `desync` without stalling the others, and `Replay(n)`
+splicing into the live tail with no gap and no duplicate seq.
+
+### 2. Move the TUI onto it
+
+The extraction. `New` gives up constructing the agent; `agentEvents` becomes a
+subscriber loop; `confirmReqMsg` loses its `resp`/`pathResp` channels in favour
+of an id. Moving out: `startTurn`, `submit`, `runSkill`, `runMcpPrompt`,
+`runCompact`, `finishTurn`, `newSession`, `loadSession`, `saveSession`, the
+confirm queue (`handleConfirmReq`, `answerConfirm`, `answerPathReq`,
+`promoteNextConfirm`), the model machinery (`switchModel`, `runModelCommand`,
+`selectLocal`, `startLocal`, `assessActiveModel`), `runLogin`/`doLogout`, and
+`buildCommands` (the web palette needs the same catalogue).
+
+Staying: everything that draws or reads keys. The `[]block` timeline stays too
+and becomes a projection of the event stream rather than of `tea.Msg`.
+
+This is the only step that can break something that works today, so it is worth
+splitting into three commits: turns and approvals; sessions, models and login;
+the command catalogue.
+
+*Done when* `internal/tui` no longer imports `internal/agent` for control, only
+for types, and every TUI test that asserts on *behaviour* passes unmodified.
+
+The stricter form of that criterion - the whole suite unmodified - turns out to
+be unachievable, and it is worth saying why rather than discovering it during
+the change. Part of the suite asserts on the internals that are being moved:
+`tui_test.go` builds `confirmReqMsg` values with a `resp chan bool` inside
+(lines 1168, 1198, 1406), reads `m.pendingQueue`, and inspects `m.toolPolicy`
+(lines 989, 1445). Those fields are precisely what moves, and the equivalent
+assertions already exist against `uisession` (`TestResolveFirstAnswerWins`,
+`TestQueuedRequestsSettledByPolicy`). So the rule for review is narrower: a test
+that pokes at a relocated field may be deleted once the new package covers the
+same ground, and a test that drives the Model and asserts on what it renders may
+not change at all.
+
+### 3. The journal on disk
+
+Directory-per-session, `events.jsonl`, `blobs/`, and back-compat reading of the
+flat `sessions/<id>.json`. `Replay` switches from the ring to the file.
+
+*Done when* `/resume` rebuilds a timeline including tool calls and subagent
+groups, which today it cannot, and an old flat session still resumes.
+
+### 4. The daemon, without a UI
+
+`internal/web`: session manager, `web.json`, HTTP routes, the websocket, the
+token and the `Origin`/`Host` checks. No frontend assets involved.
+
+*Done when* a Go test drives a full turn over the websocket - submit, tool call,
+approval, answer - and a second connection with `since` gets an identical
+timeline. Also when a request with a bad `Origin` or no token is rejected, which
+is a test worth writing before the UI makes it easy to forget.
+
+### 5. Frontend scaffolding
+
+Vite, React, TypeScript, Tailwind, shadcn/ui in `internal/web/ui/`. `make web`,
+the `go:embed`, the `.gitkeep`, the `.gitignore` entry, the goreleaser hook, and
+the error message for a build without assets.
+
+*Done when* `make web && make build && aigem web run` serves a page that streams
+one turn, and a plain `go build` still produces a working binary that refuses
+`web run` with the intended message.
+
+### 6. Web UI v1
+
+Timeline, streaming answer, tool call cards with lazy blob expansion, subagent
+lanes, the approval dialog, rendered markdown, interrupt, todo panel, context
+and spend in the header.
+
+### 7. `uisession.Remote` and `aigem attach`
+
+The second implementation of the interface, over the same protocol.
+
+*Done when* a TUI and a browser on one session both see every event, and an
+approval answered in one is reported as resolved in the other.
+
+### 8. Multi-session and mobile
+
+Session list and switching, `presence`, reconnect on `desync`, PWA manifest and
+a service worker. This is the step at which the phone scenario works end to end.
+
+### 9. Login in the browser
+
+Device code for xAI; the redirect-URL paste fallback for ChatGPT, which means
+decoupling `callbackServer` from stdin.
+
+### 10. Web-only surface
+
+Side-by-side diffs with per-hunk revert, file tree and viewer, spend dashboard
+over `internal/llm/usagestore`, and a console for the bot fleet over
+`internal/bot` (fleet, cron, heartbeat, memory).
+
+## Risks
+
+- **Step 2 is the whole bet.** Roughly 1500 lines of logic move between packages
+  in one go. The mitigation is that the TUI suite is large, predates the change
+  and does not move with it.
+- **`glamour` is a terminal renderer.** The TUI's markdown pipeline does not
+  cross over; the web renders markdown itself. Nothing is shared there, and
+  trying to share it would be a mistake.
+- **Two front-ends, one feature.** The stated intent is that features land in
+  the web first and may never reach the TUI. That is fine as long as they land
+  in `uisession` rather than in `internal/web`, or the split rots from the other
+  side.
+
+## Open questions
+
+- **Session lifetime.** When does a detached session stop, and what garbage
+  collects `events.jsonl` and `blobs/`? A daemon left running for a week with no
+  policy will accumulate both.
+- **Concurrent turns.** One turn at a time per session is assumed. Nothing in
+  the protocol prevents a second `submit` arriving mid-turn; today `Inject`
+  exists for exactly that. Which of the two applies should be decided before the
+  UI implies an answer.
+- **Notifications.** Web Push needs HTTPS, which loopback does not provide. An
+  approval waiting on a phone is the most valuable notification in the system,
+  and it is blocked behind the `--listen` decision.
+- **Upload limits** for pasted images, and where they are stored.
