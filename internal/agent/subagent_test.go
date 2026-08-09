@@ -17,15 +17,17 @@ type captureSink struct {
 	starts    []string
 	ends      int
 	agentEnds int
+	callIDs   []string
 }
 
 func (c *captureSink) AgentStart(agent, prompt string)   {}
 func (c *captureSink) AgentEnd(result string, err error) { c.agentEnds++ }
-func (c *captureSink) SubToolStart(agent, tool string, _ json.RawMessage) {
+func (c *captureSink) SubToolStart(agent, callID, tool string, _ json.RawMessage) {
 	c.starts = append(c.starts, agent+":"+tool)
+	c.callIDs = append(c.callIDs, callID)
 }
-func (c *captureSink) SubToolEnd(agent, tool, result string, err error) { c.ends++ }
-func (c *captureSink) SubNotice(agent, text string)                     {}
+func (c *captureSink) SubToolEnd(agent, callID, tool, result string, err error) { c.ends++ }
+func (c *captureSink) SubNotice(agent, text string)                             {}
 
 func TestTaskToolDelegates(t *testing.T) {
 	reg, err := tools.NewRegistry(t.TempDir())

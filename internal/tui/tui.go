@@ -1648,10 +1648,10 @@ func (m *Model) agentEvents() agent.Events {
 		OnReasoning:        func(d string) { m.events <- reasoningMsg(d) },
 		OnUsage:            func(t int) { m.events <- usageMsg(t) },
 		OnTodoUpdate:       func(todos []agent.TodoItem) { m.events <- todoUpdateMsg(todos) },
-		OnToolStart: func(name string, args json.RawMessage) {
+		OnToolStart: func(_, name string, args json.RawMessage) {
 			m.events <- toolStartMsg{name: name, args: string(args)}
 		},
-		OnToolEnd: func(name, result string, err error) {
+		OnToolEnd: func(_, name, result string, err error) {
 			m.events <- toolEndMsg{name: name, result: result, err: err}
 		},
 		OnNotice: func(text string) { m.events <- noticeMsg(text) },
@@ -1661,10 +1661,10 @@ func (m *Model) agentEvents() agent.Events {
 		OnAgentEnd: func(id, result string, err error) {
 			m.events <- agentEndMsg{id: id, result: result, err: err}
 		},
-		OnSubToolStart: func(id, ag, name string, args json.RawMessage) {
+		OnSubToolStart: func(id, ag, _, name string, args json.RawMessage) {
 			m.events <- subToolStartMsg{id: id, agent: ag, name: name, args: string(args)}
 		},
-		OnSubToolEnd: func(id, ag, name, result string, err error) {
+		OnSubToolEnd: func(id, ag, _, name, result string, err error) {
 			m.events <- subToolEndMsg{id: id, agent: ag, name: name, result: result, err: err}
 		},
 		OnSubNotice: func(id, ag, text string) { m.events <- subNoticeMsg{id: id, agent: ag, text: text} },

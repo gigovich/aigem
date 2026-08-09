@@ -70,6 +70,110 @@ func TestRunToolCallsParallel(t *testing.T) {
 	}
 }
 
+// gatedTool blocks each call on its own release channel, keyed by the call's
+// "n" argument, so a test can finish the calls in a different order from the one
+// they started in.
+type gatedTool struct {
+	arrived chan string
+	release map[string]chan struct{}
+}
+
+func (g *gatedTool) Name() string            { return "gated" }
+func (g *gatedTool) Description() string     { return "test gate" }
+func (g *gatedTool) NeedsConfirm() bool      { return false }
+func (g *gatedTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (g *gatedTool) Run(_ context.Context, args json.RawMessage) (string, error) {
+	var a struct {
+		N string `json:"n"`
+	}
+	_ = json.Unmarshal(args, &a)
+	g.arrived <- a.N
+	<-g.release[a.N]
+	return "result-" + a.N, nil
+}
+
+// A batch that runs concurrently can finish in any order, so the only thing
+// tying a result to the call that produced it is the id. Pairing by arrival
+// order - which is all a terminal front-end ever needed - attributes the wrong
+// result to the wrong call as soon as the calls do not return in order.
+func TestToolEventsCarryCallID(t *testing.T) {
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"a", "b", "c"}
+	gt := &gatedTool{arrived: make(chan string, len(names)), release: map[string]chan struct{}{}}
+	for _, n := range names {
+		gt.release[n] = make(chan struct{})
+	}
+	reg.Register(gt)
+	ag := New(&fakeClient{}, reg, 0.3, nil, "")
+
+	calls := make([]llm.ToolCall, len(names))
+	for i, n := range names {
+		calls[i] = llm.ToolCall{
+			ID:       "call-" + n,
+			Function: llm.FunctionCall{Name: "gated", Arguments: `{"n":"` + n + `"}`},
+		}
+	}
+	refs := ag.callRefs(calls)
+
+	var mu sync.Mutex
+	startArgs := map[string]string{}  // call id -> the "n" it was invoked with
+	endResults := map[string]string{} // call id -> the result reported for it
+	ended := make(chan string, len(names))
+	ev := Events{
+		OnToolStart: func(id, _ string, args json.RawMessage) {
+			mu.Lock()
+			defer mu.Unlock()
+			startArgs[id] = string(args)
+		},
+		OnToolEnd: func(id, _, result string, _ error) {
+			mu.Lock()
+			endResults[id] = result
+			mu.Unlock()
+			ended <- id
+		},
+	}
+
+	done := make(chan []string, 1)
+	go func() { done <- ag.runToolCalls(context.Background(), calls, refs, ev) }()
+
+	for range names {
+		<-gt.arrived
+	}
+	// Finish them in reverse, waiting for each end event before releasing the
+	// next, so completion order is the exact opposite of call order.
+	var endOrder []string
+	for i := len(names) - 1; i >= 0; i-- {
+		close(gt.release[names[i]])
+		select {
+		case id := <-ended:
+			endOrder = append(endOrder, id)
+		case <-time.After(3 * time.Second):
+			t.Fatalf("tool %q did not report an end event", names[i])
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("batch did not finish")
+	}
+
+	if want := []string{"call-c", "call-b", "call-a"}; strings.Join(endOrder, ",") != strings.Join(want, ",") {
+		t.Fatalf("end order = %v, want %v (the test needs out-of-order completion to be meaningful)", endOrder, want)
+	}
+	for _, r := range refs {
+		n := strings.TrimPrefix(r.ID, "call-")
+		if got, want := startArgs[r.ID], `{"n":"`+n+`"}`; got != want {
+			t.Errorf("start for %s carried args %q, want %q", r.ID, got, want)
+		}
+		if got, want := endResults[r.ID], "result-"+n; got != want {
+			t.Errorf("end for %s carried result %q, want %q", r.ID, got, want)
+		}
+	}
+}
+
 // fakeClient emits one tool call on its first tool-enabled request, then final
 // text, so Run terminates on its own without any loop guard.
 type fakeClient struct {

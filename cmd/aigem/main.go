@@ -605,10 +605,10 @@ func runREPL(client *llm.Ref, reg *tools.Registry, temp float64, sysPrompt strin
 		}
 		ev := agent.Events{
 			OnContent: func(d string) { fmt.Print(d) },
-			OnToolStart: func(name string, args json.RawMessage) {
+			OnToolStart: func(_, name string, args json.RawMessage) {
 				fmt.Printf("\n  · %s %s\n", name, string(args))
 			},
-			OnToolEnd: func(name, result string, err error) {
+			OnToolEnd: func(_, _, result string, _ error) {
 				fmt.Printf("  ⤷ %s\n", firstLine(result))
 			},
 			OnNotice: func(text string) { fmt.Printf("\n  ⚠ %s\n", text) },
@@ -676,10 +676,10 @@ func runPrint(o printRun) {
 
 	ev := agent.Events{
 		OnContent: func(d string) { fmt.Print(d) },
-		OnToolStart: func(name string, args json.RawMessage) {
+		OnToolStart: func(_, name string, args json.RawMessage) {
 			fmt.Fprintf(os.Stderr, "  · %s %s\n", name, string(args))
 		},
-		OnToolEnd: func(name, result string, err error) {
+		OnToolEnd: func(_, _, result string, _ error) {
 			fmt.Fprintf(os.Stderr, "  ⤷ %s\n", firstLine(result))
 		},
 		OnNotice: func(text string) { fmt.Fprintf(os.Stderr, "  ⚠ %s\n", text) },
@@ -691,10 +691,10 @@ func runPrint(o printRun) {
 				fmt.Fprintf(os.Stderr, "  ▸ failed: %v\n", err)
 			}
 		},
-		OnSubToolStart: func(id, ag, name string, args json.RawMessage) {
+		OnSubToolStart: func(_, ag, _, name string, args json.RawMessage) {
 			fmt.Fprintf(os.Stderr, "    ▸ %s:%s %s\n", ag, name, string(args))
 		},
-		OnSubToolEnd: func(id, ag, name, result string, err error) {
+		OnSubToolEnd: func(_, _, _, _, result string, err error) {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "    ⤷ error: %v\n", err)
 				return

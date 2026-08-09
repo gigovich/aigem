@@ -479,10 +479,10 @@ func stepEvents(log *slog.Logger, key string) agent.Events {
 		log = slog.Default()
 	}
 	return agent.Events{
-		OnToolStart: func(name string, _ json.RawMessage) {
+		OnToolStart: func(_, name string, _ json.RawMessage) {
 			log.Info("tool start", "thread", key, "tool", name)
 		},
-		OnToolEnd: func(name, _ string, err error) {
+		OnToolEnd: func(_, name, _ string, err error) {
 			if err != nil {
 				log.Error("tool end", "thread", key, "tool", name, "err", err)
 				return

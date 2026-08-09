@@ -72,8 +72,12 @@ type Events struct {
 	// tagged with, so a nested run can be traced back to the call that started
 	// it - which is what tells a delegated subagent apart from a forked skill.
 	OnToolBatch func(round int, calls []ToolCallRef)
-	OnToolStart func(name string, args json.RawMessage)
-	OnToolEnd   func(name, result string, err error)
+	// OnToolStart and OnToolEnd bracket one tool call. id is the same id the
+	// call was announced with in OnToolBatch, so a result can be attached to the
+	// call that produced it - which arrival order cannot do once a batch runs
+	// concurrently.
+	OnToolStart func(id, name string, args json.RawMessage)
+	OnToolEnd   func(id, name, result string, err error)
 	OnNotice    func(text string)
 	// OnBudgetExhausted fires when the turn is stopped by a runaway-protection
 	// budget (model rounds, tool calls, wall clock). The turn still returns a
@@ -89,9 +93,12 @@ type Events struct {
 	OnAgentStart func(id, agent, prompt string)
 	OnAgentEnd   func(id, result string, err error)
 	// OnSub* surface a delegated subagent's nested tool activity, tagged with
-	// the same parent-call id so concurrent runs stay grouped.
-	OnSubToolStart func(id, agent, tool string, args json.RawMessage)
-	OnSubToolEnd   func(id, agent, tool, result string, err error)
+	// the same parent-call id so concurrent runs stay grouped. callID is the
+	// nested call's own id, unique only within that run: a provider that supplies
+	// no ids leaves callRefs to number them per Agent, so two concurrent
+	// subagents can each produce "call-1". Identify a nested call by the pair.
+	OnSubToolStart func(id, agent, callID, tool string, args json.RawMessage)
+	OnSubToolEnd   func(id, agent, callID, tool, result string, err error)
 	OnSubNotice    func(id, agent, text string)
 }
 
@@ -687,15 +694,15 @@ func (s evSink) AgentEnd(result string, err error) {
 	}
 }
 
-func (s evSink) SubToolStart(agent, tool string, args json.RawMessage) {
+func (s evSink) SubToolStart(agent, callID, tool string, args json.RawMessage) {
 	if s.ev.OnSubToolStart != nil {
-		s.ev.OnSubToolStart(s.callID, agent, tool, args)
+		s.ev.OnSubToolStart(s.callID, agent, callID, tool, args)
 	}
 }
 
-func (s evSink) SubToolEnd(agent, tool, result string, err error) {
+func (s evSink) SubToolEnd(agent, callID, tool, result string, err error) {
 	if s.ev.OnSubToolEnd != nil {
-		s.ev.OnSubToolEnd(s.callID, agent, tool, result, err)
+		s.ev.OnSubToolEnd(s.callID, agent, callID, tool, result, err)
 	}
 }
 
@@ -824,18 +831,18 @@ func (a *Agent) runToolCalls(ctx context.Context, calls []llm.ToolCall, refs []T
 	return results
 }
 
-func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, groupID string, ev Events) string {
+func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, callID string, ev Events) string {
 	name := tc.Function.Name
 	rawArgs := json.RawMessage(tc.Function.Arguments)
 	if name != TaskToolName && ev.OnToolStart != nil {
-		ev.OnToolStart(name, rawArgs)
+		ev.OnToolStart(callID, name, rawArgs)
 	}
 
 	tool, ok := a.tools.Get(name)
 	if !ok {
 		err := fmt.Errorf("unknown tool %q", name)
 		if ev.OnToolEnd != nil {
-			ev.OnToolEnd(name, "", err)
+			ev.OnToolEnd(callID, name, "", err)
 		}
 		return "error: " + err.Error()
 	}
@@ -846,7 +853,7 @@ func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, groupID string
 	if disallowed {
 		res := "error: tool " + name + " is disallowed by the active skill"
 		if ev.OnToolEnd != nil {
-			ev.OnToolEnd(name, res, nil)
+			ev.OnToolEnd(callID, name, res, nil)
 		}
 		return res
 	}
@@ -878,7 +885,7 @@ func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, groupID string
 				"old_string EXACTLY as it appears (every space, tab, and newline must match), " +
 				"or use write_file with the file's full new contents instead."
 			if ev.OnToolEnd != nil {
-				ev.OnToolEnd(name, res, nil)
+				ev.OnToolEnd(callID, name, res, nil)
 			}
 			return res
 		}
@@ -888,7 +895,7 @@ func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, groupID string
 	if pre.Block {
 		res := "error: tool call blocked by a PreToolUse hook: " + pre.Reason
 		if ev.OnToolEnd != nil {
-			ev.OnToolEnd(name, res, nil)
+			ev.OnToolEnd(callID, name, res, nil)
 		}
 		return res
 	}
@@ -905,12 +912,12 @@ func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, groupID string
 	if needConfirm && a.confirm != nil && !a.confirm(name, rawArgs) {
 		const denied = "error: user denied this tool call"
 		if ev.OnToolEnd != nil {
-			ev.OnToolEnd(name, denied, nil)
+			ev.OnToolEnd(callID, name, denied, nil)
 		}
 		return denied
 	}
 
-	ctx = WithSink(ctx, evSink{ev: ev, callID: groupID})
+	ctx = WithSink(ctx, evSink{ev: ev, callID: callID})
 	ctx = WithActivation(ctx, agentActivation{a})
 	ctx = WithHooks(ctx, a.hooks)
 	result, err := tool.Run(ctx, rawArgs)
@@ -960,7 +967,7 @@ func (a *Agent) runToolCall(ctx context.Context, tc llm.ToolCall, groupID string
 		ev.OnTodoUpdate(a.Todos())
 	}
 	if name != TaskToolName && ev.OnToolEnd != nil {
-		ev.OnToolEnd(name, result, err)
+		ev.OnToolEnd(callID, name, result, err)
 	}
 	return result
 }

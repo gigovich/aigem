@@ -496,10 +496,10 @@ type eventRunner struct{}
 
 func (eventRunner) Run(_ context.Context, input string, ev agent.Events) (string, error) {
 	if ev.OnToolStart != nil {
-		ev.OnToolStart("read_channel", nil)
+		ev.OnToolStart("c1", "read_channel", nil)
 	}
 	if ev.OnToolEnd != nil {
-		ev.OnToolEnd("read_channel", "ok", nil)
+		ev.OnToolEnd("c1", "read_channel", "ok", nil)
 	}
 	return "answer:" + input, nil
 }
@@ -596,9 +596,9 @@ func TestCronEventsTagRunsWithTheJobID(t *testing.T) {
 	defer slog.SetDefault(old)
 
 	ev := CronEvents(slog.Default(), "work-heartbeat")
-	ev.OnToolStart("read_file", nil)
-	ev.OnToolEnd("read_file", "", nil)
-	ev.OnToolEnd("bash", "", errRefused{})
+	ev.OnToolStart("c1", "read_file", nil)
+	ev.OnToolEnd("c1", "read_file", "", nil)
+	ev.OnToolEnd("c2", "bash", "", errRefused{})
 	out := buf.String()
 	if !strings.Contains(out, "cron:work-heartbeat") {
 		t.Fatalf("cron events must carry the job id, got %q", out)

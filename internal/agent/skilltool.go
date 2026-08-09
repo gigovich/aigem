@@ -136,8 +136,10 @@ func (t *skillTool) runFork(ctx context.Context, s *skill.Skill, body string,
 	ev := Events{}
 	if sink != nil {
 		sink.AgentStart(s.Name, firstLine(body))
-		ev.OnToolStart = func(name string, a json.RawMessage) { sink.SubToolStart(s.Name, name, a) }
-		ev.OnToolEnd = func(name, result string, err error) { sink.SubToolEnd(s.Name, name, result, err) }
+		ev.OnToolStart = func(id, name string, a json.RawMessage) { sink.SubToolStart(s.Name, id, name, a) }
+		ev.OnToolEnd = func(id, name, result string, err error) {
+			sink.SubToolEnd(s.Name, id, name, result, err)
+		}
 		ev.OnNotice = func(text string) { sink.SubNotice(s.Name, text) }
 	}
 	// Same as a delegated subagent: nothing displays a forked skill's deltas, so

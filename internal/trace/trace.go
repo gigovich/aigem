@@ -61,10 +61,14 @@ type Event struct {
 	Round int    `json:"round,omitempty"`
 	// ID is the parent task call's id, present on every event belonging to a
 	// delegated run so concurrent subagents can be told apart.
-	ID    string `json:"id,omitempty"`
-	Agent string `json:"agent,omitempty"`
-	Model string `json:"model,omitempty"`
-	Tool  string `json:"tool,omitempty"`
+	ID string `json:"id,omitempty"`
+	// CallID is the id of the tool call this event is about, matching one of the
+	// ids the batch announced. On a nested event it is the subagent's own call,
+	// unique only within that run, so a nested call is identified by ID+CallID.
+	CallID string `json:"call_id,omitempty"`
+	Agent  string `json:"agent,omitempty"`
+	Model  string `json:"model,omitempty"`
+	Tool   string `json:"tool,omitempty"`
 	// Calls lists a batch's calls with their ids. The ids are what tie a nested
 	// run back to the call that started it: a delegated subagent and a forked
 	// skill announce themselves identically, and only the id says which is
@@ -196,16 +200,17 @@ func (r *Recorder) Wrap(ev agent.Events) agent.Events {
 			ev.OnToolBatch(round, calls)
 		}
 	}
-	out.OnToolStart = func(name string, args json.RawMessage) {
-		r.emit(Event{Kind: KindToolStart, Tool: name, Args: clipArgs(args)})
+	out.OnToolStart = func(id, name string, args json.RawMessage) {
+		r.emit(Event{Kind: KindToolStart, CallID: id, Tool: name, Args: clipArgs(args)})
 		if ev.OnToolStart != nil {
-			ev.OnToolStart(name, args)
+			ev.OnToolStart(id, name, args)
 		}
 	}
-	out.OnToolEnd = func(name, result string, err error) {
-		r.emit(Event{Kind: KindToolEnd, Tool: name, Text: clip(result), Bytes: len(result), Error: errText(err)})
+	out.OnToolEnd = func(id, name, result string, err error) {
+		r.emit(Event{Kind: KindToolEnd, CallID: id, Tool: name,
+			Text: clip(result), Bytes: len(result), Error: errText(err)})
 		if ev.OnToolEnd != nil {
-			ev.OnToolEnd(name, result, err)
+			ev.OnToolEnd(id, name, result, err)
 		}
 	}
 	// A delegated prompt is kept whole: whether it stands on its own without the
@@ -222,10 +227,11 @@ func (r *Recorder) Wrap(ev agent.Events) agent.Events {
 			ev.OnAgentEnd(id, result, err)
 		}
 	}
-	out.OnSubToolStart = func(id, name, tool string, args json.RawMessage) {
-		r.emit(Event{Kind: KindSubToolStart, ID: id, Agent: name, Tool: tool, Args: clipArgs(args)})
+	out.OnSubToolStart = func(id, name, callID, tool string, args json.RawMessage) {
+		r.emit(Event{Kind: KindSubToolStart, ID: id, CallID: callID, Agent: name,
+			Tool: tool, Args: clipArgs(args)})
 		if ev.OnSubToolStart != nil {
-			ev.OnSubToolStart(id, name, tool, args)
+			ev.OnSubToolStart(id, name, callID, tool, args)
 		}
 	}
 	out.OnSubNotice = func(id, name, text string) {
@@ -234,11 +240,11 @@ func (r *Recorder) Wrap(ev agent.Events) agent.Events {
 			ev.OnSubNotice(id, name, text)
 		}
 	}
-	out.OnSubToolEnd = func(id, name, tool, result string, err error) {
-		r.emit(Event{Kind: KindSubToolEnd, ID: id, Agent: name, Tool: tool,
+	out.OnSubToolEnd = func(id, name, callID, tool, result string, err error) {
+		r.emit(Event{Kind: KindSubToolEnd, ID: id, CallID: callID, Agent: name, Tool: tool,
 			Text: clip(result), Bytes: len(result), Error: errText(err)})
 		if ev.OnSubToolEnd != nil {
-			ev.OnSubToolEnd(id, name, tool, result, err)
+			ev.OnSubToolEnd(id, name, callID, tool, result, err)
 		}
 	}
 	out.OnNotice = func(text string) {

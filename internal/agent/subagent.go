@@ -332,8 +332,10 @@ func (t *taskTool) Run(ctx context.Context, args json.RawMessage) (string, error
 	ev := Events{}
 	if sink != nil {
 		sink.AgentStart(def.Name, a.Prompt)
-		ev.OnToolStart = func(name string, a json.RawMessage) { sink.SubToolStart(def.Name, name, a) }
-		ev.OnToolEnd = func(name, result string, err error) { sink.SubToolEnd(def.Name, name, result, err) }
+		ev.OnToolStart = func(id, name string, a json.RawMessage) { sink.SubToolStart(def.Name, id, name, a) }
+		ev.OnToolEnd = func(id, name, result string, err error) {
+			sink.SubToolEnd(def.Name, id, name, result, err)
+		}
 		ev.OnNotice = func(text string) { sink.SubNotice(def.Name, text) }
 	}
 
@@ -379,12 +381,13 @@ func excluding(names []string, drop string) []string {
 
 // Sink receives events from a running subagent so the UI can show its nested
 // activity. It is passed to the delegation tool via the context. The id that
-// groups a run is supplied by the implementation (the parent task call's id).
+// groups a run is supplied by the implementation (the parent task call's id);
+// callID identifies one nested call within that run.
 type Sink interface {
 	AgentStart(agent, prompt string)
 	AgentEnd(result string, err error)
-	SubToolStart(agent, tool string, args json.RawMessage)
-	SubToolEnd(agent, tool, result string, err error)
+	SubToolStart(agent, callID, tool string, args json.RawMessage)
+	SubToolEnd(agent, callID, tool, result string, err error)
 	SubNotice(agent, text string)
 }
 

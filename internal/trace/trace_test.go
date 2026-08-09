@@ -22,8 +22,8 @@ func TestRecordsDelegationStructure(t *testing.T) {
 	ev := r.Wrap(agent.Events{})
 	ev.OnToolBatch(3, []agent.ToolCallRef{{ID: "call-a", Name: "task"}, {ID: "call-b", Name: "task"}})
 	ev.OnAgentStart("call-1", "scout", "explore services/alpha")
-	ev.OnSubToolStart("call-1", "scout", "grep", json.RawMessage(`{"pattern":"x"}`))
-	ev.OnSubToolEnd("call-1", "scout", "grep", "hit", nil)
+	ev.OnSubToolStart("call-1", "scout", "s1", "grep", json.RawMessage(`{"pattern":"x"}`))
+	ev.OnSubToolEnd("call-1", "scout", "s1", "grep", "hit", nil)
 	ev.OnAgentEnd("call-1", "alpha exposes /v1", nil)
 	r.End("done", nil)
 
@@ -69,12 +69,12 @@ func TestWrapKeepsOriginalCallbacks(t *testing.T) {
 	var seen []string
 	base := agent.Events{
 		OnToolBatch:       func(int, []agent.ToolCallRef) { seen = append(seen, "batch") },
-		OnToolStart:       func(name string, _ json.RawMessage) { seen = append(seen, "start:"+name) },
-		OnToolEnd:         func(name, _ string, _ error) { seen = append(seen, "end:"+name) },
+		OnToolStart:       func(_, name string, _ json.RawMessage) { seen = append(seen, "start:"+name) },
+		OnToolEnd:         func(_, name, _ string, _ error) { seen = append(seen, "end:"+name) },
 		OnAgentStart:      func(_, name, _ string) { seen = append(seen, "agent:"+name) },
 		OnAgentEnd:        func(_, _ string, _ error) { seen = append(seen, "agentend") },
-		OnSubToolStart:    func(_, _, tool string, _ json.RawMessage) { seen = append(seen, "substart:"+tool) },
-		OnSubToolEnd:      func(_, _, tool, _ string, _ error) { seen = append(seen, "subend:"+tool) },
+		OnSubToolStart:    func(_, _, _, tool string, _ json.RawMessage) { seen = append(seen, "substart:"+tool) },
+		OnSubToolEnd:      func(_, _, _, tool, _ string, _ error) { seen = append(seen, "subend:"+tool) },
 		OnSubNotice:       func(_, _, text string) { seen = append(seen, "subnotice:"+text) },
 		OnNotice:          func(text string) { seen = append(seen, "notice:"+text) },
 		OnUsage:           func(tokens int) { seen = append(seen, "usage") },
@@ -82,11 +82,11 @@ func TestWrapKeepsOriginalCallbacks(t *testing.T) {
 	}
 	ev := NewWriter(&buf).Wrap(base)
 	ev.OnToolBatch(1, []agent.ToolCallRef{{ID: "call-a", Name: "task"}})
-	ev.OnToolStart("grep", nil)
-	ev.OnToolEnd("grep", "out", nil)
+	ev.OnToolStart("c1", "grep", nil)
+	ev.OnToolEnd("c1", "grep", "out", nil)
 	ev.OnAgentStart("id", "scout", "p")
-	ev.OnSubToolStart("id", "scout", "read_file", nil)
-	ev.OnSubToolEnd("id", "scout", "read_file", "body", nil)
+	ev.OnSubToolStart("id", "scout", "s1", "read_file", nil)
+	ev.OnSubToolEnd("id", "scout", "s1", "read_file", "body", nil)
 	ev.OnSubNotice("id", "scout", "slow")
 	ev.OnAgentEnd("id", "done", nil)
 	ev.OnNotice("hi")
@@ -122,7 +122,7 @@ func TestRecordsErrors(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewWriter(&buf)
 	ev := r.Wrap(agent.Events{})
-	ev.OnToolEnd("bash", "", errors.New("exit 1"))
+	ev.OnToolEnd("c1", "bash", "", errors.New("exit 1"))
 	r.End("", errors.New("run failed"))
 
 	events, err := Parse(&buf)
@@ -193,8 +193,8 @@ func TestConcurrentWritesStayWellFormed(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ev.OnSubToolStart("id", "scout", "grep", json.RawMessage(`{"a":1}`))
-			ev.OnSubToolEnd("id", "scout", "grep", strings.Repeat("x", 1000), nil)
+			ev.OnSubToolStart("id", "scout", "s1", "grep", json.RawMessage(`{"a":1}`))
+			ev.OnSubToolEnd("id", "scout", "s1", "grep", strings.Repeat("x", 1000), nil)
 		}()
 	}
 	wg.Wait()
@@ -280,8 +280,8 @@ func TestLargeArgumentsAreClipped(t *testing.T) {
 	r := NewWriter(&buf)
 	ev := r.Wrap(agent.Events{})
 	big := json.RawMessage(`{"content":"` + strings.Repeat("x", 5000) + `"}`)
-	ev.OnToolStart("write_file", big)
-	ev.OnSubToolStart("id", "code-writer", "write_file", big)
+	ev.OnToolStart("c1", "write_file", big)
+	ev.OnSubToolStart("id", "code-writer", "s1", "write_file", big)
 
 	if buf.Len() > 4*resultCap {
 		t.Fatalf("trace grew to %d bytes; arguments were not clipped", buf.Len())
@@ -304,8 +304,8 @@ func TestMalformedArgumentsStillRecordTheEvent(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewWriter(&buf)
 	ev := r.Wrap(agent.Events{})
-	ev.OnToolStart("bash", json.RawMessage(`{"cmd": "ls`))
-	ev.OnToolEnd("bash", "ok", nil)
+	ev.OnToolStart("c1", "bash", json.RawMessage(`{"cmd": "ls`))
+	ev.OnToolEnd("c1", "bash", "ok", nil)
 
 	events, err := Parse(&buf)
 	if err != nil {
