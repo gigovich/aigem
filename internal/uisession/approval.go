@@ -274,6 +274,21 @@ func (l *Local) pathGranted(req Approval) bool {
 	return err == nil && ok
 }
 
+// SetAutoMode toggles approving anything a tool can undo without asking.
+func (l *Local) SetAutoMode(on bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.autoMode = on
+}
+
+// ResetPolicy forgets the "Always"/"Forbid" answers given so far. A fresh
+// conversation starts from the same standing as the first one did.
+func (l *Local) ResetPolicy() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.toolPolicy = map[string]string{}
+}
+
 // Pending returns the open approval request, or nil. A front-end that attaches
 // mid-turn needs it: the request event was emitted before it subscribed, and
 // the turn is blocked until someone answers.

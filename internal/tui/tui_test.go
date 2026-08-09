@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,7 @@ import (
 	"github.com/gigovich/aigem/internal/session"
 	"github.com/gigovich/aigem/internal/skill"
 	"github.com/gigovich/aigem/internal/tools"
+	"github.com/gigovich/aigem/internal/uisession"
 )
 
 func TestMain(m *testing.M) {
@@ -986,7 +988,6 @@ func TestNewSessionClears(t *testing.T) {
 		}
 	}
 	m = step(m, todoUpdateMsg{{Text: "step", Status: agent.TodoPending}})
-	m.toolPolicy["bash"] = "allow"
 	savedID := m.sessionID
 
 	if len(m.blocks) == 0 || m.sessionID == "" || len(m.history) == 0 || len(m.todos) == 0 {
@@ -996,9 +997,6 @@ func TestNewSessionClears(t *testing.T) {
 
 	// /new wipes everything back to a fresh start.
 	m = typeEnter(m, "/new")
-	if len(m.toolPolicy) != 0 {
-		t.Fatalf("tool policy should be cleared, got %+v", m.toolPolicy)
-	}
 	// The prior session is persisted first, so it stays resumable.
 	if _, err := session.Load(savedID); err != nil {
 		t.Fatalf("prior session should be saved before /new: %v", err)
@@ -1160,12 +1158,25 @@ type stubErr string
 
 func (e stubErr) Error() string { return string(e) }
 
+// toolConfirm builds the request the session would open for a confirm-gated
+// tool. What the session decides to ask about, and what it does with the
+// answer, is tested in that package; this one covers the dialog.
+func toolConfirm(tool, args string) confirmReqMsg {
+	return confirmReqMsg{id: "ap-1", req: uisession.Approval{
+		Kind: uisession.ApprovalTool, Tool: tool, Args: json.RawMessage(args),
+		Options: []uisession.Option{
+			{Value: uisession.DecisionOnce, Label: "Once"},
+			{Value: uisession.DecisionAlways, Label: "Always"},
+			{Value: uisession.DecisionDeny, Label: "Forbid"},
+		},
+	}}
+}
+
 func TestConfirmFlow(t *testing.T) {
 	m := newTestModel(t)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	resp := make(chan bool, 1)
-	m = step(m, confirmReqMsg{name: "bash", args: `{"cmd":"ls"}`, resp: resp})
+	m = step(m, toolConfirm("bash", `{"cmd":"ls"}`))
 	if m.pending == nil {
 		t.Fatal("expected pending confirmation")
 	}
@@ -1176,9 +1187,6 @@ func TestConfirmFlow(t *testing.T) {
 	m = step(m, keyPress('y'))
 	if m.pending != nil {
 		t.Fatal("expected confirmation cleared after answer")
-	}
-	if got := <-resp; got != true {
-		t.Fatal("expected approval sent to agent")
 	}
 }
 
@@ -1194,14 +1202,12 @@ func TestOverlayBlursInput(t *testing.T) {
 		t.Fatal("input should be focused while typing")
 	}
 
-	resp := make(chan bool, 1)
-	m = step(m, confirmReqMsg{name: "bash", args: `{"cmd":"ls"}`, resp: resp})
+	m = step(m, toolConfirm("bash", `{"cmd":"ls"}`))
 	if m.input.Focused() {
 		t.Fatal("input should be blurred while a modal dialog is open")
 	}
 
 	m = step(m, keyPress('y'))
-	<-resp
 	if !m.input.Focused() {
 		t.Fatal("input should regain focus after the dialog closes")
 	}
@@ -1392,68 +1398,6 @@ func TestSubagentGrouping(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
-	}
-}
-
-// TestConfirmQueue verifies that concurrent confirmations queue behind one box
-// and promote in turn.
-func TestConfirmQueue(t *testing.T) {
-	m := newTestModel(t)
-	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-
-	r1 := make(chan bool, 1)
-	r2 := make(chan bool, 1)
-	m = step(m, confirmReqMsg{name: "bash", args: `{"cmd":"ls"}`, resp: r1})
-	m = step(m, confirmReqMsg{name: "write_file", args: `{"path":"a"}`, resp: r2})
-
-	if m.pending == nil || m.pending.name != "bash" {
-		t.Fatal("expected bash confirm shown first")
-	}
-	if len(m.pendingQueue) != 1 {
-		t.Fatalf("expected one queued confirm, got %d", len(m.pendingQueue))
-	}
-
-	m = step(m, keyPress('y'))
-	if got := <-r1; !got {
-		t.Fatal("expected bash approved")
-	}
-	if m.pending == nil || m.pending.name != "write_file" {
-		t.Fatal("expected write_file promoted after answering bash")
-	}
-	if len(m.pendingQueue) != 0 {
-		t.Fatal("queue should be empty")
-	}
-	step(m, keyPress('y'))
-	if got := <-r2; !got {
-		t.Fatal("expected write_file approved")
-	}
-}
-
-// TestConfirmAlwaysPolicy approves a tool for the session, after which later
-// calls to the same tool are auto-approved without a prompt.
-func TestConfirmAlwaysPolicy(t *testing.T) {
-	m := newTestModel(t)
-	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-
-	resp := make(chan bool, 1)
-	m = step(m, confirmReqMsg{name: "bash", args: `{"cmd":"ls"}`, resp: resp})
-	// Select "Always" and confirm.
-	m = step(m, keyPress('a'))
-	if got := <-resp; got != true {
-		t.Fatal("expected approval")
-	}
-	if m.toolPolicy["bash"] != "allow" {
-		t.Fatalf("expected session allow policy, got %q", m.toolPolicy["bash"])
-	}
-
-	// A second bash request must auto-approve without showing the box.
-	resp2 := make(chan bool, 1)
-	m = step(m, confirmReqMsg{name: "bash", args: `{"cmd":"pwd"}`, resp: resp2})
-	if m.pending != nil {
-		t.Fatal("expected no prompt for an always-allowed tool")
-	}
-	if got := <-resp2; got != true {
-		t.Fatal("expected auto-approval from session policy")
 	}
 }
 

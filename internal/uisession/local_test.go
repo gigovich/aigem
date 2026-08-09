@@ -178,6 +178,35 @@ func TestQueuedRequestsSettledByPolicy(t *testing.T) {
 	}
 }
 
+// A fresh conversation starts from the same standing as the first one did, so
+// a tool approved for the old one has to ask again.
+func TestResetPolicyForgetsAlways(t *testing.T) {
+	l := newSession(t)
+	ch, stop, err := l.Subscribe(Client{ID: "c"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	go func() { l.confirmTool("bash", nil) }()
+	req := waitFor(t, ch, KindApprovalRequest)
+	if err := l.Resolve(req.ID, DecisionAlways, "c"); err != nil {
+		t.Fatal(err)
+	}
+	// While the policy stands, the same tool does not ask.
+	go func() { l.confirmTool("bash", nil) }()
+	time.Sleep(20 * time.Millisecond)
+	if _, open := l.Pending(); open != nil {
+		t.Fatal("an always-allowed tool asked again")
+	}
+
+	l.ResetPolicy()
+	go func() { l.confirmTool("bash", nil) }()
+	if got := waitFor(t, ch, KindApprovalRequest); got.ID == req.ID {
+		t.Fatal("expected a new request after the policy was reset")
+	}
+}
+
 // A tool call parked on an approval must not outlive the session, or closing a
 // session would leak a goroutine holding the agent's turn open.
 func TestCloseRefusesPendingApprovals(t *testing.T) {

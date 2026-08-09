@@ -33,10 +33,10 @@ import (
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/local"
 	"github.com/gigovich/aigem/internal/mcp"
-	"github.com/gigovich/aigem/internal/pathgrant"
 	"github.com/gigovich/aigem/internal/session"
 	"github.com/gigovich/aigem/internal/skill"
 	"github.com/gigovich/aigem/internal/tools"
+	"github.com/gigovich/aigem/internal/uisession"
 )
 
 // Catppuccin Mocha palette (https://catppuccin.com/palette). cBase is pinned to
@@ -182,15 +182,12 @@ type subNoticeMsg struct {
 
 // confirmReqMsg is a request for the confirmation overlay. It covers two kinds
 // of question - "run this tool?" and "reach outside the working directory?" -
-// because they share the overlay, the one-at-a-time rule, and the queue behind
-// it. pathResp being non-nil marks the second kind; resp marks the first.
+// which share the overlay and the one-at-a-time rule; Approval.Kind says which.
+// The session owns the queue behind it and the channel the blocked call is
+// parked on, so all that travels here is the id to answer with.
 type confirmReqMsg struct {
-	name, args string
-	resp       chan bool
-
-	path     string // absolute path outside the root, for a path request
-	write    bool   // the tool wants to modify it, not just read it
-	pathResp chan tools.PathDecision
+	id  string
+	req uisession.Approval
 }
 type turnDoneMsg struct {
 	answer string
@@ -372,6 +369,10 @@ type alertBox struct {
 }
 
 type Model struct {
+	// sess owns the turn, the approval queue and the session tool policy, and
+	// publishes the event stream this model renders. Everything below it here is
+	// presentation state.
+	sess       *uisession.Local
 	agent      *agent.Agent
 	backend    *llm.Ref
 	modelReg   *llm.Registry
@@ -379,8 +380,7 @@ type Model struct {
 	model      string
 	url        string
 	events     chan tea.Msg
-	done       chan struct{} // closed on quit to unblock the agent goroutine
-	cancel     context.CancelFunc
+	done       chan struct{} // closed on quit to unblock the event bridge
 
 	vp             viewport.Model
 	input          textarea.Model
@@ -395,11 +395,11 @@ type Model struct {
 	pendingImages  []llm.Image
 	pastingImage   bool
 
-	pending        *confirmReqMsg
-	pendingQueue   []*confirmReqMsg // confirmations waiting behind the current one
-	confirmIdx     confirmChoice
-	autoMode       bool                 // shift+tab: auto-approve all but irreversible (destructive) ops
-	toolPolicy     map[string]string    // tool name -> "allow" | "deny" for the session
+	pending    *confirmReqMsg
+	confirmIdx confirmChoice
+	// autoMode mirrors the session's setting so the status line can render it;
+	// the session is what acts on it.
+	autoMode       bool
 	groups         map[string]*agentRun // subagent runs by parent-call id
 	skills         *skill.Registry
 	agents         *agent.SubagentRegistry
@@ -510,40 +510,6 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 	events := make(chan tea.Msg, 256)
 	done := make(chan struct{})
 
-	confirm := func(name string, args json.RawMessage) bool {
-		resp := make(chan bool, 1)
-		select {
-		case events <- confirmReqMsg{name: name, args: string(args), resp: resp}:
-		case <-done:
-			return false
-		}
-		select {
-		case ok := <-resp:
-			return ok
-		case <-done:
-			return false
-		}
-	}
-	// A path outside the working directory asks through the same overlay as a
-	// tool confirmation, so the two cannot appear at once. Persisted grants are
-	// enabled here and nowhere else: an unattended bot must not inherit a
-	// directory a human approved for the same working directory.
-	reg.SetPathGrants(true)
-	reg.SetPathApprover(func(path string, intent tools.PathIntent) tools.PathDecision {
-		resp := make(chan tools.PathDecision, 1)
-		select {
-		case events <- confirmReqMsg{name: intent.Tool, path: path, write: intent.Write, pathResp: resp}:
-		case <-done:
-			return tools.PathDeny
-		}
-		select {
-		case d := <-resp:
-			return d
-		case <-done:
-			return tools.PathDeny
-		}
-	})
-
 	// Ride out transient provider failures (429/5xx, an overloaded backend, a
 	// dropped stream) instead of surfacing them into the session. It wraps the
 	// Ref rather than the backend inside it, so a live /model switch keeps the
@@ -557,31 +523,44 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		case <-done:
 		}
 	})
-	if agents != nil {
-		reg.Register(agent.NewTaskTool(stream, reg, temp, confirm, agents, project))
-	}
-	// Kept as a closure: a project whose only skills are untrusted has none to
-	// advertise at launch, so the tool is registered again once they are approved.
-	// It takes the registry rather than closing over one, so the caller cannot
-	// silently register a tool against a registry it has since replaced.
-	regSkillTool := func(sk *skill.Registry) {
-		if st := agent.NewSkillTool(sk, stream, reg, temp, confirm); st != nil {
-			reg.Register(st)
-		}
-	}
-	regSkillTool(skills)
-	reg.OnFileChange(func(c tools.FileChange) {
-		select {
-		case events <- fileChangeMsg{path: c.Path, old: c.Old, new: c.New, created: c.Created}:
-		case <-done:
-		}
+	// The session builds the agent, because the confirmation function it is
+	// constructed with belongs to the session: it is what parks a tool call on
+	// the approval queue that every attached front-end can answer.
+	var regSkillTool func(*skill.Registry)
+	sess := uisession.New(uisession.Config{
+		Tools: reg,
+		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
+			if agents != nil {
+				reg.Register(agent.NewTaskTool(stream, reg, temp, confirm, agents, project))
+			}
+			// Kept as a closure: a project whose only skills are untrusted has none
+			// to advertise at launch, so the tool is registered again once they are
+			// approved. It takes the registry rather than closing over one, so the
+			// caller cannot silently register a tool against a registry it has since
+			// replaced.
+			regSkillTool = func(sk *skill.Registry) {
+				if st := agent.NewSkillTool(sk, stream, reg, temp, confirm); st != nil {
+					reg.Register(st)
+				}
+			}
+			regSkillTool(skills)
+			ag := agent.New(stream, reg, temp, confirm, systemPrompt)
+			reg.Register(agent.NewTodoTool(ag))
+			ag.SetHooks(runner)
+			ag.SetCompaction(compactCfg)
+			if skills != nil {
+				ag.WatchSkills(skills.Conditional())
+			}
+			return ag
+		},
 	})
-	ag := agent.New(stream, reg, temp, confirm, systemPrompt)
-	reg.Register(agent.NewTodoTool(ag))
-	ag.SetHooks(runner)
-	ag.SetCompaction(compactCfg)
-	if skills != nil {
-		ag.WatchSkills(skills.Conditional())
+	ag := sess.Agent()
+	// One subscriber, translating the session's events into the messages this
+	// model already knows how to render. Nothing else reads the stream, so the
+	// terminal stays a renderer even though the session could feed several.
+	evCh, _, err := sess.Subscribe(uisession.Client{ID: "tui", Kind: "tui"}, 0)
+	if err == nil {
+		go bridgeEvents(evCh, events, done, sess)
 	}
 
 	ta := textarea.New()
@@ -623,6 +602,7 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		// v2 defaults to half-block fill characters, which reads as a different
 		// widget; keep the solid blocks the download bar has always drawn.
 		prog:           progress.New(progress.WithDefaultBlend(), progress.WithFillCharacters('█', '░')),
+		sess:           sess,
 		agent:          ag,
 		backend:        client,
 		modelReg:       modelReg,
@@ -637,7 +617,6 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		historyRoot:    historyRoot,
 		history:        history,
 		histIdx:        len(history),
-		toolPolicy:     map[string]string{},
 		groups:         map[string]*agentRun{},
 		artIndex:       map[string]*artifact{},
 		skills:         skills,
@@ -1289,6 +1268,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	switch s := msg.String(); s {
 	case "shift+tab":
 		m.autoMode = !m.autoMode
+		m.sess.SetAutoMode(m.autoMode)
 		text := "auto mode OFF - every edit and command asks for confirmation"
 		if m.autoMode {
 			text = "auto mode ON - approving edits and safe commands automatically; " +
@@ -1320,9 +1300,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.scrollDiff(diffScrollStep)
 		return nil, true
 	case "ctrl+c":
-		if m.cancel != nil {
-			m.cancel()
-		}
+		m.sess.Interrupt()
 		if !m.busy {
 			m.saveSession()
 		}
@@ -1348,8 +1326,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 
 	switch bareCode(msg) {
 	case tea.KeyEsc:
-		if m.busy && m.cancel != nil {
-			m.cancel()
+		if m.busy {
+			m.sess.Interrupt()
 			return nil, true
 		}
 		if len(m.pendingImages) > 0 {
@@ -1629,46 +1607,16 @@ func (m *Model) startTurn(display block, title string,
 	m.refresh()
 	m.vp.GotoBottom() // a new turn re-anchors the view to the bottom
 
-	ctx, cancel := context.WithCancel(context.Background())
-	m.cancel = cancel
-
-	go func() {
-		defer cancel()
-		answer, err := run(ctx, m.agentEvents())
-		m.events <- turnDoneMsg{answer: answer, err: err}
-	}()
-	return m.spin.Tick
-}
-
-// agentEvents bridges agent callbacks onto the TUI event channel.
-func (m *Model) agentEvents() agent.Events {
-	return agent.Events{
-		OnContent:          func(d string) { m.events <- contentMsg(d) },
-		OnAssistantMessage: func(c string) { m.events <- assistantStepMsg(c) },
-		OnReasoning:        func(d string) { m.events <- reasoningMsg(d) },
-		OnUsage:            func(t int) { m.events <- usageMsg(t) },
-		OnTodoUpdate:       func(todos []agent.TodoItem) { m.events <- todoUpdateMsg(todos) },
-		OnToolStart: func(_, name string, args json.RawMessage) {
-			m.events <- toolStartMsg{name: name, args: string(args)}
-		},
-		OnToolEnd: func(_, name, result string, err error) {
-			m.events <- toolEndMsg{name: name, result: result, err: err}
-		},
-		OnNotice: func(text string) { m.events <- noticeMsg(text) },
-		OnAgentStart: func(id, ag, prompt string) {
-			m.events <- agentStartMsg{id: id, agent: ag, prompt: prompt}
-		},
-		OnAgentEnd: func(id, result string, err error) {
-			m.events <- agentEndMsg{id: id, result: result, err: err}
-		},
-		OnSubToolStart: func(id, ag, _, name string, args json.RawMessage) {
-			m.events <- subToolStartMsg{id: id, agent: ag, name: name, args: string(args)}
-		},
-		OnSubToolEnd: func(id, ag, _, name, result string, err error) {
-			m.events <- subToolEndMsg{id: id, agent: ag, name: name, result: result, err: err}
-		},
-		OnSubNotice: func(id, ag, text string) { m.events <- subNoticeMsg{id: id, agent: ag, text: text} },
+	// The session runs the turn and publishes what happens in it; the display
+	// line above is this front-end's own richer rendering of the prompt, which
+	// is why the session's user_message event is not drawn a second time.
+	if err := m.sess.Run(display.text, run); err != nil {
+		m.busy = false
+		m.blocks = append(m.blocks, block{kind: bkError, text: err.Error()})
+		m.refresh()
+		return nil
 	}
+	return m.spin.Tick
 }
 
 // hasRunningGroup reports whether any subagent run is still in progress; their
@@ -1891,37 +1839,16 @@ func (m Model) skillTrustView() string {
 
 // ---- confirmation ----
 
+// handleConfirmReq shows a request the session has opened. The session decides
+// which requests are asked at all - a tool policy, auto mode and the queue
+// behind the open one all live there - so by the time one arrives here there is
+// nothing left to decide, only to draw.
 func (m *Model) handleConfirmReq(msg confirmReqMsg) {
-	// A path request is never settled by a session tool policy or by auto mode:
-	// those govern which tools may run, and leaving the working directory is a
-	// separate question that only the user answers.
-	if msg.pathResp == nil {
-		switch m.toolPolicy[msg.name] {
-		case "allow":
-			msg.resp <- true
-			return
-		case "deny":
-			msg.resp <- false
-			return
-		}
-		// Auto mode approves anything that is reversible from the code (edits, safe
-		// commands) without prompting; an irreversible destructive op still asks.
-		if m.autoMode && !tools.IsDestructive(msg.name, json.RawMessage(msg.args)) {
-			msg.resp <- true
-			return
-		}
-	}
-	// Concurrent subagents can request confirmation at once; show one box and
-	// queue the rest.
-	if m.pending != nil {
-		m.pendingQueue = append(m.pendingQueue, &msg)
-		return
-	}
 	m.pending = &msg
 	m.confirmIdx = choiceOnce
 	if m.hooks != nil {
 		go m.hooks.RunBounded(hooks.EventNotification,
-			hooks.Input{Message: "awaiting confirmation for tool: " + msg.name}, 30*time.Second)
+			hooks.Input{Message: "awaiting confirmation for tool: " + msg.req.Tool}, 30*time.Second)
 	}
 	m.layout()
 }
@@ -1933,16 +1860,14 @@ func (m Model) confirmOptions() []string {
 	if m.pending == nil {
 		return nil
 	}
-	switch {
-	case m.pending.pathResp == nil:
-		return []string{"Once", "Always", "Forbid"}
-	case m.pending.write:
-		// A write outside the working directory is never remembered, so an
-		// "Always" here would be a button that does not do what it says.
-		return []string{"Once", "Deny"}
-	default:
-		return []string{"Once", "Always (this folder)", "Deny"}
+	// The labels come with the request: which answers a question offers, and what
+	// they mean, is the session's call - a write outside the working directory is
+	// never remembered, so it is offered no "Always" at all.
+	out := make([]string, len(m.pending.req.Options))
+	for i, o := range m.pending.req.Options {
+		out[i] = o.Label
 	}
+	return out
 }
 
 func (m *Model) handleConfirmKey(msg tea.KeyPressMsg) tea.Cmd {
@@ -1979,84 +1904,19 @@ func (m *Model) handleConfirmKey(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
+// answerConfirm sends the chosen option back to the session, which unparks the
+// tool call, records any session policy the answer implies, and opens the next
+// queued question if the answer did not already settle it.
 func (m *Model) answerConfirm(choice confirmChoice) {
 	pending := m.pending
-	if pending.pathResp != nil {
-		m.answerPathReq(pending, choice)
-	} else {
-		name := pending.name
-		ok := choice != choiceForbid
-		switch choice {
-		case choiceAlways:
-			m.toolPolicy[name] = "allow"
-		case choiceForbid:
-			m.toolPolicy[name] = "deny"
-		}
-		pending.resp <- ok
-	}
 	m.pending = nil
-	m.promoteNextConfirm()
+	opts := pending.req.Options
+	if int(choice) < len(opts) {
+		// A request answered by someone else in the meantime is not an error: the
+		// session broadcasts the resolution and this dialog is already gone.
+		_ = m.sess.Resolve(pending.id, opts[choice].Value, "tui")
+	}
 	m.layout()
-}
-
-// answerPathReq resolves an out-of-root path request. "Always" records the
-// path's directory for this project, so the rest of that tree is read without
-// asking again - here and in later sessions.
-func (m *Model) answerPathReq(req *confirmReqMsg, choice confirmChoice) {
-	last := confirmChoice(len(m.confirmOptions()) - 1)
-	switch {
-	case choice >= last:
-		req.pathResp <- tools.PathDeny
-	case choice == choiceOnce:
-		req.pathResp <- tools.PathAllowOnce
-	default:
-		req.pathResp <- tools.PathAllowDir
-		m.blocks = append(m.blocks, block{kind: bkNotice,
-			text: "allowed " + filepath.Dir(req.path) + " for this project"})
-	}
-}
-
-// pathGranted reports whether a queued path request is already covered - the
-// user may have just approved a directory above it, and asking twice for the
-// same tree is exactly what "Always" was meant to prevent.
-func (m *Model) pathGranted(req *confirmReqMsg) bool {
-	if req.write || m.reg == nil {
-		return false // a write is never covered by a grant
-	}
-	ok, err := pathgrant.Allowed(m.reg.Root(), req.path)
-	return err == nil && ok
-}
-
-// promoteNextConfirm shows the next queued confirmation, auto-resolving any that
-// a session policy now covers (e.g. set by an "Always"/"Forbid" just chosen).
-func (m *Model) promoteNextConfirm() {
-	for len(m.pendingQueue) > 0 {
-		next := m.pendingQueue[0]
-		m.pendingQueue = m.pendingQueue[1:]
-		if next.pathResp != nil {
-			if m.pathGranted(next) {
-				next.pathResp <- tools.PathAllowOnce
-				continue
-			}
-			m.pending = next
-			m.confirmIdx = choiceOnce
-			return
-		}
-		switch m.toolPolicy[next.name] {
-		case "allow":
-			next.resp <- true
-		case "deny":
-			next.resp <- false
-		default:
-			if m.autoMode && !tools.IsDestructive(next.name, json.RawMessage(next.args)) {
-				next.resp <- true
-				continue
-			}
-			m.pending = next
-			m.confirmIdx = choiceOnce
-			return
-		}
-	}
 }
 
 // ---- resume picker ----
@@ -3074,7 +2934,7 @@ func (m *Model) newSession() {
 	}
 	m.blocks = nil
 	m.groups = map[string]*agentRun{}
-	m.toolPolicy = map[string]string{}
+	m.sess.ResetPolicy()
 	m.artifacts = nil
 	m.artIndex = map[string]*artifact{}
 	m.diffScrollX = 0
@@ -3189,7 +3049,6 @@ func (m *Model) finishTurn(msg turnDoneMsg) {
 		m.blocks = append(m.blocks, block{kind: bkAssistant, text: answer})
 	}
 	m.busy = false
-	m.cancel = nil
 	m.resetStream()
 	m.saveSession()
 	// Persist the quota reading this turn's responses carried, so `aigem usage`
@@ -3809,17 +3668,17 @@ func (m Model) confirmView() string {
 	nameStyle := lipgloss.NewStyle().Foreground(cGreen).Background(cSurface0).Bold(true)
 	title := "Run this tool?"
 	var head string
-	if m.pending.pathResp != nil {
+	req := m.pending.req
+	if req.Kind == uisession.ApprovalPath {
 		verb := "read"
-		if m.pending.write {
+		if req.Write {
 			verb = "modify"
 		}
-		title = "Let " + m.pending.name + " " + verb + " a file outside the working directory?"
-		head = nameStyle.Render(truncate(m.pending.path, max(5, w-2)))
+		title = "Let " + req.Tool + " " + verb + " a file outside the working directory?"
+		head = nameStyle.Render(truncate(req.Path, max(5, w-2)))
 	} else {
-		name := m.pending.name
-		args := truncate(formatArgs(name, m.pending.args), max(5, w-len([]rune(name))-4))
-		head = nameStyle.Render(name) + overlayTextStyle.Render("  "+args)
+		args := truncate(formatArgs(req.Tool, string(req.Args)), max(5, w-len([]rune(req.Tool))-4))
+		head = nameStyle.Render(req.Tool) + overlayTextStyle.Render("  "+args)
 	}
 	labels := m.confirmOptions()
 	opts := make([]string, len(labels))
@@ -4329,6 +4188,12 @@ func indent(s, prefix string) string {
 
 // Run starts the Bubble Tea program.
 func Run(m Model) error {
+	// Closing the session on the way out refuses anything still parked on an
+	// approval, so a tool call waiting on a dialog that is no longer on screen
+	// cannot hold its goroutine open past the program.
+	if m.sess != nil {
+		defer m.sess.Close()
+	}
 	p := tea.NewProgram(m, tea.WithColorProfile(teaColorProfile()))
 	_, err := p.Run()
 	return err
