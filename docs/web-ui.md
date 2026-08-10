@@ -2,7 +2,7 @@
 
 !!! note "Partly built"
 
-    Steps 0 to 9 of the work breakdown have landed: call ids on tool events,
+    Steps 0 to 10 of the work breakdown have landed, in part: call ids on tool events,
     `internal/uisession`, the terminal ported onto it, the journal, and the
     daemon with its protocol. There is no UI yet: `aigem web run` serves the API
     and says so. The design below is kept in step with the code as it is
@@ -599,9 +599,29 @@ protect.
 
 ### 10. Web-only surface
 
-Side-by-side diffs with per-hunk revert, file tree and viewer, spend dashboard
-over `internal/llm/usagestore`, and a console for the bot fleet over
-`internal/bot` (fleet, cron, heartbeat, memory).
+Side-by-side diffs and the spend readings have landed. The file tree and the bot
+console have not.
+
+Both of the built ones are read-only views over state the agent already keeps,
+which is why neither needed a new event: the session has tracked what it changed
+since step 1, and the quota readings have been persisted from real responses
+since long before any of this.
+
+The diff list carries filenames only, and content arrives when a path is named.
+The list is opened far more often than any one diff is read, and a session that
+rewrote a large tree would otherwise ship all of it to draw a sidebar. The
+"before" is the file as it was when the session first touched it, not before the
+last edit, because the question someone reviewing a run asks is what the run
+did.
+
+Per-hunk revert is not built. Reverting is a write, and a write from the browser
+is a different thing from a view of one: it wants the same approval path a tool
+write goes through, or it is a way to change files that skips the trust model
+entirely. That is a design question, not an afternoon of UI.
+
+The file tree needs a listing endpoint over the sandbox, and the bot console
+needs `internal/bot` to expose fleet state that today only its logs carry.
+Neither is blocked; both are their own piece of work.
 
 ## Risks
 

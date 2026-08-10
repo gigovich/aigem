@@ -561,6 +561,13 @@ func (l *Local) recordFileChange(c tools.FileChange) {
 	l.mu.Unlock()
 }
 
+// RecordFileChange notes a change the session did not make through a tool. It
+// exists for tests and for a front-end that edited a file itself; the tool
+// registry reports its own.
+func (l *Local) RecordFileChange(path, old, updated string, created bool) {
+	l.recordFileChange(tools.FileChange{Path: path, Old: old, New: updated, Created: created})
+}
+
 // Artifacts returns the files this session changed, with the content before and
 // after, keyed by path.
 func (l *Local) Artifacts() map[string]tools.FileChange {

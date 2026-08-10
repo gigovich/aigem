@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CircleStop, KeyRound, MessagesSquare, Plus, Send, WifiOff, X } from "lucide-react";
+import { CircleStop, FileDiff, KeyRound, MessagesSquare, Plus, Send, WifiOff, X } from "lucide-react";
 import { api, type SessionView } from "@/lib/protocol";
 import { useSession } from "@/lib/session";
 import { Timeline } from "@/components/timeline";
 import { Login } from "@/components/login";
+import { Files } from "@/components/files";
+import { Spend } from "@/components/usage";
 import { Badge, Button, Spinner } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
@@ -108,6 +110,7 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const [picker, setPicker] = useState(false);
   const [login, setLogin] = useState(false);
+  const [files, setFiles] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -163,6 +166,9 @@ export default function App() {
         <span className="font-semibold tracking-tight">aigem</span>
         {state.title && <span className="truncate text-sm text-muted">{state.title}</span>}
         <div className="ml-auto flex items-center gap-2">
+          <Button variant="ghost" size="icon" onClick={() => setFiles((v) => !v)} title="Files">
+            <FileDiff className="h-4 w-4" />
+          </Button>
           <Button variant="ghost" size="icon" onClick={() => setLogin((v) => !v)} title="Providers">
             <KeyRound className="h-4 w-4" />
           </Button>
@@ -183,6 +189,7 @@ export default function App() {
       </header>
 
       {login && <Login onClose={() => setLogin(false)} />}
+      {login && <Spend />}
 
       {picker && (
         <div className="shrink-0 border-b border-border bg-panel-2">
@@ -230,10 +237,14 @@ export default function App() {
         </div>
       )}
 
-      <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
-        {id ? <Timeline items={state.items} sessionID={id} /> : null}
-        <div ref={bottom} />
-      </div>
+      {files && id ? (
+        <Files sessionID={id} onClose={() => setFiles(false)} />
+      ) : (
+        <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
+          {id ? <Timeline items={state.items} sessionID={id} /> : null}
+          <div ref={bottom} />
+        </div>
+      )}
 
       {state.approval && <Approval req={state.approval} onAnswer={(a, d) => resolve(a, d as never)} />}
 

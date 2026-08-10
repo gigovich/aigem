@@ -202,6 +202,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/blobs/{seq}", s.handleBlob)
 	s.mux.HandleFunc("GET /api/sessions/{id}/socket", s.handleSocket)
 	s.loginRoutes()
+	s.artifactRoutes()
 	s.mux.HandleFunc("/", s.handleAssets)
 }
 
