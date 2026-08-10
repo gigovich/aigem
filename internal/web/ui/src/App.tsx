@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CircleStop, MessagesSquare, Plus, Send, WifiOff, X } from "lucide-react";
+import { CircleStop, KeyRound, MessagesSquare, Plus, Send, WifiOff, X } from "lucide-react";
 import { api, type SessionView } from "@/lib/protocol";
 import { useSession } from "@/lib/session";
 import { Timeline } from "@/components/timeline";
+import { Login } from "@/components/login";
 import { Badge, Button, Spinner } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
@@ -106,6 +107,7 @@ export default function App() {
   const { state, submit, interrupt, resolve } = useSession(id);
   const [draft, setDraft] = useState("");
   const [picker, setPicker] = useState(false);
+  const [login, setLogin] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -161,6 +163,9 @@ export default function App() {
         <span className="font-semibold tracking-tight">aigem</span>
         {state.title && <span className="truncate text-sm text-muted">{state.title}</span>}
         <div className="ml-auto flex items-center gap-2">
+          <Button variant="ghost" size="icon" onClick={() => setLogin((v) => !v)} title="Providers">
+            <KeyRound className="h-4 w-4" />
+          </Button>
           {state.model && <Badge>{state.model}</Badge>}
           {state.tokens > 0 && (
             <Badge>
@@ -176,6 +181,8 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {login && <Login onClose={() => setLogin(false)} />}
 
       {picker && (
         <div className="shrink-0 border-b border-border bg-panel-2">

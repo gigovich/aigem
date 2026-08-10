@@ -33,7 +33,6 @@ type webRun struct {
 	// the delegation and skill tools carry the confirmation function of whichever
 	// session registered them last.
 	newRegistry func() (*tools.Registry, error)
-	mcp         *mcp.Manager
 	temp        float64
 	sysPrompt   string
 	buildSys    func() string
@@ -62,6 +61,8 @@ func runWeb(o webRun) {
 		Addr:    o.addr,
 		Factory: o.factory(),
 		Assets:  web.Assets(),
+		Models:  o.modelReg,
+		Backend: o.client,
 	})
 	if err != nil {
 		fatal(err)
@@ -117,8 +118,8 @@ func (o webRun) factory() web.Factory {
 		if err != nil {
 			return nil, err
 		}
-		if o.mcp != nil && !o.mcp.Empty() {
-			o.mcp.RegisterTools(reg)
+		if o.mcpMgr != nil && !o.mcpMgr.Empty() {
+			o.mcpMgr.RegisterTools(reg)
 		}
 		// The retry notice needs the session it belongs to, which does not exist
 		// until the stream it wraps has been built. Capturing it keeps a

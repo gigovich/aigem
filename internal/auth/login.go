@@ -286,9 +286,19 @@ func startCallback(redirect string, allowStdinPaste bool) (*callbackServer, erro
 func (cs *callbackServer) readPasted() {
 	buf := make([]byte, 4096)
 	n, _ := os.Stdin.Read(buf)
-	line := strings.TrimSpace(string(buf[:n]))
+	cs.paste(string(buf[:n]))
+}
+
+// paste delivers a redirect URL or bare code the user brought back by hand,
+// from wherever they typed it: a terminal reading stdin, or a browser field on
+// a phone that could never have reached this machine's loopback. It reports
+// whether anything usable was found. The delivered result is marked as pasted,
+// which is what the CSRF rule keys off - a bare code carries no state, and one
+// that does carry a state must still match.
+func (cs *callbackServer) paste(raw string) bool {
+	line := strings.TrimSpace(raw)
 	if line == "" {
-		return
+		return false
 	}
 	res := callbackResult{code: line, viaPaste: true}
 	if u, err := url.Parse(line); err == nil && u.Query().Get("code") != "" {
@@ -296,7 +306,9 @@ func (cs *callbackServer) readPasted() {
 	}
 	select {
 	case cs.results <- res:
+		return true
 	default:
+		return false // something already answered this login
 	}
 }
 

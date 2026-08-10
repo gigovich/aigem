@@ -505,7 +505,7 @@ func main() {
 	}
 	if webMode {
 		runWeb(webRun{
-			client: ref, newRegistry: newRegistry, mcp: mcpMgr,
+			client: ref, newRegistry: newRegistry,
 			temp: *temp, sysPrompt: sysPrompt, buildSys: buildSystem,
 			agents: agents, project: project, skills: skills, hooks: runner, mcpMgr: mcpMgr,
 			compactCfg: compactCfg, modelReg: modelReg, maxTokens: *maxTokens,

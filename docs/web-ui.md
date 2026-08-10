@@ -2,7 +2,7 @@
 
 !!! note "Partly built"
 
-    Steps 0 to 8 of the work breakdown have landed: call ids on tool events,
+    Steps 0 to 9 of the work breakdown have landed: call ids on tool events,
     `internal/uisession`, the terminal ported onto it, the journal, and the
     daemon with its protocol. There is no UI yet: `aigem web run` serves the API
     and says so. The design below is kept in step with the code as it is
@@ -578,8 +578,24 @@ wanted.
 
 ### 9. Login in the browser
 
-Device code for xAI; the redirect-URL paste fallback for ChatGPT, which means
+Device code for xAI; the redirect-URL paste fallback for ChatGPT, which meant
 decoupling `callbackServer` from stdin.
+
+The flows are the same ones the terminal runs, split so the blocking half can be
+watched instead of waited on: `auth.Begin` does the part that produces something
+to show - the device code, or the authorize URL and a bound callback - and
+returns, leaving the wait on its own goroutine. Nothing about the CSRF rule
+changes: a callback arriving over HTTP must echo the state exactly, and a pasted
+URL bearing one must match it too.
+
+`Paste` is refused for a flow with no callback waiting, so a device login cannot
+be fed an authorization code from somewhere else, and a second answer cannot
+displace one that already arrived.
+
+The API reports where to send the user and whether it worked. It never returns a
+token, a code or an exchange - a client does not need any of that, and the
+credential store is exactly what the token and origin checks were put there to
+protect.
 
 ### 10. Web-only surface
 

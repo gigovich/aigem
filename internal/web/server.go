@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/uisession"
 )
 
@@ -41,6 +42,10 @@ type Config struct {
 	// Assets serves the built UI. A build without one still runs the protocol,
 	// which is what the daemon is tested against.
 	Assets http.Handler
+	// Models and Backend let the daemon report which models exist and which are
+	// reachable, and say which one is in use.
+	Models  *llm.Registry
+	Backend *llm.Ref
 	// MaxSessions bounds how many conversations this daemon holds at once; zero
 	// is unlimited. It exists because sessions sharing one tool registry are not
 	// safely independent - see the comment on handleCreate.
@@ -59,9 +64,14 @@ type Server struct {
 	ln   net.Listener
 	http *http.Server
 
+	models  *llm.Registry
+	backend *llm.Ref
+
 	mu       sync.Mutex
 	sessions map[string]*entry
 	seq      int
+	flows    map[string]*loginFlow
+	flowSeq  int
 	closed   bool
 }
 
@@ -103,6 +113,9 @@ func New(cfg Config) (*Server, error) {
 		mux:         http.NewServeMux(),
 		ln:          ln,
 		sessions:    map[string]*entry{},
+		flows:       map[string]*loginFlow{},
+		models:      cfg.Models,
+		backend:     cfg.Backend,
 	}
 	s.allowedHosts = hostsFor(ln.Addr())
 	s.routes()
@@ -163,8 +176,13 @@ func (s *Server) Close() error {
 		all = append(all, e)
 	}
 	s.sessions = map[string]*entry{}
+	flows := s.flows
+	s.flows = map[string]*loginFlow{}
 	s.mu.Unlock()
 
+	for _, f := range flows {
+		f.flow.Cancel()
+	}
 	for _, e := range all {
 		_ = e.sess.Save()
 		e.sess.Close()
@@ -183,6 +201,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
 	s.mux.HandleFunc("GET /api/sessions/{id}/blobs/{seq}", s.handleBlob)
 	s.mux.HandleFunc("GET /api/sessions/{id}/socket", s.handleSocket)
+	s.loginRoutes()
 	s.mux.HandleFunc("/", s.handleAssets)
 }
 
