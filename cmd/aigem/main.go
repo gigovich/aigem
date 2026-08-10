@@ -313,15 +313,6 @@ func main() {
 		KeepTools:    *keepTools,
 	}
 
-	reg, err := tools.NewRegistry(*cwd)
-	if err != nil {
-		fatal(err)
-	}
-	// Directories the user has already approved for this project are read without
-	// asking again. Each front-end installs its own approver for the ones that are
-	// not yet granted; -p has no one to ask and keeps refusing them.
-	reg.SetPathGrants(true)
-
 	// First-run search setup: in an interactive front-end (TUI or REPL, never -p),
 	// ask the user to pick a search provider before the session starts. Skipping it
 	// just leaves the agent without web_search.
@@ -335,14 +326,34 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not load search config:", err)
 	}
-	if st := search.NewTool(searchCfg); st != nil {
-		reg.Register(st)
+	// newRegistry builds the sandbox for one conversation. It is a function
+	// rather than a value because a registry is not shareable between sessions:
+	// the delegation and skill tools are registered into it bound to that
+	// session's confirmation function, so two conversations sharing one would
+	// have tool calls in the first asking the second's clients for approval.
+	newRegistry := func() (*tools.Registry, error) {
+		r, err := tools.NewRegistry(*cwd)
+		if err != nil {
+			return nil, err
+		}
+		// Directories the user has already approved for this project are read
+		// without asking again. Each front-end installs its own approver for the
+		// ones that are not yet granted; -p has no one to ask and keeps refusing.
+		r.SetPathGrants(true)
+		if st := search.NewTool(searchCfg); st != nil {
+			r.Register(st)
+		}
+		if bt := search.NewBrowseTool(searchCfg); bt != nil {
+			r.Register(bt)
+		}
+		if at := search.NewBrowserActionTool(searchCfg); at != nil {
+			r.Register(at)
+		}
+		return r, nil
 	}
-	if bt := search.NewBrowseTool(searchCfg); bt != nil {
-		reg.Register(bt)
-	}
-	if at := search.NewBrowserActionTool(searchCfg); at != nil {
-		reg.Register(at)
+	reg, err := newRegistry()
+	if err != nil {
+		fatal(err)
 	}
 
 	agents := loadAgents()
@@ -494,7 +505,8 @@ func main() {
 	}
 	if webMode {
 		runWeb(webRun{
-			client: ref, reg: reg, temp: *temp, sysPrompt: sysPrompt, buildSys: buildSystem,
+			client: ref, newRegistry: newRegistry, mcp: mcpMgr,
+			temp: *temp, sysPrompt: sysPrompt, buildSys: buildSystem,
 			agents: agents, project: project, skills: skills, hooks: runner, mcpMgr: mcpMgr,
 			compactCfg: compactCfg, modelReg: modelReg, maxTokens: *maxTokens,
 			ctxSize: *ctxSize, addr: *webAddr, cwd: *cwd,

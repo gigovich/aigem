@@ -444,11 +444,9 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 }
 
-// A second conversation would be built against the same tool registry as the
-// first, which binds the delegation tool to whichever session registered it
-// last - so a tool call in one would ask the other's clients for approval.
-// Until a session can own its registry, the second request is refused.
-func TestSecondSessionIsRefusedNotCrossWired(t *testing.T) {
+// MaxSessions is still honoured for a caller that wants one conversation at a
+// time, but it is a choice now rather than the only safe setting.
+func TestSessionCapIsHonoured(t *testing.T) {
 	srv := testServer(t)
 	srv.maxSessions = 1
 	srv.newSession(t)
@@ -463,6 +461,55 @@ func TestSecondSessionIsRefusedNotCrossWired(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("second session: %s, want 409", res.Status)
+	}
+}
+
+// Two conversations at once, each answering its own questions. The failure this
+// guards against is not a crash: with a shared tool registry the delegation and
+// skill tools carry whichever confirmation function was registered last, so a
+// tool call in one conversation asks the other one's clients for approval - and
+// the wrong person clicks Once.
+func TestConcurrentSessionsAreIndependent(t *testing.T) {
+	srv := testServer(t)
+	a, b := srv.newSession(t), srv.newSession(t)
+	if a == b {
+		t.Fatal("the daemon reused a handle")
+	}
+	ca, cb := srv.dial(t, a, 0, ""), srv.dial(t, b, 0, "")
+
+	send(t, ca, map[string]any{"op": "submit", "text": "in a"})
+	reqA := await(t, ca, uisession.KindApprovalRequest)
+
+	// b has been asked nothing, and must not be offered a's question.
+	cb.deadline(t, 300*time.Millisecond)
+	for {
+		data, err := wsutil.ReadServerText(cb.r)
+		if err != nil {
+			break
+		}
+		var ev uisession.Event
+		if err := json.Unmarshal(data, &ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev.Kind == uisession.KindApprovalRequest {
+			t.Fatal("one conversation's approval was offered to another")
+		}
+	}
+
+	// Answering in a lets a run, and leaves b untouched.
+	send(t, ca, map[string]any{"op": "resolve", "id": reqA.ID, "decision": "once", "label": "a"})
+	if ev := await(t, ca, uisession.KindTurnEnd); ev.Error != "" {
+		t.Fatalf("a's turn = %+v", ev)
+	}
+
+	send(t, cb, map[string]any{"op": "submit", "text": "in b"})
+	reqB := await(t, cb, uisession.KindApprovalRequest)
+	if reqB.ID == "" {
+		t.Fatal("b never got its own question")
+	}
+	send(t, cb, map[string]any{"op": "resolve", "id": reqB.ID, "decision": "deny", "label": "b"})
+	if ev := await(t, cb, uisession.KindTurnEnd); ev.Error != "" {
+		t.Fatalf("b's turn = %+v", ev)
 	}
 }
 

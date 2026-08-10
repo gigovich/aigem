@@ -2,7 +2,7 @@
 
 !!! note "Partly built"
 
-    Steps 0 to 7 of the work breakdown have landed: call ids on tool events,
+    Steps 0 to 8 of the work breakdown have landed: call ids on tool events,
     `internal/uisession`, the terminal ported onto it, the journal, and the
     daemon with its protocol. There is no UI yet: `aigem web run` serves the API
     and says so. The design below is kept in step with the code as it is
@@ -465,14 +465,12 @@ approval, answer - and a second connection with `since` gets an identical
 timeline. Also when a request with a bad `Origin` or no token is rejected, which
 is a test worth writing before the UI makes it easy to forget.
 
-One conversation at a time, for now. Sessions built against a single tool
-registry are not independent: registering the delegation tool binds it to the
-confirmation function of whichever session registered it last, so a tool call in
-one conversation would ask another conversation's clients for approval. Giving a
-session its own registry means resolving skills, project instructions, path
-grants and trust per root, which is the same work as serving a second directory
-- so both wait for step 8, and until then a second request is refused with a
-409 rather than quietly cross-wired.
+One conversation at a time to begin with, lifted in step 8. Sessions built
+against a single tool registry are not independent: registering the delegation
+tool binds it to the confirmation function of whichever session registered it
+last, so a tool call in one conversation would ask another conversation's
+clients for approval. `MaxSessions` still exists for a caller that wants a cap;
+it is a choice now rather than the only safe setting.
 
 Three things a websocket needs that an HTTP handler does not. The connection is
 hijacked, so the http server can no longer close it: when the session ends
@@ -558,8 +556,25 @@ rather than before it.
 
 ### 8. Multi-session and mobile
 
-Session list and switching, `presence`, reconnect on `desync`, PWA manifest and
-a service worker. This is the step at which the phone scenario works end to end.
+A sandbox per conversation, session list and switching, `presence`, reconnect on
+`desync`, and an installable page. This is the step at which the phone scenario
+works end to end.
+
+The registry is the whole of it. Everything else - the list, the switcher, the
+reconnect - was already there or is a dozen lines; what blocked several
+conversations was that they would have shared one, and a shared registry hands
+the delegation and skill tools whichever confirmation function was registered
+last. The guard for that lives against the factory the command builds, not the
+daemon's, because the daemon's own tests inject their own.
+
+What is still per-root rather than per-session: skills, project instructions and
+trust, all resolved once at startup. That is why a session asked for another
+directory is refused rather than sandboxed to the wrong one.
+
+No service worker. The page is useless without the daemon, and an offline cache
+would only ever show a conversation that has moved on; the manifest is there so
+a phone can keep it on the home screen, which is the part that was actually
+wanted.
 
 ### 9. Login in the browser
 

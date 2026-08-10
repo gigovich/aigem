@@ -28,22 +28,26 @@ every request needs; anything reaching the daemon without it is refused.
 // normal startup path so a web session is put together exactly like a terminal
 // one.
 type webRun struct {
-	client     *llm.Ref
-	reg        *tools.Registry
-	temp       float64
-	sysPrompt  string
-	buildSys   func() string
-	agents     *agent.SubagentRegistry
-	project    string
-	skills     *skill.Registry
-	hooks      *hooks.Runner
-	mcpMgr     *mcp.Manager
-	compactCfg agent.CompactConfig
-	modelReg   *llm.Registry
-	maxTokens  int
-	ctxSize    int
-	addr       string
-	cwd        string
+	client *llm.Ref
+	// newRegistry builds a sandbox per conversation. Sessions cannot share one:
+	// the delegation and skill tools carry the confirmation function of whichever
+	// session registered them last.
+	newRegistry func() (*tools.Registry, error)
+	mcp         *mcp.Manager
+	temp        float64
+	sysPrompt   string
+	buildSys    func() string
+	agents      *agent.SubagentRegistry
+	project     string
+	skills      *skill.Registry
+	hooks       *hooks.Runner
+	mcpMgr      *mcp.Manager
+	compactCfg  agent.CompactConfig
+	modelReg    *llm.Registry
+	maxTokens   int
+	ctxSize     int
+	addr        string
+	cwd         string
 }
 
 // runWeb starts the daemon and serves until interrupted.
@@ -55,10 +59,9 @@ func runWeb(o webRun) {
 			prior.Addr, prior.PID))
 	}
 	srv, err := web.New(web.Config{
-		Addr:        o.addr,
-		Factory:     o.factory(),
-		Assets:      web.Assets(),
-		MaxSessions: 1,
+		Addr:    o.addr,
+		Factory: o.factory(),
+		Assets:  web.Assets(),
 	})
 	if err != nil {
 		fatal(err)
@@ -99,16 +102,23 @@ func runWeb(o webRun) {
 	o.mcpMgr.Close()
 }
 
-// factory builds one session per conversation. Everything except the agent is
-// shared with the process, which is what confines this step to the directory
-// the daemon was started in: skills, project instructions, path grants and
-// trust are all resolved per root at startup, and serving a second root means
-// resolving them again rather than reusing these.
+// factory builds one session per conversation, each with its own sandbox.
+// What is still shared is what was resolved for this root at startup - skills,
+// project instructions, trust - which is what confines the daemon to the
+// directory it was started in: another root means resolving those again rather
+// than reusing these.
 func (o webRun) factory() web.Factory {
 	return func(spec web.Spec) (*uisession.Local, error) {
 		if spec.Cwd != "" && spec.Cwd != o.cwd {
 			return nil, errors.New("this daemon serves " + o.cwd +
 				"; a session in another directory needs its own daemon for now")
+		}
+		reg, err := o.newRegistry()
+		if err != nil {
+			return nil, err
+		}
+		if o.mcp != nil && !o.mcp.Empty() {
+			o.mcp.RegisterTools(reg)
 		}
 		// The retry notice needs the session it belongs to, which does not exist
 		// until the stream it wraps has been built. Capturing it keeps a
@@ -120,14 +130,14 @@ func (o webRun) factory() web.Factory {
 			}
 		})
 		sess = uisession.New(uisession.Config{
-			Tools: o.reg,
+			Tools: reg,
 			NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
 				if o.agents != nil {
-					o.reg.Register(agent.NewTaskTool(stream, o.reg, o.temp, confirm, o.agents, o.project))
+					reg.Register(agent.NewTaskTool(stream, reg, o.temp, confirm, o.agents, o.project))
 				}
-				registerSkillTool(o.reg, o.skills, stream, o.temp, confirm)
-				ag := agent.New(stream, o.reg, o.temp, confirm, o.sysPrompt)
-				o.reg.Register(agent.NewTodoTool(ag))
+				registerSkillTool(reg, o.skills, stream, o.temp, confirm)
+				ag := agent.New(stream, reg, o.temp, confirm, o.sysPrompt)
+				reg.Register(agent.NewTodoTool(ag))
 				ag.SetHooks(o.hooks)
 				ag.SetCompaction(o.compactCfg)
 				if o.skills != nil {

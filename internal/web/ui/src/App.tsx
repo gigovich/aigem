@@ -1,32 +1,69 @@
-import { useEffect, useRef, useState } from "react";
-import { CircleStop, Send, WifiOff } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CircleStop, MessagesSquare, Plus, Send, WifiOff, X } from "lucide-react";
 import { api, type SessionView } from "@/lib/protocol";
 import { useSession } from "@/lib/session";
 import { Timeline } from "@/components/timeline";
 import { Badge, Button, Spinner } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
-/** The daemon holds one conversation for now; adopt it, or open one. */
-function useDaemonSession() {
+/** The daemon can hold several conversations. Adopt whichever it has, open one
+ *  when it has none, and keep the list fresh enough to switch between them. */
+function useDaemonSessions() {
+  const [list, setList] = useState<SessionView[]>([]);
   const [id, setID] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    const next = await api<SessionView[]>("/api/sessions");
+    setList(next);
+    return next;
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
-        const list = await api<SessionView[]>("/api/sessions");
-        if (list.length > 0) return setID(list[0].id);
-        const made = await api<SessionView>("/api/sessions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        });
-        setID(made.id);
+        const next = await refresh();
+        if (next.length > 0) return setID(next[0].id);
+        setID((await open()).id);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, []);
-  return { id, error };
+  }, [refresh]);
+
+  const open = async () =>
+    api<SessionView>("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+
+  const create = useCallback(async () => {
+    try {
+      const made = await open();
+      await refresh();
+      setID(made.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [refresh]);
+
+  const close = useCallback(
+    async (target: string) => {
+      try {
+        await api<void>(`/api/sessions/${target}`, { method: "DELETE" });
+        const next = await refresh();
+        // Closing the one being viewed moves to whatever is left rather than
+        // leaving a socket pointed at a conversation that is gone.
+        if (target === id) setID(next[0]?.id ?? null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [id, refresh],
+  );
+
+  return { list, id, setID, error, refresh, create, close };
 }
 
 function Approval({
@@ -65,9 +102,10 @@ function Approval({
 }
 
 export default function App() {
-  const { id, error } = useDaemonSession();
+  const { list, id, setID, error, refresh, create, close } = useDaemonSessions();
   const { state, submit, interrupt, resolve } = useSession(id);
   const [draft, setDraft] = useState("");
+  const [picker, setPicker] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -83,6 +121,10 @@ export default function App() {
     if (!el) return;
     pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
+
+  useEffect(() => {
+    if (state.title) void refresh();
+  }, [state.title, refresh]);
 
   const send = () => {
     const text = draft.trim();
@@ -107,6 +149,15 @@ export default function App() {
   return (
     <div className="flex h-full flex-col">
       <header className="flex shrink-0 items-center gap-2 border-b border-border bg-panel px-3 py-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => { setPicker((p) => !p); void refresh(); }}
+          title="Conversations"
+        >
+          <MessagesSquare className="h-4 w-4" />
+          {list.length > 1 && <span className="text-xs">{list.length}</span>}
+        </Button>
         <span className="font-semibold tracking-tight">aigem</span>
         {state.title && <span className="truncate text-sm text-muted">{state.title}</span>}
         <div className="ml-auto flex items-center gap-2">
@@ -125,6 +176,33 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {picker && (
+        <div className="shrink-0 border-b border-border bg-panel-2">
+          <div className="mx-auto max-w-3xl px-3 py-2">
+            {list.map((s) => (
+              <div key={s.id} className="flex items-center gap-2 py-1">
+                <button
+                  onClick={() => { setID(s.id); setPicker(false); }}
+                  className={cn(
+                    "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
+                    s.id === id ? "bg-panel text-fg" : "text-muted hover:bg-panel",
+                  )}
+                >
+                  <span className="truncate">{s.title || "new conversation"}</span>
+                  {s.running && <Spinner className="ml-auto" />}
+                </button>
+                <Button variant="ghost" size="icon" title="Close" onClick={() => void close(s.id)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+            <Button variant="outline" size="sm" className="mt-1" onClick={() => void create()}>
+              <Plus className="h-3.5 w-3.5" /> New conversation
+            </Button>
+          </div>
+        </div>
+      )}
 
       {state.todos.length > 0 && (
         <div className="shrink-0 overflow-x-auto border-b border-border bg-panel px-3 py-1.5">
