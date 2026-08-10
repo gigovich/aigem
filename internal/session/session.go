@@ -2,6 +2,8 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -31,9 +33,19 @@ type Session struct {
 	Messages []llm.Message `json:"messages"`
 }
 
-// NewID derives a sortable, filesystem-safe id from a timestamp.
+// NewID derives a sortable, filesystem-safe id from a timestamp, with enough
+// randomness that two conversations started in the same second are still two.
+// A second was fine while a session was one file written whole; the event
+// journal is opened for append, so a collision no longer overwrites - it
+// interleaves two conversations under one set of sequence numbers.
 func NewID(now time.Time) string {
-	return now.UTC().Format("20060102-150405")
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Entropy failure is not a reason to refuse to start a conversation; the
+		// timestamp alone is what this always used to be.
+		return now.UTC().Format("20060102-150405")
+	}
+	return now.UTC().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
 }
 
 func dir() (string, error) {

@@ -33,11 +33,19 @@ type clientOp struct {
 // wsError is sent when an op cannot be carried out. It is deliberately not an
 // Event: events are what happened in the session, and one client's bad request
 // did not happen in the session.
+//
+// The kind is client_error rather than error, because error is a real Event
+// kind - naming it that made every client mistake a rejected request for
+// something that happened in the conversation, and put "approval already
+// decided" into the timeline as a failure at exactly the moment the design says
+// it must not be one.
 type wsError struct {
 	Kind  string `json:"kind"`
 	Op    string `json:"op,omitempty"`
 	Error string `json:"error"`
 }
+
+const kindClientError = "client_error"
 
 // handleSocket attaches one client to a session for as long as it stays
 // connected. Everything it is sent comes from the session's own stream, which
@@ -147,7 +155,7 @@ func (c *wsConn) readLoop(sess *uisession.Local, kind string) {
 			continue
 		}
 		if err := apply(sess, in, kind); err != nil {
-			_ = c.send(wsError{Kind: "error", Op: in.Op, Error: err.Error()})
+			_ = c.send(wsError{Kind: kindClientError, Op: in.Op, Error: err.Error()})
 		}
 	}
 }

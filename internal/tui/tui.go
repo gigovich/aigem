@@ -146,6 +146,13 @@ type assistantStepMsg string
 type reasoningMsg string
 type usageMsg int
 
+// approvalResolvedMsg says an open request was answered. With more than one
+// front-end attached that answer may not be this one's, so the dialog closes on
+// the resolution rather than on the keystroke that produced it.
+type approvalResolvedMsg struct {
+	id, by, decision string
+}
+
 // sessionMetaMsg carries what the status line needs about the conversation:
 // the model it is on and the window the gauge measures against.
 type sessionMetaMsg struct {
@@ -566,10 +573,7 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 	// One subscriber, translating the session's events into the messages this
 	// model already knows how to render. Nothing else reads the stream, so the
 	// terminal stays a renderer even though the session could feed several.
-	evCh, _, err := sess.Subscribe(uisession.Client{ID: "tui", Kind: "tui"}, 0)
-	if err == nil {
-		go bridgeEvents(evCh, events, done, sess)
-	}
+	go bridgeEvents(sess, uisession.Client{Kind: "tui"}, events, done)
 
 	ta := textarea.New()
 	ta.Placeholder = "Ask aigem...  (Enter send · / for commands · Ctrl+C quit)"
@@ -760,6 +764,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case usageMsg:
 		m.ctxTokens = int(msg)
+		cmds = append(cmds, m.waitForEvent())
+
+	case approvalResolvedMsg:
+		if m.pending != nil && m.pending.id == msg.id {
+			m.pending = nil
+			if msg.by != "tui" {
+				m.blocks = append(m.blocks, block{kind: bkNotice,
+					text: msg.decision + " (answered by " + msg.by + ")"})
+			}
+			m.layout()
+		}
 		cmds = append(cmds, m.waitForEvent())
 
 	case sessionMetaMsg:

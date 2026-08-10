@@ -123,6 +123,10 @@ func (l *Local) Reset() error {
 	l.artifacts = map[string]tools.FileChange{}
 	l.journal.close()
 	l.journal = nil
+	// The retained history belongs to the conversation just ended. Leaving it
+	// would have beginLocked replay it into the next one's journal, so a fresh
+	// conversation would open with the previous one's transcript above it.
+	l.ring = nil
 	l.id, l.title, l.start = "", "", time.Time{}
 	if l.hooks != nil {
 		l.hooks.SetSession("", "")

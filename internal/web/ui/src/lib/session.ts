@@ -6,7 +6,7 @@ import { token } from "./protocol";
 export type Item =
   | { kind: "user"; seq: number; text: string; images: number; injected: boolean }
   | { kind: "assistant"; seq: number; text: string; streaming: boolean }
-  | { kind: "tool"; seq: number; id: string; name: string; args: unknown; result?: string; error?: string; bytes?: number; blob?: boolean; done: boolean }
+  | { kind: "tool"; seq: number; id: string; name: string; args: unknown; result?: string; error?: string; bytes?: number; blob?: boolean; blobSeq?: number; done: boolean }
   | { kind: "run"; seq: number; id: string; agent: string; prompt: string; done: boolean; failed: boolean; steps: RunStep[] }
   | { kind: "notice"; seq: number; text: string; tone: "note" | "error" };
 
@@ -132,7 +132,9 @@ function reduce(s: State, a: Action): State {
         ...s2,
         items: patch(s2.items, i, {
           ...it, done: true, result: ev.text, error: ev.error,
-          bytes: ev.bytes, blob: ev.blob,
+          // The blob is stored under the seq of the event that carried the
+          // result, which is this one - not the seq of the call that started it.
+          bytes: ev.bytes, blob: ev.blob, blobSeq: ev.seq,
         }),
       };
     }
@@ -250,9 +252,9 @@ export function useSession(id: string | null) {
       ws.onopen = () => { attempt = 0; dispatch({ t: "connected", on: true }); };
       ws.onmessage = (m) => {
         const ev = JSON.parse(m.data as string) as Event;
-        // A server-side error reply is about this client's request, not about
-        // the conversation, so it is surfaced without joining the timeline.
-        if ((ev as unknown as { error?: string }).error && !ev.kind) return;
+        // A rejection of this client's own frame is not something that happened
+        // in the conversation, so it never joins the timeline.
+        if ((ev.kind as string) === "client_error") return;
         if (ev.kind === "desync") {
           seq.current = ev.from ?? seq.current;
           ws.close();

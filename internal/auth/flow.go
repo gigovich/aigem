@@ -60,6 +60,22 @@ func (f *Flow) Status() (FlowState, error) {
 }
 
 func (f *Flow) finish(rec Record, err error) {
+	// Claim the outcome before writing anything. The exchange can return at the
+	// same moment the user cancels, and Cancel promises the credential store is
+	// untouched - persisting after losing that race would break the promise and
+	// report "cancelled" over a login that had in fact replaced the credential.
+	f.mu.Lock()
+	if f.state != FlowPending {
+		f.mu.Unlock()
+		return
+	}
+	if err == nil {
+		f.state = FlowDone
+	} else {
+		f.state, f.err = FlowFailed, err
+	}
+	f.mu.Unlock()
+
 	if err == nil {
 		if err = Put(f.Provider, rec); err == nil {
 			// A cached token source for this provider now holds the credential
@@ -69,14 +85,9 @@ func (f *Flow) finish(rec Record, err error) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.state != FlowPending {
-		return
-	}
 	if err != nil {
 		f.state, f.err = FlowFailed, err
-		return
 	}
-	f.state = FlowDone
 }
 
 // Paste delivers a redirect URL (or a bare code) the user brought back by hand.
@@ -158,21 +169,19 @@ func BeginXAIDevice(ctx context.Context) (*Flow, error) {
 func BeginChatGPT(ctx context.Context) (*Flow, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loginTimeout)
 
-	// No stdin reader: this flow has no terminal, and reading stdin from a
-	// daemon would steal input from whatever else is using it.
-	cb, err := startCallback(chatGPTRedirect, false)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
 	cfg := oauthConfig()
 	verifier := oauth2.GenerateVerifier()
 	state, err := randState()
 	if err != nil {
 		cancel()
-		cb.close()
 		return nil, fmt.Errorf("generate state: %w", err)
+	}
+	// No stdin reader: this flow has no terminal, and reading stdin from a
+	// daemon would steal input from whatever else is using it.
+	cb, err := startCallback(chatGPTRedirect, state, false)
+	if err != nil {
+		cancel()
+		return nil, err
 	}
 	authURL := cfg.AuthCodeURL(state,
 		oauth2.S256ChallengeOption(verifier),

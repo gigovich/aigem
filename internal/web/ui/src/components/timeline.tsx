@@ -20,6 +20,9 @@ function argSummary(args: unknown): string {
 function ToolCard({ item, sessionID }: { item: Extract<Item, { kind: "tool" }>; sessionID: string }) {
   const [open, setOpen] = useState(false);
   const [full, setFull] = useState<string | null>(null);
+  // A blob that will not load is said out loud. Silently showing the head
+  // forever is how a broken key went unnoticed in the first place.
+  const [failed, setFailed] = useState(false);
   const body = full ?? item.result ?? "";
 
   const expand = async () => {
@@ -27,14 +30,15 @@ function ToolCard({ item, sessionID }: { item: Extract<Item, { kind: "tool" }>; 
     setOpen(next);
     // The journal keeps only the head of a large result; the rest is fetched
     // when someone actually looks at it.
-    if (next && item.blob && full === null) {
+    if (next && item.blob && item.blobSeq && full === null) {
       try {
-        const res = await fetch(`/api/sessions/${sessionID}/blobs/${item.seq}`, {
+        const res = await fetch(`/api/sessions/${sessionID}/blobs/${item.blobSeq}`, {
           headers: { Authorization: `Bearer ${sessionStorage.getItem("aigem-token") ?? ""}` },
         });
         if (res.ok) setFull(await res.text());
+        else setFailed(true);
       } catch {
-        /* the head is still shown; a failed fetch is not worth an alert */
+        setFailed(true);
       }
     }
   };
@@ -70,8 +74,10 @@ function ToolCard({ item, sessionID }: { item: Extract<Item, { kind: "tool" }>; 
             </pre>
           )}
           {item.blob && full === null && (
-            <p className="mt-1 text-[11px] text-muted">
-              showing the first {item.result?.length ?? 0} of {item.bytes} bytes
+            <p className={cn("mt-1 text-[11px]", failed ? "text-bad" : "text-muted")}>
+              {failed
+                ? `could not load the rest of this result (${item.bytes} bytes)`
+                : `showing the first ${item.result?.length ?? 0} of ${item.bytes} bytes`}
             </p>
           )}
         </div>

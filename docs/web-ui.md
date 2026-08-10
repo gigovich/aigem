@@ -2,7 +2,8 @@
 
 !!! note "Partly built"
 
-    Steps 0 to 10 of the work breakdown have landed, in part: call ids on tool events,
+    Steps 0 to 10 of the work breakdown have landed, in part, and have been
+    through a review pass: call ids on tool events,
     `internal/uisession`, the terminal ported onto it, the journal, and the
     daemon with its protocol. There is no UI yet: `aigem web run` serves the API
     and says so. The design below is kept in step with the code as it is
@@ -68,6 +69,12 @@ type Session interface {
     Command(name, args string) error
     // Resolve answers the open approval; by labels who answered.
     Resolve(id string, d Decision, by string) error
+
+    // Meta identifies the conversation; Pending is the approval blocking it,
+    // which a client attaching mid-turn never saw asked.
+    Meta() session.Meta
+    Pending() (string, *Approval)
+    Close()
 }
 ```
 
@@ -114,14 +121,15 @@ the journal, so the journal order and the subscriber order can never disagree.
 | Kind                | Payload                                     | Source          |
 | ------------------- | ------------------------------------------- | --------------- |
 | `user_message`      | `text`, `images`                            | `uisession`     |
-| `turn_start`        | `turn`                                      | `uisession`     |
-| `turn_end`          | `turn`, `error`                             | `uisession`     |
+| `turn_start`        | -                                           | `uisession`     |
+| `turn_end`          | `text`, `error`, `interrupted`              | `uisession`     |
 | `content`           | `delta`                                     | `agent.Events`  |
 | `reasoning`         | `delta`                                     | `agent.Events`  |
 | `assistant_message` | `text`                                      | `agent.Events`  |
 | `tool_batch`        | `round`, `calls[]{id,name}`                 | `agent.Events`  |
 | `tool_start`        | `id`, `name`, `args`                        | `agent.Events`* |
-| `tool_end`          | `id`, `name`, `result`, `blob`, `error`     | `agent.Events`* |
+| `tool_end`          | `id`, `name`, `text`, `bytes`, `blob`, `error` | `agent.Events`* |
+| `error`             | `text`                                      | `uisession`     |
 | `agent_start`       | `id`, `agent`, `prompt`                     | `agent.Events`  |
 | `agent_end`         | `id`, `result`, `error`                     | `agent.Events`  |
 | `sub_tool_start`    | `id`, `agent`, `tool`, `args`               | `agent.Events`  |
@@ -134,9 +142,9 @@ the journal, so the journal order and the subscriber order can never disagree.
 | `file_changed`      | `path`                                      | `uisession`     |
 | `approval_request`  | see below                                   | `uisession`     |
 | `approval_resolved` | see below                                   | `uisession`     |
-| `session_meta`      | `title`, `model`, `cwd`, `profile`, `ctx`   | `uisession`     |
+| `session_meta`      | `id`, `title`, `model`, `ctx`               | `uisession`     |
 | `presence`          | `clients[]{id,kind,label}`                  | `uisession`     |
-| `desync`            | `from`                                      | server          |
+| `desync`            | `from`                                      | fan-out         |
 
 The `id` on `agent_*` and `sub_*` is the parent `task` tool call's id, which is
 what keeps concurrent subagent runs correctly grouped no matter how their events
@@ -181,17 +189,31 @@ moves into a private table owned by `uisession`, keyed by an id that goes out in
 the event:
 
 ```jsonc
-// approval_request
-{"id": "ap_7", "kind": "tool", "tool": "bash",
- "args": {...}, "options": ["once", "always", "forbid"]}
+// approval_request: the request is nested, and each option carries the label
+// to show for it - "Always" means something different for a tool, for a read
+// outside the root, and for a write outside it.
+{"kind": "approval_request", "id": "ap-7", "approval": {
+  "kind": "tool", "tool": "bash", "args": {...},
+  "options": [{"value": "once", "label": "Once"},
+              {"value": "always", "label": "Always"},
+              {"value": "deny", "label": "Forbid"}]}}
 
 // approval_request, path variant
-{"id": "ap_8", "kind": "path", "tool": "read_file",
- "path": "/etc/hosts", "write": false, "options": ["once", "always", "no"]}
+{"kind": "approval_request", "id": "ap-8", "approval": {
+  "kind": "path", "tool": "read_file", "path": "/etc/hosts", "write": false,
+  "options": [{"value": "once", "label": "Once"},
+              {"value": "always", "label": "Always (this folder)"},
+              {"value": "deny", "label": "Deny"}]}}
 
 // approval_resolved
-{"id": "ap_7", "decision": "once", "by": "phone"}
+{"kind": "approval_resolved", "id": "ap-7", "decision": "once", "by": "phone"}
 ```
+
+A rejected client frame is not an event. It goes back as `{"kind":
+"client_error", "op": ..., "error": ...}`, deliberately not `error` - naming it
+that made every client mistake a refused request for something that happened in
+the conversation, and put "approval already decided" into the timeline as a
+failure at exactly the moment this design says it must not be one.
 
 `Resolve` takes the lock, removes the entry, and sends on the parked channel.
 A second `Resolve` for the same id finds nothing and returns `ErrAlreadyDecided`.
@@ -298,7 +320,9 @@ GET    /api/sessions                    list
 POST   /api/sessions                    create {cwd, model, profile}
 DELETE /api/sessions/{id}               close and archive
 GET    /api/sessions/{id}/events?since= replay (non-websocket clients, debugging)
-GET    /api/sessions/{id}/blobs/{call}  untruncated tool output
+GET    /api/sessions/{id}/blobs/{seq}   the tail of a large tool result
+GET    /api/sessions/{id}/artifacts     files this conversation changed
+GET    /api/usage                       quota readings, per provider
 GET    /api/models                      registry + which are authenticated
 POST   /api/auth/login/{provider}       begin a login, returns a flow id
 GET    /api/auth/login/{flow}           poll: pending / done / error

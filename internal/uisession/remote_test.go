@@ -185,3 +185,55 @@ func TestRemoteResumesAfterADrop(t *testing.T) {
 		t.Fatalf("replayed %v, want [during after]", seen)
 	}
 }
+
+// Registering after the history is fetched leaves a window in which an event is
+// in neither: the replay is an HTTP round trip, and the daemon does not stop
+// during it. The local session closes that window by doing both under one lock;
+// the remote one has to close it the other way round, and then not duplicate.
+func TestRemoteSubscribeLosesNothingWhileReplaying(t *testing.T) {
+	local, r := remotePair(t)
+	for i := range 5 {
+		local.emit(Event{Kind: KindNotice, Text: string(rune('a' + i))})
+	}
+	// Let the follower catch up so the events exist on both sides.
+	deadline := time.After(3 * time.Second)
+	for {
+		r.mu.Lock()
+		seen := r.seq
+		r.mu.Unlock()
+		if seen >= 5 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("the follower only reached seq %d", seen)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	ch, stop, err := r.Subscribe(Client{ID: "late"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	local.emit(Event{Kind: KindNotice, Text: "tail"})
+
+	var seqs []uint64
+	seenTail := false
+	for !seenTail {
+		ev := recv(t, ch)
+		if len(seqs) > 0 && ev.Seq <= seqs[len(seqs)-1] {
+			t.Fatalf("event %d was delivered twice or out of order after %v", ev.Seq, seqs)
+		}
+		seqs = append(seqs, ev.Seq)
+		seenTail = ev.Kind == KindNotice && ev.Text == "tail"
+	}
+	for i := 1; i < len(seqs); i++ {
+		if seqs[i] != seqs[i-1]+1 {
+			t.Fatalf("gap between %d and %d in %v", seqs[i-1], seqs[i], seqs)
+		}
+	}
+	if seqs[0] != 1 {
+		t.Fatalf("the stream started at %d, want 1", seqs[0])
+	}
+}

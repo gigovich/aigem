@@ -359,9 +359,13 @@ func (l *Local) Subscribe(c Client, since uint64) (<-chan Event, func(), error) 
 		c.ID = "c-" + strconv.FormatUint(l.subSeq, 10)
 	}
 	s := newSubscriber(c, l.ringCap, backlog)
+	prev := l.subs[c.ID]
 	l.subs[c.ID] = s
 	l.emitLocked(l.presenceLocked())
 	l.mu.Unlock()
+	// Replacing an id without stopping the old one would leave its pump parked
+	// forever on a channel nothing closes.
+	prev.stop()
 
 	go s.run()
 	var once sync.Once

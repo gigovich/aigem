@@ -30,18 +30,20 @@ func LoginChatGPT(ctx context.Context, allowStdinPaste bool) (Record, error) {
 	ctx, cancel := context.WithTimeout(ctx, loginTimeout)
 	defer cancel()
 
-	cb, err := startCallback(chatGPTRedirect, allowStdinPaste)
-	if err != nil {
-		return Record{}, err
-	}
-	defer cb.close()
-
 	cfg := oauthConfig()
 	verifier := oauth2.GenerateVerifier()
+	// The state is generated before the listener, because the listener needs it:
+	// it is what tells the provider's redirect apart from any other page's
+	// request to the same well-known loopback URL.
 	state, err := randState()
 	if err != nil {
 		return Record{}, fmt.Errorf("generate state: %w", err)
 	}
+	cb, err := startCallback(chatGPTRedirect, state, allowStdinPaste)
+	if err != nil {
+		return Record{}, err
+	}
+	defer cb.close()
 	authURL := cfg.AuthCodeURL(state,
 		oauth2.S256ChallengeOption(verifier),
 		// The Codex client requires this extra parameter to mint an API-capable
@@ -232,7 +234,7 @@ const callbackHTML = `<!doctype html><meta charset=utf-8><title>aigem</title>
 // startCallback binds the loopback redirect from the registered redirect URL.
 // The port is fixed (1455) because the public client pre-registers it; if it is
 // busy the flow cannot complete and a clear error is returned.
-func startCallback(redirect string, allowStdinPaste bool) (*callbackServer, error) {
+func startCallback(redirect, expectState string, allowStdinPaste bool) (*callbackServer, error) {
 	u, err := url.Parse(redirect)
 	if err != nil {
 		return nil, fmt.Errorf("bad redirect %q: %w", redirect, err)
@@ -241,6 +243,11 @@ func startCallback(redirect string, allowStdinPaste bool) (*callbackServer, erro
 	if path == "" {
 		path = "/"
 	}
+	// Both families or neither. "localhost" resolves to one or the other
+	// depending on the browser and the host, so proceeding on a partial bind
+	// leaves whoever holds the other one to receive the authorization code -
+	// silently, while this flow waits out its timeout. PKCE keeps the code from
+	// being redeemed, but a squatted 1455 is exactly the condition to refuse on.
 	var listeners []net.Listener
 	var bindErrs []string
 	for _, addr := range []string{"127.0.0.1:" + u.Port(), "[::1]:" + u.Port()} {
@@ -251,8 +258,12 @@ func startCallback(redirect string, allowStdinPaste bool) (*callbackServer, erro
 		}
 		listeners = append(listeners, ln)
 	}
-	if len(listeners) == 0 {
-		return nil, fmt.Errorf("bind callback %s: %s (is another login in progress?)", u.Host, strings.Join(bindErrs, "; "))
+	if len(bindErrs) > 0 {
+		for _, ln := range listeners {
+			_ = ln.Close()
+		}
+		return nil, fmt.Errorf("bind callback %s: %s (is another login in progress?)",
+			u.Host, strings.Join(bindErrs, "; "))
 	}
 	cs := &callbackServer{results: make(chan callbackResult, 1)}
 	mux := http.NewServeMux()
@@ -260,6 +271,15 @@ func startCallback(redirect string, allowStdinPaste bool) (*callbackServer, erro
 		q := r.URL.Query()
 		if q.Get("code") == "" && q.Get("error") == "" {
 			http.Error(w, "missing authorization code", http.StatusBadRequest)
+			return
+		}
+		// The state is checked here, not after the wait. This endpoint is a
+		// fixed, well-known loopback URL that any page in any other tab can hit
+		// with an <img> - no token, no CORS, nothing to stop it. Latching the
+		// first arrival and checking afterwards meant one such request killed
+		// every login attempt with a state mismatch, indefinitely.
+		if expectState != "" && q.Get("state") != expectState {
+			http.Error(w, "unexpected authorization state", http.StatusBadRequest)
 			return
 		}
 		select {

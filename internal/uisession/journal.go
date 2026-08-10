@@ -53,6 +53,9 @@ func openJournal(id string) (*journal, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o700); err != nil {
 		return nil, err
 	}

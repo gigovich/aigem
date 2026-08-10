@@ -210,7 +210,25 @@ func (s *Server) routes() {
 // produces a binary with no assets on purpose - `go install` is the documented
 // way to get aigem and must keep working without a node toolchain - so this
 // says what to do rather than serving a blank page.
+// securityHeaders bounds what the page may load and where it may talk to.
+//
+// This is not defence in depth, it is the control that closes a live hole. The
+// agent reads pages an attacker may have written, and the UI renders what the
+// model writes back as HTML. A planted instruction to end a reply with an image
+// tag pointing at the attacker's host would otherwise make the user's browser
+// GET whatever the model encoded into the URL - conversation content, file
+// contents, anything it had read. Sanitising the HTML does not help: the tag is
+// legitimate. img-src is the load-bearing directive; the rest is cheap.
+func securityHeaders(h http.Header) {
+	h.Set("Content-Security-Policy",
+		"default-src 'self'; img-src 'self' data:; connect-src 'self'; "+
+			"frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer")
+}
+
 func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
+	securityHeaders(w.Header())
 	if s.assets == nil {
 		http.Error(w, "this build has no web UI (built without `make web`).\n"+
 			"Download a release binary, or run `make web && make build`.\n",
@@ -373,6 +391,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	securityHeaders(w.Header())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(body))
 }
@@ -386,6 +405,7 @@ func sinceParam(r *http.Request) uint64 {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
+	securityHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		// The status is already written by now, so there is nowhere to report

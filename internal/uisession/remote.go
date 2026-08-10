@@ -30,6 +30,11 @@ type Remote struct {
 	token  string
 	client *http.Client
 
+	// writeMu serialises frames onto the socket. Header and payload go out as
+	// separate writes, so two concurrent ops interleave and corrupt the stream -
+	// the server guards its side of the same protocol for the same reason.
+	writeMu sync.Mutex
+
 	mu      sync.Mutex
 	conn    net.Conn
 	rw      io.ReadWriter // reads come from the buffer the handshake filled
@@ -74,12 +79,23 @@ func Dial(base, id, token string) (*Remote, error) {
 	return r, nil
 }
 
+// url builds an HTTP URL. The token is deliberately not in it: get() sends it
+// as a header, and Go wraps a transport failure in a *url.Error whose message
+// embeds the whole URL - so a daemon that goes away mid-attach would print the
+// credential into terminal scrollback or a CI log.
 func (r *Remote) url(path string, q url.Values) string {
 	if q == nil {
 		q = url.Values{}
 	}
-	q.Set("token", r.token)
 	return r.base + path + "?" + q.Encode()
+}
+
+// socketURL is the one place the token has to travel in the query string:
+// browsers cannot set headers on a websocket handshake, and the daemon accepts
+// only the one form for both clients.
+func (r *Remote) socketURL(path string, q url.Values) string {
+	q.Set("token", r.token)
+	return "ws" + (r.base + path + "?" + q.Encode())[len("http"):]
 }
 
 func (r *Remote) get(path string, q url.Values, out any) error {
@@ -157,10 +173,11 @@ func (r *Remote) Replay(since uint64) ([]Event, error) {
 // renderer is dropped with a resume marker here too rather than stalling the
 // socket for everyone attached to it.
 func (r *Remote) Subscribe(c Client, since uint64) (<-chan Event, func(), error) {
-	backlog, err := r.Replay(since)
-	if err != nil {
-		return nil, nil, err
-	}
+	// Register before fetching, not after. The replay is an HTTP round trip, and
+	// anything the follower delivers during it would otherwise be in neither the
+	// backlog nor the queue - the gap Local.Subscribe closes by doing both under
+	// one lock. Registering first means the window can only duplicate, and
+	// duplicates are filtered below.
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -170,14 +187,26 @@ func (r *Remote) Subscribe(c Client, since uint64) (<-chan Event, func(), error)
 	if c.ID == "" {
 		c.ID = "r-" + strconv.FormatUint(r.subSeq, 10)
 	}
-	// Anything the follower has already seen is in the backlog; start the live
-	// tail above it so nothing is delivered twice.
-	if n := len(backlog); n > 0 && backlog[n-1].Seq > r.seq {
-		r.seq = backlog[n-1].Seq
-	}
-	s := newSubscriber(c, r.queue, backlog)
+	s := newSubscriber(c, r.queue, nil)
+	s.skipTo = since
+	prev := r.subs[c.ID]
 	r.subs[c.ID] = s
 	r.mu.Unlock()
+	// Replacing an id without stopping the old one would leave its pump parked
+	// forever on a channel nothing closes.
+	prev.stop()
+
+	backlog, err := r.Replay(since)
+	if err != nil {
+		r.mu.Lock()
+		delete(r.subs, c.ID)
+		r.mu.Unlock()
+		s.stop()
+		return nil, nil, err
+	}
+	// Splice the history in front of whatever arrived while it was being
+	// fetched, and drop from the live queue anything the history already covers.
+	s.prepend(backlog)
 
 	go s.run()
 	var once sync.Once
@@ -263,7 +292,7 @@ func (r *Remote) connect() error {
 		"since": []string{strconv.FormatUint(since, 10)},
 		"kind":  []string{"tui"},
 	}
-	wsURL := "ws" + r.url("/api/sessions/"+r.id+"/socket", q)[len("http"):]
+	wsURL := r.socketURL("/api/sessions/"+r.id+"/socket", q)
 	conn, br, _, err := ws.Dialer{}.Dial(context.Background(), wsURL)
 	if err != nil {
 		return err
@@ -306,8 +335,11 @@ func (r *Remote) connect() error {
 			_ = conn.Close()
 			return nil
 		}
-		if ev.Kind == "" {
-			continue // a per-request error reply, not something that happened
+		// A per-request rejection is about this client's frame, not about the
+		// conversation, and it carries no sequence number - fanning it out would
+		// reset every subscriber's resume point to zero.
+		if ev.Kind == "" || ev.Kind == "client_error" {
+			continue
 		}
 		r.fanout(ev)
 	}
@@ -352,6 +384,8 @@ func (r *Remote) send(op map[string]any) error {
 	if err != nil {
 		return err
 	}
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
 	return wsutil.WriteClientMessage(rw, ws.OpText, b)
 }
 
