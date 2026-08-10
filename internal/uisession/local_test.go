@@ -574,3 +574,22 @@ func TestSubscribeDeliversWholeBacklog(t *testing.T) {
 		}
 	}
 }
+
+// A message that is only images still names the conversation after what was
+// sent, rather than after the empty string that came with it.
+func TestSubmitTitleForImagesOnly(t *testing.T) {
+	for _, c := range []struct {
+		text   string
+		images int
+		want   string
+	}{
+		{"", 1, "1 image"},
+		{"  ", 3, "3 images"},
+		{"look at this", 2, "look at this"},
+		{"", 0, "(untitled)"},
+	} {
+		if got := submitTitle(c.text, c.images); got != c.want {
+			t.Errorf("submitTitle(%q, %d) = %q, want %q", c.text, c.images, got, c.want)
+		}
+	}
+}

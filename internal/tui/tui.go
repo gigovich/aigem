@@ -145,6 +145,13 @@ type contentMsg string
 type assistantStepMsg string
 type reasoningMsg string
 type usageMsg int
+
+// sessionMetaMsg carries what the status line needs about the conversation:
+// the model it is on and the window the gauge measures against.
+type sessionMetaMsg struct {
+	ctx   int
+	model string
+}
 type todoUpdateMsg []agent.TodoItem
 type toolStartMsg struct {
 	name string
@@ -362,10 +369,15 @@ type alertBox struct {
 }
 
 type Model struct {
-	// sess owns the turn, the approval queue and the session tool policy, and
-	// publishes the event stream this model renders. Everything below it here is
-	// presentation state.
-	sess     *uisession.Local
+	// sess is the conversation: submitting, interrupting, answering an approval,
+	// and the event stream this model renders. It is an interface because the
+	// same model has to drive a session in this process and one in a daemon.
+	sess uisession.Session
+	// local is that same session when it runs here, and nil when it does not.
+	// It carries what cannot cross a socket - chiefly a turn driven by a closure
+	// (a skill, an MCP prompt, a compaction) - so every use of it is a statement
+	// that the feature is local-only until it grows a command.
+	local    *uisession.Local
 	agent    *agent.Agent
 	backend  *llm.Ref
 	modelReg *llm.Registry
@@ -391,7 +403,10 @@ type Model struct {
 	confirmIdx confirmChoice
 	// autoMode mirrors the session's setting so the status line can render it;
 	// the session is what acts on it.
-	autoMode       bool
+	autoMode bool
+	// ctxSize is the active model's window, tracked from session_meta rather
+	// than asked for, so the gauge works the same over a socket.
+	ctxSize        int
 	groups         map[string]*agentRun // subagent runs by parent-call id
 	skills         *skill.Registry
 	agents         *agent.SubagentRegistry
@@ -464,7 +479,7 @@ type selPoint struct{ line, col int }
 // SetSystemRebuilder registers a closure that rebuilds the system prompt from
 // the current on-disk project instructions; /new calls it so edits to
 // AGENTS.md/CLAUDE.md/context.md take effect without a full restart.
-func (m *Model) SetSystemRebuilder(f func() string) { m.sess.SetRebuildSystem(f) }
+func (m *Model) SetSystemRebuilder(f func() string) { m.local.SetRebuildSystem(f) }
 
 // SetStartupNotices seeds the chat with warnings raised before the program
 // started. They are also on stderr, but the alt screen wipes that on the first
@@ -593,6 +608,8 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		// widget; keep the solid blocks the download bar has always drawn.
 		prog:           progress.New(progress.WithDefaultBlend(), progress.WithFillCharacters('█', '░')),
 		sess:           sess,
+		local:          sess,
+		ctxSize:        ctxSize,
 		agent:          ag,
 		backend:        client,
 		modelReg:       modelReg,
@@ -745,6 +762,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ctxTokens = int(msg)
 		cmds = append(cmds, m.waitForEvent())
 
+	case sessionMetaMsg:
+		if msg.ctx > 0 {
+			m.ctxSize = msg.ctx
+		}
+		if msg.model != "" {
+			m.model = msg.model
+		}
+		m.refresh()
+		cmds = append(cmds, m.waitForEvent())
+
 	case todoUpdateMsg:
 		// The plan panel floats over the chat (full-width), so a plan change needs
 		// no relayout - View() composites it from m.todos each frame.
@@ -895,7 +922,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.localProgIdx = -1
 		m.dlName = ""
 		m.modelReg.ReplaceLocal(llm.LocalProvider(msg.cfg.BaseURL(), msg.cfg.ModelName,
-			msg.cfg.CtxSize, m.sess.MaxTokens()))
+			msg.cfg.CtxSize, m.local.MaxTokens()))
 		m.blocks = append(m.blocks, block{kind: bkNotice, text: "llama-server is up"})
 		m.switchModel(llm.LocalProviderID+"/"+msg.cfg.ModelName, true)
 		return m, nil
@@ -1254,7 +1281,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	switch s := msg.String(); s {
 	case "shift+tab":
 		m.autoMode = !m.autoMode
-		m.sess.SetAutoMode(m.autoMode)
+		m.local.SetAutoMode(m.autoMode)
 		text := "auto mode OFF - every edit and command asks for confirmation"
 		if m.autoMode {
 			text = "auto mode ON - approving edits and safe commands automatically; " +
@@ -1499,18 +1526,17 @@ func (m *Model) navHistory(delta int) {
 	m.input.CursorEnd()
 }
 
+// submit sends a typed message. It goes through the interface rather than
+// through a closure, which is what makes the ordinary case - the one that is
+// almost all of the use - work against a session in a daemon.
 func (m *Model) submit(input string) tea.Cmd {
 	images := append([]llm.Image(nil), m.pendingImages...)
 	m.pendingImages = nil
-	displayText := userTextWithImages(input, len(images))
-	title := session.Title(input)
-	if strings.TrimSpace(input) == "" {
-		title = session.Title(imagesLabel(len(images)))
+	m.beginTurn(block{kind: bkUser, text: userTextWithImages(input, len(images))})
+	if err := m.sess.Submit(input, images); err != nil {
+		return m.turnFailed(err)
 	}
-	return m.startTurn(block{kind: bkUser, text: displayText}, title,
-		func(ctx context.Context, ev agent.Events) (string, error) {
-			return m.agent.RunWithImages(ctx, input, images, ev)
-		})
+	return m.spin.Tick
 }
 
 // runSkill handles a "/skill:<name> [args]" command: it renders the skill and
@@ -1570,8 +1596,11 @@ func (m *Model) runCompact(instructions string) tea.Cmd {
 
 // startTurn appends the display block, marks the model busy, and runs `run` in a
 // goroutine wired to the event bridge.
-func (m *Model) startTurn(display block, title string,
-	run func(context.Context, agent.Events) (string, error)) tea.Cmd {
+// beginTurn puts the model into a running turn: the prompt line, the input
+// reset, the spinner. The display line is this front-end's own rendering of the
+// prompt - richer than the plain text a skill or an MCP prompt would produce -
+// which is why the session's own user_message event is not drawn again.
+func (m *Model) beginTurn(display block) {
 	m.blocks = append(m.blocks, display)
 	m.input.Reset()
 	if m.resizeInputHeight() && m.ready {
@@ -1581,15 +1610,29 @@ func (m *Model) startTurn(display block, title string,
 	m.resetStream()
 	m.refresh()
 	m.vp.GotoBottom() // a new turn re-anchors the view to the bottom
+}
 
-	// The session runs the turn and publishes what happens in it; the display
-	// line above is this front-end's own richer rendering of the prompt, which
-	// is why the session's user_message event is not drawn a second time.
-	if err := m.sess.Run(display.text, title, run); err != nil {
-		m.busy = false
-		m.blocks = append(m.blocks, block{kind: bkError, text: err.Error()})
+func (m *Model) turnFailed(err error) tea.Cmd {
+	m.busy = false
+	m.blocks = append(m.blocks, block{kind: bkError, text: err.Error()})
+	m.refresh()
+	return nil
+}
+
+// startTurn runs a turn from a closure: a skill, an MCP prompt, a compaction.
+// A function cannot cross a socket, so these need the session to be in this
+// process; a front-end attached to a daemon reaches them as commands instead.
+func (m *Model) startTurn(display block, title string,
+	run func(context.Context, agent.Events) (string, error)) tea.Cmd {
+	if m.local == nil {
+		m.blocks = append(m.blocks, block{kind: bkNotice,
+			text: "not available while attached to a daemon"})
 		m.refresh()
 		return nil
+	}
+	m.beginTurn(display)
+	if err := m.local.Run(display.text, title, run); err != nil {
+		return m.turnFailed(err)
 	}
 	return m.spin.Tick
 }
@@ -1726,7 +1769,7 @@ func (m *Model) adoptProjectSkills() ([]string, error) {
 	m.commands = uisession.Commands(m.skills, m.mcpMgr)
 	// The launch-time system prompt listed only the trusted skills, so without
 	// this the model still cannot see the ones just approved.
-	m.sess.RebuildSystem()
+	m.local.RebuildSystem()
 	var loaded []string
 	for _, s := range m.skills.List() {
 		if s.ProjectLocal {
@@ -2256,7 +2299,7 @@ func (m *Model) handleModelKey(msg tea.KeyPressMsg) tea.Cmd {
 // false when restoring a resumed session's model (which must not redefine the
 // global default).
 func (m *Model) switchModel(ref string, persist bool) {
-	info, err := m.sess.SwitchModel(ref, persist)
+	info, err := m.local.SwitchModel(ref, persist)
 	if err != nil {
 		m.blocks = append(m.blocks, block{kind: bkError, text: "switch model: " + err.Error()})
 		m.refresh()
@@ -2833,7 +2876,7 @@ func (m Model) localWizardView() string {
 // AGENTS.md/CLAUDE.md/context.md since launch take effect; the launch-time
 // SessionStart hook context and connected MCP servers are not re-run.
 func (m *Model) newSession() {
-	if err := m.sess.Reset(); err != nil {
+	if err := m.local.Reset(); err != nil {
 		m.blocks = append(m.blocks, block{kind: bkNotice, text: "could not save session: " + err.Error()})
 	}
 	m.blocks = nil
@@ -2857,7 +2900,7 @@ func (m *Model) newSession() {
 }
 
 func (m *Model) loadSession(id string) {
-	s, err := m.sess.Load(id)
+	s, err := m.local.Load(id)
 	if err != nil {
 		m.blocks = append(m.blocks, block{kind: bkError, text: "load session: " + err.Error()})
 		return
@@ -2875,7 +2918,7 @@ func (m *Model) loadSession(id string) {
 			}
 		}
 	}
-	m.ctxTokens = m.sess.ContextTokens()
+	m.ctxTokens = m.local.ContextTokens()
 	m.resetStream()
 	// A resumed conversation opens at its end, the way it looked when you left.
 	// The offset carried over from whatever was on screen means nothing against
@@ -2907,7 +2950,7 @@ func reconstructBlocks(msgs []llm.Message) []block {
 }
 
 func (m *Model) saveSession() {
-	if err := m.sess.Save(); err != nil {
+	if err := m.local.Save(); err != nil {
 		m.blocks = append(m.blocks, block{kind: bkNotice, text: "could not save session: " + err.Error()})
 	}
 }
@@ -3885,7 +3928,7 @@ func (m Model) statusLine() string {
 	sep := seg(cOverlay0, " · ")
 
 	pct := 0
-	ctxSize := m.sess.CtxSize()
+	ctxSize := m.ctxSize
 	if ctxSize > 0 {
 		pct = m.ctxTokens * 100 / ctxSize
 	}

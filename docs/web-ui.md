@@ -542,11 +542,19 @@ What does not cross is running a turn from a closure. A skill, an MCP prompt and
 a compaction all hand the session a function that drives the agent, and a
 function does not travel; those reach a remote session as commands instead.
 
-`aigem attach` is a stream client rather than the Bubble Tea model: it renders
-the same events and answers the same approvals, but the terminal's own timeline
-is still built against a local session. Making the full TUI run either way is
-what remains of this step, and it is a rework of that model rather than of the
-protocol - which is the right side of the line for the remaining work to be on.
+The model is written against the interface for the conversation and holds the
+local session separately for what cannot cross. Submitting a message - which is
+almost all of the use - goes through the interface; a turn driven by a closure
+goes through the local session and says so when there is none. The gauge's
+denominator moved onto the stream with the rest of the conversation's identity,
+so it works the same either side of the wire.
+
+`aigem attach` is still a stream client rather than the Bubble Tea model. What
+is left is not the model's dependencies any more but its construction: `tui.New`
+builds an agent, a registry, skills and MCP because a local session needs them,
+and an attached one needs none of it. That is a second constructor and a set of
+absent-collaborator paths, and it is worth doing next to the multi-session work
+rather than before it.
 
 ### 8. Multi-session and mobile
 

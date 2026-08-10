@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -428,12 +429,25 @@ func (l *Local) Submit(text string, images []llm.Image) error {
 			return ErrBusy
 		}
 	}
-	l.startLocked(text, session.Title(text), len(images),
+	l.startLocked(text, submitTitle(text, len(images)), len(images),
 		func(ctx context.Context, ev agent.Events) (string, error) {
 			return l.ag.RunWithImages(ctx, text, images, ev)
 		})
 	l.mu.Unlock()
 	return nil
+}
+
+// submitTitle names a conversation after its first message. A message that is
+// only images has no text to name it after, and "(untitled)" says less than
+// what was actually sent.
+func submitTitle(text string, images int) string {
+	if strings.TrimSpace(text) == "" && images > 0 {
+		if images == 1 {
+			return "1 image"
+		}
+		return strconv.Itoa(images) + " images"
+	}
+	return session.Title(text)
 }
 
 // injectWindow bounds how long Submit waits for a just-started turn to become

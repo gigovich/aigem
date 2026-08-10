@@ -732,9 +732,13 @@ func TestModelSwitchUpdatesGauge(t *testing.T) {
 	if m.backend.Model().Ref() != "openai/gpt-5.6-sol" {
 		t.Fatalf("backend not switched: %q", m.backend.Model().Ref())
 	}
-	if ctx, comp := m.sess.CtxSize(), m.sess.CompactConfig().CtxSize; ctx != 400000 || comp != 400000 {
+	if ctx, comp := m.local.CtxSize(), m.local.CompactConfig().CtxSize; ctx != 400000 || comp != 400000 {
 		t.Fatalf("gauge/compaction window not updated: ctx=%d compact=%d", ctx, comp)
 	}
+	// The gauge reads its denominator from the stream, not from the session, so
+	// the switch has to have published it.
+	m = applyUntil(t, m, "the gauge to learn the new window",
+		func(m Model) bool { return m.ctxSize == 400000 })
 	if m.model != "openai/gpt-5.6-sol" {
 		t.Fatalf("status model label = %q", m.model)
 	}
@@ -1399,6 +1403,23 @@ func TestSubagentGrouping(t *testing.T) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
 	}
+}
+
+// applyUntil feeds the model events until cond holds. The session publishes on
+// its own goroutine, so a test that acts on the model and then asserts on what
+// it renders has to let the stream catch up rather than look immediately.
+func applyUntil(t *testing.T, m Model, what string, cond func(Model) bool) Model {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for !cond(m) {
+		select {
+		case msg := <-m.events:
+			m = step(m, msg)
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+	return m
 }
 
 func TestStableSplit(t *testing.T) {

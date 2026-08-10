@@ -52,7 +52,10 @@ func (l *Local) metaLocked() session.Meta {
 
 func (l *Local) metaEventLocked() Event {
 	meta := l.metaLocked()
-	return Event{Kind: KindSessionMeta, ID: meta.ID, Text: meta.Title, Name: meta.Model}
+	return Event{
+		Kind: KindSessionMeta, ID: meta.ID, Text: meta.Title,
+		Name: meta.Model, Ctx: l.ctxSize,
+	}
 }
 
 // SetTitle renames the conversation.

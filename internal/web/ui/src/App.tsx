@@ -111,7 +111,12 @@ export default function App() {
         {state.title && <span className="truncate text-sm text-muted">{state.title}</span>}
         <div className="ml-auto flex items-center gap-2">
           {state.model && <Badge>{state.model}</Badge>}
-          {state.tokens > 0 && <Badge>{Math.round(state.tokens / 1000)}k ctx</Badge>}
+          {state.tokens > 0 && (
+            <Badge>
+              {Math.round(state.tokens / 1000)}k
+              {state.ctx > 0 && ` / ${Math.round(state.ctx / 1000)}k`} ctx
+            </Badge>
+          )}
           {state.clients.length > 1 && <Badge>{state.clients.length} attached</Badge>}
           {!state.connected && (
             <Badge className="border-warn/40 text-warn">

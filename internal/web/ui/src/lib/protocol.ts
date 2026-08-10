@@ -43,6 +43,7 @@ export interface Event {
   round?: number;
   calls?: { id: string; name: string }[];
   tokens?: number;
+  ctx?: number;
   todos?: Todo[];
   images?: number;
   injected?: boolean;

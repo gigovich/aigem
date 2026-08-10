@@ -16,6 +16,7 @@ export interface State {
   items: Item[];
   todos: Todo[];
   tokens: number;
+  ctx: number;
   title: string;
   model: string;
   running: boolean;
@@ -28,7 +29,7 @@ export interface State {
 }
 
 export const empty: State = {
-  items: [], todos: [], tokens: 0, title: "", model: "", running: false,
+  items: [], todos: [], tokens: 0, ctx: 0, title: "", model: "", running: false,
   approval: null, clients: [], lastSeq: 0, connected: false, files: [],
 };
 
@@ -200,7 +201,7 @@ function reduce(s: State, a: Action): State {
       return { ...s2, todos: ev.todos ?? [] };
 
     case "session_meta":
-      return { ...s2, title: ev.text ?? s2.title, model: ev.name ?? s2.model };
+      return { ...s2, title: ev.text ?? s2.title, model: ev.name ?? s2.model, ctx: ev.ctx ?? s2.ctx };
 
     case "approval_request":
       return ev.approval ? { ...s2, approval: { id: ev.id ?? "", req: ev.approval } } : s2;

@@ -87,6 +87,10 @@ type Event struct {
 	Bytes int  `json:"bytes,omitempty"`
 	Blob  bool `json:"blob,omitempty"`
 
+	// Ctx is the active model's context window, carried on session_meta so a
+	// front-end tracks it from the stream instead of asking for it.
+	Ctx int `json:"ctx,omitempty"`
+
 	Round  int              `json:"round,omitempty"`
 	Calls  []Call           `json:"calls,omitempty"`
 	Tokens int              `json:"tokens,omitempty"`
