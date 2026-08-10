@@ -1,5 +1,5 @@
 import { cva, type VariantProps } from "class-variance-authority";
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 const button = cva(
@@ -33,7 +33,11 @@ export function Button({ className, variant, size, ...props }: ButtonProps) {
   return <button className={cn(button({ variant, size }), className)} {...props} />;
 }
 
-export function Badge({ children, className }: { children: ReactNode; className?: string }) {
+export function Badge({
+  children,
+  className,
+  ...props
+}: HTMLAttributes<HTMLSpanElement> & { children: ReactNode }) {
   return (
     <span
       className={cn(
@@ -41,6 +45,7 @@ export function Badge({ children, className }: { children: ReactNode; className?
           "px-2 py-0.5 text-[11px] font-medium text-muted",
         className,
       )}
+      {...props}
     >
       {children}
     </span>

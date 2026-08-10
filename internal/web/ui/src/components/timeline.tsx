@@ -1,18 +1,27 @@
 import { useState } from "react";
-import { ChevronRight, CornerDownRight, TriangleAlert, User, Wrench } from "lucide-react";
+import { Check, ChevronRight, CornerDownRight, TriangleAlert, User, Wrench } from "lucide-react";
 import type { Item, RunStep } from "@/lib/session";
 import { Badge, Spinner } from "./ui";
 import { Markdown } from "./md";
-import { cn } from "@/lib/utils";
+import { argSummary, cn } from "@/lib/utils";
 
-function argSummary(args: unknown): string {
-  if (args == null) return "";
-  if (typeof args === "string") return args;
-  const o = args as Record<string, unknown>;
-  for (const k of ["cmd", "command", "path", "pattern", "query", "url"]) {
-    if (typeof o[k] === "string") return o[k] as string;
-  }
-  return JSON.stringify(args);
+/** The plan is rendered as a plan, in the rail. Its writes were also arriving
+ *  here as tool cards - six identical rows of raw JSON per turn, which is most
+ *  of what the timeline showed and none of what it meant. */
+const PLAN_TOOL = "todo_write";
+
+/** Hidden only when it worked. A failed plan write leaves the rail showing the
+ *  previous plan, so dropping the card too would erase the failure entirely. */
+function isPlanWrite(item: Item): boolean {
+  return item.kind === "tool" && item.name === PLAN_TOOL && !item.error;
+}
+
+/** The first line of a result, for the collapsed row. Whether a command printed
+ *  a match or an error is the question being asked of a closed card. */
+function resultPreview(item: Extract<Item, { kind: "tool" }>): string {
+  const text = (item.error || item.result || "").trim();
+  if (!text) return "";
+  return text.split("\n", 1)[0];
 }
 
 /** A tool call and its result as one card, which is the thing the terminal
@@ -43,25 +52,41 @@ function ToolCard({ item, sessionID }: { item: Extract<Item, { kind: "tool" }>; 
     }
   };
 
+  const preview = resultPreview(item);
   return (
     <div className="rounded-lg border border-border bg-panel">
       <button
         onClick={expand}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        aria-expanded={open}
+        className="flex w-full flex-col gap-0.5 px-3 py-1.5 text-left"
       >
-        <ChevronRight
-          className={cn("h-3.5 w-3.5 shrink-0 text-muted transition-transform", open && "rotate-90")}
-        />
-        <Wrench className="h-3.5 w-3.5 shrink-0 text-accent" />
-        <span className="shrink-0 font-mono text-[13px] text-fg">{item.name}</span>
-        <span className="truncate font-mono text-[12px] text-muted">{argSummary(item.args)}</span>
-        <span className="ml-auto shrink-0">
-          {!item.done ? (
-            <Spinner />
-          ) : item.error ? (
-            <Badge className="border-bad/40 text-bad">failed</Badge>
-          ) : null}
+        <span className="flex w-full items-center gap-2">
+          <ChevronRight
+            className={cn("h-3.5 w-3.5 shrink-0 text-muted transition-transform", open && "rotate-90")}
+          />
+          <Wrench className="h-3.5 w-3.5 shrink-0 text-accent" />
+          <span className="shrink-0 font-mono text-[13px] text-fg">{item.name}</span>
+          <span className="truncate font-mono text-[12px] text-muted">{argSummary(item.args)}</span>
+          <span className="ml-auto shrink-0">
+            {!item.done ? (
+              <Spinner />
+            ) : item.error ? (
+              <Badge className="border-bad/40 text-bad">failed</Badge>
+            ) : (
+              <Check className="h-3.5 w-3.5 text-good" aria-hidden />
+            )}
+          </span>
         </span>
+        {!open && preview && (
+          <span
+            className={cn(
+              "w-full truncate pl-[3.25rem] font-mono text-[11px]",
+              item.error ? "text-bad" : "text-muted",
+            )}
+          >
+            {preview}
+          </span>
+        )}
       </button>
       {open && (
         <div className="border-t border-border px-3 py-2">
@@ -118,14 +143,15 @@ function RunLane({ item }: { item: Extract<Item, { kind: "run" }> }) {
 }
 
 export function Timeline({ items, sessionID }: { items: Item[]; sessionID: string }) {
+  const shown = items.filter((it) => !isPlanWrite(it));
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-3 py-4">
-      {items.map((item, i) => {
+      {shown.map((item) => {
         switch (item.kind) {
           case "user":
             return (
-              <div key={i} className="flex justify-end">
-                <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-panel-2 px-3.5 py-2">
+              <div key={`${item.kind}-${item.seq}`} className="flex justify-end">
+                <div className="min-w-0 max-w-[85%] rounded-2xl rounded-br-sm bg-panel-2 px-3.5 py-2">
                   <div className="flex items-center gap-1.5 text-[11px] text-muted">
                     <User className="h-3 w-3" />
                     {item.injected && <span>added mid-turn</span>}
@@ -137,19 +163,19 @@ export function Timeline({ items, sessionID }: { items: Item[]; sessionID: strin
             );
           case "assistant":
             return (
-              <div key={i} className="max-w-none">
+              <div key={`${item.kind}-${item.seq}`} className="max-w-none">
                 <Markdown text={item.text} />
                 {item.streaming && <Spinner className="ml-0.5 align-middle" />}
               </div>
             );
           case "tool":
-            return <ToolCard key={i} item={item} sessionID={sessionID} />;
+            return <ToolCard key={`${item.kind}-${item.seq}`} item={item} sessionID={sessionID} />;
           case "run":
-            return <RunLane key={i} item={item} />;
+            return <RunLane key={`${item.kind}-${item.seq}`} item={item} />;
           case "notice":
             return (
               <div
-                key={i}
+                key={`${item.kind}-${item.seq}`}
                 className={cn(
                   "flex items-start gap-2 rounded-md border px-3 py-1.5 text-[13px]",
                   item.tone === "error"
@@ -158,7 +184,7 @@ export function Timeline({ items, sessionID }: { items: Item[]; sessionID: strin
                 )}
               >
                 {item.tone === "error" && <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-                <span className="whitespace-pre-wrap break-words">{item.text}</span>
+                <span className="min-w-0 whitespace-pre-wrap break-words">{item.text}</span>
               </div>
             );
         }

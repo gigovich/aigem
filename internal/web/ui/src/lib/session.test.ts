@@ -3,7 +3,7 @@ import type { Event, Kind } from "./protocol";
 import { empty, sessionReducer, type State } from "./session";
 
 function fresh(): State {
-  return { ...empty, items: [], todos: [], clients: [], files: [] };
+  return { ...empty, items: [], todos: [], clients: [] };
 }
 
 function event(kind: Kind, seq: number, values: Partial<Event> = {}): Event {
@@ -11,6 +11,15 @@ function event(kind: Kind, seq: number, values: Partial<Event> = {}): Event {
 }
 
 describe("sessionReducer", () => {
+  it("counts every file change, not the files that changed", () => {
+    let state = sessionReducer(fresh(), { t: "event", ev: event("file_changed", 1, { path: "a.go" }) });
+    state = sessionReducer(state, { t: "event", ev: event("file_changed", 2, { path: "a.go" }) });
+
+    // A second write to the same file has to move this, or the rail that
+    // refetches on a change never sees it.
+    expect(state.fileEvents).toBe(2);
+  });
+
   it("joins streamed content and commits it at the end of a turn", () => {
     let state = sessionReducer(fresh(), { t: "event", ev: event("turn_start", 1) });
     state = sessionReducer(state, { t: "event", ev: event("content", 2, { text: "hello " }) });

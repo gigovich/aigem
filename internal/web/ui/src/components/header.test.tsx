@@ -16,6 +16,8 @@ function renderHeader() {
       ctx={64_000}
       clientCount={2}
       connected={false}
+      navOpen={false}
+      railOpen={false}
       onToggleConversations={vi.fn()}
       onToggleFiles={onToggleFiles}
       onToggleProviders={onToggleProviders}
@@ -26,7 +28,7 @@ function renderHeader() {
 
 describe("Header", () => {
   it("reveals compact controls from the mobile overflow button", () => {
-    const { onToggleFiles } = renderHeader();
+    const { onToggleProviders } = renderHeader();
     const more = screen.getByRole("button", { name: "More controls" });
 
     expect(more).toHaveAttribute("aria-expanded", "false");
@@ -43,10 +45,53 @@ describe("Header", () => {
     const controls = document.querySelector("#mobile-header-controls");
     expect(controls).toBeInTheDocument();
     expect(controls).toHaveClass("lg:hidden");
-    fireEvent.click(within(controls as HTMLElement).getByRole("button", { name: "Files" }));
+    fireEvent.click(within(controls as HTMLElement).getByRole("button", { name: "Providers" }));
+
+    expect(onToggleProviders).toHaveBeenCalledOnce();
+    expect(document.querySelector("#mobile-header-controls")).not.toBeInTheDocument();
+  });
+
+  it("carries the plan's progress at every width, the phone's only view of it", () => {
+    render(
+      <Header
+        conversationCount={1}
+        title=""
+        model=""
+        tokens={0}
+        ctx={0}
+        clientCount={1}
+        connected
+        navOpen={false}
+        railOpen={false}
+        planDone={2}
+        planTotal={6}
+        onToggleConversations={vi.fn()}
+        onToggleFiles={vi.fn()}
+        onToggleProviders={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Plan 2 of 6 done")).toHaveTextContent("2/6");
+  });
+
+  it("shows no plan badge when there is no plan", () => {
+    renderHeader();
+    expect(screen.queryByText("0/0")).not.toBeInTheDocument();
+  });
+
+  it("keeps both rails one tap away at every width", () => {
+    const { onToggleFiles } = renderHeader();
+
+    const session = screen.getByRole("button", { name: "Session" });
+    expect(session).not.toHaveClass("lg:flex");
+    fireEvent.click(session);
 
     expect(onToggleFiles).toHaveBeenCalledOnce();
-    expect(document.querySelector("#mobile-header-controls")).not.toBeInTheDocument();
+    expect(session).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Conversations" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
   });
 
   it("keeps the conversation switcher directly available", () => {
@@ -60,6 +105,8 @@ describe("Header", () => {
         ctx={0}
         clientCount={1}
         connected
+        navOpen={false}
+        railOpen={false}
         onToggleConversations={onToggleConversations}
         onToggleFiles={vi.fn()}
         onToggleProviders={vi.fn()}

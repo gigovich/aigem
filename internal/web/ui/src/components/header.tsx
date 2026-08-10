@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { FileDiff, KeyRound, MessagesSquare, MoreHorizontal, WifiOff } from "lucide-react";
+import { FileDiff, KeyRound, ListChecks, MessagesSquare, MoreHorizontal, WifiOff } from "lucide-react";
 import { Badge, Button } from "./ui";
+import { cn } from "@/lib/utils";
 
 interface HeaderProps {
   conversationCount: number;
@@ -10,6 +11,10 @@ interface HeaderProps {
   ctx: number;
   clientCount: number;
   connected: boolean;
+  planDone?: number;
+  planTotal?: number;
+  navOpen: boolean;
+  railOpen: boolean;
   onToggleConversations: () => void;
   onToggleFiles: () => void;
   onToggleProviders: () => void;
@@ -49,17 +54,16 @@ export function Header({
   ctx,
   clientCount,
   connected,
+  planDone,
+  planTotal,
+  navOpen,
+  railOpen,
   onToggleConversations,
   onToggleFiles,
   onToggleProviders,
 }: HeaderProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const status = { model, tokens, ctx, clientCount, connected };
-
-  const openFiles = () => {
-    setMobileOpen(false);
-    onToggleFiles();
-  };
 
   const openProviders = () => {
     setMobileOpen(false);
@@ -74,6 +78,7 @@ export function Header({
           size="sm"
           onClick={onToggleConversations}
           aria-label="Conversations"
+          aria-expanded={navOpen}
         >
           <MessagesSquare className="h-4 w-4" />
           {conversationCount > 1 && <span className="text-xs">{conversationCount}</span>}
@@ -83,10 +88,33 @@ export function Header({
           {title && <span className="truncate text-sm text-muted">{title}</span>}
         </div>
 
+        {/* Progress stays in the bar at every width: with the rail closed on a
+            phone, this is the only place the plan is visible at all. */}
+        {planTotal ? (
+          <Badge
+            aria-label={`Plan ${planDone} of ${planTotal} done`}
+            className={cn("shrink-0 font-mono", planDone === planTotal && "border-good/40 text-good")}
+          >
+            <ListChecks className="mr-1 h-3 w-3" />
+            {planDone}/{planTotal}
+          </Badge>
+        ) : null}
+
+        {/* Beside the conversations toggle at every width: behind the overflow
+            menu, the plan and the changed files were two taps deep on the screen
+            with the least room to spare. */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="shrink-0"
+          onClick={onToggleFiles}
+          aria-label="Session"
+          aria-expanded={railOpen}
+        >
+          <FileDiff className="h-4 w-4" />
+        </Button>
+
         <div role="group" aria-label="Desktop session controls" className="hidden shrink-0 items-center gap-2 lg:flex">
-          <Button variant="ghost" size="icon" onClick={openFiles} aria-label="Files">
-            <FileDiff className="h-4 w-4" />
-          </Button>
           <Button variant="ghost" size="icon" onClick={openProviders} aria-label="Providers">
             <KeyRound className="h-4 w-4" />
           </Button>
@@ -115,9 +143,6 @@ export function Header({
           className="shrink-0 overflow-x-auto border-b border-border bg-panel-2 lg:hidden"
         >
           <div className="flex min-w-max items-center gap-2 px-3 py-2">
-            <Button variant="ghost" size="sm" onClick={openFiles}>
-              <FileDiff className="h-4 w-4" /> Files
-            </Button>
             <Button variant="ghost" size="sm" onClick={openProviders}>
               <KeyRound className="h-4 w-4" /> Providers
             </Button>

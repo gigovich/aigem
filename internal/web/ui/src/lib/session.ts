@@ -24,13 +24,15 @@ export interface State {
   clients: Client[];
   lastSeq: number;
   connected: boolean;
-  /** files touched this session, newest first */
-  files: string[];
+  /** every file_changed, counted. What changed is asked of the daemon; this is
+   *  only the signal to ask again, so it counts events rather than paths - a
+   *  second write to the same file has to move it. */
+  fileEvents: number;
 }
 
 export const empty: State = {
   items: [], todos: [], tokens: 0, ctx: 0, title: "", model: "", running: false,
-  approval: null, clients: [], lastSeq: 0, connected: false, files: [],
+  approval: null, clients: [], lastSeq: 0, connected: false, fileEvents: 0,
 };
 
 type Action =
@@ -214,10 +216,8 @@ export function sessionReducer(s: State, a: Action): State {
     case "presence":
       return { ...s2, clients: ev.clients ?? [] };
 
-    case "file_changed": {
-      const p = ev.path ?? "";
-      return { ...s2, files: [p, ...s2.files.filter((f) => f !== p)] };
-    }
+    case "file_changed":
+      return { ...s2, fileEvents: s2.fileEvents + 1 };
 
     default:
       return s2;
@@ -231,25 +231,33 @@ export function useSession(id: string | null) {
   const [state, dispatch] = useReducer(sessionReducer, empty);
   const sock = useRef<WebSocket | null>(null);
   const seq = useRef(0);
-  const gone = useRef(false);
 
   useEffect(() => {
     if (!id) return;
     seq.current = 0;
-    gone.current = false;
+    // Per run, not a ref: a browser delivers the old socket's close event after
+    // the next conversation is already connected, and a shared flag is false by
+    // then - so the conversation just left reconnected, took sock.current back,
+    // and the next message was sent to it.
+    let cancelled = false;
     let timer: number | undefined;
     let attempt = 0;
 
     const connect = () => {
-      if (gone.current) return;
+      if (cancelled) return;
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
       const url = `${proto}://${window.location.host}/api/sessions/${id}/socket` +
         `?token=${encodeURIComponent(token())}&since=${seq.current}&kind=web`;
       const ws = new WebSocket(url);
       sock.current = ws;
 
-      ws.onopen = () => { attempt = 0; dispatch({ t: "connected", on: true }); };
+      ws.onopen = () => {
+        if (cancelled || sock.current !== ws) return;
+        attempt = 0;
+        dispatch({ t: "connected", on: true });
+      };
       ws.onmessage = (m) => {
+        if (cancelled || sock.current !== ws) return;
         const ev = JSON.parse(m.data as string) as Event;
         // A rejection of this client's own frame is not something that happened
         // in the conversation, so it never joins the timeline.
@@ -263,18 +271,21 @@ export function useSession(id: string | null) {
         dispatch({ t: "event", ev });
       };
       ws.onclose = () => {
+        if (cancelled || sock.current !== ws) return;
         dispatch({ t: "connected", on: false });
-        if (gone.current) return;
         // Back off, but never so far that a phone waking up sits disconnected.
         const wait = Math.min(5000, 250 * 2 ** attempt++);
         timer = window.setTimeout(connect, wait);
       };
-      ws.onerror = () => ws.close();
+      ws.onerror = () => {
+        if (cancelled || sock.current !== ws) return;
+        ws.close();
+      };
     };
 
     connect();
     return () => {
-      gone.current = true;
+      cancelled = true;
       if (timer) window.clearTimeout(timer);
       sock.current?.close();
       sock.current = null;
