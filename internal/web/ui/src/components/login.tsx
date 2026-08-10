@@ -41,6 +41,9 @@ export function Login({ onClose }: { onClose: () => void }) {
   }, []);
 
   useEffect(() => {
+    // refresh only sets state after its await, so this is a subscription to the
+    // daemon rather than the cascading render the rule is guarding against.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
   }, [refresh]);
 

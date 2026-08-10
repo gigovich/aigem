@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CircleStop, FileDiff, KeyRound, MessagesSquare, Plus, Send, WifiOff, X } from "lucide-react";
+import { CircleStop, Plus, Send, X } from "lucide-react";
 import { api, type SessionView } from "@/lib/protocol";
 import { useSession } from "@/lib/session";
 import { Timeline } from "@/components/timeline";
 import { Login } from "@/components/login";
 import { Files } from "@/components/files";
 import { Spend } from "@/components/usage";
+import { Header } from "@/components/header";
 import { Badge, Button, Spinner } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
@@ -22,24 +23,29 @@ function useDaemonSessions() {
     return next;
   }, []);
 
+  const open = useCallback(
+    () =>
+      api<SessionView>("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    [],
+  );
+
   useEffect(() => {
     (async () => {
       try {
         const next = await refresh();
         if (next.length > 0) return setID(next[0].id);
-        setID((await open()).id);
+        const made = await open();
+        setList([made]);
+        setID(made.id);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [refresh]);
-
-  const open = async () =>
-    api<SessionView>("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
+  }, [open, refresh]);
 
   const create = useCallback(async () => {
     try {
@@ -49,7 +55,7 @@ function useDaemonSessions() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [refresh]);
+  }, [open, refresh]);
 
   const close = useCallback(
     async (target: string) => {
@@ -153,40 +159,18 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-panel px-3 py-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => { setPicker((p) => !p); void refresh(); }}
-          title="Conversations"
-        >
-          <MessagesSquare className="h-4 w-4" />
-          {list.length > 1 && <span className="text-xs">{list.length}</span>}
-        </Button>
-        <span className="font-semibold tracking-tight">aigem</span>
-        {state.title && <span className="truncate text-sm text-muted">{state.title}</span>}
-        <div className="ml-auto flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={() => setFiles((v) => !v)} title="Files">
-            <FileDiff className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="icon" onClick={() => setLogin((v) => !v)} title="Providers">
-            <KeyRound className="h-4 w-4" />
-          </Button>
-          {state.model && <Badge>{state.model}</Badge>}
-          {state.tokens > 0 && (
-            <Badge>
-              {Math.round(state.tokens / 1000)}k
-              {state.ctx > 0 && ` / ${Math.round(state.ctx / 1000)}k`} ctx
-            </Badge>
-          )}
-          {state.clients.length > 1 && <Badge>{state.clients.length} attached</Badge>}
-          {!state.connected && (
-            <Badge className="border-warn/40 text-warn">
-              <WifiOff className="mr-1 h-3 w-3" /> reconnecting
-            </Badge>
-          )}
-        </div>
-      </header>
+      <Header
+        conversationCount={list.length}
+        title={state.title}
+        model={state.model}
+        tokens={state.tokens}
+        ctx={state.ctx}
+        clientCount={state.clients.length}
+        connected={state.connected}
+        onToggleConversations={() => { setPicker((p) => !p); void refresh(); }}
+        onToggleFiles={() => setFiles((v) => !v)}
+        onToggleProviders={() => setLogin((v) => !v)}
+      />
 
       {login && <Login onClose={() => setLogin(false)} />}
       {login && <Spend />}

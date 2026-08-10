@@ -32,8 +32,10 @@ function diff(oldText: string, newText: string): Row[] {
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (a[i] === b[j]) rows.push({ left: a[i], right: b[j++], kind: "same" }), i++;
-    else if (lcs[i + 1][j] >= lcs[i][j + 1]) rows.push({ left: a[i++], kind: "del" });
+    if (a[i] === b[j]) {
+      rows.push({ left: a[i], right: b[j++], kind: "same" });
+      i++;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) rows.push({ left: a[i++], kind: "del" });
     else rows.push({ right: b[j++], kind: "add" });
   }
   while (i < n) rows.push({ left: a[i++], kind: "del" });
@@ -82,6 +84,9 @@ export function Files({ sessionID, onClose }: { sessionID: string; onClose: () =
   }, [sessionID]);
 
   useEffect(() => {
+    // refresh only sets state after its await, so this is a subscription to the
+    // daemon rather than the cascading render the rule is guarding against.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh();
   }, [refresh]);
 

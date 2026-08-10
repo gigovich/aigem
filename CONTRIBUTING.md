@@ -28,9 +28,9 @@ make check
 
 That is `fmt-check`, `vet`, `lint`, `race`, and `cross`. `make help` lists every
 target. CI additionally runs `govulncheck`, checks that `go mod tidy` is a no-op,
-and lints under `GOOS=windows` - `make check-all` covers those too, if you have
-`govulncheck` installed. CI also compiles and vets on a real Windows runner,
-which nothing local can reproduce.
+lints under `GOOS=windows`, and checks the web UI - `make check-all` covers those
+too, if you have `govulncheck` and Node installed. CI also compiles and vets on a
+real Windows runner, which nothing local can reproduce.
 
 If you would rather run them by hand:
 
@@ -39,6 +39,7 @@ gofmt -l .            # must print nothing
 go vet ./...
 go test -race ./...
 golangci-lint run     # see .golangci.yml
+make web-check         # type-check, lint, test, and build the React UI
 ```
 
 `golangci-lint` is not vendored. Install it with:

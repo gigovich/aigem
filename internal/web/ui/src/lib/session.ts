@@ -62,7 +62,7 @@ function indexOfRun(items: Item[], id: string): number {
   return -1;
 }
 
-function reduce(s: State, a: Action): State {
+export function sessionReducer(s: State, a: Action): State {
   if (a.t === "connected") return { ...s, connected: a.on };
   if (a.t === "reset") return { ...empty, connected: s.connected };
 
@@ -228,15 +228,14 @@ function reduce(s: State, a: Action): State {
  *  number it saw. A dropped connection is normal on a phone; losing the middle
  *  of a conversation to one is not, so the daemon replays the gap. */
 export function useSession(id: string | null) {
-  const [state, dispatch] = useReducer(reduce, empty);
+  const [state, dispatch] = useReducer(sessionReducer, empty);
   const sock = useRef<WebSocket | null>(null);
   const seq = useRef(0);
   const gone = useRef(false);
 
-  seq.current = state.lastSeq;
-
   useEffect(() => {
     if (!id) return;
+    seq.current = 0;
     gone.current = false;
     let timer: number | undefined;
     let attempt = 0;
@@ -260,6 +259,7 @@ export function useSession(id: string | null) {
           ws.close();
           return;
         }
+        seq.current = Math.max(seq.current, ev.seq ?? 0);
         dispatch({ t: "event", ev });
       };
       ws.onclose = () => {
