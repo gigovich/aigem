@@ -269,7 +269,31 @@ func TestPanicInATurnDoesNotStopTheBot(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	// The next message on another thread must still be served.
+	// The same thread must still be served: a panic that walked past the lock release would
+	// wedge this conversation forever and pin a thread the cap can never evict.
+	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Text: "again"}
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the thread stayed locked after a panicking turn")
+	}
+	rt.mu.Lock()
+	st := rt.threads["c1/c1"]
+	rt.mu.Unlock()
+	if st == nil {
+		t.Fatal("the panicking thread lost its state")
+	}
+	// A held lock also makes the thread permanently unevictable, so wait for the second turn to
+	// give it back rather than only proving the turn started.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(st.lock) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the thread lock was still held after the turns finished")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Another thread must still be served too.
 	ft.in <- Inbound{Kind: "dm", Channel: "c2", Thread: ThreadRef{ChannelID: "c2"}, Text: "again"}
 	select {
 	case <-ran:

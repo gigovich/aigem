@@ -517,7 +517,8 @@ func stepEvents(log *slog.Logger, key string) agent.Events {
 func (r *Runtime) handle(ctx context.Context, in Inbound) {
 	// Contain a panic here, in the goroutine that can actually recover it. Every turn runs on its
 	// own goroutine, and bots now share a process: an unrecovered panic in one bot's turn would
-	// take the whole team down, where before it cost one process out of several.
+	// take the whole team down, where before it cost one process out of several. Turns themselves
+	// recover in runLocked, which owns the thread lock; this is the backstop for the routing code.
 	defer func() {
 		if p := recover(); p != nil {
 			r.logger().Error("turn panicked", "thread", threadKey(in), "kind", in.Kind,
@@ -551,9 +552,23 @@ func (r *Runtime) handle(ctx context.Context, in Inbound) {
 	case <-ctx.Done():
 		return
 	}
-	r.runTurn(ctx, key, st, in)
-	<-st.lock
+	r.runLocked(ctx, key, st, in)
 	r.pump(ctx, key, st)
+}
+
+// runLocked runs one turn under the lock the caller took and always releases it.
+// A panicking turn is contained here rather than by handle's backstop: unwinding
+// past the release would leave the lock held forever, wedging the conversation
+// and pinning a thread that evictColdestLocked then refuses to reclaim.
+func (r *Runtime) runLocked(ctx context.Context, key string, st *threadState, in Inbound) {
+	defer func() { <-st.lock }()
+	defer func() {
+		if p := recover(); p != nil {
+			r.logger().Error("turn panicked", "thread", key, "kind", in.Kind,
+				"panic", p, "stack", string(debug.Stack()))
+		}
+	}()
+	r.runTurn(ctx, key, st, in)
 }
 
 // pump runs the thread's pending coalesced update whenever the lock is free.
@@ -577,8 +592,7 @@ func (r *Runtime) pump(ctx context.Context, key string, st *threadState) {
 			}
 			continue
 		}
-		r.runTurn(ctx, key, st, in)
-		<-st.lock
+		r.runLocked(ctx, key, st, in)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -304,24 +305,44 @@ type persistSource struct {
 	provider string
 	mu       sync.Mutex
 	rec      Record
+	// unsaved marks that the store holds a refresh token this source has already
+	// spent, because the write of its replacement failed.
+	unsaved bool
 }
 
 func (s *persistSource) Token() (*oauth2.Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if disk, ok, err := Get(s.provider); err == nil && ok && disk.Token != nil &&
-		disk.Token.RefreshToken != "" {
-		s.rec = disk
+	if !s.unsaved {
+		// Only while our own copy is the one on disk. After a failed write the file still
+		// carries the refresh token the provider has already spent, and reloading it would
+		// hand that burned credential to the refresh below.
+		if disk, ok, err := Get(s.provider); err == nil && ok && disk.Token != nil &&
+			disk.Token.RefreshToken != "" {
+			s.rec = disk
+		}
 	}
 	tok, err := oauthConfigFor(s.provider, s.rec).TokenSource(s.ctx, s.rec.Token).Token()
 	if err != nil {
 		return nil, err
 	}
-	if s.rec.Token == nil || tok.AccessToken != s.rec.Token.AccessToken ||
-		(tok.RefreshToken != "" && tok.RefreshToken != s.rec.Token.RefreshToken) {
+	rotated := s.rec.Token == nil || tok.AccessToken != s.rec.Token.AccessToken ||
+		(tok.RefreshToken != "" && tok.RefreshToken != s.rec.Token.RefreshToken)
+	if rotated || s.unsaved {
 		s.rec.Token = tok
+		// The provider has already spent the old refresh token by the time we get here.
+		// Failing the call would throw the replacement away and leave every copy we still
+		// hold - memory and disk - pointing at a credential the provider will reject, so a
+		// single bad write (a full disk) would cost the operator a re-login. Keep the
+		// rotated token in memory, where it carries this process until it exits, retry the
+		// write at the next refresh, and make the failure loud meanwhile.
 		if err := Put(s.provider, s.rec); err != nil {
-			return nil, fmt.Errorf("persist refreshed token: %w", err)
+			s.unsaved = true
+			slog.Error("could not persist the rotated OAuth token; it now lives only in this "+
+				"process, and a restart will need a fresh login",
+				"provider", s.provider, "err", err)
+		} else {
+			s.unsaved = false
 		}
 	}
 	return tok, nil
