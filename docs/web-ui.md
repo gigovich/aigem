@@ -2,7 +2,7 @@
 
 !!! note "Partly built"
 
-    Steps 0 to 6 of the work breakdown have landed: call ids on tool events,
+    Steps 0 to 7 of the work breakdown have landed: call ids on tool events,
     `internal/uisession`, the terminal ported onto it, the journal, and the
     daemon with its protocol. There is no UI yet: `aigem web run` serves the API
     and says so. The design below is kept in step with the code as it is
@@ -528,6 +528,25 @@ The second implementation of the interface, over the same protocol.
 
 *Done when* a TUI and a browser on one session both see every event, and an
 approval answered in one is reported as resolved in the other.
+
+The interface had to be settled first, and settling it drew a line that was not
+obvious from the outside. What crosses is what a front-end *does* to a
+conversation - submit, interrupt, resolve, command - plus the two things it
+cannot learn any other way: the conversation's identity, and the approval
+already blocking it when the client arrived. Everything else a front-end used to
+ask for is now something it is told: the context window, the token count and the
+title arrive as events, so a remote client is not a chain of round trips over a
+conversation it is already streaming.
+
+What does not cross is running a turn from a closure. A skill, an MCP prompt and
+a compaction all hand the session a function that drives the agent, and a
+function does not travel; those reach a remote session as commands instead.
+
+`aigem attach` is a stream client rather than the Bubble Tea model: it renders
+the same events and answers the same approvals, but the terminal's own timeline
+is still built against a local session. Making the full TUI run either way is
+what remains of this step, and it is a rework of that model rather than of the
+protocol - which is the right side of the line for the remaining work to be on.
 
 ### 8. Multi-session and mobile
 

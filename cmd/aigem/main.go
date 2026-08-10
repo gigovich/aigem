@@ -72,6 +72,7 @@ const topLevelUsage = `usage:
   aigem paths ...            manage approved paths outside the working directory
   aigem bot ...              define and run unattended chat bots
   aigem web run              serve the web UI on 127.0.0.1
+  aigem attach [<id>]        follow a conversation running in the daemon
   aigem version              print the version
 
 flags:`
@@ -193,6 +194,11 @@ func main() {
 			return
 		case "bot":
 			if err := runBotCommand(os.Args[2:]); err != nil {
+				fatal(err)
+			}
+			return
+		case "attach":
+			if err := runAttachCommand(os.Args[2:]); err != nil {
 				fatal(err)
 			}
 			return

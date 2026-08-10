@@ -18,6 +18,15 @@ import (
 // Session is what a front-end drives. Local runs the agent in this process;
 // a remote implementation speaks the same events over a websocket, which is
 // what lets a terminal attach to a session a browser started.
+// Session is the conversation surface, and deliberately only that. It holds
+// what works the same whether the agent is in this process or in a daemon
+// across a socket. Everything a front-end can do to a conversation is here;
+// everything it can ask *about* one arrives as an event, so a remote client is
+// not a chain of round trips.
+//
+// What is not here is what cannot cross: running a turn from a closure - a
+// skill, an MCP prompt, a compaction - needs the agent itself, so those reach a
+// remote session as commands instead.
 type Session interface {
 	Subscribe(c Client, since uint64) (<-chan Event, func(), error)
 	Replay(since uint64) ([]Event, error)
@@ -26,6 +35,13 @@ type Session interface {
 	Interrupt()
 	Command(name, args string) error
 	Resolve(id string, d Decision, by string) error
+
+	// Meta identifies the conversation. Pending is the approval blocking it, if
+	// any: a front-end that attaches mid-turn has to draw a dialog whose request
+	// event it never saw.
+	Meta() session.Meta
+	Pending() (string, *Approval)
+	Close()
 }
 
 var _ Session = (*Local)(nil)
