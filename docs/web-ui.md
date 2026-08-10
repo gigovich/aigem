@@ -2,7 +2,7 @@
 
 !!! note "Partly built"
 
-    Steps 0 to 4 of the work breakdown have landed: call ids on tool events,
+    Steps 0 to 6 of the work breakdown have landed: call ids on tool events,
     `internal/uisession`, the terminal ported onto it, the journal, and the
     daemon with its protocol. There is no UI yet: `aigem web run` serves the API
     and says so. The design below is kept in step with the code as it is
@@ -507,6 +507,20 @@ frontend itself.
 Timeline, streaming answer, tool call cards with lazy blob expansion, subagent
 lanes, the approval dialog, rendered markdown, interrupt, todo panel, context
 and spend in the header.
+
+Two things the browser does that the terminal cannot, and they are the reason
+the step exists rather than being polish. A tool call and its result are one
+card, because the result is attached by id rather than by whatever line arrived
+next. And a delegated run is its own lane, because a terminal has one column and
+concurrent subagents have to interleave in it.
+
+Markdown from a model is untrusted input rendered as HTML, so it is sanitised.
+Links are given `target=_blank` and `rel=noopener` after sanitising, since the
+sanitiser strips them.
+
+The token arrives in the URL and is kept in `sessionStorage`, not
+`localStorage`: it authorises an agent with a shell, and it should not outlive
+the tab it was handed to.
 
 ### 7. `uisession.Remote` and `aigem attach`
 

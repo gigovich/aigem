@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* shadcn's token layer: components address roles, not colours, so the palette
+   is one place rather than scattered through class lists. */
+@theme {
+  --color-bg: #0b0d12;
+  --color-panel: #121620;
+  --color-panel-2: #171c28;
+  --color-border: #232a3a;
+  --color-fg: #e6e9f0;
+  --color-muted: #8b93a7;
+  --color-accent: #7aa2f7;
+  --color-good: #9ece6a;
+  --color-warn: #e0af68;
+  --color-bad: #f7768e;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    /* The composer sits on the bottom edge; on a phone that edge is the home
+       indicator, so the safe area is padding rather than a guess. */
+    padding-bottom: env(safe-area-inset-bottom);
+    overscroll-behavior-y: none;
+  }
+  code,
+  pre {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+}
+
+/* Rendered markdown. Kept small and explicit: a prose plugin would style more
+   than the handful of elements a model actually emits. */
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md p { margin: 0.5rem 0; line-height: 1.65; }
+.md ul, .md ol { margin: 0.5rem 0; padding-left: 1.25rem; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li { margin: 0.15rem 0; }
+.md h1, .md h2, .md h3 { font-weight: 600; margin: 0.9rem 0 0.4rem; line-height: 1.3; }
+.md h1 { font-size: 1.15rem; }
+.md h2 { font-size: 1.08rem; }
+.md h3 { font-size: 1rem; }
+.md a { color: var(--color-accent); text-decoration: underline; }
+.md code {
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.875em;
+}
+.md pre {
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  margin: 0.6rem 0;
+  overflow-x: auto;
+}
+.md pre code { background: none; border: 0; padding: 0; font-size: 0.85em; }
+.md blockquote {
+  border-left: 2px solid var(--color-border);
+  padding-left: 0.75rem;
+  color: var(--color-muted);
+  margin: 0.5rem 0;
+}
+.md table { border-collapse: collapse; margin: 0.6rem 0; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--color-border); padding: 0.3rem 0.5rem; text-align: left; }

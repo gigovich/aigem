@@ -12,6 +12,7 @@
 /internal/web/dist/*
 !/internal/web/dist/.gitkeep
 /internal/web/ui/node_modules/
+/internal/web/ui/*.tsbuildinfo
 
 # Local agent/editor state
 /.claude
