@@ -22,7 +22,7 @@ type fakeTransport struct {
 }
 
 func (f *fakeTransport) Events() <-chan Inbound { return f.in }
-func (f *fakeTransport) Reply(_ ThreadRef, text string) error {
+func (f *fakeTransport) Reply(_ ThreadID, text string) error {
 	f.mu.Lock()
 	f.replies = append(f.replies, text)
 	f.mu.Unlock()
@@ -50,7 +50,7 @@ func TestRuntimeRepliesPerThread(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Text: "hi"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Text: "hi"}
 	<-runner.started
 	close(runner.release)
 	ft.Close()
@@ -66,7 +66,7 @@ type fakeThreadTransport struct {
 	thread string
 }
 
-func (f *fakeThreadTransport) ThreadHistory(_ context.Context, _, _ string) string { return f.thread }
+func (f *fakeThreadTransport) ThreadHistory(_ context.Context, _ ThreadID) string { return f.thread }
 
 func TestRuntimeThreadUpdateFeedsFullThread(t *testing.T) {
 	ft := &fakeThreadTransport{
@@ -79,7 +79,7 @@ func TestRuntimeThreadUpdateFeedsFullThread(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	ft.in <- Inbound{Kind: "thread_update", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "r1"}}
+	ft.in <- Inbound{Kind: "thread_update", Thread: ThreadID("r1")}
 	<-runner.started
 	close(runner.release)
 	ft.Close()
@@ -121,9 +121,9 @@ func TestRuntimeSingleFlightPerThread(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	th := ThreadRef{ChannelID: "c1", RootID: "r1"}
+	th := ThreadID("r1")
 	for i := 0; i < 3; i++ {
-		ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: th, Text: "x"}
+		ft.in <- Inbound{Kind: "mention", Thread: th, Text: "x"}
 	}
 	time.Sleep(50 * time.Millisecond)
 	close(gate)
@@ -140,65 +140,6 @@ type runnerFunc func()
 func (f runnerFunc) Run(_ context.Context, _ string, _ agent.Events) (string, error) {
 	f()
 	return "ok", nil
-}
-
-type historyTransport struct {
-	*fakeTransport
-	block string
-}
-
-func (h *historyTransport) History(_ context.Context, _ string) string { return h.block }
-
-type typingTransport struct {
-	*fakeTransport
-	count int32
-}
-
-func (tt *typingTransport) Typing(_ ThreadRef) error {
-	atomic.AddInt32(&tt.count, 1)
-	return nil
-}
-
-func TestRuntimeSignalsTyping(t *testing.T) {
-	ft := &fakeTransport{in: make(chan Inbound, 4)}
-	tt := &typingTransport{fakeTransport: ft}
-	runner := &fakeRunner{started: make(chan struct{}, 4), release: make(chan struct{})}
-	rt := NewRuntime(tt, func(string) Runner { return runner }, 4)
-
-	done := make(chan struct{})
-	go func() { rt.Serve(context.Background()); close(done) }()
-
-	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Text: "hi"}
-	<-runner.started
-	close(runner.release)
-	ft.Close()
-	<-done
-
-	if atomic.LoadInt32(&tt.count) < 1 {
-		t.Fatal("expected at least one typing signal during the run")
-	}
-}
-
-func TestRuntimePrefixesHistory(t *testing.T) {
-	ft := &fakeTransport{in: make(chan Inbound, 4)}
-	ht := &historyTransport{fakeTransport: ft, block: "alice: earlier note"}
-	runner := &fakeRunner{started: make(chan struct{}, 4), release: make(chan struct{})}
-	rt := NewRuntime(ht, func(string) Runner { return runner }, 4)
-
-	done := make(chan struct{})
-	go func() { rt.Serve(context.Background()); close(done) }()
-
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "p1"}, Text: "summarize"}
-	<-runner.started
-	close(runner.release)
-	ft.Close()
-	<-done
-
-	if len(ft.replies) != 1 ||
-		!strings.Contains(ft.replies[0], "alice: earlier note") ||
-		!strings.Contains(ft.replies[0], "summarize") {
-		t.Fatalf("history not prefixed: %v", ft.replies)
-	}
 }
 
 func TestIsNoReply(t *testing.T) {
@@ -229,7 +170,7 @@ func TestRuntimeSuppressesNoReply(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "r1"}, Text: "fyi"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("r1"), Text: "fyi"}
 	ft.Close()
 	<-done
 
@@ -263,7 +204,7 @@ func TestRuntimeCoalescesThreadUpdates(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	up := Inbound{Kind: "thread_update", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "r1"}}
+	up := Inbound{Kind: "thread_update", Thread: ThreadID("r1")}
 	ft.in <- up
 	<-runner.started // first update is running and holds the thread lock
 	// A burst of updates lands while the turn is in flight: they must coalesce.
@@ -311,7 +252,7 @@ func TestRuntimeAutoResumesAfterBudgetStop(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(ctx); close(done) }()
 
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "r1"}, Text: "build it"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("r1"), Text: "build it"}
 
 	deadline := time.After(2 * time.Second)
 	for {
@@ -354,7 +295,7 @@ func TestRuntimeAutoResumeCap(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(ctx); close(done) }()
 
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "r1"}, Text: "go"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("r1"), Text: "go"}
 	deadline := time.After(2 * time.Second)
 	for runner.runs.Load() < int32(1+maxAutoResumes) {
 		select {
@@ -399,7 +340,7 @@ func TestRuntimeSanitizesTransientErrorAndResumes(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(ctx); close(done) }()
 
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "r1"}, Text: "hi"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("r1"), Text: "hi"}
 
 	deadline := time.After(2 * time.Second)
 	for runner.runs.Load() < 2 { // the transient failure must schedule a resume turn
@@ -463,8 +404,8 @@ func TestRuntimeDispatchesAttachmentsToImageRunner(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "r1"},
-		Text: "what is in the screenshot?", FileIDs: []string{"f1"}}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("r1"),
+		Text: "what is in the screenshot?", AttachmentIDs: []string{"f1"}}
 	ft.Close()
 	<-done
 
@@ -516,7 +457,7 @@ func TestRuntimeLogsSteps(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Author: "u-x", Text: "hi"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Author: "u-x", Text: "hi"}
 	ft.Close()
 	<-done
 
@@ -539,7 +480,7 @@ func TestRuntimeBusyWhileTurnRuns(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Text: "hi"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Text: "hi"}
 	<-runner.started
 	if !rt.Busy() {
 		t.Fatal("a runtime with a turn in flight must report busy, or cron will double up on it")
@@ -570,9 +511,9 @@ func TestRuntimeOnAddressedFiresForMentionAndDMOnly(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Text: "статус?"}
-	ft.in <- Inbound{Kind: "mention", Channel: "c2", Thread: ThreadRef{ChannelID: "c2", RootID: "r"}, Text: "@amiran"}
-	ft.in <- Inbound{Kind: "thread_update", Channel: "c3", Thread: ThreadRef{ChannelID: "c3", RootID: "r3"}}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Text: "статус?"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("r"), Text: "@amiran"}
+	ft.in <- Inbound{Kind: "thread_update", Thread: ThreadID("r3")}
 	ft.Close()
 	<-done
 
@@ -621,8 +562,8 @@ func TestRuntimeMentionInThreadCarriesTheThread(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
-	ft.in <- Inbound{Kind: "mention", Channel: "c1",
-		Thread: ThreadRef{ChannelID: "c1", RootID: "root1"}, Text: "@lisa"}
+	ft.in <- Inbound{Kind: "mention",
+		Thread: ThreadID("root1"), Text: "@lisa"}
 	got := <-seen
 	ft.Close()
 	<-done
@@ -647,8 +588,8 @@ func TestRuntimeMentionOpeningAThreadIsNotDuplicated(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
-	ft.in <- Inbound{Kind: "mention", Channel: "c1",
-		Thread: ThreadRef{ChannelID: "c1", RootID: "root1"}, Text: "@lisa посмотри #32"}
+	ft.in <- Inbound{Kind: "mention",
+		Thread: ThreadID("root1"), Text: "@lisa посмотри #32"}
 	got := <-seen
 	ft.Close()
 	<-done

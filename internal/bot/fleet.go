@@ -29,26 +29,32 @@ type Fleet struct {
 
 type member struct {
 	name string
-	// username is the bot's chat username, which is what a teammate addresses. It is resolved
-	// from the chat server rather than assumed equal to name: delivering by a name the chat
-	// server does not agree with would route someone else's direct message into this bot.
-	username string
-	role     string
-	rt       *Runtime
-	// resolver answers, with this bot's own credentials, which channels it belongs to. It is what
-	// keeps in-process delivery inside the same boundary chat enforces.
-	resolver ChannelResolver
-	userID   string
+	role string
+	rt   *Runtime
+	// actor is the id the store knows this bot by, and part is what answers
+	// whether it is in a thread. Together they are the entitlement check that
+	// the Mattermost transport could only approximate.
+	actor string
+	part  Participation
+}
+
+// Participation answers, from the one store that decides it, whether an actor
+// is in a thread.
+//
+// Mattermost made this a guess: the recipient asked the chat server with its
+// own credentials and fell back to chat when it could not confirm. Here there
+// is no second authority to disagree with, so a refusal is final.
+type Participation interface {
+	IsParticipant(ctx context.Context, thread, actor string) (bool, error)
 }
 
 // Member describes a bot joining the roster.
 type Member struct {
-	Name     string
-	Username string
-	Role     string
-	UserID   string
-	Runtime  *Runtime
-	Resolver ChannelResolver
+	Name          string
+	Role          string
+	Actor         string
+	Runtime       *Runtime
+	Participation Participation
 }
 
 // MemberStatus is one teammate as the roster reports it.
@@ -67,14 +73,10 @@ func (f *Fleet) Register(m Member) {
 	if f == nil || m.Name == "" {
 		return
 	}
-	username := m.Username
-	if username == "" {
-		username = m.Name // the chat server could not be asked; the name is the best guess left
-	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.members[m.Name] = &member{name: m.Name, username: username, role: m.Role,
-		rt: m.Runtime, resolver: m.Resolver, userID: m.UserID}
+	f.members[m.Name] = &member{name: m.Name, role: m.Role,
+		rt: m.Runtime, actor: m.Actor, part: m.Participation}
 }
 
 // Unregister drops a bot from the roster, so a teammate that stopped is not
@@ -91,58 +93,37 @@ func (f *Fleet) Unregister(name string) {
 // Has reports whether name is a bot running in this process.
 func (f *Fleet) Has(name string) bool { return f.Resolve(name) != "" }
 
-// Resolve maps a chat username to the roster name of the bot behind it, or "" when no bot in this
-// process answers to it.
-//
-// Matching is on the CHAT USERNAME, not the aigem name: the caller addressed a chat account, and
-// a bot whose aigem name happens to equal some person's username must not receive that person's
-// messages. Chat usernames are case-insensitive, so "@Kate" reaches the account "kate".
-func (f *Fleet) Resolve(username string) string {
-	if f == nil || username == "" {
+// Resolve maps a name to the roster name of the bot behind it, or "" when no
+// bot in this process answers to it. Names are case-insensitive, so a model
+// writing "Kate" reaches the bot "kate".
+func (f *Fleet) Resolve(name string) string {
+	if f == nil || name == "" {
 		return ""
 	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	for _, m := range f.members {
-		if strings.EqualFold(m.username, username) {
+		if strings.EqualFold(m.name, name) {
 			return m.name
 		}
 	}
 	return ""
 }
 
-// IsMember reports whether a chat user id belongs to a bot in this process. The runtime uses it
-// to tell a teammate's ping apart from a person's.
-func (f *Fleet) IsMember(userID string) bool {
-	if f == nil || userID == "" {
+// IsMember reports whether an actor id belongs to a bot in this process. The
+// runtime uses it to tell a teammate's ping apart from a person's.
+func (f *Fleet) IsMember(actor string) bool {
+	if f == nil || actor == "" {
 		return false
 	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	for _, m := range f.members {
-		if m.userID == userID {
+		if m.actor == actor {
 			return true
 		}
 	}
 	return false
-}
-
-// MarkRouted tells a teammate that these chat posts have already been handled, so the copies the
-// chat server pushes back are ignored. It is how a message split across several posts wakes them
-// once rather than once per chunk.
-func (f *Fleet) MarkRouted(to string, postIDs []string) {
-	if f == nil || len(postIDs) == 0 {
-		return
-	}
-	f.mu.RLock()
-	m := f.members[to]
-	f.mu.RUnlock()
-	if m == nil || m.rt == nil {
-		return
-	}
-	for _, id := range postIDs {
-		m.rt.alreadyRouted(id)
-	}
 }
 
 // Deliver hands in to the named teammate's runtime and reports whether it landed.
@@ -153,7 +134,7 @@ func (f *Fleet) MarkRouted(to string, postIDs []string) {
 // message the same way an inbound chat event is queued. A synchronous handoff
 // would deadlock the moment two bots handed off to each other while both held a
 // fleet turn slot.
-func (f *Fleet) Deliver(ctx context.Context, to, channel string, in Inbound) bool {
+func (f *Fleet) Deliver(ctx context.Context, to string, in Inbound) bool {
 	if f == nil {
 		return false
 	}
@@ -163,32 +144,26 @@ func (f *Fleet) Deliver(ctx context.Context, to, channel string, in Inbound) boo
 	if m == nil || m.rt == nil {
 		return false
 	}
-	if !m.entitled(ctx, channel, in) {
+	if !m.entitled(ctx, in) {
 		return false
 	}
 	return m.rt.Enqueue(in)
 }
 
-// entitled reports whether this message would have reached the bot over chat anyway.
+// entitled reports whether this bot is in the thread the message claims to come
+// from.
 //
-// This is the check the websocket performs for free and the in-process path does not: a bot only
-// ever sees posts in channels it belongs to. Without it a teammate could wake this bot in any
-// channel the SENDER can post to, which is a different and larger set - and the woken message is
-// handed straight into a running turn, where the model treats it as an instruction to act on.
-// So the recipient asks, with its own credentials, whether it belongs to the channel the message
-// claims to come from; anything it cannot confirm falls back to chat, which is what decided this
-// before the fleet existed.
-func (m *member) entitled(ctx context.Context, channel string, in Inbound) bool {
-	if in.Kind == "dm" {
-		// A direct message is addressed to this bot's own account by name, and Resolve has already
-		// confirmed the name is this bot's chat username, so the conversation is one it is in.
-		return true
-	}
-	if m.resolver == nil || channel == "" {
+// Without it a teammate could wake this bot in any thread the SENDER is in,
+// which is a different and larger set - and the woken message is handed
+// straight into a running turn, where the model treats it as an instruction to
+// act on. The answer comes from the store, which is the only thing that decides
+// participation, so a refusal here is final rather than a fallback.
+func (m *member) entitled(ctx context.Context, in Inbound) bool {
+	if m.part == nil || m.actor == "" {
 		return false
 	}
-	id, err := m.resolver.ResolveChannel(ctx, channel)
-	return err == nil && id == in.Channel
+	ok, err := m.part.IsParticipant(ctx, string(in.Thread), m.actor)
+	return err == nil && ok
 }
 
 // Roster returns every teammate, sorted by name, with whether each is mid-turn.

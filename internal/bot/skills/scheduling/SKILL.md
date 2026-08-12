@@ -2,7 +2,7 @@
 name: scheduling
 description: >-
   Mechanics of the schedule and post_message tools. Load BEFORE creating, replacing, or
-  removing a scheduled job, writing a job's prompt, or posting proactively to a channel,
+  removing a scheduled job, writing a job's prompt, or posting proactively into a thread,
   person, or thread.
 ---
 Use the schedule tool to run work on a timer:
@@ -38,11 +38,10 @@ Two rules govern what a job may post:
   Schedule a continuation only for work YOU will advance when it fires, and keep at most one
   slow check to notice a wait has gone on too long.
 
-Use the post_message tool to post to a channel you belong to, or to a person: this is how a
-scheduled run delivers its result, and how you message a channel outside of replying to
-someone. It has no default channel, so always name the target - a scheduled job has no incoming
-message to infer one from, so state the target in the job's prompt or keep it in memory. Pass a
-channel name for a channel, or "@username" for a direct message (a DM has no channel name, so a
-job continuing DM work must use "@username"). To land a deferred result back in the thread it
-was requested in, pass that thread's root post id as "thread" - so record the channel name or
-@username and the thread root id in the job's prompt when you schedule follow-up work.
+Use the post_message tool to post into a thread you are in, or to open a new one: this is how a
+scheduled run delivers its result, and how you start a conversation outside of replying to
+someone. It has no default thread, so always name the target - a scheduled job has no incoming
+message to infer one from, so state the target in the job's prompt or keep it in memory. To land
+a deferred result back in the thread the work was requested in, pass that thread's id as
+"thread" - so record the thread id in the job's prompt when you schedule follow-up work. With no
+thread to return to, name participants instead and the job opens one.

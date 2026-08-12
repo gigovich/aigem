@@ -1,11 +1,16 @@
 # Chat bots
 
 Beyond the interactive terminal agent, aigem can run **unattended bots** that live
-in a chat workspace, answer when addressed, and hand work to each other. The only
-transport implemented today is Mattermost.
+in threads, answer when addressed, and hand work to each other. They talk through
+aigem's own conversation store, which the fleet process owns and serves to a
+browser and to `aigem chat`.
 
-Each bot is one account and one working directory. One process runs one bot or
-the whole team.
+A thread is one task or one conversation with an explicit set of participants:
+you and one or more bots. There are no channels; participation is what decides
+who may read and write a thread, and it is the only thing that does.
+
+Each bot is one name and one working directory. One process runs one bot or the
+whole team.
 
 ```sh
 aigem bot create <name>   # define a bot interactively
@@ -16,16 +21,18 @@ aigem bot start jane      # run one
 aigem bot start jane kate # run only these
 aigem bot model [<name>] [<ref>]   # show or switch the model a bot runs on
 aigem bot prompt <name>   # print the bot's full assembled system prompt
+
+aigem chat threads        # the fleet's inbox
+aigem chat tail <thread>  # follow a thread live, including the agent's steps
 ```
 
 ## Running the whole team in one process
 
-`aigem bot start` with no name runs every configured bot in one process. They
-start one at a time and each is connected before the next begins, because one
-Mattermost account allows one websocket and opening several at once is what the
-server rate-limits.
+`aigem bot start` with no name runs every configured bot in one process, along
+with the conversation store and the daemon serving it. The store comes up first,
+so a bot that fails to start is visible in a UI that is already running.
 
-What the bots then share:
+What the bots share:
 
 - **A cap on concurrent turns.** Each bot limits its own threads, but those limits
   multiply: five bots at four threads each is twenty conversations aimed at one
@@ -61,11 +68,13 @@ running. A panic inside one bot's turn does not reach the others.
 
 ### Reaching a teammate
 
-A handoff still writes to chat - that post is the record a human reads - but chat
-is no longer what wakes the teammate. When the recipient runs in the same process
-the message is handed to them directly, so a handoff survives a websocket that is
-down or reconnecting. Both copies carry the same post id and the teammate acts on
-whichever arrives first, never twice.
+A handoff writes to the thread - that message is the record you read - and, when
+the recipient runs in the same process, is also handed to them directly, which
+saves the round trip through the store's own fan-out. Both copies carry the same
+message sequence and the teammate acts on whichever arrives first, never twice.
+
+The direct path is checked against the same boundary as everything else: the
+recipient is only woken if the store says they are in that thread.
 
 The `team_status` tool lists the teammates in the process and whether each is
 working right now. A bot that has not answered because it is mid-turn looks
@@ -95,11 +104,6 @@ persona: "female; speaks Russian with feminine forms"
 model: openai/gpt-5.6-sol
 workdir: /path/to/repo
 capabilityProfile: workspace-write
-transport:
-  kind: mattermost
-  serverURL: https://mattermost.example.com
-  team: YourTeam
-  botUserID: "..."
 turnBudget:
   maxDuration: 45m
   maxModelRounds: 80
@@ -252,29 +256,22 @@ A key with no passphrase is a real trade-off - it is a credential sitting on
 disk - so scope it to one repository as a deploy key rather than reusing your
 personal key. See [Security](security.md).
 
-Restarting a single bot is not what this unit is for: aigem already restarts a
-crashed bot on its own and leaves the others running, and `systemctl restart`
-takes the whole fleet down and up. When you genuinely need per-bot lifecycle
-control, use `deploy/systemd/aigem-bot@.service` instead - one unit per bot:
+Restarting a single bot is not what this unit is for, and there is no per-bot
+unit any more: aigem already restarts a crashed bot on its own and leaves the
+others running, which was the only thing one bought. The fleet is now one
+process for a harder reason than sharing a connection pool - it owns the SQLite
+conversation store, and a second process would be a second writer serving a
+second copy of the UI on a second port.
 
-```sh
-cp deploy/systemd/aigem-bot@.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now aigem-bot@jane aigem-bot@kate
-```
-
-The cost is that separate processes share nothing: no common connection pool, no
-single token source, and the caps on concurrent turns and browsers apply per bot
-instead of across the team. The template unit declares `Conflicts=aigem-bots`, so
-systemd will not let both run - they would otherwise open two websockets for the
-same account.
+For foreground debugging of one bot, `aigem bot start <name>` still runs exactly
+that bot. Do not leave it running beside the unit.
 
 ## Running in a container
 
 See [Docker](docker.md) for the image, volume layout, and how to move config and
 state to a server.
 
-> Do not run the same bot in two places at once. Two websocket connections for one
-> Mattermost account cause duplicate replies and authentication errors. That
-> applies across processes as much as within one: `aigem bot start` with no name
-> already runs every bot, so a second command naming one of them starts it twice.
+> Do not run the fleet in two places at once. Both would open the same SQLite
+> conversation store, and only one of them writes the state record `aigem chat`
+> and the browser use to find a daemon. `aigem bot start` with no name already
+> runs every bot, so a second command naming one of them starts it twice.

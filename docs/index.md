@@ -29,7 +29,7 @@ rendering are real; only the model is scripted, so the recording is
 | [Web search](search.md)              | Brave and browser-driven search backends                    |
 | [The TUI](tui.md)                    | Keys, sessions, compaction, runaway guards, theming         |
 | [Configuration](configuration.md)    | System prompt overrides and project instruction files       |
-| [Chat bots](bots.md)                 | Unattended bots over Mattermost                             |
+| [Chat bots](bots.md)                 | Unattended bots with their own web UI                       |
 | [Docker](docker.md)                  | Running a bot in a container                                |
 | [Architecture](architecture.md)      | Package map, for contributors                               |
 

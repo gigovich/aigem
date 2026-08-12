@@ -1,10 +1,7 @@
 package main
 
 import (
-	"context"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,43 +10,6 @@ import (
 	"github.com/gigovich/aigem/internal/auth"
 	"github.com/gigovich/aigem/internal/bot"
 )
-
-func TestVerifyMattermost(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v4/users/me":
-			w.Write([]byte(`{"id":"bot123"}`))
-		case "/api/v4/teams/name/eng":
-			w.Write([]byte(`{"id":"team1"}`))
-		default:
-			http.Error(w, "nope", http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	conf := bot.TransportConf{Kind: "mattermost", ServerURL: srv.URL, Team: "eng"}
-	id, err := verifyMattermost(context.Background(), conf, "tok")
-	if err != nil || id != "bot123" {
-		t.Fatalf("verifyMattermost = %q, %v", id, err)
-	}
-}
-
-func TestVerifyMattermostBadTeam(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v4/users/me":
-			w.Write([]byte(`{"id":"bot123"}`))
-		default:
-			http.Error(w, "nope", http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	conf := bot.TransportConf{Kind: "mattermost", ServerURL: srv.URL, Team: "eng"}
-	if _, err := verifyMattermost(context.Background(), conf, "tok"); err == nil {
-		t.Fatal("expected an error when the team does not resolve")
-	}
-}
 
 // isolatedBots points the config and state dirs at temp dirs, registers an
 // auth-free and a logged-out provider in the user models.json, and saves the
@@ -83,7 +43,6 @@ func isolatedBots(t *testing.T, names ...string) {
 	for _, name := range names {
 		c := bot.Config{
 			Name: name, Role: "developer", Workdir: t.TempDir(),
-			Transport:  bot.TransportConf{Kind: "mattermost", Team: "eng", BotUserID: "u-" + name},
 			TurnBudget: bot.TurnBudgetConf{MaxDuration: "45m"},
 			Cron:       []bot.CronJob{{ID: "job1", Expr: "5 */2 * * *", Prompt: "check the board"}},
 		}
@@ -105,7 +64,7 @@ func TestBotModelSetsNormalizesAndClears(t *testing.T) {
 	}
 	// The whole file is rewritten on a switch; everything else must survive.
 	if len(c.Cron) != 1 || c.Cron[0].ID != "job1" || c.TurnBudget.MaxDuration != "45m" ||
-		c.Transport.BotUserID != "u-kate" {
+		c.Persona != "" {
 		t.Fatalf("switch clobbered other config: %+v", c)
 	}
 

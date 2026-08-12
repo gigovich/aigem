@@ -66,8 +66,9 @@ An explicit command is passed straight to `aigem` and takes precedence over
 `docker run --rm -v ~/.config/aigem:/config/aigem aigem-bot bot list`. With
 neither a command nor `BOT_NAME`, the container prints a hint and exits non-zero.
 
-Do not run the same bot in two places at once (e.g. locally and in a container): two websocket
-connections for one Mattermost account cause duplicate replies and authentication errors.
+Do not run the same fleet in two places at once (e.g. locally and in a container): both would
+open the same SQLite conversation store, and only one of them writes the state file the CLI and
+the browser use to find a daemon.
 
 ## Copying config and state to a server
 
@@ -92,7 +93,7 @@ The trailing `/` on each source copies the directory contents, so `bots/` lands 
 `/srv/aigem/config/`. On macOS the config source is `"$HOME/Library/Application Support/aigem/"`.
 Then mount `/srv/aigem/config:/config/aigem` and `/srv/aigem/state:/state/aigem`.
 
-Tokens are tied to the Mattermost/OpenAI accounts, not the machine, so no re-login is needed
+Tokens are tied to the provider accounts, not the machine, so no re-login is needed
 after the copy.
 
 ## Left out by design

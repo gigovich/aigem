@@ -15,7 +15,6 @@ import (
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/auth"
 	"github.com/gigovich/aigem/internal/bot"
-	"github.com/gigovich/aigem/internal/bot/mattermost"
 	"github.com/gigovich/aigem/internal/config"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/local"
@@ -105,7 +104,7 @@ func botList() error {
 		if model == "" {
 			model = "auto"
 		}
-		fmt.Printf("%s\trole=%s\tprofile=%s\ttransport=%s\tmodel=%s\n", n, c.Role, profile, c.Transport.Kind, model)
+		fmt.Printf("%s\trole=%s\tprofile=%s\tmodel=%s\n", n, c.Role, profile, model)
 	}
 	return nil
 }
@@ -397,18 +396,6 @@ func botCreate(name string) error {
 
 	persona := promptLine(rd, "persona (optional, e.g. \"female; use feminine forms in Russian\"): ")
 
-	kind := promptLine(rd, "transport [mattermost]: ")
-	if kind == "" {
-		kind = "mattermost"
-	}
-	if kind != "mattermost" {
-		return fmt.Errorf("only the mattermost transport is supported")
-	}
-
-	conf := bot.TransportConf{Kind: kind}
-	conf.ServerURL = promptLine(rd, "server URL: ")
-	token := promptLine(rd, "bot token: ")
-	conf.Team = promptLine(rd, "team: ")
 	workdir := promptLine(rd, "workdir [.]: ")
 	if workdir == "" {
 		workdir = "."
@@ -421,29 +408,21 @@ func botCreate(name string) error {
 		return err
 	}
 
-	fmt.Print("verifying... ")
-	botUserID, err := verifyMattermost(context.Background(), conf, token)
-	if err != nil {
-		fmt.Println("FAILED")
-		return err
-	}
-	conf.BotUserID = botUserID
-	fmt.Println("ok")
-
+	// Four questions and no network call. There is no server to point at, no
+	// team to resolve and no token to verify: a bot reaches its conversations
+	// through the store this process already owns.
 	c := bot.Config{Name: name, Role: role, Persona: persona, Workdir: workdir,
-		Transport: conf, CapabilityProfile: profile}
+		CapabilityProfile: profile}
 	if err := bot.Save(c); err != nil {
-		return err
-	}
-	if err := bot.SaveToken(name, token); err != nil {
 		return err
 	}
 	fmt.Printf("bot %q ready (role %s)\n", name, role)
 	return nil
 }
 
-// verifyMattermost confirms the token works and the team resolves. Channel membership is
-// managed in Mattermost and resolved at post time, so it is not checked here.
+// intersectTools is the tools a role wants and the capability profile allows.
+// A tool outside the intersection is not registered at all, so it is not merely
+// refused at call time - the model never sees it.
 func intersectTools(a, b []string) []string {
 	set := make(map[string]bool, len(b))
 	for _, name := range b {
@@ -456,49 +435,6 @@ func intersectTools(a, b []string) []string {
 		}
 	}
 	return out
-}
-
-func verifyMattermost(ctx context.Context, conf bot.TransportConf, token string) (string, error) {
-	c := mattermost.NewClient(conf.ServerURL, token)
-	userID, err := c.Me(ctx)
-	if err != nil {
-		return "", fmt.Errorf("authenticate: %w", err)
-	}
-	if _, err := c.TeamID(ctx, conf.Team); err != nil {
-		return "", fmt.Errorf("resolve team %q: %w", conf.Team, err)
-	}
-	return userID, nil
-}
-
-// mmResolver adapts the Mattermost client to bot.ChannelResolver, binding the team so the
-// post_message tool resolves a channel name to an id among the bot's memberships on demand.
-type mmResolver struct {
-	client *mattermost.Client
-	team   string
-	teamID string
-}
-
-func (r mmResolver) ResolveChannel(ctx context.Context, name string) (string, error) {
-	// "@username" targets a direct-message channel. DM channels have no name in
-	// Mattermost, so they cannot be resolved through the team channel list.
-	if user, ok := strings.CutPrefix(strings.TrimSpace(name), "@"); ok {
-		user = strings.TrimSpace(user)
-		if user == "" {
-			return "", fmt.Errorf("a direct message needs a username after the @")
-		}
-		return r.client.DirectChannelWith(ctx, user)
-	}
-	if r.teamID == "" {
-		return "", fmt.Errorf("team %q was not resolved at startup; cannot post", r.team)
-	}
-	return r.client.ChannelIDByName(ctx, r.teamID, name)
-}
-
-func (r mmResolver) MemberChannels(ctx context.Context) ([]string, error) {
-	if r.teamID == "" {
-		return nil, fmt.Errorf("team %q was not resolved at startup", r.team)
-	}
-	return r.client.MemberChannelNames(ctx, r.teamID)
 }
 
 // errRunner is returned by the agent factory when a thread's tool registry cannot be

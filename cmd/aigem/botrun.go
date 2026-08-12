@@ -18,7 +18,8 @@ import (
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/auth"
 	"github.com/gigovich/aigem/internal/bot"
-	"github.com/gigovich/aigem/internal/bot/mattermost"
+	"github.com/gigovich/aigem/internal/bot/chatlink"
+	"github.com/gigovich/aigem/internal/chat"
 	"github.com/gigovich/aigem/internal/config"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/local"
@@ -47,6 +48,10 @@ type fleetResources struct {
 	fleet    *bot.Fleet
 	turns    *bot.TurnLimiter
 	launches *search.LaunchGate
+	// store is the conversation store every bot reads and writes. One store,
+	// not one per bot: it is a single SQLite writer, and the whole point of the
+	// participants table is that one place decides who may see what.
+	store *chat.Store
 }
 
 // botStart runs the named bots, or the whole configured fleet when no name is
@@ -92,10 +97,8 @@ func botStart(args []string) error {
 		return err
 	}
 	defer chatSrv.Close()
+	shared.store = chatSrv.store
 
-	// Start sequentially and wait for each to be connected before the next: one
-	// Mattermost account allows one websocket, and opening several at once is what
-	// the server rate-limits.
 	var wg sync.WaitGroup
 	started := 0
 	for _, name := range names {
@@ -266,11 +269,12 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 	if !ok {
 		return nil, fmt.Errorf("bot %q has unknown role %q", name, c.Role)
 	}
-	token, err := bot.LoadToken(name)
-	if err != nil {
-		return nil, err
+	// The store is where a bot's conversations are. Without one there is nothing
+	// for it to read, write or be woken by, so this is a wiring mistake worth
+	// naming rather than a nil dereference three frames down.
+	if shared.store == nil {
+		return nil, fmt.Errorf("bot %q: no conversation store", name)
 	}
-
 	client, err := openBotModel(name, c, log)
 	if err != nil {
 		return nil, err
@@ -319,11 +323,7 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 	// scheduler bound to it would keep firing this bot's cron and heartbeat jobs forever, one
 	// extra copy per restart, each still persisting its own snapshot of the job list.
 	botCtx, cancelBot := context.WithCancel(ctx)
-	tr, err := mattermost.Dial(botCtx, c.Transport.ServerURL, token, c.Transport.BotUserID, log)
-	if err != nil {
-		cancelBot()
-		return nil, fmt.Errorf("connect mattermost: %w", err)
-	}
+	tr := chatlink.Open(shared.store, name, log)
 	closers := []func(){func() { _ = tr.Close() }}
 	closeAll := func() {
 		cancelBot() // stop the scheduler first, so nothing new starts while we tear down
@@ -332,24 +332,11 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 		}
 	}
 
-	if ts, terr := bot.NewThreadStore(name); terr != nil {
-		log.Warn("thread state unavailable", "err", terr)
-	} else {
-		tr.SeedThreads(ts.Load())
-		tr.SetThreadSink(func(version uint64, ids []string) {
-			if err := ts.Save(version, ids); err != nil {
-				log.Warn("could not persist followed threads", "err", err)
-			}
-		})
-	}
-
-	mmClient := mattermost.NewClient(c.Transport.ServerURL, token)
-	teamID, terr := mmClient.TeamID(botCtx, c.Transport.Team)
-	if terr != nil {
-		log.Warn("could not resolve team for posting", "err", terr)
-	}
-	resolver := mmResolver{client: mmClient, team: c.Transport.Team, teamID: teamID}
-	local := &bot.LocalDelivery{Self: name, SelfUserID: c.Transport.BotUserID, Fleet: shared.fleet}
+	// The tracked-thread file is gone with the transport that needed it: which
+	// threads a bot follows is which threads it participates in, and that is a
+	// table now.
+	self := chat.BotActor(name)
+	local := &bot.LocalDelivery{Self: name, SelfActor: self, Fleet: shared.fleet}
 
 	scheduler, cronWarns := bot.NewScheduler(c.Cron, saveCronJobs(name))
 	scheduler.SetLogger(log)
@@ -375,9 +362,9 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 		}
 		reg.Register(bot.NewMemoryTool(store))
 		reg.Register(bot.NewScheduleTool(scheduler))
-		reg.Register(bot.NewPostMessageTool(tr, resolver, local))
-		reg.Register(bot.NewHandoffTool(tr, resolver, local))
-		reg.Register(bot.NewReadChatTool(tr, resolver))
+		reg.Register(bot.NewPostMessageTool(tr, tr, local))
+		reg.Register(bot.NewHandoffTool(tr, local, name))
+		reg.Register(bot.NewReadThreadsTool(tr))
 		reg.Register(bot.NewSaveSkillTool(skillsDir))
 		reg.Register(bot.NewDeleteSkillTool(skillsDir))
 		if tt := bot.NewTeamStatusTool(name, shared.fleet); tt != nil {
@@ -442,18 +429,10 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 		return ag, aerr
 	}, heartbeat, rt.EnterTurn, shared.turns))
 
-	// Join the roster under the chat username the server reports, not the aigem name. A teammate
-	// addresses a chat account; registering under a name the chat server does not agree with
-	// would route someone else's direct messages into this bot.
-	username := tr.AuthorName(botCtx, c.Transport.BotUserID)
-	if username == "" {
-		log.Warn("could not resolve own chat username; teammates will address this bot by its aigem name",
-			"name", name)
-	}
 	// Join the roster last: a teammate must not be able to deliver into a runtime
 	// that is still being wired.
-	shared.fleet.Register(bot.Member{Name: name, Username: username, Role: role.Name,
-		UserID: c.Transport.BotUserID, Runtime: rt, Resolver: resolver})
+	shared.fleet.Register(bot.Member{Name: name, Role: role.Name, Actor: self,
+		Runtime: rt, Participation: shared.store})
 	closers = append(closers, func() { shared.fleet.Unregister(name) })
 
 	return &botHandle{name: name, role: role.Name, rt: rt, sched: scheduler, log: log,

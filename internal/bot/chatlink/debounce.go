@@ -1,4 +1,4 @@
-package mattermost
+package chatlink
 
 import (
 	"sync"
@@ -18,8 +18,8 @@ type threadDebouncer struct {
 	mu      sync.Mutex
 	delay   time.Duration
 	after   func(time.Duration, func()) stoppable // time.AfterFunc wrapper; overridable in tests
-	fire    func(bot.ThreadRef)
-	pending map[string]bot.ThreadRef
+	fire    func(bot.ThreadID)
+	pending map[string]bot.ThreadID
 	timers  map[string]stoppable
 	gen     map[string]int // active thread -> its current timer's seq; pruned on flush
 	seq     int            // global monotonic timer id; never reused, so a stale timer no-ops
@@ -27,33 +27,33 @@ type threadDebouncer struct {
 	firing  sync.WaitGroup // tracks in-flight fire calls so stop can wait them out
 }
 
-func newThreadDebouncer(delay time.Duration, fire func(bot.ThreadRef)) *threadDebouncer {
+func newThreadDebouncer(delay time.Duration, fire func(bot.ThreadID)) *threadDebouncer {
 	return &threadDebouncer{
 		delay:   delay,
 		after:   func(d time.Duration, f func()) stoppable { return time.AfterFunc(d, f) },
 		fire:    fire,
-		pending: map[string]bot.ThreadRef{},
+		pending: map[string]bot.ThreadID{},
 		timers:  map[string]stoppable{},
 		gen:     map[string]int{},
 	}
 }
 
 // note records a new reply in the thread and (re)arms its quiet-period timer.
-func (d *threadDebouncer) note(ref bot.ThreadRef) {
+func (d *threadDebouncer) note(ref bot.ThreadID) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stopped {
 		return
 	}
-	d.pending[ref.RootID] = ref
-	if t := d.timers[ref.RootID]; t != nil {
+	d.pending[string(ref)] = ref
+	if t := d.timers[string(ref)]; t != nil {
 		t.Stop()
 	}
 	d.seq++    // a globally unique, never-reused id; a stalled old timer's seq can never match a
 	s := d.seq // later re-armed one, even after gen[root] is pruned and re-created on flush.
-	d.gen[ref.RootID] = s
-	root := ref.RootID
-	d.timers[ref.RootID] = d.after(d.delay, func() { d.flush(root, s) })
+	d.gen[string(ref)] = s
+	root := string(ref)
+	d.timers[string(ref)] = d.after(d.delay, func() { d.flush(root, s) })
 }
 
 // flush fires once for the thread, unless a newer reply superseded this timer or the debouncer
@@ -88,7 +88,7 @@ func (d *threadDebouncer) stop() {
 		t.Stop()
 		delete(d.timers, id)
 	}
-	d.pending = map[string]bot.ThreadRef{}
+	d.pending = map[string]bot.ThreadID{}
 	d.gen = map[string]int{}
 	d.mu.Unlock()
 	d.firing.Wait()

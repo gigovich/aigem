@@ -55,10 +55,10 @@ func TestSystemSkillBodiesCarryMovedContent(t *testing.T) {
 	reg, _ := SystemSkills()
 	want := map[string][]string{
 		"scheduling": {
-			"minute hour day-of-month month day-of-week", "FRESH agent", "@username",
-			"root post id", "set:", "remove:", "list:",
+			"minute hour day-of-month month day-of-week", "FRESH agent", "thread id",
+			"post_message", "set:", "remove:", "list:",
 		},
-		"long-deliverables": {"16k", "write_file", "wiki", "short summary"},
+		"long-deliverables": {"write_file", "wiki", "short summary"},
 		"memory-mechanics": {
 			"save:", "read:", "delete:", "list:", "archive:", "restore:", "audit:", "inspect:", "overwrites it",
 		},

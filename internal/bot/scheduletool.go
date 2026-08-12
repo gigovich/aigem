@@ -26,7 +26,8 @@ func (t *scheduleTool) Description() string {
 		"that runs once after that delay and then deletes itself)); remove (delete a job by id); " +
 		"list (show your jobs). Each scheduled run starts a fresh agent with only your memory, so " +
 		"write each prompt as a self-contained instruction - include where to report the result " +
-		"(channel, and the thread root id if it should land back in a specific thread). Setting an " +
+		"(the thread id, so the result lands back in the thread the work was requested in; say to " +
+		"open a new thread with the operator when there is none). Setting an " +
 		"id that exists replaces it."
 }
 

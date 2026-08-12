@@ -63,9 +63,9 @@ func TestShippedPromptsAreDeploymentNeutral(t *testing.T) {
 	// naming one deployment's bots: the handoff tool used to say `to (the teammate's name,
 	// e.g. "jane")`, which no other user has.
 	for _, tl := range []tools.Tool{
-		NewHandoffTool(nil, nil, nil),
+		NewHandoffTool(nil, nil, "botname"),
 		NewPostMessageTool(nil, nil, nil),
-		NewReadChatTool(nil, nil),
+		NewReadThreadsTool(nil),
 		NewTeamStatusTool("botname", NewFleet()),
 		NewMemoryTool(NewStore(t.TempDir())),
 		NewScheduleTool(nil),
@@ -84,6 +84,18 @@ func TestShippedPromptsAreDeploymentNeutral(t *testing.T) {
 		corpus += "\n" + s.Listing() + "\n" + s.Body()
 	}
 	lower := strings.ToLower(corpus)
+	// Channels are gone with the transport that had them. Prompt text that still
+	// tells the model to use one describes a product the operator does not have,
+	// which is worse than saying nothing. Saying they do not exist is allowed and
+	// deliberate: a model trained on chat products will otherwise go looking.
+	for _, gone := range []string{
+		"@mention", "@here", "@channel", "read_chat", "direct message",
+		"a channel", "the channel", "channels you", "channel name",
+	} {
+		if strings.Contains(lower, gone) {
+			t.Errorf("shipped prompt text still says %q; there are threads and participants now", gone)
+		}
+	}
 	for _, banned := range []string{
 		"lisa", "amiran", "jane", "kate", "demetre", // deployment bot names
 		"gitea", "mattermost", "doaml", "devinlab", "laban", "oxoauth", // hosts/orgs/vendors
@@ -107,7 +119,7 @@ func TestRolePromptsCarryExtractedLessons(t *testing.T) {
 			"never batch unrelated, risky, or mutually blocking changes",
 			// A fully blocked board is exactly the state that stalled the team: the manager
 			// stayed silent instead of asking the architect what could be unblocked.
-			"ask the architect, by @mention, which of the blocked tickets can be unblocked",
+			"ask the architect, in a thread with them, which of the blocked tickets can be unblocked",
 			"Ask once per episode",
 			"A board that is blocked, asked about, and recorded is not silence",
 			// Progress was judged by "did he answer my check-in", which a stalled bot passes.

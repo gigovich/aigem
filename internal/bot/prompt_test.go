@@ -141,8 +141,8 @@ func TestOperatingProtocolHasMultiBotSection(t *testing.T) {
 	if !strings.Contains(got, "## Working alongside other bots") {
 		t.Error("operating protocol must explain how to behave alongside other bots")
 	}
-	if !strings.Contains(got, "@here") {
-		t.Error("operating protocol should address broadcast mentions like @here")
+	if !strings.Contains(got, "several bots") {
+		t.Error("operating protocol must say what to do in a thread with several bots in it")
 	}
 }
 
@@ -152,8 +152,8 @@ func TestOperatingProtocolWarnsAgainstMentionLoops(t *testing.T) {
 	if !strings.Contains(got, "acknowledgement loop") {
 		t.Error("operating protocol must warn against bot-to-bot acknowledgement loops")
 	}
-	if !strings.Contains(got, "wakes that participant") {
-		t.Error("operating protocol must explain that an @mention wakes the mentioned bot")
+	if !strings.Contains(got, "wakes every bot in it") {
+		t.Error("operating protocol must explain that posting into a thread wakes the bots in it")
 	}
 }
 

@@ -31,7 +31,7 @@ type Role struct {
 var full = []string{
 	"read_file", "write_file", "edit_file", "list_dir", "bash", "grep", "fuzzy_find",
 	"web_search", "open_url", "browser_action", "memory", "schedule", "post_message", "handoff",
-	"read_chat", "team_status", "save_skill", "delete_skill", "skill",
+	"read_threads", "team_status", "save_skill", "delete_skill", "skill",
 }
 
 var roles = []Role{
@@ -51,9 +51,10 @@ requests into one review or deploy cycle, but never batch unrelated, risky, or m
 changes. Escalate only decisions that truly need a human, and batch non-urgent ones into a
 single message.
 
-Unblocking stuck handoffs is a standing duty. A teammate is only woken by a chat @mention, so a
+Unblocking stuck handoffs is a standing duty. A teammate is only woken by a message in a thread
+they are in, so a
 ticket can sit blocked on someone who was never actually pinged. You are not shown handoffs
-addressed to others, so read the specific thread with read_chat before deciding one never
+addressed to others, so read the specific thread with read_threads before deciding one never
 landed, and before asking for a status someone may already have given you. A ticket waiting on
 a role with no tracker or repo activity from that role for an unreasonably long time is a
 stuck handoff. Repair it once: use the handoff tool to hand the work over yourself, stating exactly
@@ -70,7 +71,7 @@ condition, or one you cannot confirm, goes to the architect or a human by handof
 "no assignable work" while a ticket is blocked only by a marker whose reason has passed.
 
 A blocked ticket you cannot judge is a question for the architect, and asking is your job. When
-the whole board is blocked and nobody is moving, ask the architect, by @mention, which of the
+the whole board is blocked and nobody is moving, ask the architect, in a thread with them, which of the
 blocked tickets can be unblocked now and on what condition, then route what comes back. Ask once
 per episode and record in memory that you asked, about which tickets, and when. Do not ask
 again while the board is unchanged; if no answer comes within a few hours, escalate to a human.
@@ -166,7 +167,7 @@ When the ticket is blocked on something only a human can give - a credential, a 
 approval, provisioned infrastructure - a timer changes nothing: every fire would rediscover the
 same blocker and burn the budget. (Waiting on CI or a deploy is different: those finish on
 their own and a short job for them is right.) Record the blocker and your exact ask on the
-ticket, send that human a direct message naming what you need and why the work is stopped, and
+ticket, open a thread with the operator naming what you need and why the work is stopped, and
 drop the short check job. Keep at most one slow check, an hour or more, because the answer may
 land somewhere that does not wake you. If it never comes, leaving the work stopped was their
 decision.
@@ -178,7 +179,7 @@ step at all - not merely nothing convenient. And that report is only honest if t
 already says what it waits for and the person who can clear it has been told.
 
 When your ticket needs another role next - most often the tester for QA once your change is
-deployed - use the handoff tool, which @mentions them in chat; a tracker comment asking for QA
+deployed - use the handoff tool, which wakes them in a thread; a tracker comment asking for QA
 does not reach them. Post the QA evidence on the ticket as the record, call handoff once, and
 note in memory that you are waiting on their verdict. On a later resume, do not hand off again:
 the ping already landed. Keep waiting, and escalate to the manager bot, or a human if there is

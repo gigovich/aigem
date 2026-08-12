@@ -18,11 +18,19 @@ func fleetRuntime(t *testing.T) (*Runtime, *fakeTransport) {
 	return NewRuntime(ft, func(string) Runner { return nil }, 1), ft
 }
 
+// allParticipation says yes, which is what the fleet tests are not about: they
+// exercise routing, and the entitlement check has its own tests.
+type allParticipation struct{}
+
+func (allParticipation) IsParticipant(_ context.Context, _, _ string) (bool, error) {
+	return true, nil
+}
+
 func TestFleetNilIsSafe(t *testing.T) {
 	var f *Fleet
 	f.Register(Member{Name: "a", Role: "manager"})
 	f.Unregister("a")
-	if f.Has("a") || f.Busy("a") || f.Deliver(context.Background(), "a", "Tasks", Inbound{}) || f.Roster() != nil {
+	if f.Has("a") || f.Busy("a") || f.Deliver(context.Background(), "a", Inbound{}) || f.Roster() != nil {
 		t.Fatal("a nil fleet must behave as if nobody else is running")
 	}
 }
@@ -30,30 +38,30 @@ func TestFleetNilIsSafe(t *testing.T) {
 func TestFleetDeliverReachesRegisteredBotOnly(t *testing.T) {
 	rt, _ := fleetRuntime(t)
 	f := NewFleet()
-	f.Register(Member{Name: "jane", Username: "jane", Role: "tester", Runtime: rt,
-		Resolver: fakeResolver{ids: map[string]string{"Tasks": "c-tasks"}}})
+	f.Register(Member{Name: "jane", Actor: "bot:jane", Role: "tester", Runtime: rt,
+		Participation: allParticipation{}})
 
 	if !f.Has("jane") {
 		t.Fatal("registered bot not on the roster")
 	}
-	if f.Deliver(context.Background(), "amiran", "Tasks", Inbound{Text: "hi"}) {
+	if f.Deliver(context.Background(), "amiran", Inbound{Text: "hi"}) {
 		t.Fatal("delivered to a bot that is not in this process")
 	}
-	if !f.Deliver(context.Background(), "jane", "Tasks",
-		Inbound{Kind: "mention", Channel: "c-tasks", Text: "hi", PostID: "p1"}) {
+	if !f.Deliver(context.Background(), "jane",
+		Inbound{Kind: "mention", Thread: "t_0102030405060708", Text: "hi", MessageSeq: 1}) {
 		t.Fatal("delivery to a registered bot failed")
 	}
 	select {
 	case got := <-rt.enqueued:
-		if got.PostID != "p1" {
-			t.Fatalf("post id = %q, want p1", got.PostID)
+		if got.MessageSeq != 1 {
+			t.Fatalf("message seq = %d, want 1", got.MessageSeq)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("nothing was queued on the receiving runtime")
 	}
 
 	f.Unregister("jane")
-	if f.Deliver(context.Background(), "jane", "Tasks", Inbound{}) {
+	if f.Deliver(context.Background(), "jane", Inbound{}) {
 		t.Fatal("delivered to a bot that has stopped")
 	}
 }
@@ -65,8 +73,8 @@ func TestFleetRosterReportsBusy(t *testing.T) {
 	defer done()
 
 	f := NewFleet()
-	f.Register(Member{Name: "kate", Username: "kate", Role: "architect", Runtime: idle})
-	f.Register(Member{Name: "amiran", Username: "amiran", Role: "developer", Runtime: busy})
+	f.Register(Member{Name: "kate", Actor: "bot:" + "kate", Role: "architect", Runtime: idle, Participation: allParticipation{}})
+	f.Register(Member{Name: "amiran", Actor: "bot:" + "amiran", Role: "developer", Runtime: busy, Participation: allParticipation{}})
 
 	roster := f.Roster()
 	if len(roster) != 2 {
@@ -105,39 +113,38 @@ func TestRuntimeEnqueueDoesNotBlockWhenFull(t *testing.T) {
 	}
 }
 
-func TestRuntimeRoutesEachPostOnce(t *testing.T) {
+func TestRuntimeRoutesEachMessageOnce(t *testing.T) {
 	rt, _ := fleetRuntime(t)
-	if rt.alreadyRouted("p1") {
-		t.Fatal("first sighting of a post must be routed")
+	if rt.alreadyRouted(1) {
+		t.Fatal("first sighting of a message must be routed")
 	}
-	if !rt.alreadyRouted("p1") {
-		t.Fatal("the second copy of a post must be dropped")
+	if !rt.alreadyRouted(1) {
+		t.Fatal("the second copy of a message must be dropped")
 	}
-	// A message with no post behind it has no identity, so it is never dropped.
-	for i := 0; i < 2; i++ {
-		if rt.alreadyRouted("") {
-			t.Fatal("messages without a post id must always be routed")
+	// A resume or a thread update has no message behind it, so no identity to
+	// compare - it must never be dropped.
+	for range 2 {
+		if rt.alreadyRouted(0) {
+			t.Fatal("something with no message behind it must always be routed")
 		}
 	}
 }
 
-func TestRuntimeRoutedPostMemoryIsBounded(t *testing.T) {
+func TestRuntimeRoutedMessageMemoryIsBounded(t *testing.T) {
 	rt, _ := fleetRuntime(t)
-	for i := 0; i < maxSeenPosts+10; i++ {
-		rt.alreadyRouted(postIDFor(i))
+	for i := range uint64(maxSeenMsgs + 10) {
+		rt.alreadyRouted(i + 1)
 	}
 	rt.mu.Lock()
-	size := len(rt.seenPosts)
+	size := len(rt.seenMsgs)
 	rt.mu.Unlock()
-	if size > maxSeenPosts {
-		t.Fatalf("routed-post memory grew to %d, past the %d cap", size, maxSeenPosts)
+	if size > maxSeenMsgs {
+		t.Fatalf("routed-message memory grew to %d, past the %d cap", size, maxSeenMsgs)
 	}
-	if rt.alreadyRouted(postIDFor(maxSeenPosts+9)) != true {
-		t.Fatal("the most recent post must still be remembered")
+	if !rt.alreadyRouted(uint64(maxSeenMsgs + 10)) {
+		t.Fatal("the most recent message must still be remembered")
 	}
 }
-
-func postIDFor(i int) string { return "post-" + strconv.Itoa(i) }
 
 func TestRuntimeServeRoutesEnqueuedMessages(t *testing.T) {
 	ft := &fakeTransport{in: make(chan Inbound, 4)}
@@ -148,8 +155,8 @@ func TestRuntimeServeRoutesEnqueuedMessages(t *testing.T) {
 	defer cancel()
 	go func() { _ = rt.Serve(ctx) }()
 
-	if !rt.Enqueue(Inbound{Kind: "mention", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "r1"},
-		Text: "handoff from a teammate", PostID: "p9"}) {
+	if !rt.Enqueue(Inbound{Kind: "mention", Thread: ThreadID("r1"),
+		Text: "handoff from a teammate", MessageSeq: 9}) {
 		t.Fatal("Enqueue rejected the delivery")
 	}
 	select {
@@ -159,8 +166,8 @@ func TestRuntimeServeRoutesEnqueuedMessages(t *testing.T) {
 	}
 
 	// The same post arriving over the websocket afterwards must not run again.
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: ThreadRef{ChannelID: "c1", RootID: "r1"},
-		Text: "handoff from a teammate", PostID: "p9"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("r1"),
+		Text: "handoff from a teammate", MessageSeq: 9}
 	select {
 	case <-runner.started:
 		t.Fatal("the chat copy of an already-delivered post ran a second turn")
@@ -234,7 +241,7 @@ func TestRuntimeTurnTakesAFleetSlot(t *testing.T) {
 	defer cancel()
 	go func() { _ = rt.Serve(ctx) }()
 
-	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Text: "hi"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Text: "hi"}
 	select {
 	case <-runner.started:
 		t.Fatal("a chat turn ran while the fleet cap was full")
@@ -261,7 +268,7 @@ func TestPanicInATurnDoesNotStopTheBot(t *testing.T) {
 	served := make(chan struct{})
 	go func() { _ = rt.Serve(ctx); close(served) }()
 
-	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Text: "boom"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Text: "boom"}
 	<-ran
 	select {
 	case <-served:
@@ -271,14 +278,14 @@ func TestPanicInATurnDoesNotStopTheBot(t *testing.T) {
 
 	// The same thread must still be served: a panic that walked past the lock release would
 	// wedge this conversation forever and pin a thread the cap can never evict.
-	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Text: "again"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Text: "again"}
 	select {
 	case <-ran:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the thread stayed locked after a panicking turn")
 	}
 	rt.mu.Lock()
-	st := rt.threads["c1/c1"]
+	st := rt.threads["c1"]
 	rt.mu.Unlock()
 	if st == nil {
 		t.Fatal("the panicking thread lost its state")
@@ -294,7 +301,7 @@ func TestPanicInATurnDoesNotStopTheBot(t *testing.T) {
 	}
 
 	// Another thread must still be served too.
-	ft.in <- Inbound{Kind: "dm", Channel: "c2", Thread: ThreadRef{ChannelID: "c2"}, Text: "again"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c2"), Text: "again"}
 	select {
 	case <-ran:
 	case <-time.After(2 * time.Second):

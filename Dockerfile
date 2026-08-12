@@ -32,7 +32,7 @@ LABEL org.opencontainers.image.title="aigem" \
       org.opencontainers.image.licenses="Apache-2.0"
 # bash: the bot's bash tool runs `bash -c` (developer/tester roles).
 # git:  developer/tester shell out to git in their workdir.
-# ca-certificates: HTTPS to Mattermost, the LLM API, and Brave search.
+# ca-certificates: HTTPS to the LLM API and Brave search.
 # tini: PID 1 that reaps the bash subprocesses bots spawn and forwards signals.
 RUN apk add --no-cache ca-certificates bash git tzdata tini
 

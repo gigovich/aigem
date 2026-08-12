@@ -7,78 +7,145 @@ import (
 	"testing"
 )
 
-func TestHandoffDefaultsToCoordinationChannel(t *testing.T) {
-	fp := &fakePoster{}
-	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{defaultHandoffChannel: "id-tasks"}}, nil)
-	if tool.Name() != "handoff" || tool.NeedsConfirm() {
-		t.Fatalf("name=%q needsConfirm=%v", tool.Name(), tool.NeedsConfirm())
-	}
-	if _, err := tool.Run(context.Background(),
-		json.RawMessage(`{"to":"jane","summary":"run QA on #4"}`)); err != nil {
+func runHandoff(t *testing.T, f *fakeWriter, local *LocalDelivery, args string) (string, error) {
+	t.Helper()
+	return NewHandoffTool(f, local, "amiran").Run(context.Background(), json.RawMessage(args))
+}
+
+// With no thread a handoff is new work, and the operator is in it from the
+// start so no bot-to-bot conversation happens out of sight.
+func TestHandoffWithNoThreadOpensOneWithTheOperatorInIt(t *testing.T) {
+	f := newFakeWriter()
+
+	out, err := runHandoff(t, f, nil, `{"to":"demetre","summary":"QA the settings pane"}`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if fp.channel != "id-tasks" {
-		t.Fatalf("posted to %q, want id-tasks (default channel)", fp.channel)
+	if len(f.opened) != 1 {
+		t.Fatalf("opened %d threads", len(f.opened))
 	}
-	if !strings.HasPrefix(fp.text, "@jane") {
-		t.Fatalf("handoff must @mention the teammate, got %q", fp.text)
+	got := f.opened[0].Participants
+	for _, want := range []string{"bot:demetre", "bot:amiran", "human:operator"} {
+		if !contains(got, want) {
+			t.Fatalf("participants = %v, want %s among them", got, want)
+		}
 	}
-	if !strings.Contains(fp.text, "run QA on #4") {
-		t.Fatalf("handoff should carry the summary, got %q", fp.text)
+	if !strings.Contains(out, "handed off to demetre") {
+		t.Fatalf("result = %q", out)
 	}
-	if fp.thread != "" {
-		t.Fatalf("no thread expected, got %q", fp.thread)
+	said := f.lastSaid()
+	if !strings.Contains(said.Text, "**Handoff**") || !strings.Contains(said.Text, "QA the settings pane") {
+		t.Fatalf("the message does not read as a handoff: %q", said.Text)
 	}
 }
 
-func TestHandoffNamedChannelTicketAndThread(t *testing.T) {
-	fp := &fakePoster{}
-	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{"Bootcamp": "id-bc"}}, nil)
-	if _, err := tool.Run(context.Background(), json.RawMessage(
-		`{"to":"@@kate","summary":"review design","ticket":"AIGEM-4","channel":"Bootcamp","thread":"root1"}`,
-	)); err != nil {
+// Inside an existing thread the teammate is pulled into it rather than being
+// given a second place to talk about the same work.
+func TestHandoffInAThreadJoinsTheTeammateToIt(t *testing.T) {
+	f := newFakeWriter("t_0102030405060708")
+
+	if _, err := runHandoff(t, f, nil,
+		`{"to":"demetre","summary":"QA it","thread":"t_0102030405060708"}`); err != nil {
 		t.Fatal(err)
 	}
-	if fp.channel != "id-bc" || fp.thread != "root1" {
-		t.Fatalf("posted to %q thread %q, want id-bc root1", fp.channel, fp.thread)
+	if len(f.opened) != 0 {
+		t.Fatal("a thread was opened when one was named")
 	}
-	// Any number of leading @ on the target must collapse to a single mention.
-	if !strings.HasPrefix(fp.text, "@kate") || strings.Contains(fp.text, "@@") {
-		t.Fatalf("target mention malformed: %q", fp.text)
+	if len(f.joined) != 1 || f.joined[0].Actor != "bot:demetre" ||
+		f.joined[0].Thread != "t_0102030405060708" {
+		t.Fatalf("joined = %+v", f.joined)
 	}
-	if !strings.Contains(fp.text, "AIGEM-4") {
-		t.Fatalf("ticket should appear in the message, got %q", fp.text)
-	}
-}
-
-func TestHandoffRequiresToAndSummary(t *testing.T) {
-	fp := &fakePoster{}
-	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{defaultHandoffChannel: "id-tasks"}}, nil)
-	if _, err := tool.Run(context.Background(),
-		json.RawMessage(`{"summary":"x"}`)); err == nil {
-		t.Error("missing to should error")
-	}
-	if _, err := tool.Run(context.Background(),
-		json.RawMessage(`{"to":"jane"}`)); err == nil {
-		t.Error("missing summary should error")
-	}
-	if _, err := tool.Run(context.Background(),
-		json.RawMessage(`{"to":"  ","summary":"x"}`)); err == nil {
-		t.Error("blank to should error")
-	}
-	if fp.calls != 0 {
-		t.Fatalf("no handoff should be posted on validation failure, got %d", fp.calls)
+	if f.lastSaid().Thread != "t_0102030405060708" {
+		t.Fatalf("the handoff landed in %q", f.lastSaid().Thread)
 	}
 }
 
-func TestHandoffUnknownChannelErrors(t *testing.T) {
-	fp := &fakePoster{}
-	tool := NewHandoffTool(fp, fakeResolver{ids: map[string]string{defaultHandoffChannel: "id-tasks"}}, nil)
-	if _, err := tool.Run(context.Background(),
-		json.RawMessage(`{"to":"jane","summary":"x","channel":"nope"}`)); err == nil {
-		t.Error("unknown channel should error")
+// The teammate is named on the message, which is what the UI draws and what the
+// classifier reads.
+func TestHandoffMentionsTheTeammate(t *testing.T) {
+	f := newFakeWriter("t_0102030405060708")
+	if _, err := runHandoff(t, f, nil,
+		`{"to":"demetre","summary":"QA it","thread":"t_0102030405060708"}`); err != nil {
+		t.Fatal(err)
 	}
-	if fp.calls != 0 {
-		t.Fatalf("no handoff should be posted when the channel does not resolve, got %d", fp.calls)
+	if got := f.lastSaid().Opts.Mentions; len(got) != 1 || got[0] != "bot:demetre" {
+		t.Fatalf("mentions = %v", got)
 	}
+}
+
+func TestHandoffCarriesTheTicket(t *testing.T) {
+	f := newFakeWriter("t_0102030405060708")
+	if _, err := runHandoff(t, f, nil,
+		`{"to":"demetre","summary":"QA it","ticket":"#42","thread":"t_0102030405060708"}`); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.lastSaid().Text, "[#42]") {
+		t.Fatalf("the ticket is missing: %q", f.lastSaid().Text)
+	}
+}
+
+func TestHandoffNeedsATeammateAndASummary(t *testing.T) {
+	f := newFakeWriter()
+	for _, args := range []string{
+		`{"summary":"QA it"}`,
+		`{"to":"demetre"}`,
+		`{"to":"  ","summary":"QA it"}`,
+		`{"to":"demetre","summary":"   "}`,
+	} {
+		if _, err := runHandoff(t, f, nil, args); err == nil {
+			t.Fatalf("%s was accepted", args)
+		}
+	}
+	if len(f.said) != 0 || len(f.opened) != 0 {
+		t.Fatal("a refused handoff wrote something anyway")
+	}
+}
+
+// A handoff to a name nothing answers to notifies nobody, which is the one
+// thing a handoff must not do quietly.
+func TestHandoffRefusesAnUnknownTeammate(t *testing.T) {
+	f := newFakeWriter()
+
+	_, err := runHandoff(t, f, nil, `{"to":"ghost","summary":"QA it"}`)
+	if err == nil {
+		t.Fatal("a handoff to nobody reported success")
+	}
+	if !strings.Contains(err.Error(), "team_status") {
+		t.Fatalf("error does not say how to find who there is: %v", err)
+	}
+	if len(f.opened) != 0 || len(f.said) != 0 {
+		t.Fatal("the handoff was written anyway")
+	}
+}
+
+// Knowing the teammate is already working is what stops a second ping, and it
+// has to be read before the delivery that would make them busy.
+func TestHandoffReportsABusyTeammate(t *testing.T) {
+	f := newFakeWriter("t_0102030405060708")
+	fleet := NewFleet()
+	rt := NewRuntime(&fakeTransport{in: make(chan Inbound)}, nil, 1)
+	fleet.Register(Member{Name: "demetre", Actor: "bot:demetre", Runtime: rt,
+		Participation: allParticipation{}})
+	// Hold the turn for the length of the test: the note exists to stop a second
+	// ping while the first is still being worked on.
+	defer rt.EnterTurn()()
+
+	local := &LocalDelivery{Self: "amiran", SelfActor: "bot:amiran", Fleet: fleet}
+	out, err := runHandoff(t, f, local,
+		`{"to":"demetre","summary":"QA it","thread":"t_0102030405060708"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "mid-turn") {
+		t.Fatalf("result does not say the teammate is busy: %q", out)
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }

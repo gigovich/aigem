@@ -58,11 +58,11 @@ type Runtime struct {
 	mu       sync.Mutex
 	threads  map[string]*threadState
 	inFlight int // turns currently running; the cron busy-gate reads this
-	// seenPosts remembers which chat posts have already been routed, so a message
-	// that arrives both through the fleet and through the websocket is acted on
-	// once. seenOrder bounds it.
-	seenPosts map[string]bool
-	seenOrder []string
+	// seenMsgs remembers which messages have already been routed, so one that
+	// arrives both from a teammate in this process and from the store's own
+	// publisher is acted on once. seenOrder bounds it.
+	seenMsgs  map[uint64]bool
+	seenOrder []uint64
 
 	// onAddressed, when set, is called whenever a human or teammate addresses the bot
 	// directly (mention or DM). The heartbeat uses it to drop back to its active interval.
@@ -169,7 +169,7 @@ func NewRuntime(t Transport, mk AgentFactory, workers int) *Runtime {
 		stopped:     make(chan struct{}),
 		resumeDelay: defaultResumeDelay,
 		threads:     map[string]*threadState{},
-		seenPosts:   map[string]bool{},
+		seenMsgs:    map[uint64]bool{},
 	}
 }
 
@@ -215,24 +215,24 @@ func (r *Runtime) Enqueue(in Inbound) bool {
 // between a fleet delivery and the same post arriving over the websocket, which
 // is milliseconds; the cap exists so a long-lived bot does not grow the map
 // forever.
-const maxSeenPosts = 512
+const maxSeenMsgs = 512
 
-// alreadyRouted reports whether this chat post was routed before, recording it
-// when it was not. Posts with no id (a synthetic resume, a thread update) are
-// never deduplicated: they have no identity to compare.
-func (r *Runtime) alreadyRouted(postID string) bool {
-	if postID == "" {
+// alreadyRouted reports whether this message was routed before, recording it
+// when it was not. Anything with no message behind it - a synthetic resume, a
+// thread update - is never deduplicated: it has no identity to compare.
+func (r *Runtime) alreadyRouted(seq uint64) bool {
+	if seq == 0 {
 		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.seenPosts[postID] {
+	if r.seenMsgs[seq] {
 		return true
 	}
-	r.seenPosts[postID] = true
-	r.seenOrder = append(r.seenOrder, postID)
-	if len(r.seenOrder) > maxSeenPosts {
-		delete(r.seenPosts, r.seenOrder[0])
+	r.seenMsgs[seq] = true
+	r.seenOrder = append(r.seenOrder, seq)
+	if len(r.seenOrder) > maxSeenMsgs {
+		delete(r.seenMsgs, r.seenOrder[0])
 		r.seenOrder = r.seenOrder[1:]
 	}
 	return false
@@ -275,15 +275,9 @@ func (r *Runtime) EnterTurn() func() {
 	}
 }
 
-// threadKey is a stable per-conversation key: channel plus thread root (the root falls back
-// to the channel for root-level posts and DMs).
-func threadKey(in Inbound) string {
-	root := in.Thread.RootID
-	if root == "" {
-		root = in.Thread.ChannelID
-	}
-	return in.Thread.ChannelID + "/" + root
-}
+// threadKey is the per-conversation key. A thread is now the whole of it: with
+// no channel above one, the id is the key.
+func threadKey(in Inbound) string { return string(in.Thread) }
 
 // state returns the thread's state, creating it on first sight. Building the agent reads the
 // workdir, the skills directory and the memory index, so it happens with r.mu released: Busy()
@@ -386,21 +380,21 @@ func (r *Runtime) buildInput(ctx context.Context, in Inbound) string {
 	if th := r.threadContext(ctx, in); th != "" {
 		return threadAddressedPreamble + th + "\n\n---\n" + in.Text
 	}
-	return r.inputWithHistory(ctx, in)
+	return in.Text
 }
 
 // threadContext returns the thread the inbound belongs to, or "" when there is none, when the
 // transport cannot read it, or when the thread is just this one message (a mention that opened its
 // own thread), where repeating it would only duplicate the text.
 func (r *Runtime) threadContext(ctx context.Context, in Inbound) string {
-	if in.Thread.RootID == "" {
+	if in.Thread == "" {
 		return ""
 	}
-	tr, ok := r.transport.(ThreadReader)
+	tr, ok := r.transport.(ThreadHistoryReader)
 	if !ok {
 		return ""
 	}
-	th := tr.ThreadHistory(ctx, in.Thread.ChannelID, in.Thread.RootID)
+	th := tr.ThreadHistory(ctx, in.Thread)
 	if strings.Count(strings.TrimSpace(th), "\n") == 0 {
 		return ""
 	}
@@ -422,45 +416,6 @@ const threadAddressedPreamble = "Someone wrote to you in a thread. The whole thr
 	"the message addressed to you follows the separator. Read the thread first - the message may " +
 	"be the answer to a question you asked earlier, in which case answer that question rather " +
 	"than greeting them as if this were a new conversation.\n\nThread:\n"
-
-// inputWithHistory prefixes recent unaddressed channel chatter to the message when the
-// transport can provide it, so the agent can answer questions about messages it was not
-// mentioned in.
-func (r *Runtime) inputWithHistory(ctx context.Context, in Inbound) string {
-	hr, ok := r.transport.(HistoryReader)
-	if !ok {
-		return in.Text
-	}
-	h := hr.History(ctx, in.Channel)
-	if h == "" {
-		return in.Text
-	}
-	return "Recent messages in this channel, none of which mentioned you:\n" + h + "\n\n---\n" + in.Text
-}
-
-// keepTyping signals "typing" in the thread immediately and every few seconds until the
-// returned stop func is called. It is a no-op when the transport cannot type.
-func (r *Runtime) keepTyping(ctx context.Context, in Inbound) func() {
-	typist, ok := r.transport.(Typist)
-	if !ok {
-		return func() {}
-	}
-	cctx, cancel := context.WithCancel(ctx)
-	go func() {
-		_ = typist.Typing(in.Thread)
-		tick := time.NewTicker(3 * time.Second)
-		defer tick.Stop()
-		for {
-			select {
-			case <-cctx.Done():
-				return
-			case <-tick.C:
-				_ = typist.Typing(in.Thread)
-			}
-		}
-	}()
-	return cancel
-}
 
 // CronEvents returns the same step logging a chat turn gets, tagged with a job id instead of a
 // thread key, so a timer-driven run is as visible in the log as an inbound one.
@@ -528,7 +483,7 @@ func (r *Runtime) handle(ctx context.Context, in Inbound) {
 	// A teammate's message reaches this bot twice - once in-process, once when the
 	// chat server pushes the post back - and the copies race. Whichever lands
 	// first is the one acted on.
-	if r.alreadyRouted(in.PostID) {
+	if r.alreadyRouted(in.MessageSeq) {
 		return
 	}
 	key := threadKey(in)
@@ -540,7 +495,7 @@ func (r *Runtime) handle(ctx context.Context, in Inbound) {
 	}
 	// A message addressed to the bot while it is working goes into that turn
 	// rather than behind it, and the model decides what it means.
-	if in.Kind == "mention" || in.Kind == "dm" {
+	if in.Kind == "mention" {
 		if inj, ok := st.runner.(Injector); ok && inj.Inject(midTurnDelivery(r.authorName(ctx, in), in.Text)) {
 			r.logger().Info("delivered into the running turn", "thread", key, "author", in.Author)
 			r.noteAddressed(st, in)
@@ -661,12 +616,9 @@ func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in I
 
 	log.Info("inbound", "thread", key, "kind", in.Kind, "author", in.Author)
 
-	if in.Kind == "mention" || in.Kind == "dm" {
+	if in.Kind == "mention" {
 		r.noteAddressed(st, in)
 	}
-
-	stop := r.keepTyping(ctx, in)
-	defer stop()
 
 	input := r.buildInput(ctx, in)
 	images := r.fetchAttachments(ctx, in, &input)
@@ -687,14 +639,14 @@ func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in I
 	// Budget notes ride on an answer the agent chose to post, or go to a thread
 	// where a human addressed the bot; a proactive turn with nothing to say must
 	// not post a bare runtime-status line (the other bots observe it).
-	noteworthy := answer != "" || in.Kind == "mention" || in.Kind == "dm"
+	noteworthy := answer != "" || in.Kind == "mention"
 	switch {
 	case budgetReason == "":
 		// Only a clean human-addressed or resume turn ends the automatic chain.
 		// A clean thread_update/broadcast in between (e.g. another bot's reply
 		// answered with NO_REPLY) must not reset the cap, or periodic chatter in
 		// the thread would let the bot self-continue indefinitely.
-		if in.Kind != "thread_update" && in.Kind != "broadcast" {
+		if in.Kind != "thread_update" {
 			st.mu.Lock()
 			st.resumes = 0
 			st.mu.Unlock()
@@ -736,14 +688,14 @@ func (r *Runtime) run(ctx context.Context, runner Runner, input string, images [
 // can, appending a description of every attachment to the input so the model
 // knows what arrived even when it cannot view it.
 func (r *Runtime) fetchAttachments(ctx context.Context, in Inbound, input *string) []llm.Image {
-	if len(in.FileIDs) == 0 {
+	if len(in.AttachmentIDs) == 0 {
 		return nil
 	}
 	af, ok := r.transport.(AttachmentFetcher)
 	if !ok {
 		return nil
 	}
-	images, note := af.Attachments(ctx, in.FileIDs)
+	images, note := af.Attachments(ctx, in.AttachmentIDs)
 	if note != "" {
 		*input += "\n\n" + note
 	}
@@ -765,7 +717,7 @@ func (r *Runtime) handleRunErr(ctx context.Context, key string, st *threadState,
 	// (thread_update / broadcast / resume): the other bots observe such posts and it
 	// sets off a reply cascade. For a message a human addressed to us directly,
 	// answer once with a short, non-technical notice; the full error is in the logs.
-	if in.Kind != "mention" && in.Kind != "dm" {
+	if in.Kind != "mention" {
 		return
 	}
 	var msg string
@@ -821,7 +773,7 @@ func (r *Runtime) scheduleResume(ctx context.Context, st *threadState, in Inboun
 	}
 	st.resumes++
 	st.mu.Unlock()
-	resume := Inbound{Kind: "resume", Channel: in.Channel, Thread: in.Thread, Author: in.Author, Text: prompt}
+	resume := Inbound{Kind: "resume", Thread: in.Thread, Author: in.Author, Text: prompt}
 	delay := r.resumeDelay
 	// The resume goroutine is not tracked by Serve's WaitGroup: it exits via ctx
 	// on shutdown, and in the events-channel-close path (transport death) a late

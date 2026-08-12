@@ -66,14 +66,14 @@ func TestAddressedMessageIsDeliveredIntoTheRunningTurn(t *testing.T) {
 	defer cancel()
 	go rt.Serve(ctx)
 
-	thread := ThreadRef{ChannelID: "c1", RootID: "t1"}
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: thread, Author: "u-demetre", Text: "implement #5"}
+	thread := ThreadID("t1")
+	ft.in <- Inbound{Kind: "mention", Thread: thread, Author: "u-demetre", Text: "implement #5"}
 	if got := <-runner.started; !strings.Contains(got, "implement #5") {
 		t.Fatalf("first turn input = %q", got)
 	}
 
 	// Written in a language and phrasing no keyword list would carry.
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: thread, Author: "u-gigovich",
+	ft.in <- Inbound{Kind: "mention", Thread: thread, Author: "u-gigovich",
 		Text: "@amiran погоди, AIGEM больше не трогаем, пока я не скажу"}
 
 	waitForReplies(t, ft, 1)
@@ -109,7 +109,7 @@ func TestMessageWithNoRunningTurnRunsNormally(t *testing.T) {
 	done := make(chan struct{})
 	go func() { rt.Serve(context.Background()); close(done) }()
 
-	ft.in <- Inbound{Kind: "dm", Channel: "c1", Thread: ThreadRef{ChannelID: "c1"}, Text: "stop that"}
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Text: "stop that"}
 	<-runner.started
 	close(runner.release)
 	ft.Close()
@@ -131,10 +131,10 @@ func TestThreadUpdateIsNotDelivered(t *testing.T) {
 	defer cancel()
 	go rt.Serve(ctx)
 
-	thread := ThreadRef{ChannelID: "c1", RootID: "t1"}
-	ft.in <- Inbound{Kind: "mention", Channel: "c1", Thread: thread, Text: "implement #5"}
+	thread := ThreadID("t1")
+	ft.in <- Inbound{Kind: "mention", Thread: thread, Text: "implement #5"}
 	<-runner.started
-	ft.in <- Inbound{Kind: "thread_update", Channel: "c1", Thread: thread}
+	ft.in <- Inbound{Kind: "thread_update", Thread: thread}
 
 	time.Sleep(200 * time.Millisecond)
 	runner.mu.Lock()

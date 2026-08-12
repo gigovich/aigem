@@ -94,7 +94,7 @@ version:
 | `internal/llm`   | provider registry, backends, retry, usage accounting |
 | `internal/tools` | the built-in tools and the capability profiles       |
 | `internal/tui`   | the Bubble Tea front-end                            |
-| `internal/bot`   | unattended chat bots and the Mattermost transport    |
+| `internal/bot`   | unattended chat bots and the store they talk through |
 
 ## Security-sensitive areas
 

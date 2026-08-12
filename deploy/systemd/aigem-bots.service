@@ -7,9 +7,12 @@
 #   systemctl --user enable --now aigem-bots
 #   loginctl enable-linger "$USER"     # keep it running when you are not logged in
 #
-# Do not run this alongside aigem-bot@.service or a second copy elsewhere: one
-# Mattermost account allows one websocket, and two connections for one account
-# cause duplicate replies and authentication errors.
+# Do not run a second copy elsewhere: both would open the same SQLite
+# conversation store, and only one of them writes the state file the CLI and the
+# browser use to find a daemon.
+#
+# The fleet serves its web UI on a loopback port by default. Pass --addr to bind
+# it somewhere reachable; see docs/bots.md before you do.
 Description=aigem chat bot fleet
 Documentation=https://gigovich.github.io/aigem/bots/
 After=network-online.target

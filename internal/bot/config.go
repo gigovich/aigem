@@ -23,7 +23,6 @@ type Config struct {
 	Persona           string         `yaml:"persona,omitempty"` // e.g. "female; speaks Russian with feminine forms"
 	Model             string         `yaml:"model,omitempty"`   // "provider/id"; empty auto-picks
 	Workdir           string         `yaml:"workdir"`
-	Transport         TransportConf  `yaml:"transport"`
 	CapabilityProfile string         `yaml:"capabilityProfile,omitempty"`
 	TurnBudget        TurnBudgetConf `yaml:"turnBudget,omitempty"`
 	LLMPaceFactor     *float64       `yaml:"llmPaceFactor,omitempty"`
@@ -102,14 +101,6 @@ func (c TurnBudgetConf) resolve(b agent.TurnBudget) (agent.TurnBudget, error) {
 		}
 	}
 	return b, nil
-}
-
-// TransportConf holds non-secret connection parameters for the chat transport.
-type TransportConf struct {
-	Kind      string `yaml:"kind"`
-	ServerURL string `yaml:"serverURL"`
-	Team      string `yaml:"team"`
-	BotUserID string `yaml:"botUserID"`
 }
 
 // CronJob is one scheduled task. A recurring job carries a 5-field cron Expr; a one-shot job
@@ -247,22 +238,11 @@ func Remove(name string) error {
 
 func tokenKey(name string) string { return "bot:" + name }
 
-// SaveToken stores the bot's chat token in the auth secret store.
-func SaveToken(name, token string) error {
-	return auth.Put(tokenKey(name), auth.Record{Kind: auth.KindAPIKey, Key: token})
-}
-
-// LoadToken returns the stored chat token, or an error if none is set.
-func LoadToken(name string) (string, error) {
-	rec, ok, err := auth.Get(tokenKey(name))
-	if err != nil {
-		return "", err
-	}
-	if !ok || rec.Key == "" {
-		return "", fmt.Errorf("no token stored for bot %q", name)
-	}
-	return rec.Key, nil
-}
-
-// DeleteToken removes the bot's stored chat token.
+// DeleteToken removes any secret an older install stored for this bot.
+//
+// Nothing writes one any more: a bot reaches its conversations through the
+// store the fleet process owns, so there is no chat credential to keep. `aigem
+// bot rm` still calls this, because a Mattermost token left in the auth store
+// after the transport that used it was deleted is a live credential nobody is
+// watching.
 func DeleteToken(name string) error { return auth.Delete(tokenKey(name)) }

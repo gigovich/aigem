@@ -3,7 +3,6 @@ package bot
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,12 +19,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		Name:    "amiran",
 		Role:    "developer",
 		Workdir: "/tmp/repo",
-		Transport: TransportConf{
-			Kind:      "mattermost",
-			ServerURL: "https://chat.example.com",
-			Team:      "eng",
-			BotUserID: "u123",
-		},
+		Persona: "female; use feminine forms in Russian",
 	}
 	if err := Save(in); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -34,41 +28,15 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.Role != "developer" || got.Transport.BotUserID != "u123" ||
-		got.Transport.Team != "eng" {
+	if got.Role != "developer" || got.Workdir != "/tmp/repo" ||
+		got.Persona != in.Persona {
 		t.Fatalf("round-trip mismatch: %+v", got)
-	}
-}
-
-func TestTokenNotInYAML(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	// SaveToken writes to the auth store under StateDir, not the config dir, so it must be
-	// isolated too - otherwise this test overwrites a real bot's token in ~/.local/state.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	c := Config{Name: "amiran", Role: "developer", Transport: TransportConf{Kind: "mattermost"}}
-	if err := Save(c); err != nil {
-		t.Fatal(err)
-	}
-	if err := SaveToken("amiran", "secret-token"); err != nil {
-		t.Fatal(err)
-	}
-	dir, _ := Dir("amiran")
-	data, err := os.ReadFile(filepath.Join(dir, "bot.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "secret-token") {
-		t.Fatal("token leaked into bot.yaml")
-	}
-	tok, err := LoadToken("amiran")
-	if err != nil || tok != "secret-token" {
-		t.Fatalf("LoadToken = %q, %v", tok, err)
 	}
 }
 
 func TestSaveKeepsFileModeAndLeavesNoTemp(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	c := Config{Name: "amiran", Role: "developer", Transport: TransportConf{Kind: "mattermost"}}
+	c := Config{Name: "amiran", Role: "developer"}
 	if err := Save(c); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +76,7 @@ func TestSaveKeepsFileModeAndLeavesNoTemp(t *testing.T) {
 func TestListAndRemove(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, n := range []string{"amiran", "bob"} {
-		if err := Save(Config{Name: n, Role: "developer", Transport: TransportConf{Kind: "mattermost"}}); err != nil {
+		if err := Save(Config{Name: n, Role: "developer"}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -62,7 +62,7 @@ func TestResolveBotNamesRejectsAnUnknownName(t *testing.T) {
 
 func TestResolveBotNamesDeduplicates(t *testing.T) {
 	withBots(t, "jane")
-	// One Mattermost account allows one websocket, so naming a bot twice must not
+	// Naming a bot twice asks for one bot, not two, so it must not
 	// start it twice.
 	got, err := resolveBotNames([]string{"jane", "jane"})
 	if err != nil {

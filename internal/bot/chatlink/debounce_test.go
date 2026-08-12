@@ -1,4 +1,4 @@
-package mattermost
+package chatlink
 
 import (
 	"testing"
@@ -17,7 +17,7 @@ func (f *fakeTimer) Stop() bool {
 
 // newFakeDebouncer returns a debouncer whose timers never fire on their own; the test invokes
 // the captured callbacks to control timing deterministically.
-func newFakeDebouncer(fire func(bot.ThreadRef)) (*threadDebouncer, *[]func()) {
+func newFakeDebouncer(fire func(bot.ThreadID)) (*threadDebouncer, *[]func()) {
 	scheduled := &[]func(){}
 	d := newThreadDebouncer(time.Minute, fire)
 	d.after = func(_ time.Duration, f func()) stoppable {
@@ -28,10 +28,10 @@ func newFakeDebouncer(fire func(bot.ThreadRef)) (*threadDebouncer, *[]func()) {
 }
 
 func TestDebounceCoalescesBurst(t *testing.T) {
-	var fired []bot.ThreadRef
-	d, scheduled := newFakeDebouncer(func(ref bot.ThreadRef) { fired = append(fired, ref) })
+	var fired []bot.ThreadID
+	d, scheduled := newFakeDebouncer(func(ref bot.ThreadID) { fired = append(fired, ref) })
 
-	ref := bot.ThreadRef{ChannelID: "c1", RootID: "root1"}
+	ref := bot.ThreadID("root1")
 	d.note(ref)
 	d.note(ref)
 	d.note(ref)
@@ -51,10 +51,10 @@ func TestDebounceCoalescesBurst(t *testing.T) {
 
 func TestDebounceSeparateThreadsFireIndependently(t *testing.T) {
 	var fired []string
-	d, scheduled := newFakeDebouncer(func(ref bot.ThreadRef) { fired = append(fired, ref.RootID) })
+	d, scheduled := newFakeDebouncer(func(ref bot.ThreadID) { fired = append(fired, string(ref)) })
 
-	d.note(bot.ThreadRef{ChannelID: "c1", RootID: "a"})
-	d.note(bot.ThreadRef{ChannelID: "c1", RootID: "b"})
+	d.note(bot.ThreadID("a"))
+	d.note(bot.ThreadID("b"))
 	for _, f := range *scheduled {
 		f()
 	}
@@ -65,9 +65,9 @@ func TestDebounceSeparateThreadsFireIndependently(t *testing.T) {
 
 func TestDebounceRearmsAfterFire(t *testing.T) {
 	var fired int
-	d, scheduled := newFakeDebouncer(func(bot.ThreadRef) { fired++ })
+	d, scheduled := newFakeDebouncer(func(bot.ThreadID) { fired++ })
 
-	ref := bot.ThreadRef{ChannelID: "c1", RootID: "root1"}
+	ref := bot.ThreadID("root1")
 	d.note(ref)
 	(*scheduled)[0]()
 	if fired != 1 {
@@ -86,14 +86,14 @@ func TestDebounceRearmsAfterFire(t *testing.T) {
 func TestDebounceStopWaitsForInFlightFire(t *testing.T) {
 	fireStarted := make(chan struct{})
 	releaseFire := make(chan struct{})
-	d := newThreadDebouncer(time.Minute, func(bot.ThreadRef) {
+	d := newThreadDebouncer(time.Minute, func(bot.ThreadID) {
 		close(fireStarted)
 		<-releaseFire
 	})
 	var captured func()
 	d.after = func(_ time.Duration, f func()) stoppable { captured = f; return &fakeTimer{} }
 
-	d.note(bot.ThreadRef{ChannelID: "c1", RootID: "root1"})
+	d.note(bot.ThreadID("root1"))
 	go captured() // runs flush -> fire, which blocks in the callback
 	<-fireStarted
 
@@ -115,9 +115,9 @@ func TestDebounceStopWaitsForInFlightFire(t *testing.T) {
 
 func TestDebounceNoteAfterStopIsNoop(t *testing.T) {
 	var fired int
-	d, scheduled := newFakeDebouncer(func(bot.ThreadRef) { fired++ })
+	d, scheduled := newFakeDebouncer(func(bot.ThreadID) { fired++ })
 	d.stop()
-	d.note(bot.ThreadRef{ChannelID: "c1", RootID: "root1"})
+	d.note(bot.ThreadID("root1"))
 	if len(*scheduled) != 0 {
 		t.Fatalf("note after stop should not arm a timer, armed %d", len(*scheduled))
 	}
@@ -128,9 +128,9 @@ func TestDebounceNoteAfterStopIsNoop(t *testing.T) {
 
 func TestDebounceStopCancels(t *testing.T) {
 	var fired int
-	d, scheduled := newFakeDebouncer(func(bot.ThreadRef) { fired++ })
+	d, scheduled := newFakeDebouncer(func(bot.ThreadID) { fired++ })
 
-	d.note(bot.ThreadRef{ChannelID: "c1", RootID: "root1"})
+	d.note(bot.ThreadID("root1"))
 	d.stop()
 	for _, f := range *scheduled {
 		f()
