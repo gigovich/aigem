@@ -280,6 +280,7 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 		return nil, err
 	}
 	logUsagePerCall(log, client)
+	billUsageToTurn(client)
 
 	extra := config.ProjectInstructions(c.Workdir)
 	memDir, err := bot.MemoryDir(name)
@@ -437,6 +438,26 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 
 	return &botHandle{name: name, role: role.Name, rt: rt, sched: scheduler, log: log,
 		ctx: botCtx, close: closeAll}, nil
+}
+
+// billUsageToTurn charges each model call to the thread it was made for, so a
+// thread can say what the work in it cost rather than only that it happened.
+//
+// The attribution has to be per call. One client serves every thread the bot is
+// working on at once, so a total sampled around a turn would be smeared by
+// whatever else was in flight; the context of the call is what carries the turn,
+// and a call made outside one - a heartbeat, a scheduled job with no thread -
+// finds no sink and is accounted for in the log alone, as before.
+func billUsageToTurn(client *llm.Ref) {
+	rep, ok := llm.UsageOf(client)
+	if !ok {
+		return
+	}
+	rep.OnCallCtx(func(ctx context.Context, u llm.Usage, _ llm.UsageReport) {
+		if spend := bot.UsageFrom(ctx); spend != nil {
+			spend(u, client.Model().Ref())
+		}
+	})
 }
 
 // openBotModel resolves and opens the bot's model. A configured model is binding:

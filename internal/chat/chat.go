@@ -183,9 +183,12 @@ type Turn struct {
 	Error   string    `json:"error,omitempty"`
 }
 
-// Usage is what a turn spent, accumulated across its model calls. Uncounted is
-// how many calls the provider reported no numbers for, so a total can never
-// quietly understate the spend.
+// Usage is what a turn spent, accumulated across its model calls.
+//
+// Calls counts every call, and Uncounted says how many of those the provider
+// reported no numbers for - so a total can never quietly understate the spend
+// by dropping them. llm.UsageReport, which the bot log carries, excludes them
+// from its own Calls instead, so the two surfaces disagree by design.
 type Usage struct {
 	InputTokens  int `json:"input_tokens,omitempty"`
 	CachedTokens int `json:"cached_tokens,omitempty"`
@@ -198,6 +201,18 @@ type Usage struct {
 // reached the provider renders as no cost rather than as a row of zeroes. It
 // looks unused, and is not.
 func (u Usage) IsZero() bool { return u == Usage{} }
+
+// Add sums two usages field by field, so that the places which total usage
+// have one summation between them rather than a copy each.
+func (u Usage) Add(o Usage) Usage {
+	return Usage{
+		InputTokens:  u.InputTokens + o.InputTokens,
+		CachedTokens: u.CachedTokens + o.CachedTokens,
+		OutputTokens: u.OutputTokens + o.OutputTokens,
+		Calls:        u.Calls + o.Calls,
+		Uncounted:    u.Uncounted + o.Uncounted,
+	}
+}
 
 // Attachment is a file on a message.
 type Attachment struct {

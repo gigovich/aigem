@@ -62,6 +62,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A bot thread now records what the work in it cost. A model call made while a
+  bot is working in a thread is billed to that turn - including the calls its
+  subagents and its compaction make - and `aigem chat read` closes a transcript
+  with the thread's tokens, calls and models. A call made outside a thread, on a
+  heartbeat or a scheduled job, has no turn to belong to and still appears only
+  in the log. Until now all of it did, attributed to a process rather than to
+  any particular piece of work - and one client serves every thread a bot has
+  open at once, so no total sampled around a turn could have been attributed
+  correctly.
 - `--trace-json` records a `-p` run's tool and delegation activity as JSONL. The
   human-readable stderr output was the only machine-adjacent record, and parsing
   it back is guesswork: it truncates, and it cannot show which calls the model

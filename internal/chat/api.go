@@ -37,6 +37,7 @@ func (a *API) Mount(mux *http.ServeMux, guard func(http.HandlerFunc) http.Handle
 		"POST /api/chat/threads/{id}/messages":           a.postMessage,
 		"GET /api/chat/threads/{id}/timeline":            a.timeline,
 		"GET /api/chat/threads/{id}/turns":               a.turns,
+		"GET /api/chat/threads/{id}/spend":               a.spend,
 		"GET /api/chat/threads/{id}/blobs/{seq}":         a.blob,
 		"POST /api/chat/threads/{id}/participants":       a.addParticipant,
 		"DELETE /api/chat/threads/{id}/participants/{a}": a.removeParticipant,
@@ -166,6 +167,14 @@ func (a *API) timeline(w http.ResponseWriter, r *http.Request) {
 func (a *API) turns(w http.ResponseWriter, r *http.Request) {
 	turns, err := a.store.Turns(r.Context(), Operator, r.PathValue("id"))
 	writeResult(w, turns, err)
+}
+
+// spend is the thread's total. It is its own route rather than a field on the
+// thread because summing the turns table is not something the inbox should pay
+// for on every row it draws.
+func (a *API) spend(w http.ResponseWriter, r *http.Request) {
+	spend, err := a.store.Spend(r.Context(), Operator, r.PathValue("id"))
+	writeResult(w, spend, err)
 }
 
 // blob serves the untruncated body of an oversized tool result as plain text,

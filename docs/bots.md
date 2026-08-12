@@ -24,6 +24,7 @@ aigem bot prompt <name>   # print the bot's full assembled system prompt
 
 aigem chat threads        # the fleet's inbox
 aigem chat tail <thread>  # follow a thread live, including the agent's steps
+aigem chat read <thread>  # print a thread, and what the work in it cost
 ```
 
 ## Running the whole team in one process
@@ -189,6 +190,36 @@ falling back. A running bot keeps its current model until it is restarted.
 Each bot logs `msg="llm usage"` for every model call: the tokens it cost, the
 running totals, and the tightest quota window. That is what makes burn rate
 comparable between models. See [Models and providers](models.md#usage-and-quota).
+
+The same calls are also billed to the thread they were made for, so `aigem chat
+read <thread>` ends with what the work in that thread cost:
+
+```
+--
+thread total: 3 turns · 48.2k in (31.0k cached) · 5.1k out · 22 calls · xai/grok-4.3
+```
+
+Everything a turn sets off is charged to it, including the calls its subagents
+and its compaction make. A call made outside a thread - a heartbeat, a scheduled
+job - belongs to no turn and appears in the log alone, whatever thread its work
+ends up in. A retried call is recorded only for the attempts that reached the
+model: one rejected outright (a 429, a 5xx) never reports usage at all, so it is
+not counted, and one that streamed partway and then broke is counted as a call
+the provider reported no numbers for, because the token counts arrive in the
+last chunk and it never got there.
+
+Three things about the line are worth knowing before comparing it to anything.
+It is always the whole thread, never the window `--limit` and `--before` print,
+and it counts only turns that actually spent something. It is dropped from
+`--json`, which is for scripts that want the messages and nothing wrapped around
+them. And a turn that is still running is behind by up to 16 calls: the spend is
+written in batches, so that recording it never blocks the model call that is
+still streaming. Read the thread again once the bot is idle for the final figure.
+
+The per-turn breakdown is at `GET /api/chat/threads/{id}/turns` and the total at
+`/spend`, on the daemon `aigem bot start` runs - `$XDG_STATE_HOME/aigem/chat.json`
+holds its address and bearer token. The two counts of `calls` differ on purpose:
+see [Models and providers](models.md#usage-and-quota).
 
 ## Running as a service
 

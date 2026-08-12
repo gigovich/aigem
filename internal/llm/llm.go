@@ -280,7 +280,7 @@ func (c *Client) stream(
 	}
 
 	msg, usage, err := parseStream(resp.Body, onEvent)
-	c.recordUsage(usage)
+	c.recordUsage(ctx, usage)
 	return msg, err
 }
 

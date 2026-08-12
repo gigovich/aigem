@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -315,9 +316,9 @@ func TestTurnAccumulatesUsageAcrossCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, u := range []Usage{
-		{InputTokens: 1000, CachedTokens: 400, OutputTokens: 120},
-		{InputTokens: 1500, OutputTokens: 60},
-		{}, // the provider reported nothing for this one
+		{InputTokens: 1000, CachedTokens: 400, OutputTokens: 120, Calls: 1},
+		{InputTokens: 1500, OutputTokens: 60, Calls: 1},
+		{Calls: 1, Uncounted: 1}, // the provider reported nothing for this one
 	} {
 		if err := s.AddUsage(ctx, amiran, turn, u, "grok-4.3"); err != nil {
 			t.Fatal(err)
@@ -344,6 +345,76 @@ func TestTurnAccumulatesUsageAcrossCalls(t *testing.T) {
 	}
 	if turns[0].Ended.IsZero() {
 		t.Fatal("the turn was not marked ended")
+	}
+
+	// A late call from a goroutine the turn did not wait for must not reopen the
+	// accounting: a number that keeps moving after the work stopped is not a
+	// record of it. The write is refused quietly, as EndTurn's second close is.
+	if err := s.AddUsage(ctx, amiran, turn,
+		Usage{InputTokens: 9999, Calls: 1}, "someone/else"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.Turns(ctx, Operator, th.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after[0].Usage != want || after[0].Model != "grok-4.3" {
+		t.Fatalf("an ended turn took more spend: %+v", after[0])
+	}
+}
+
+// A thread's total is summed in the store, because the caller that wants it
+// wants one line and nothing prunes the turns table.
+func TestThreadSpendSumsOnlyTheTurnsThatReachedTheProvider(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran, demetre)
+
+	spend := func(actor string, u Usage, model string) {
+		t.Helper()
+		turn, err := s.BeginTurn(ctx, th.ID, actor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.AddUsage(ctx, actor, turn, u, model); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.EndTurn(ctx, actor, turn, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spend(amiran, Usage{InputTokens: 1000, CachedTokens: 400, OutputTokens: 120, Calls: 2,
+		Uncounted: 1}, "xai/grok-4.3")
+	spend(demetre, Usage{InputTokens: 500, OutputTokens: 60, Calls: 1}, "xai/grok-4.2")
+	spend(amiran, Usage{InputTokens: 40, OutputTokens: 10, Calls: 1}, "xai/grok-4.3")
+	// Reached nothing, so it is neither counted nor allowed to name a model.
+	spend(amiran, Usage{}, "xai/grok-4.9")
+
+	got, err := s.Spend(ctx, Operator, th.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Spend{
+		Usage:  Usage{InputTokens: 1540, CachedTokens: 400, OutputTokens: 190, Calls: 4, Uncounted: 1},
+		Turns:  3,
+		Models: []string{"xai/grok-4.2", "xai/grok-4.3"},
+	}
+	if got.Usage != want.Usage || got.Turns != want.Turns ||
+		!slices.Equal(got.Models, want.Models) {
+		t.Fatalf("spend = %+v, want %+v", got, want)
+	}
+
+	// A thread nobody has worked in reports nothing, rather than a row of zeroes
+	// its reader has to recognise as meaning the same.
+	quiet := mustThread(t, s, "quiet", amiran)
+	if got, err := s.Spend(ctx, Operator, quiet.ID); err != nil || !got.Usage.IsZero() ||
+		got.Turns != 0 {
+		t.Fatalf("an unworked thread reports %+v (err %v)", got, err)
+	}
+
+	// Participation is the boundary here as everywhere else.
+	if _, err := s.Spend(ctx, jane, th.ID); !errors.Is(err, ErrNoSuchThread) {
+		t.Fatalf("a non-participant read the thread's spend: %v", err)
 	}
 }
 

@@ -128,7 +128,7 @@ func botTurn(ctx context.Context, t *testing.T, s *Store, threadID string) {
 		}
 	}
 	if err := s.AddUsage(ctx, amiran, turn,
-		Usage{InputTokens: 4210, OutputTokens: 380}, "grok-4.3"); err != nil {
+		Usage{InputTokens: 4210, OutputTokens: 380, Calls: 1}, "grok-4.3"); err != nil {
 		t.Error(err)
 		return
 	}

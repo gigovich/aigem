@@ -115,11 +115,46 @@ type AttachmentFetcher interface {
 }
 
 // Journaller returns the sink that records a turn's steps into the thread's
-// timeline, and the function that closes it. This is what puts the tool calls,
-// the diffs and the plan in front of the operator instead of only in the log.
+// timeline, the sink that bills its model calls, and the function that closes
+// the turn. This is what puts the tool calls, the diffs and the plan in front
+// of the operator instead of only in the log.
 //
 // A transport that does not implement it still works; the turn is then visible
 // only as its answer, which is all Mattermost ever showed.
 type Journaller interface {
-	TurnEvents(thread ThreadID, actor string) (ev agent.Events, done func(answer string, err error))
+	TurnEvents(thread ThreadID, actor string) (ev agent.Events, spend UsageSink,
+		done func(answer string, err error))
+}
+
+// UsageSink books what one model call cost against the turn that made it. It
+// may be nil, which is a turn nobody is accounting for.
+//
+// It is called from the goroutine that made the call, with the provider's
+// response still open, so it must be cheap: whatever it does is paid for by a
+// connection that is not yet back in the pool.
+type UsageSink func(u llm.Usage, model string)
+
+type usageKey struct{}
+
+// WithUsage attaches the sink that bills the calls made under ctx.
+//
+// A bot's model client is one object shared by every thread it is working on at
+// once, so the usage callback cannot be told at registration time which turn it
+// is reporting for. The context of the call is the only thing that knows, which
+// is why it travels there rather than on the client.
+//
+// A nil sink is stored rather than ignored. Contexts outlive the turn that
+// built them - a budget stop parks one for minutes and resumes on it - so a
+// no-op here would leave the previous turn's sink in place and bill the new
+// turn's calls to a row that has already been closed.
+func WithUsage(ctx context.Context, spend UsageSink) context.Context {
+	return context.WithValue(ctx, usageKey{}, spend)
+}
+
+// UsageFrom returns the sink to bill a call made under ctx, or nil. Calls made
+// outside a turn - a heartbeat, a scheduled job with no thread - have none, and
+// are accounted for in the log and in the client's own totals as before.
+func UsageFrom(ctx context.Context) UsageSink {
+	spend, _ := ctx.Value(usageKey{}).(UsageSink)
+	return spend
 }

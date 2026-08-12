@@ -80,6 +80,143 @@ func TestTheDaemonComesUpBeforeAnyBot(t *testing.T) {
 	}
 }
 
+// What a turn cost is accumulated by the store and returned by the API long
+// before anything shows it to a person. Until the browser mode exists the
+// transcript is where the operator reads a thread, so it is where the number
+// has to appear.
+func TestReadingAThreadShowsWhatItCost(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	ctx := t.Context()
+
+	srv, err := startChatServer(ctx, "127.0.0.1:0", nil, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	const amiran, demetre = "bot:amiran", "bot:demetre"
+	for _, id := range []string{amiran, demetre} {
+		if err := srv.store.PutActor(ctx, chat.Actor{ID: id, Name: id[4:], Role: "developer"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	th, err := srv.store.NewThread(ctx, "retries", chat.Operator, []string{amiran, demetre})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.Say(ctx, th.ID,
+		chat.Draft{Author: chat.Operator, Body: "the logout is back"}); err != nil {
+		t.Fatal(err)
+	}
+	// Two bots, two models, and a call the provider reported nothing for - a
+	// thread total has to survive all three.
+	spend := func(actor string, u chat.Usage, model string) {
+		t.Helper()
+		turn, err := srv.store.BeginTurn(ctx, th.ID, actor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.store.AddUsage(ctx, actor, turn, u, model); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.store.EndTurn(ctx, actor, turn, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spend(amiran, chat.Usage{InputTokens: 1200, CachedTokens: 400, OutputTokens: 340,
+		Calls: 2, Uncounted: 1}, "xai/grok-4.3")
+	spend(demetre, chat.Usage{InputTokens: 300, OutputTokens: 60, Calls: 1}, "xai/grok-4.2")
+	// A second turn on a model already listed: the footer names each one once.
+	spend(amiran, chat.Usage{InputTokens: 40, OutputTokens: 10, Calls: 1}, "xai/grok-4.3")
+	// A turn that failed before it reached the provider is not work anyone paid
+	// for, so it must not pad the turn count or name a model that cost nothing.
+	spend(amiran, chat.Usage{}, "xai/grok-4.9")
+
+	c, err := dialChat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Through `read`, not straight to the footer: the footer is only worth
+	// anything if the command a person types actually prints it.
+	out := captureStdout(t, func() {
+		if err := c.read(ctx, []string{th.ID}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "the logout is back") {
+		t.Fatalf("read printed no transcript: %q", out)
+	}
+	// The whole line, not substrings of it: a footer assembled from the wrong
+	// fields still contains every piece one would think to look for.
+	want := "thread total: 3 turns · 1.5k in (400 cached) · 410 out · 4 calls " +
+		"(1 uncounted) · xai/grok-4.2, xai/grok-4.3"
+	if !strings.Contains(out, want) {
+		t.Fatalf("the transcript footer is\n%q\nwant it to contain\n%q", out, want)
+	}
+
+	// The total is the thread's, not the printed window's: a number that moved
+	// with --limit would be a different answer every time the same thread was read.
+	windowed := captureStdout(t, func() {
+		if err := c.read(ctx, []string{"--limit", "1", th.ID}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(windowed, "4 calls") {
+		t.Fatalf("a windowed read reported a different total: %q", windowed)
+	}
+
+	// --json is for scripts, which want the messages they asked for and nothing
+	// else wrapped around them.
+	raw := captureStdout(t, func() {
+		if err := c.read(ctx, []string{"--json", th.ID}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(raw, "thread total") {
+		t.Fatalf("--json output carries the footer: %q", raw)
+	}
+
+	// A thread nobody has worked in yet has no cost, and printing a row of
+	// zeroes under it would be noise rather than information.
+	quiet, err := srv.store.NewThread(ctx, "quiet", chat.Operator, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := captureStdout(t, func() { c.printSpend(ctx, quiet.ID) }); out != "" {
+		t.Fatalf("a thread that cost nothing printed %q", out)
+	}
+}
+
+// A developer bot runs up to 120 model rounds a turn, so a thread's totals reach
+// millions of tokens - and one turn with one call is the commonest thread there
+// is. Both are the cases the footer renders in real life and neither is what a
+// fixture reaches for.
+func TestTheSpendFooterReadsAtEveryScale(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		want string
+	}{
+		{0, "0"}, {999, "999"}, {1000, "1.0k"}, {1200, "1.2k"},
+		{999_949, "999.9k"},
+		// Past here "%.1fk" would print "1000.0k", which is not how anyone writes
+		// a million.
+		{999_950, "1.0M"}, {1_000_000, "1.0M"}, {4_210_000, "4.2M"},
+	} {
+		if got := humanTokens(c.n); got != c.want {
+			t.Errorf("humanTokens(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+	for _, c := range []struct {
+		n    int
+		want string
+	}{{0, "0 turns"}, {1, "1 turn"}, {2, "2 turns"}} {
+		if got := countOf(c.n, "turn"); got != c.want {
+			t.Errorf("countOf(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
 func stateRecord(t *testing.T) string {
 	t.Helper()
 	return os.Getenv("XDG_STATE_HOME") + "/aigem/chat.json"

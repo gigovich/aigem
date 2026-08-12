@@ -266,7 +266,7 @@ func (c *ResponsesClient) Stream(ctx context.Context, messages []Message, tools 
 		return Message{}, fmt.Errorf("responses: status %d: %s", resp.StatusCode, body)
 	}
 	msg, usage, err := parseResponsesStream(resp.Body, c.cfg.Info.Provider, onEvent)
-	c.recordUsage(usage)
+	c.recordUsage(ctx, usage)
 	return msg, err
 }
 

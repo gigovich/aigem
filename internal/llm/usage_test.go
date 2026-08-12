@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -176,9 +177,9 @@ data: [DONE]
 
 func TestUsageTrackerAccumulates(t *testing.T) {
 	var c Client
-	c.recordUsage(Usage{InputTokens: 100, OutputTokens: 10})
-	c.recordUsage(Usage{InputTokens: 200, OutputTokens: 20})
-	c.recordUsage(Usage{}) // the provider reported no numbers for this one
+	c.recordUsage(t.Context(), Usage{InputTokens: 100, OutputTokens: 10})
+	c.recordUsage(t.Context(), Usage{InputTokens: 200, OutputTokens: 20})
+	c.recordUsage(t.Context(), Usage{}) // the provider reported no numbers for this one
 	c.recordLimits(ParseLimits(codexHeaders(), "openai", "gpt-5.6-sol", time.Now()))
 
 	r := c.UsageReport()
@@ -216,7 +217,7 @@ func TestOnCallAttributesEachCallUnderConcurrency(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < perWorker; i++ {
-				c.recordUsage(Usage{InputTokens: w*perWorker + i + 1, OutputTokens: 1})
+				c.recordUsage(t.Context(), Usage{InputTokens: w*perWorker + i + 1, OutputTokens: 1})
 			}
 		}(w)
 	}
@@ -240,7 +241,7 @@ func TestOnCallAttributesEachCallUnderConcurrency(t *testing.T) {
 
 func TestUsageOfUnwrapsRef(t *testing.T) {
 	c := &Client{}
-	c.recordUsage(Usage{InputTokens: 5, OutputTokens: 1})
+	c.recordUsage(t.Context(), Usage{InputTokens: 5, OutputTokens: 1})
 	ref := NewRef(c)
 	rep, ok := UsageOf(ref)
 	if !ok {
@@ -266,7 +267,7 @@ func TestRefReappliesObserverOnSwitch(t *testing.T) {
 
 	next := &Client{}
 	ref.Set(next)
-	next.recordUsage(Usage{InputTokens: 7, OutputTokens: 1})
+	next.recordUsage(t.Context(), Usage{InputTokens: 7, OutputTokens: 1})
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -276,6 +277,54 @@ func TestRefReappliesObserverOnSwitch(t *testing.T) {
 	// Totals belong to the backend that spent them, so the new one starts at zero.
 	if r := ref.UsageReport(); r.Total.InputTokens != 7 {
 		t.Fatalf("totals after switch = %+v", r.Total)
+	}
+}
+
+type turnKey struct{}
+
+// One client is shared by every thread a bot works on at once, so the callback
+// alone cannot say which of them a call belongs to. The context is the only
+// thing that travels with the call, and this is what makes it reachable.
+func TestOnCallCtxCarriesTheCallContext(t *testing.T) {
+	var c Client
+	var billed []string
+	c.OnCallCtx(func(ctx context.Context, u Usage, _ UsageReport) {
+		turn, _ := ctx.Value(turnKey{}).(string)
+		billed = append(billed, fmt.Sprintf("%s:%d", turn, u.InputTokens))
+	})
+	// The plain callback rides on the same list; adding the context must not
+	// have changed what it sees.
+	var plain []int
+	c.OnCall(func(u Usage, r UsageReport) { plain = append(plain, r.Total.InputTokens) })
+
+	c.recordUsage(context.WithValue(t.Context(), turnKey{}, "a"), Usage{InputTokens: 1, OutputTokens: 1})
+	c.recordUsage(context.WithValue(t.Context(), turnKey{}, "b"), Usage{InputTokens: 2, OutputTokens: 1})
+	c.recordUsage(t.Context(), Usage{InputTokens: 4, OutputTokens: 1}) // no turn: a heartbeat
+
+	if want := []string{"a:1", "b:2", ":4"}; !slices.Equal(billed, want) {
+		t.Fatalf("billed = %v, want %v", billed, want)
+	}
+	if want := []int{1, 3, 7}; !slices.Equal(plain, want) {
+		t.Fatalf("OnCall saw %v, want %v", plain, want)
+	}
+}
+
+// A /model switch installs a new backend; the same guarantee OnCall has.
+func TestRefReappliesCtxObserverOnSwitch(t *testing.T) {
+	ref := NewRef(&Client{})
+	var got []string
+	rep, _ := UsageOf(ref)
+	rep.OnCallCtx(func(ctx context.Context, _ Usage, _ UsageReport) {
+		turn, _ := ctx.Value(turnKey{}).(string)
+		got = append(got, turn)
+	})
+
+	next := &Client{}
+	ref.Set(next)
+	next.recordUsage(context.WithValue(t.Context(), turnKey{}, "a"), Usage{InputTokens: 7})
+
+	if want := []string{"a"}; !slices.Equal(got, want) {
+		t.Fatalf("observer after switch saw %v, want %v", got, want)
 	}
 }
 

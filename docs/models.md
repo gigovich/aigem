@@ -154,6 +154,11 @@ between models. A call the provider reported no counts for (an aborted runaway, 
 backend that sends none) is logged as `uncounted` rather than folded into the
 totals.
 
+A bot's calls are recorded a second time against the conversation thread they
+were made for, which is what [Bots](bots.md#observability) describes. The two
+count `calls` differently: the log excludes the uncounted ones, and a thread's
+total includes them and says how many they were.
+
 Coverage follows what each provider sends. A ChatGPT subscription reports plan,
 percent used per rolling window, per-model buckets, and credits. An API key
 reports the classic `x-ratelimit-*` remaining counts, which appear as remaining

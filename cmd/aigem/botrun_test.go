@@ -2,16 +2,73 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gigovich/aigem/internal/bot"
+	"github.com/gigovich/aigem/internal/llm"
 )
+
+// usageSSE is a streamed response carrying a usage chunk, which is the only
+// thing on the wire that says what a call cost.
+const usageSSE = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n" +
+	"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":80,\"prompt_tokens_details\":" +
+	"{\"cached_tokens\":20},\"completion_tokens\":9}}\n\ndata: [DONE]\n\n"
+
+// This drives the seam joining three otherwise independent halves: the client
+// reporting a call's cost with its context, the turn hanging its sink on that
+// context, and the store recording it. Each half has its own test and none of
+// them touches this one, so without it the reporting could be disconnected from
+// the billing and every test would still pass.
+//
+// It does not cover startBot's one line calling this - there is no test that
+// builds a bot - so deleting that line still costs nothing.
+func TestABotsCallsAreBilledToTheTurnThatMadeThem(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, usageSSE)
+	}))
+	defer srv.Close()
+
+	client := llm.NewRef(llm.NewClient(llm.ClientConfig{
+		BaseURL: srv.URL, Info: llm.ModelInfo{Provider: "xai", ID: "grok-4.3"},
+	}))
+	billUsageToTurn(client)
+
+	var billed []string
+	spend := func(u llm.Usage, model string) {
+		billed = append(billed, fmt.Sprintf("%s %d/%d/%d",
+			model, u.InputTokens, u.CachedTokens, u.OutputTokens))
+	}
+	ask := func(ctx context.Context) {
+		t.Helper()
+		if _, err := client.Stream(ctx, []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+			nil, 0, func(llm.StreamEvent) {}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ask(bot.WithUsage(t.Context(), spend))
+	if want := []string{"xai/grok-4.3 80/20/9"}; !slices.Equal(billed, want) {
+		t.Fatalf("billed %v, want %v", billed, want)
+	}
+
+	// A heartbeat or a scheduled job has no turn, and must neither panic nor be
+	// charged to whatever ran last.
+	ask(t.Context())
+	if len(billed) != 1 {
+		t.Fatalf("a call outside a turn was billed: %v", billed)
+	}
+}
 
 // withBots points the config dir at a temp tree holding the named bots.
 func withBots(t *testing.T, names ...string) {

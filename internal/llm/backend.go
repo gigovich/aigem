@@ -60,7 +60,7 @@ type Backend interface {
 type Ref struct {
 	mu       sync.RWMutex
 	b        Backend
-	onCall   []func(Usage, UsageReport)
+	onCall   []func(context.Context, Usage, UsageReport)
 	onLimits []func(Limits)
 }
 
@@ -83,7 +83,7 @@ func (r *Ref) Set(b Backend) {
 		return
 	}
 	for _, f := range calls {
-		u.OnCall(f)
+		u.OnCallCtx(f)
 	}
 	for _, f := range limits {
 		u.OnLimits(f)
@@ -104,12 +104,20 @@ func (r *Ref) OnCall(f func(Usage, UsageReport)) {
 	if f == nil {
 		return
 	}
+	r.OnCallCtx(func(_ context.Context, u Usage, rep UsageReport) { f(u, rep) })
+}
+
+// OnCallCtx implements UsageReporter, remembering the callback so it survives Set.
+func (r *Ref) OnCallCtx(f func(context.Context, Usage, UsageReport)) {
+	if f == nil {
+		return
+	}
 	r.mu.Lock()
 	r.onCall = append(r.onCall, f)
 	b := r.b
 	r.mu.Unlock()
 	if u, ok := b.(UsageReporter); ok {
-		u.OnCall(f)
+		u.OnCallCtx(f)
 	}
 }
 

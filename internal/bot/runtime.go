@@ -627,20 +627,26 @@ func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in I
 		r.noteAddressed(st, in)
 	}
 
-	input := r.buildInput(ctx, in)
-	images := r.fetchAttachments(ctx, in, &input)
-
 	budgetReason := ""
 	ev := r.logEvents(in)
 	// The timeline is what puts this turn's tool calls, diffs and plan in front
 	// of a person. Without it a bot's work reaches only the log, which is what
 	// the chat product it replaced could show and no more.
+	//
+	// It opens before the input is built rather than after, so the thread reads
+	// as working while its attachments are being fetched rather than only once
+	// the model starts. It also puts the whole turn under the usage sink, which
+	// travels on the context this line replaces.
 	if j, ok := r.transport.(Journaller); ok {
-		jev, done := j.TurnEvents(in.Thread, in.Author)
+		jev, spend, done := j.TurnEvents(in.Thread, in.Author)
 		ev = mergeEvents(ev, jev)
+		ctx = WithUsage(ctx, spend)
 		defer func() { done(lastAnswer, lastErr) }()
 	}
 	ev.OnBudgetExhausted = func(reason string) { budgetReason = reason }
+
+	input := r.buildInput(ctx, in)
+	images := r.fetchAttachments(ctx, in, &input)
 
 	answer, err := r.run(ctx, st.runner, input, images, ev)
 	lastAnswer, lastErr = answer, err

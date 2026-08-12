@@ -69,31 +69,34 @@ func (s *Store) BeginTurn(ctx context.Context, threadID, actor string) (uint64, 
 	return turnSeq, err
 }
 
-// AddUsage accumulates what one model call cost onto the turn.
+// AddUsage adds what one or more of a turn's model calls cost onto it.
 //
-// A zero Usage still counts the call, in uncounted, so a total can never
-// quietly understate the spend by dropping the calls the provider reported
-// nothing for. A turn seq that is not the caller's own is refused: they are
-// small consecutive integers, so without the check any actor could bill or
-// corrupt any other's accounting by guessing.
+// u carries its own Calls and Uncounted rather than this counting one call per
+// AddUsage, because only whoever made the calls knows how many there were: the
+// bot batches, to keep the fleet's single writer off the goroutine holding a
+// provider response open, and arrives with a dozen calls folded into one set of
+// numbers.
+//
+// A turn seq that is not the caller's own is refused: they are small
+// consecutive integers, so without the check any actor could bill or corrupt
+// any other's accounting by guessing. A turn that has ended takes no more
+// spend, on the same reasoning EndTurn closes only once - a number that keeps
+// moving after the work stopped is not a record of it.
 func (s *Store) AddUsage(ctx context.Context, actor string, turnSeq uint64, u Usage, model string) error {
 	return s.write(ctx, "add usage", func(tx *sql.Tx, _ *[]Frame) error {
 		if _, err := requireOwnTurn(ctx, tx, turnSeq, actor); err != nil {
 			return err
 		}
-		uncounted := 0
-		if u.InputTokens == 0 && u.OutputTokens == 0 {
-			uncounted = 1
-		}
 		model = SanitizeField(model)
 		_, err := tx.ExecContext(ctx,
 			`UPDATE turns SET
 			   in_tokens = in_tokens + ?, cached_tokens = cached_tokens + ?,
-			   out_tokens = out_tokens + ?, calls = calls + 1,
+			   out_tokens = out_tokens + ?, calls = calls + ?,
 			   uncounted = uncounted + ?,
 			   model = CASE WHEN ? = '' THEN model ELSE ? END
-			 WHERE turn_seq = ?`,
-			u.InputTokens, u.CachedTokens, u.OutputTokens, uncounted, model, model, turnSeq)
+			 WHERE turn_seq = ? AND ended_at IS NULL`,
+			u.InputTokens, u.CachedTokens, u.OutputTokens, u.Calls, u.Uncounted,
+			model, model, turnSeq)
 		return err
 	})
 }
@@ -302,6 +305,61 @@ func (s *Store) Turns(ctx context.Context, actor, threadID string) ([]Turn, erro
 	}
 	return out, rows.Err()
 }
+
+// Spend is what the work in a thread has cost, summed over its turns. Turns
+// counts only the ones that spent something: a run that failed before it
+// reached the provider is not work the account paid for.
+type Spend struct {
+	Usage  Usage    `json:"usage,omitzero"`
+	Turns  int      `json:"turns"`
+	Models []string `json:"models,omitempty"`
+}
+
+// Spend sums a thread's turns.
+//
+// It is a query rather than a sum over Turns because a caller that wants one
+// line wants one line. Nothing prunes the turns table - a thread is long-lived
+// and every inbound message is a run - so summing on the client would make
+// reading a thread cost its entire history of runs.
+func (s *Store) Spend(ctx context.Context, actor, threadID string) (Spend, error) {
+	if err := s.requireParticipantR(ctx, threadID, actor); err != nil {
+		return Spend{}, err
+	}
+	var sp Spend
+	if err := s.r.QueryRowContext(ctx,
+		`SELECT coalesce(sum(in_tokens), 0), coalesce(sum(cached_tokens), 0),
+		        coalesce(sum(out_tokens), 0), coalesce(sum(calls), 0),
+		        coalesce(sum(uncounted), 0), count(*)
+		   FROM turns WHERE thread_id = ? AND `+turnSpent, threadID).
+		Scan(&sp.Usage.InputTokens, &sp.Usage.CachedTokens, &sp.Usage.OutputTokens,
+			&sp.Usage.Calls, &sp.Usage.Uncounted, &sp.Turns); err != nil {
+		return Spend{}, fmt.Errorf("chat: read spend: %w", err)
+	}
+	// Every model the thread ran on, not the last one, which would put all of
+	// its tokens under whichever turn happened to finish last. Ordered, so two
+	// identical reads cannot disagree.
+	rows, err := s.r.QueryContext(ctx,
+		`SELECT DISTINCT model FROM turns
+		  WHERE thread_id = ? AND model <> '' AND `+turnSpent+` ORDER BY model`, threadID)
+	if err != nil {
+		return Spend{}, fmt.Errorf("chat: read spend models: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return Spend{}, err
+		}
+		sp.Models = append(sp.Models, model)
+	}
+	return sp, rows.Err()
+}
+
+// turnSpent is a turn that reached the provider. It is one string so the sum
+// and the model list cannot come to disagree about which turns they describe.
+const turnSpent = `NOT (in_tokens = 0 AND cached_tokens = 0 AND out_tokens = 0
+	AND calls = 0 AND uncounted = 0)`
 
 // Prune deletes timeline events older than before, and the blobs hanging off
 // them. Messages are never pruned.

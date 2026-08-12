@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -57,6 +58,11 @@ func (l Limits) IsZero() bool { return l.Plan == "" && l.Credits == "" && len(l.
 // UsageReport is everything a backend knows about what it has spent and how
 // close the account is to its limits. Uncounted is how many calls the provider
 // reported no numbers for, so a total can never quietly understate the spend.
+//
+// Calls excludes those, so three calls of which one reported nothing read here
+// as "calls=2 uncounted=1". chat.Usage, which records the same calls against a
+// thread, counts them all in Calls instead; the two are read side by side and
+// the difference is worth knowing before comparing them.
 type UsageReport struct {
 	Last      Usage
 	Total     Usage
@@ -76,6 +82,13 @@ type UsageReporter interface {
 	// provider reported none. Callbacks must not block; they run on the calling
 	// goroutine right after the response.
 	OnCall(func(Usage, UsageReport))
+	// OnCallCtx is OnCall with the context the call was made under. It exists
+	// because one client is shared by every concurrent thread a bot is working
+	// on, so the callback alone cannot say which of them to bill: the context is
+	// the only thing that travels with the call. A caller that does not care
+	// which turn the call belonged to uses OnCall, which is this with the
+	// context dropped.
+	OnCallCtx(func(context.Context, Usage, UsageReport))
 	// OnLimits registers a callback fired whenever a response carries quota
 	// headers, including the responses that failed. A rejected call reports no
 	// usage, so OnCall never sees a 429 - and a 429 is the reading most worth
@@ -103,14 +116,14 @@ type usageTracker struct {
 	calls     int
 	uncounted int
 	limits    Limits
-	onCall    []func(Usage, UsageReport)
+	onCall    []func(context.Context, Usage, UsageReport)
 	onLimits  []func(Limits)
 }
 
 // recordUsage books one call. A zero Usage still counts as a call - the provider
 // simply did not say what it cost (an aborted runaway, or a backend that reports
 // no numbers) - and is tracked separately so the totals stay honest.
-func (t *usageTracker) recordUsage(u Usage) {
+func (t *usageTracker) recordUsage(ctx context.Context, u Usage) {
 	t.mu.Lock()
 	if u.IsZero() {
 		t.uncounted++
@@ -123,7 +136,7 @@ func (t *usageTracker) recordUsage(u Usage) {
 	subs := slices.Clone(t.onCall)
 	t.mu.Unlock()
 	for _, f := range subs {
-		f(u, rep)
+		f(ctx, u, rep)
 	}
 }
 
@@ -154,6 +167,14 @@ func (t *usageTracker) reportLocked() UsageReport {
 
 // OnCall implements UsageReporter.
 func (t *usageTracker) OnCall(f func(Usage, UsageReport)) {
+	if f == nil {
+		return
+	}
+	t.OnCallCtx(func(_ context.Context, u Usage, r UsageReport) { f(u, r) })
+}
+
+// OnCallCtx implements UsageReporter.
+func (t *usageTracker) OnCallCtx(f func(context.Context, Usage, UsageReport)) {
 	if f == nil {
 		return
 	}

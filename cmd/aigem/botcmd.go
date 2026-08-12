@@ -290,9 +290,10 @@ func explainPinFailure(ref string, err error) error {
 
 // logUsagePerCall makes an unattended bot report what it spends: it has no
 // screen to put a gauge on, so the log is the only record of the burn rate. The
-// callback fires once per model call - per attempt of a retried one, since that
-// is what the provider charges for - and carries that call's own cost, so
-// concurrent threads cannot smear each other's numbers.
+// callback fires once per model call and carries that call's own cost, so
+// concurrent threads cannot smear each other's numbers. A retried attempt is
+// reported only if it reached the model: one the provider rejected outright
+// returns before any usage is recorded.
 func logUsagePerCall(log *slog.Logger, client *llm.Ref) {
 	rep, ok := llm.UsageOf(client)
 	if !ok {

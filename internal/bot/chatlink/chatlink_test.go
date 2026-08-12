@@ -5,11 +5,13 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gigovich/aigem/internal/bot"
 	"github.com/gigovich/aigem/internal/chat"
+	"github.com/gigovich/aigem/internal/llm"
 )
 
 const (
@@ -247,7 +249,7 @@ func TestATurnRecordsItsStepsIntoTheThread(t *testing.T) {
 	tr := openTransport(t, s, "amiran")
 	th := thread(t, s, amiran)
 
-	ev, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	ev, spend, done := tr.TurnEvents(bot.ThreadID(th), operator)
 	// While the turn is open the thread reads as working, which is what replaced
 	// the typing indicator.
 	v, err := s.ThreadFor(t.Context(), operator, th)
@@ -265,6 +267,11 @@ func TestATurnRecordsItsStepsIntoTheThread(t *testing.T) {
 	ev.OnContent("re")
 	ev.OnContent("produced")
 	ev.OnAssistantMessage("reproduced")
+	// A call the provider reported nothing for is still a call: an attempt that
+	// streamed partway and then broke arrives exactly like this.
+	spend(llm.Usage{InputTokens: 100, CachedTokens: 40, OutputTokens: 10}, "xai/grok-4.3")
+	spend(llm.Usage{InputTokens: 200, OutputTokens: 20}, "xai/grok-4.3")
+	spend(llm.Usage{}, "xai/grok-4.3")
 	done("reproduced", nil)
 
 	frames, err := s.Timeline(t.Context(), operator, th, 0, 100)
@@ -299,6 +306,101 @@ func TestATurnRecordsItsStepsIntoTheThread(t *testing.T) {
 	if v.Working {
 		t.Fatal("the thread still reports working after the turn ended")
 	}
+
+	turns, err := s.Turns(t.Context(), operator, th)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(turns))
+	}
+	want := chat.Usage{InputTokens: 300, CachedTokens: 40, OutputTokens: 30, Calls: 3, Uncounted: 1}
+	if turns[0].Usage != want {
+		t.Fatalf("turn usage = %+v, want %+v", turns[0].Usage, want)
+	}
+	if turns[0].Model != "xai/grok-4.3" {
+		t.Fatalf("turn model = %q", turns[0].Model)
+	}
+}
+
+// The write is batched off the goroutine holding the provider's response, so a
+// long turn's row would otherwise sit at zero for the whole run - which for a
+// developer bot is up to 120 model rounds.
+func TestALongTurnsSpendIsRecordedBeforeItEnds(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	_, spend, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	defer done("", nil)
+	for range usageFlushEvery {
+		spend(llm.Usage{InputTokens: 10, OutputTokens: 1}, "xai/grok-4.3")
+	}
+
+	turns, err := s.Turns(t.Context(), operator, th)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := chat.Usage{InputTokens: 10 * usageFlushEvery, OutputTokens: usageFlushEvery,
+		Calls: usageFlushEvery}
+	if len(turns) != 1 || turns[0].Usage != want {
+		t.Fatalf("a turn still running reports %+v, want %+v", turns, want)
+	}
+}
+
+// A call that names no model must not blank the one the batch already had: the
+// store keeps the last non-empty value, but only among what reaches it, and a
+// batch flushed with an empty model lands with none at all.
+func TestACallWithNoModelDoesNotEraseTheTurnsModel(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	_, spend, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	spend(llm.Usage{InputTokens: 10, OutputTokens: 1}, "xai/grok-4.3")
+	spend(llm.Usage{InputTokens: 10, OutputTokens: 1}, "")
+	done("", nil)
+
+	turns, err := s.Turns(t.Context(), operator, th)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 1 || turns[0].Model != "xai/grok-4.3" {
+		t.Fatalf("turn model = %+v, want xai/grok-4.3", turns)
+	}
+}
+
+// Parallel subagents run on the one client, so several calls finish at once and
+// the accumulator is written from all of them.
+func TestConcurrentCallsDoNotLoseSpend(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	_, spend, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	const workers, each = 8, 20
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range each {
+				spend(llm.Usage{InputTokens: 1, OutputTokens: 1}, "xai/grok-4.3")
+			}
+		}()
+	}
+	wg.Wait()
+	done("", nil)
+
+	turns, err := s.Turns(t.Context(), operator, th)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := chat.Usage{InputTokens: workers * each, OutputTokens: workers * each,
+		Calls: workers * each}
+	if len(turns) != 1 || turns[0].Usage != want {
+		t.Fatalf("usage = %+v, want %+v", turns, want)
+	}
 }
 
 // An oversized tool result is stored beside the timeline, so a reconnect does
@@ -308,7 +410,7 @@ func TestAnOversizedToolResultGoesToABlob(t *testing.T) {
 	tr := openTransport(t, s, "amiran")
 	th := thread(t, s, amiran)
 
-	ev, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	ev, _, done := tr.TurnEvents(bot.ThreadID(th), operator)
 	body := make([]byte, chat.BlobThreshold*3)
 	for i := range body {
 		body[i] = 'y'

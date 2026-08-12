@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -431,6 +432,121 @@ func TestErrSummary(t *testing.T) {
 	if got := errSummary(long); len([]rune(got)) > 170 {
 		t.Fatalf("errSummary did not cap length: %d", len(got))
 	}
+}
+
+// billingTransport journals, so its turns are the ones a model call can be
+// billed to.
+type billingTransport struct {
+	fakeTransport
+	mu    sync.Mutex
+	spent map[string][]int
+}
+
+func (b *billingTransport) TurnEvents(thread ThreadID, _ string) (agent.Events, UsageSink,
+	func(string, error)) {
+	spend := func(u llm.Usage, _ string) {
+		b.mu.Lock()
+		b.spent[string(thread)] = append(b.spent[string(thread)], u.InputTokens)
+		b.mu.Unlock()
+	}
+	return agent.Events{}, spend, func(string, error) {}
+}
+
+// billingRunner stands in for the model client: it reads the sink off the
+// context exactly as the OnCallCtx callback does, on the goroutine that made the
+// call. It holds the turn open until released, so both turns are in flight at
+// once - which is the only arrangement in which a shared sink would smear.
+type billingRunner struct {
+	tokens  int
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *billingRunner) Run(ctx context.Context, input string, _ agent.Events) (string, error) {
+	r.started <- struct{}{}
+	<-r.release
+	spend := UsageFrom(ctx)
+	if spend == nil {
+		return "", errors.New("the turn context carries no usage sink")
+	}
+	for range 3 {
+		spend(llm.Usage{InputTokens: r.tokens}, "xai/grok-4.3")
+	}
+	return "answer:" + input, nil
+}
+
+// One client serves every thread a bot works on at once, so what a turn cost can
+// only be known per call and only from the call's own context. Sampling a total
+// around a turn would charge each of these threads for the other.
+func TestConcurrentTurnsBillTheirOwnThread(t *testing.T) {
+	bt := &billingTransport{
+		fakeTransport: fakeTransport{in: make(chan Inbound, 4)},
+		spent:         map[string][]int{},
+	}
+	started, release := make(chan struct{}, 2), make(chan struct{})
+	tokens := map[string]int{"c1": 100, "c2": 7}
+	rt := NewRuntime(bt, func(key string) Runner {
+		return &billingRunner{tokens: tokens[key], started: started, release: release}
+	}, 4)
+
+	done := make(chan struct{})
+	go func() { rt.Serve(context.Background()); close(done) }()
+
+	bt.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Text: "hi"}
+	bt.in <- Inbound{Kind: "mention", Thread: ThreadID("c2"), Text: "hi"}
+	<-started
+	<-started
+	close(release)
+	bt.Close()
+	<-done
+
+	bt.mu.Lock()
+	defer bt.mu.Unlock()
+	for thread, want := range map[string][]int{"c1": {100, 100, 100}, "c2": {7, 7, 7}} {
+		if !slices.Equal(bt.spent[thread], want) {
+			t.Fatalf("thread %s was billed %v, want %v", thread, bt.spent[thread], want)
+		}
+	}
+}
+
+// A context outlives the turn that built it: a budget stop parks one for
+// minutes and the resume runs on that same context. So a turn that has no sink
+// has to say so, or its calls land on a row that was closed long ago.
+func TestANilSinkClearsTheOneItInherited(t *testing.T) {
+	ctx := WithUsage(t.Context(), func(llm.Usage, string) {})
+	if UsageFrom(ctx) == nil {
+		t.Fatal("the sink was not attached")
+	}
+	if UsageFrom(WithUsage(ctx, nil)) != nil {
+		t.Fatal("a turn with no journal inherited the previous turn's sink")
+	}
+}
+
+// A transport that does not journal has no turn to bill to, and a bot whose
+// calls could not be attributed must still work.
+func TestATurnWithoutAJournalStillRuns(t *testing.T) {
+	ft := &fakeTransport{in: make(chan Inbound, 4)}
+	rt := NewRuntime(ft, func(string) Runner { return sinkProbeRunner{} }, 4)
+
+	done := make(chan struct{})
+	go func() { rt.Serve(context.Background()); close(done) }()
+
+	ft.in <- Inbound{Kind: "mention", Thread: ThreadID("c1"), Text: "hi"}
+	ft.Close()
+	<-done
+
+	if len(ft.replies) != 1 || ft.replies[0] != "no sink" {
+		t.Fatalf("replies = %v", ft.replies)
+	}
+}
+
+type sinkProbeRunner struct{}
+
+func (sinkProbeRunner) Run(ctx context.Context, _ string, _ agent.Events) (string, error) {
+	if UsageFrom(ctx) != nil {
+		return "sink", nil
+	}
+	return "no sink", nil
 }
 
 type eventRunner struct{}

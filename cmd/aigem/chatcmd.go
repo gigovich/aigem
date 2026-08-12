@@ -28,7 +28,7 @@ const chatUsage = `usage:
   aigem chat new --with <bot>[,<bot>] [--title t] <text>
                                                       open a thread; prints its id
   aigem chat send <thread> <text>                      post; prints the message seq
-  aigem chat read <thread> [--limit n] [--before seq]  print a thread
+  aigem chat read <thread> [--limit n] [--before seq]  print a thread and its cost
   aigem chat search <words> [--limit n]                search the threads you are in
   aigem chat tail [<thread>]                           follow live (blocks)
   aigem chat fleet                                     roster and who is running
@@ -274,7 +274,70 @@ func (c *chatClient) read(ctx context.Context, args []string) error {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		printMessage(msgs[i])
 	}
+	c.printSpend(ctx, fs.Args()[0])
 	return nil
+}
+
+// printSpend closes a transcript with what the work in the thread cost. A
+// thread is a task, and what a task cost the account is part of reading it -
+// until now that number reached only the bot's log, where it was attributed to
+// a process rather than to any particular piece of work.
+//
+// The line is labelled as the thread's, because it is: --limit and --before
+// page the transcript, and a total that silently followed them would be a
+// different number every time the same thread was read.
+//
+// A failure to read it is not a failure to read the thread, so it is swallowed:
+// the transcript is what was asked for.
+func (c *chatClient) printSpend(ctx context.Context, threadID string) {
+	var sp chat.Spend
+	if err := c.do(ctx, http.MethodGet,
+		"/api/chat/threads/"+threadID+"/spend", nil, &sp); err != nil {
+		return
+	}
+	if sp.Usage.IsZero() {
+		return
+	}
+	line := fmt.Sprintf("thread total: %s · %s in",
+		countOf(sp.Turns, "turn"), humanTokens(sp.Usage.InputTokens))
+	if sp.Usage.CachedTokens > 0 {
+		line += fmt.Sprintf(" (%s cached)", humanTokens(sp.Usage.CachedTokens))
+	}
+	line += fmt.Sprintf(" · %s out · %s",
+		humanTokens(sp.Usage.OutputTokens), countOf(sp.Usage.Calls, "call"))
+	if sp.Usage.Uncounted > 0 {
+		// Named as well as counted: Calls includes these, and a reader comparing
+		// the figure to the bot log - where it does not - needs to see how many
+		// they were.
+		line += fmt.Sprintf(" (%d uncounted)", sp.Usage.Uncounted)
+	}
+	if len(sp.Models) > 0 {
+		line += " · " + strings.Join(sp.Models, ", ")
+	}
+	fmt.Printf("--\n%s\n", line)
+}
+
+func humanTokens(n int) string {
+	switch {
+	case n < 1000:
+		return strconv.Itoa(n)
+	// The bounds are shy of the round number by half a decimal place, because
+	// past that "%.1f" prints "1000.0k", which is not how anyone writes a
+	// million.
+	case n < 999_950:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	case n < 999_950_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	default:
+		return fmt.Sprintf("%.1fB", float64(n)/1_000_000_000)
+	}
+}
+
+func countOf(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return strconv.Itoa(n) + " " + noun + "s"
 }
 
 // tail follows the live stream. With a thread id it also prints that thread's
