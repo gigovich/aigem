@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -230,6 +231,18 @@ type Frame struct {
 	Event json.RawMessage `json:"event,omitempty"`
 	// From is the resume point on a desync frame.
 	From uint64 `json:"from,omitempty"`
+	// To is who may see this frame: the thread's participants at the moment it
+	// was written. Entitlement is decided here, inside the transaction that
+	// already has the participants in hand, rather than by the hub asking the
+	// database once per frame per subscriber on a path that holds the writer.
+	//
+	// It never goes on the wire. It is routing, not content.
+	To []string `json:"-"`
+}
+
+// visibleTo reports whether an actor may see this frame.
+func (f Frame) visibleTo(actor string) bool {
+	return slices.Contains(f.To, actor)
 }
 
 // Frame streams.

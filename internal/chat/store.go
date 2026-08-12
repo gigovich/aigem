@@ -400,9 +400,13 @@ func (s *Store) DeleteThread(ctx context.Context, actor, threadID string) error 
 		if err != nil {
 			return err
 		}
-		// The tombstone is written before the delete, while the participants
-		// still exist to be recorded: they are what tells a client that was away
-		// whether this deletion was any of its business.
+		// Read the participants before the delete cascades them away: they are
+		// both the tombstone's rows and the audience for the frame, and after
+		// the delete there is no way to know who this was any business of.
+		audience, err := participantsOf(ctx, tx, threadID)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO deleted_threads (seq, thread_id, actor_id)
 			 SELECT ?, ?, actor_id FROM participants WHERE thread_id = ?`,
@@ -414,9 +418,28 @@ func (s *Store) DeleteThread(ctx context.Context, actor, threadID string) error 
 		}
 		// A thread frame with no thread on it is how a client learns the row is
 		// gone; there is nothing left to describe.
-		*out = append(*out, Frame{Seq: seq, Stream: StreamThread, ThreadID: threadID})
+		*out = append(*out, Frame{Seq: seq, Stream: StreamThread, ThreadID: threadID, To: audience})
 		return nil
 	})
+}
+
+func participantsOf(ctx context.Context, tx *sql.Tx, threadID string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT actor_id FROM participants WHERE thread_id = ? ORDER BY actor_id`, threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // ---- participants ----
@@ -749,7 +772,21 @@ func (s *Store) publishThread(ctx context.Context, tx *sql.Tx, frames *[]Frame, 
 		return err
 	}
 	*frames = append(*frames, Frame{Seq: seq, Stream: StreamThread, ThreadID: threadID, Thread: view})
+	// Every frame this write produced for the thread gets the same audience.
+	// Filling it here rather than at each call site means a new kind of frame
+	// cannot ship without one, which would make it invisible rather than public.
+	addressTo(*frames, threadID, view.Participants)
 	return nil
+}
+
+// addressTo fills in the audience of every frame for a thread that does not
+// have one yet.
+func addressTo(frames []Frame, threadID string, participants []string) {
+	for i := range frames {
+		if frames[i].ThreadID == threadID && frames[i].To == nil {
+			frames[i].To = participants
+		}
+	}
 }
 
 // MarkRead records how far an actor has read, which is what the inbox counts

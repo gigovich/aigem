@@ -202,6 +202,11 @@ func main() {
 				fatal(err)
 			}
 			return
+		case "chat":
+			if err := runChatCommand(os.Args[2:]); err != nil {
+				fatal(err)
+			}
+			return
 		case "help":
 			fmt.Println(topLevelUsage)
 			flag.CommandLine.SetOutput(os.Stdout)

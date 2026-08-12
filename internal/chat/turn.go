@@ -236,8 +236,14 @@ func (s *Store) AppendEvent(ctx context.Context, rec EventRecord) (uint64, error
 				return err
 			}
 		}
+		// An event does not publish a thread frame - a turn produces hundreds of
+		// them and the row does not change - so it addresses itself.
+		audience, err := participantsOf(ctx, tx, rec.Thread)
+		if err != nil {
+			return err
+		}
 		*frames = append(*frames, Frame{
-			Seq: seq, Stream: StreamEvent, ThreadID: rec.Thread, Event: rec.Payload,
+			Seq: seq, Stream: StreamEvent, ThreadID: rec.Thread, Event: rec.Payload, To: audience,
 		})
 		return nil
 	})
