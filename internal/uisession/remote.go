@@ -187,8 +187,7 @@ func (r *Remote) Subscribe(c Client, since uint64) (<-chan Event, func(), error)
 	if c.ID == "" {
 		c.ID = "r-" + strconv.FormatUint(r.subSeq, 10)
 	}
-	s := newSubscriber(c, r.queue, nil)
-	s.skipTo = since
+	s := newSubscriber(c, r.queue, nil, since)
 	prev := r.subs[c.ID]
 	r.subs[c.ID] = s
 	r.mu.Unlock()
@@ -206,11 +205,11 @@ func (r *Remote) Subscribe(c Client, since uint64) (<-chan Event, func(), error)
 	}
 	// Splice the history in front of whatever arrived while it was being
 	// fetched, and drop from the live queue anything the history already covers.
-	s.prepend(backlog)
+	s.Prepend(backlog)
 
-	go s.run()
+	go s.Run()
 	var once sync.Once
-	return s.out, func() {
+	return s.Out(), func() {
 		once.Do(func() {
 			r.mu.Lock()
 			delete(r.subs, c.ID)
@@ -242,7 +241,7 @@ func (r *Remote) fanout(ev Event) {
 	}
 	r.mu.Unlock()
 	for _, s := range subs {
-		s.push(ev)
+		s.Push(ev)
 	}
 }
 

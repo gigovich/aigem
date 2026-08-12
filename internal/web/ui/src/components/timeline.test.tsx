@@ -1,9 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Item } from "@/lib/session";
 import { Timeline } from "./timeline";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 const items: Item[] = [
   {
@@ -21,16 +24,18 @@ const failedPlan: Item = {
   args: { todos: [] }, error: "invalid todos: text is required",
 };
 
+const blobURL = (seq: number) => `/api/sessions/s/blobs/${seq}`;
+
 describe("Timeline", () => {
   it("leaves the plan to the rail instead of repeating it as tool cards", () => {
-    render(<Timeline items={items} sessionID="s" />);
+    render(<Timeline items={items} blobURL={blobURL} />);
 
     expect(screen.queryByText("todo_write")).not.toBeInTheDocument();
     expect(screen.getByText("bash")).toBeInTheDocument();
   });
 
   it("keeps a plan write that failed, which the rail cannot show", async () => {
-    render(<Timeline items={[...items, failedPlan]} sessionID="s" />);
+    render(<Timeline items={[...items, failedPlan]} blobURL={blobURL} />);
 
     expect(screen.getByText("todo_write")).toBeInTheDocument();
     expect(screen.getByText("failed")).toBeInTheDocument();
@@ -49,7 +54,7 @@ describe("Timeline", () => {
           kind: "tool", seq: 9, id: "9", name: "bash", done: true,
           args: { cmd: "false" }, result: "stdout line", error: "exit status 1",
         }]}
-        sessionID="s"
+        blobURL={blobURL}
       />,
     );
 
@@ -61,7 +66,7 @@ describe("Timeline", () => {
   });
 
   it("closes a call down to one line: the name, one argument and the outcome", () => {
-    render(<Timeline items={items} sessionID="s" />);
+    render(<Timeline items={items} blobURL={blobURL} />);
 
     expect(screen.getByText("bash")).toBeInTheDocument();
     expect(screen.getByText("grep -R main cmd/")).toBeInTheDocument();
@@ -73,7 +78,7 @@ describe("Timeline", () => {
   });
 
   it("shows the result only once the row is opened", async () => {
-    render(<Timeline items={items} sessionID="s" />);
+    render(<Timeline items={items} blobURL={blobURL} />);
 
     fireEvent.click(screen.getByRole("button", { name: /bash/ }));
 
@@ -81,5 +86,32 @@ describe("Timeline", () => {
       expect(screen.getByRole("button", { name: /bash/ })).toHaveAttribute("aria-expanded", "true");
     });
     expect(screen.getByText(/cmd\/aigem\/main\.go:146/)).toBeInTheDocument();
+  });
+
+  // The caller decides where the rest of a large result lives, which is what
+  // lets one timeline draw both a session's stream and a bot thread's.
+  it("fetches the tail of a large result from the URL the caller built", async () => {
+    const asked: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      asked.push(url);
+      return new Response("the whole thing");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <Timeline
+        items={[{
+          kind: "tool", seq: 12, id: "12", name: "bash", done: true,
+          args: { cmd: "go test ./..." }, result: "head only", blob: true, blobSeq: 12,
+        }]}
+        blobURL={(seq) => `/api/chat/threads/t_1/blobs/${seq}`}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /bash/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText("the whole thing")).toBeInTheDocument();
+    });
+    expect(asked).toEqual(["/api/chat/threads/t_1/blobs/12"]);
   });
 });

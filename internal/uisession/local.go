@@ -2,7 +2,6 @@ package uisession
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -288,7 +287,7 @@ func (l *Local) emitLocked(ev Event) {
 		l.ring = l.ring[len(l.ring)-l.ringCap:]
 	}
 	for _, s := range l.subs {
-		s.push(ev)
+		s.Push(ev)
 	}
 }
 
@@ -358,7 +357,7 @@ func (l *Local) Subscribe(c Client, since uint64) (<-chan Event, func(), error) 
 	if c.ID == "" {
 		c.ID = "c-" + strconv.FormatUint(l.subSeq, 10)
 	}
-	s := newSubscriber(c, l.ringCap, backlog)
+	s := newSubscriber(c, l.ringCap, backlog, 0)
 	prev := l.subs[c.ID]
 	l.subs[c.ID] = s
 	l.emitLocked(l.presenceLocked())
@@ -367,9 +366,9 @@ func (l *Local) Subscribe(c Client, since uint64) (<-chan Event, func(), error) 
 	// forever on a channel nothing closes.
 	prev.stop()
 
-	go s.run()
+	go s.Run()
 	var once sync.Once
-	return s.out, func() { once.Do(func() { l.unsubscribe(c.ID) }) }, nil
+	return s.Out(), func() { once.Do(func() { l.unsubscribe(c.ID) }) }, nil
 }
 
 func (l *Local) unsubscribe(id string) {
@@ -584,52 +583,5 @@ func (l *Local) Artifacts() map[string]tools.FileChange {
 	return out
 }
 
-// agentEvents bridges the agent's callbacks onto the event stream.
-func (l *Local) agentEvents() agent.Events {
-	return agent.Events{
-		OnContent:          func(d string) { l.emit(Event{Kind: KindContent, Text: d}) },
-		OnReasoning:        func(d string) { l.emit(Event{Kind: KindReasoning, Text: d}) },
-		OnAssistantMessage: func(c string) { l.emit(Event{Kind: KindAssistantMessage, Text: c}) },
-		OnNotice:           func(t string) { l.emit(Event{Kind: KindNotice, Text: t}) },
-		OnUsage:            func(n int) { l.emit(Event{Kind: KindUsage, Tokens: n}) },
-		OnTodoUpdate:       func(td []agent.TodoItem) { l.emit(Event{Kind: KindTodo, Todos: td}) },
-		OnBudgetExhausted:  func(r string) { l.emit(Event{Kind: KindBudgetExhausted, Text: r}) },
-		OnToolBatch: func(round int, calls []agent.ToolCallRef) {
-			out := make([]Call, len(calls))
-			for i, c := range calls {
-				out[i] = Call{ID: c.ID, Name: c.Name}
-			}
-			l.emit(Event{Kind: KindToolBatch, Round: round, Calls: out})
-		},
-		OnToolStart: func(id, name string, args json.RawMessage) {
-			l.emit(Event{Kind: KindToolStart, ID: id, Name: name, Args: args})
-		},
-		OnToolEnd: func(id, name, result string, err error) {
-			l.emit(Event{Kind: KindToolEnd, ID: id, Name: name, Text: result, Error: errText(err)})
-		},
-		OnAgentStart: func(id, name, prompt string) {
-			l.emit(Event{Kind: KindAgentStart, ID: id, Agent: name, Text: prompt})
-		},
-		OnAgentEnd: func(id, result string, err error) {
-			l.emit(Event{Kind: KindAgentEnd, ID: id, Text: result, Error: errText(err)})
-		},
-		OnSubToolStart: func(runID, name, callID, tool string, args json.RawMessage) {
-			l.emit(Event{Kind: KindSubToolStart, RunID: runID, Agent: name,
-				ID: callID, Name: tool, Args: args})
-		},
-		OnSubToolEnd: func(runID, name, callID, tool, result string, err error) {
-			l.emit(Event{Kind: KindSubToolEnd, RunID: runID, Agent: name,
-				ID: callID, Name: tool, Text: result, Error: errText(err)})
-		},
-		OnSubNotice: func(runID, name, text string) {
-			l.emit(Event{Kind: KindSubNotice, RunID: runID, Agent: name, Text: text})
-		},
-	}
-}
-
-func errText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
+// agentEvents bridges the agent's callbacks onto this session's event stream.
+func (l *Local) agentEvents() agent.Events { return Bridge(l.emit) }

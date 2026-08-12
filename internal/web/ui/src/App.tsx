@@ -298,7 +298,12 @@ export default function App() {
                 </p>
               </div>
             )}
-            {id ? <Timeline items={state.items} sessionID={id} /> : null}
+            {id ? (
+              <Timeline
+                items={state.items}
+                blobURL={(seq) => `/api/sessions/${id}/blobs/${seq}`}
+              />
+            ) : null}
             <div ref={bottom} />
           </div>
 

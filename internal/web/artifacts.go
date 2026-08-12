@@ -25,6 +25,12 @@ type artifactView struct {
 
 func (s *Server) artifactRoutes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/artifacts", s.handleArtifacts)
+}
+
+// usageRoutes are registered even by a daemon with no sessions: what the account
+// has spent is a property of the provider, not of a conversation, and a fleet of
+// bots burning quota is exactly the case worth reporting.
+func (s *Server) usageRoutes() {
 	s.mux.HandleFunc("GET /api/usage", s.handleUsage)
 }
 

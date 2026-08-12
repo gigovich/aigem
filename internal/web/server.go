@@ -50,6 +50,16 @@ type Config struct {
 	// is unlimited. It exists because sessions sharing one tool registry are not
 	// safely independent - see the comment on handleCreate.
 	MaxSessions int
+	// Mount lets another package add routes to this daemon. It is called once
+	// with the mux and a wrapper that applies the origin check, the token check
+	// and the security headers, so a mounted API cannot answer under weaker
+	// rules than the ones here. The bot fleet's chat API arrives this way: one
+	// listener, one token and one CSP rather than two servers with two answers
+	// about who may connect.
+	//
+	// Routes are mounted before the "/" asset handler, so a mounted pattern wins
+	// over the catch-all.
+	Mount func(mux *http.ServeMux, guard func(http.HandlerFunc) http.HandlerFunc)
 }
 
 // Server is the daemon.
@@ -59,6 +69,7 @@ type Server struct {
 	factory      Factory
 	assets       http.Handler
 	maxSessions  int
+	mount        func(*http.ServeMux, func(http.HandlerFunc) http.HandlerFunc)
 	mux          *http.ServeMux
 
 	ln   net.Listener
@@ -86,8 +97,10 @@ type entry struct {
 // known before it starts serving and can be printed or written to the state
 // file without a race.
 func New(cfg Config) (*Server, error) {
-	if cfg.Factory == nil {
-		return nil, errors.New("web: no session factory")
+	// A daemon needs something to serve, but not necessarily sessions: the bot
+	// fleet hosts the chat API through Mount and creates no conversations.
+	if cfg.Factory == nil && cfg.Mount == nil {
+		return nil, errors.New("web: no session factory and nothing mounted")
 	}
 	addr := cfg.Addr
 	if addr == "" {
@@ -110,6 +123,7 @@ func New(cfg Config) (*Server, error) {
 		factory:     cfg.Factory,
 		assets:      cfg.Assets,
 		maxSessions: cfg.MaxSessions,
+		mount:       cfg.Mount,
 		mux:         http.NewServeMux(),
 		ln:          ln,
 		sessions:    map[string]*entry{},
@@ -195,14 +209,23 @@ func (s *Server) routes() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	s.mux.HandleFunc("GET /api/sessions", s.handleList)
-	s.mux.HandleFunc("POST /api/sessions", s.handleCreate)
-	s.mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDelete)
-	s.mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
-	s.mux.HandleFunc("GET /api/sessions/{id}/blobs/{seq}", s.handleBlob)
-	s.mux.HandleFunc("GET /api/sessions/{id}/socket", s.handleSocket)
+	// Without a factory there are no conversations to list, create or attach to,
+	// and handleCreate would have nothing to call. Leaving the routes off is
+	// what makes a mount-only daemon answer 404 there instead of panicking.
+	if s.factory != nil {
+		s.mux.HandleFunc("GET /api/sessions", s.handleList)
+		s.mux.HandleFunc("POST /api/sessions", s.handleCreate)
+		s.mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDelete)
+		s.mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
+		s.mux.HandleFunc("GET /api/sessions/{id}/blobs/{seq}", s.handleBlob)
+		s.mux.HandleFunc("GET /api/sessions/{id}/socket", s.handleSocket)
+		s.artifactRoutes()
+	}
 	s.loginRoutes()
-	s.artifactRoutes()
+	s.usageRoutes()
+	if s.mount != nil {
+		s.mount(s.mux, s.Guard)
+	}
 	s.mux.HandleFunc("/", s.handleAssets)
 }
 

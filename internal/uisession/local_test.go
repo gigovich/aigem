@@ -245,23 +245,27 @@ func TestSlowSubscriberIsDroppedNotBlocking(t *testing.T) {
 		cap   = 4
 		total = 40
 	)
+	// Subscribe hands each new reader the ring size as its queue cap, so setting
+	// it between the two calls is how the test gives them different caps: a small
+	// queue for the slow reader so the test does not have to emit thousands of
+	// events, and room for the fast one so it is bounded by its own reading speed
+	// rather than by the emitter's burst.
+	l.mu.Lock()
+	l.ringCap = cap
+	l.mu.Unlock()
 	slow, stopSlow, err := l.Subscribe(Client{ID: "slow"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stopSlow()
+	l.mu.Lock()
+	l.ringCap = total + 8
+	l.mu.Unlock()
 	fast, stopFast, err := l.Subscribe(Client{ID: "fast"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stopFast()
-	// Shrink the slow reader's queue so the test does not have to emit thousands
-	// of events, and give the fast one room so it is bounded by its own reading
-	// speed rather than by the emitter's burst.
-	l.mu.Lock()
-	l.subs["slow"].cap = cap
-	l.subs["fast"].cap = total + 8
-	l.mu.Unlock()
 
 	done := make(chan struct{})
 	go func() {

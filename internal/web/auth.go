@@ -78,6 +78,22 @@ func (s *Server) hostAllowed(host string) bool {
 	return false
 }
 
+// Guard wraps a handler so it answers only for a request that passed both
+// checks, and so its response carries the daemon's security headers. It is what
+// Config.Mount is handed: a package adding routes here must not be able to
+// answer under weaker rules than the ones this file sets.
+//
+// The headers go on before the checks so a refusal carries them too.
+func (s *Server) Guard(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		securityHeaders(w.Header())
+		if !s.guard(w, r) {
+			return
+		}
+		h(w, r)
+	}
+}
+
 // guard applies both checks to an ordinary request. It writes the response and
 // reports false when the request is refused.
 func (s *Server) guard(w http.ResponseWriter, r *http.Request) bool {

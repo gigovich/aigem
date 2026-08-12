@@ -5,6 +5,11 @@ import { Badge, RunDot } from "./ui";
 import { Markdown } from "./md";
 import { argSummary, cn } from "@/lib/utils";
 
+/** Where the rest of an oversized tool result lives. It is a function rather
+ *  than an id because the same timeline draws a session's stream and a bot
+ *  thread's, and those keep their blobs under different routes. */
+export type BlobURL = (seq: number) => string;
+
 /** The plan is rendered as a plan, in the rail. Its writes were also arriving
  *  here as tool cards - six identical rows of raw JSON per turn, which is most
  *  of what the timeline showed and none of what it meant. */
@@ -34,7 +39,7 @@ function TurnLabel({ who, children }: { who: "you" | "aigem"; children?: ReactNo
 
 /** A tool call and its result as one card, which is the thing the terminal
  *  cannot do: there, a result is whatever line happened to arrive next. */
-function ToolCard({ item, sessionID }: { item: Extract<Item, { kind: "tool" }>; sessionID: string }) {
+function ToolCard({ item, blobURL }: { item: Extract<Item, { kind: "tool" }>; blobURL: BlobURL }) {
   const [open, setOpen] = useState(false);
   const [full, setFull] = useState<string | null>(null);
   // A blob that will not load is said out loud. Silently showing the head
@@ -49,7 +54,7 @@ function ToolCard({ item, sessionID }: { item: Extract<Item, { kind: "tool" }>; 
     // when someone actually looks at it.
     if (next && item.blob && item.blobSeq && full === null) {
       try {
-        const res = await fetch(`/api/sessions/${sessionID}/blobs/${item.blobSeq}`, {
+        const res = await fetch(blobURL(item.blobSeq), {
           headers: { Authorization: `Bearer ${sessionStorage.getItem("aigem-token") ?? ""}` },
         });
         if (res.ok) setFull(await res.text());
@@ -143,7 +148,7 @@ function RunLane({ item }: { item: Extract<Item, { kind: "run" }> }) {
   );
 }
 
-export function Timeline({ items, sessionID }: { items: Item[]; sessionID: string }) {
+export function Timeline({ items, blobURL }: { items: Item[]; blobURL: BlobURL }) {
   const shown = items.filter((it) => !isPlanWrite(it));
   return (
     <div className="px-4 py-4">
@@ -174,7 +179,7 @@ export function Timeline({ items, sessionID }: { items: Item[]; sessionID: strin
                 </div>
               );
             case "tool":
-              return <ToolCard key={`${item.kind}-${item.seq}`} item={item} sessionID={sessionID} />;
+              return <ToolCard key={`${item.kind}-${item.seq}`} item={item} blobURL={blobURL} />;
             case "run":
               return <RunLane key={`${item.kind}-${item.seq}`} item={item} />;
             case "notice":
