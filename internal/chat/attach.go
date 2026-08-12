@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,20 +16,15 @@ import (
 	"time"
 )
 
-// Attachment limits, carried over from the Mattermost transport because the
-// reasoning behind them did not change: base64 inflates a payload by 4/3 and
-// the provider caps the whole request, so a message may hand the model at most
-// a few images and none of them may be large. Anything else is stored and
-// described, never sent.
-const (
-	MaxAttachmentImages = 4
-	MaxImageBytes       = 3 << 20
-)
-
-// ViewableImageMimes are the attachment types multimodal models accept.
-var ViewableImageMimes = map[string]bool{
-	"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true,
-}
+// MaxAttachmentBytes bounds one stored file. The number is carried over from
+// the Mattermost transport, where it bounded what could be sent to a model:
+// base64 inflates a payload by 4/3 and the provider caps the whole request.
+//
+// Which of these the model may actually look at, and how many, is not decided
+// here - that is a fact about a model, and this package does not know what one
+// is. The store's only interest is that a conversation cannot be used as
+// unbounded disk.
+const MaxAttachmentBytes = 3 << 20
 
 // PutAttachment stores a file for a thread and returns its record.
 //
@@ -44,16 +40,15 @@ func (s *Store) PutAttachment(ctx context.Context, actor, threadID, filename str
 	if err := s.requireParticipantR(ctx, threadID, actor); err != nil {
 		return Attachment{}, err
 	}
-	body, err := io.ReadAll(io.LimitReader(r, MaxImageBytes+1))
+	body, err := io.ReadAll(io.LimitReader(r, MaxAttachmentBytes+1))
 	if err != nil {
 		return Attachment{}, fmt.Errorf("chat: read attachment: %w", err)
 	}
-	if len(body) > MaxImageBytes {
-		return Attachment{}, fmt.Errorf("chat: attachment is larger than %s",
-			HumanSize(MaxImageBytes))
+	if len(body) > MaxAttachmentBytes {
+		return Attachment{}, invalid("attachment is larger than %s", HumanSize(MaxAttachmentBytes))
 	}
 	if len(body) == 0 {
-		return Attachment{}, errors.New("chat: attachment is empty")
+		return Attachment{}, invalid("attachment is empty")
 	}
 
 	sum := sha256.Sum256(body)
@@ -63,7 +58,11 @@ func (s *Store) PutAttachment(ctx context.Context, actor, threadID, filename str
 	}
 
 	att := Attachment{
-		ID:       "a_" + digest[:16],
+		// The id is derived from the thread as well as the bytes. The file on
+		// disk is shared by content, but the row is not: thread_id is what the
+		// participation check reads, so one row for two threads would mean the
+		// second uploader could not see the file they had just uploaded.
+		ID:       attachmentID(threadID, digest),
 		Thread:   threadID,
 		Filename: safeFilename(filename),
 		Mime:     http.DetectContentType(body),
@@ -71,7 +70,10 @@ func (s *Store) PutAttachment(ctx context.Context, actor, threadID, filename str
 		SHA256:   digest,
 		Created:  s.now(),
 	}
-	err = s.write(ctx, func(tx *sql.Tx, _ *[]Frame) error {
+	err = s.write(ctx, "put attachment", func(tx *sql.Tx, _ *[]Frame) error {
+		if err := requireParticipant(ctx, tx, threadID, actor); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO attachments (id, thread_id, filename, mime, size, sha256, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -84,6 +86,14 @@ func (s *Store) PutAttachment(ctx context.Context, actor, threadID, filename str
 		return Attachment{}, err
 	}
 	return att, nil
+}
+
+// attachmentID names a file within its thread. Both halves are hashed so the
+// id carries no thread id anyone could read off it, and re-uploading the same
+// bytes into the same thread lands on the same row.
+func attachmentID(threadID, digest string) string {
+	sum := sha256.Sum256([]byte(threadID + "\x00" + digest))
+	return "a_" + hex.EncodeToString(sum[:])[:24]
 }
 
 // writeBlobFile stores content-addressed bytes, fanned out two levels so a
@@ -124,44 +134,56 @@ func (s *Store) writeBlobFile(digest string, body []byte) error {
 func (s *Store) Attachment(ctx context.Context, actor, id string) (Attachment, []byte, error) {
 	var (
 		att     Attachment
-		msg     sql.NullInt64
 		created int64
 	)
 	err := s.r.QueryRowContext(ctx,
-		`SELECT a.id, a.thread_id, a.message_seq, a.filename, a.mime, a.size, a.sha256, a.created_at
+		`SELECT a.id, a.thread_id, a.filename, a.mime, a.size, a.sha256, a.created_at
 		   FROM attachments a
 		   JOIN participants p ON p.thread_id = a.thread_id AND p.actor_id = ?
 		  WHERE a.id = ?`, actor, id).
-		Scan(&att.ID, &att.Thread, &msg, &att.Filename, &att.Mime, &att.Size,
+		Scan(&att.ID, &att.Thread, &att.Filename, &att.Mime, &att.Size,
 			&att.SHA256, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Attachment{}, nil, ErrNoSuchThread
 	}
 	if err != nil {
-		return Attachment{}, nil, err
+		return Attachment{}, nil, fmt.Errorf("chat: read attachment: %w", err)
 	}
 	att.Created = time.UnixMilli(created)
-	if msg.Valid {
-		att.Message = uint64(msg.Int64)
+	path, err := s.blobPath(att.SHA256)
+	if err != nil {
+		return Attachment{}, nil, err
 	}
-	body, err := os.ReadFile(filepath.Join(s.dir, "blobs",
-		att.SHA256[:2], att.SHA256[2:4], att.SHA256))
+	body, err := os.ReadFile(path)
 	if err != nil {
 		return Attachment{}, nil, fmt.Errorf("chat: read attachment %s: %w", id, err)
 	}
 	return att, body, nil
 }
 
+// blobPath builds the on-disk path for a digest, refusing anything that is not
+// one. The value comes from the database rather than from a request, so this
+// guards against a corrupt or tampered row rather than a caller - but the
+// alternatives are a panic on a short string and a path that escapes the blob
+// root, both inside a request handler.
+func (s *Store) blobPath(digest string) (string, error) {
+	if !isHex(digest, 64) {
+		return "", fmt.Errorf("chat: attachment digest %q is not a sha256", digest)
+	}
+	return filepath.Join(s.dir, "blobs", digest[:2], digest[2:4], digest), nil
+}
+
 // AttachmentsOn returns the files carried by a message.
 func (s *Store) AttachmentsOn(ctx context.Context, actor string, messageSeq uint64) ([]Attachment, error) {
 	rows, err := s.r.QueryContext(ctx,
 		`SELECT a.id, a.thread_id, a.filename, a.mime, a.size, a.sha256, a.created_at
-		   FROM attachments a
+		   FROM message_attachments ma
+		   JOIN attachments a ON a.id = ma.attachment_id
 		   JOIN participants p ON p.thread_id = a.thread_id AND p.actor_id = ?
-		  WHERE a.message_seq = ?
+		  WHERE ma.message_seq = ?
 		  ORDER BY a.id`, actor, messageSeq)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("chat: read attachments: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -178,6 +200,59 @@ func (s *Store) AttachmentsOn(ctx context.Context, actor string, messageSeq uint
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// SweepBlobs removes attachment files no row refers to any more, and reports
+// how many went.
+//
+// Deleting a thread cascades its attachment rows away but cannot touch the
+// filesystem, so without this a "delete" leaves the bytes on disk - and because
+// they are content-addressed, re-uploading the same file would silently
+// resurrect them. It is a separate call rather than part of DeleteThread
+// because the same bytes may still be referenced from another thread, which
+// only a full sweep can know.
+func (s *Store) SweepBlobs(ctx context.Context) (removed int, err error) {
+	live := map[string]bool{}
+	rows, err := s.r.QueryContext(ctx, `SELECT DISTINCT sha256 FROM attachments`)
+	if err != nil {
+		return 0, fmt.Errorf("chat: sweep attachments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var digest string
+		if err := rows.Scan(&digest); err != nil {
+			return 0, err
+		}
+		live[digest] = true
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	root := filepath.Join(s.dir, "blobs")
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		name := d.Name()
+		// A leftover ".tmp-*" from an interrupted write is not a digest and is
+		// nobody's file; it goes too.
+		if isHex(name, 64) && live[name] {
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		removed++
+		return nil
+	})
+	if err != nil {
+		return removed, fmt.Errorf("chat: sweep attachments: %w", err)
+	}
+	return removed, nil
 }
 
 // safeFilename reduces an uploaded name to a single harmless label.
@@ -200,15 +275,29 @@ func safeFilename(name string) string {
 	return name
 }
 
-// SanitizeField makes an uploader-provided string safe to put in a note the
-// runtime wrote: control characters and newlines - which could forge extra
-// lines that look runtime-authored - are stripped, and the length is capped.
+// SanitizeField makes a caller-provided string safe to put where a reader will
+// take it as runtime-authored: a note to a model, a filename in a header, a
+// label in the UI.
+//
+// It strips three families. Control characters and newlines could forge extra
+// lines that look like ours. Bidi overrides are the classic display spoof - a
+// U+202E turns "exe.gnp" into "png.exe" in every UI that renders it. Zero-width
+// and line/paragraph separators are invisible, so two different strings would
+// look identical to whoever has to decide whether to trust one.
 func SanitizeField(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		switch {
+		case r < 0x20, r == 0x7f:
 			return ' '
+		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069: // bidi
+			return -1
+		case r == 0x200b, r == 0x200c, r == 0x200d, r == 0xfeff: // zero width
+			return -1
+		case r == 0x2028, r == 0x2029: // line and paragraph separators
+			return ' '
+		default:
+			return r
 		}
-		return r
 	}, s)
 	s = strings.TrimSpace(s)
 	const max = 120

@@ -1,7 +1,10 @@
 package chat
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -53,7 +56,7 @@ func mustThread(t *testing.T, s *Store, title string, with ...string) *Thread {
 
 func mustSay(t *testing.T, s *Store, thread, author, body string) Message {
 	t.Helper()
-	m, err := s.Say(t.Context(), thread, Say{Author: author, Body: body})
+	m, err := s.Say(t.Context(), thread, Draft{Author: author, Body: body})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +111,7 @@ func TestConcurrentWritersGetDistinctIncreasingSeqs(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := range each {
-				m, err := s.Say(ctx, th.ID, Say{
+				m, err := s.Say(ctx, th.ID, Draft{
 					Author: authors[w%len(authors)],
 					Body:   strings.Repeat("x", 1+i%5),
 				})
@@ -231,7 +234,7 @@ func TestStateFollowsWhoSpokeAndWhetherTheyAsked(t *testing.T) {
 	if got := stateOf(); got != StateIdle {
 		t.Fatalf("after a plain bot reply: %q, want %q", got, StateIdle)
 	}
-	if _, err := s.Say(ctx, th.ID, Say{
+	if _, err := s.Say(ctx, th.ID, Draft{
 		Author: amiran, Body: "should I revoke the old token first?", AwaitReply: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -262,7 +265,7 @@ func TestWorkingIsDerivedFromTheTurnsTable(t *testing.T) {
 			v.Working, v.State, StateWorking)
 	}
 
-	if err := s.EndTurn(ctx, turn, ""); err != nil {
+	if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
 		t.Fatal(err)
 	}
 	v, err = s.ThreadFor(ctx, Operator, th.ID)
@@ -316,11 +319,11 @@ func TestTurnAccumulatesUsageAcrossCalls(t *testing.T) {
 		{InputTokens: 1500, OutputTokens: 60},
 		{}, // the provider reported nothing for this one
 	} {
-		if err := s.AddUsage(ctx, turn, u, "grok-4.3"); err != nil {
+		if err := s.AddUsage(ctx, amiran, turn, u, "grok-4.3"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.EndTurn(ctx, turn, ""); err != nil {
+	if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -352,7 +355,7 @@ func TestAnOutsiderCannotReachAThread(t *testing.T) {
 	th := mustThread(t, s, "private", amiran)
 	mustSay(t, s, th.ID, amiran, "between us")
 
-	if _, err := s.Say(ctx, th.ID, Say{Author: jane, Body: "hello"}); !errors.Is(err, ErrNoSuchThread) {
+	if _, err := s.Say(ctx, th.ID, Draft{Author: jane, Body: "hello"}); !errors.Is(err, ErrNoSuchThread) {
 		t.Fatalf("Say by an outsider: %v, want ErrNoSuchThread", err)
 	}
 	if _, err := s.Messages(ctx, jane, th.ID, 0, 10); !errors.Is(err, ErrNoSuchThread) {
@@ -384,10 +387,10 @@ func TestOnlyAParticipantMayAddOne(t *testing.T) {
 	ctx := t.Context()
 	th := mustThread(t, s, "retries", amiran)
 
-	if err := s.Join(ctx, th.ID, demetre, jane); !errors.Is(err, ErrNoSuchThread) {
+	if err := s.AddParticipant(ctx, jane, th.ID, demetre); !errors.Is(err, ErrNoSuchThread) {
 		t.Fatalf("an outsider added a participant: %v, want ErrNoSuchThread", err)
 	}
-	if err := s.Join(ctx, th.ID, demetre, amiran); err != nil {
+	if err := s.AddParticipant(ctx, amiran, th.ID, demetre); err != nil {
 		t.Fatal(err)
 	}
 	ok, err := s.IsParticipant(ctx, th.ID, demetre)
@@ -405,10 +408,10 @@ func TestMembershipChangesAreInTheTranscript(t *testing.T) {
 	ctx := t.Context()
 	th := mustThread(t, s, "retries", amiran)
 
-	if err := s.Join(ctx, th.ID, demetre, amiran); err != nil {
+	if err := s.AddParticipant(ctx, amiran, th.ID, demetre); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Leave(ctx, th.ID, demetre, Operator); err != nil {
+	if err := s.RemoveParticipant(ctx, Operator, th.ID, demetre); err != nil {
 		t.Fatal(err)
 	}
 	msgs, err := s.Messages(ctx, Operator, th.ID, 0, 50)
@@ -438,10 +441,10 @@ func TestASystemNoteDoesNotChangeTheState(t *testing.T) {
 	s := newStore(t)
 	ctx := t.Context()
 	th := mustThread(t, s, "retries", amiran)
-	if _, err := s.Say(ctx, th.ID, Say{Author: amiran, Body: "which token?", AwaitReply: true}); err != nil {
+	if _, err := s.Say(ctx, th.ID, Draft{Author: amiran, Body: "which token?", AwaitReply: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Join(ctx, th.ID, demetre, amiran); err != nil {
+	if err := s.AddParticipant(ctx, amiran, th.ID, demetre); err != nil {
 		t.Fatal(err)
 	}
 	v, err := s.ThreadFor(ctx, Operator, th.ID)
@@ -541,7 +544,7 @@ func TestSearchIndexFollowsDeletes(t *testing.T) {
 	if hits, err := s.Search(ctx, amiran, "distinctive", 20); err != nil || len(hits) != 1 {
 		t.Fatalf("before delete: %d hits, err %v", len(hits), err)
 	}
-	if err := s.DeleteThread(ctx, amiran, th.ID); err != nil {
+	if err := s.DeleteThread(ctx, Operator, th.ID); err != nil {
 		t.Fatal(err)
 	}
 	hits, err := s.Search(ctx, amiran, "distinctive", 20)
@@ -592,9 +595,12 @@ func TestTailReplaysMessagesAndOneCurrentThreadRow(t *testing.T) {
 	mustSay(t, s, th.ID, amiran, "on it")
 	mustSay(t, s, th.ID, amiran, "done")
 
-	frames, err := s.Tail(ctx, Operator, mark, 100)
+	frames, cursor, more, err := s.Tail(ctx, Operator, mark, 100)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if more {
+		t.Fatal("a two-message tail with a limit of 100 reported more to come")
 	}
 	var msgs, threads int
 	for _, f := range frames {
@@ -612,9 +618,17 @@ func TestTailReplaysMessagesAndOneCurrentThreadRow(t *testing.T) {
 	if threads != 1 {
 		t.Fatalf("replayed %d thread frames, want 1", threads)
 	}
+	// Resuming from the reported cursor delivers nothing twice.
+	again, _, _, err := s.Tail(ctx, Operator, cursor, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("resuming from the reported cursor replayed %d frames, want 0", len(again))
+	}
 
 	// An outsider replays nothing.
-	frames, err = s.Tail(ctx, jane, mark, 100)
+	frames, _, _, err = s.Tail(ctx, jane, mark, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,9 +722,17 @@ func TestPruneDropsOldEventsAndKeepsMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
+		t.Fatal(err)
+	}
+
 	s.now = time.Now
+	fresh, err := s.BeginTurn(ctx, th.ID, amiran)
+	if err != nil {
+		t.Fatal(err)
+	}
 	freshSeq, err := s.AppendEvent(ctx, EventRecord{
-		Thread: th.ID, Actor: amiran, TurnSeq: turn, Kind: "tool_end",
+		Thread: th.ID, Actor: amiran, TurnSeq: fresh, Kind: "tool_end",
 		Payload: []byte(`{"kind":"tool_end"}`),
 	})
 	if err != nil {
@@ -740,13 +762,54 @@ func TestPruneDropsOldEventsAndKeepsMessages(t *testing.T) {
 	}
 }
 
+// A run whose history was amputated under it would render as a live turn with
+// no work in it.
+func TestPruneLeavesARunningTurnsEventsAlone(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+
+	s.now = func() time.Time { return time.Now().Add(-72 * time.Hour) }
+	turn, err := s.BeginTurn(ctx, th.ID, amiran)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEvent(ctx, EventRecord{
+		Thread: th.ID, Actor: amiran, TurnSeq: turn, Kind: "tool_start",
+		Payload: []byte(`{"kind":"tool_start"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.now = time.Now
+
+	events, _, err := s.Prune(ctx, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events != 0 {
+		t.Fatalf("pruned %d events belonging to a turn that is still running", events)
+	}
+
+	// Once it ends, the same events are collectable.
+	if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
+		t.Fatal(err)
+	}
+	events, _, err = s.Prune(ctx, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("pruned %d events after the turn ended, want 1", events)
+	}
+}
+
 func TestInboxFiltersByEffectiveState(t *testing.T) {
 	s := newStore(t)
 	ctx := t.Context()
 	asking := mustThread(t, s, "asking", amiran)
 	running := mustThread(t, s, "running", demetre)
 
-	if _, err := s.Say(ctx, asking.ID, Say{Author: amiran, Body: "which one?", AwaitReply: true}); err != nil {
+	if _, err := s.Say(ctx, asking.ID, Draft{Author: amiran, Body: "which one?", AwaitReply: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.BeginTurn(ctx, running.ID, demetre); err != nil {
@@ -779,7 +842,7 @@ func TestStateFilterIsAppliedBeforeTheLimit(t *testing.T) {
 	// The one thread that needs the operator is the oldest, so anything that
 	// filters after LIMIT will miss it.
 	asking := mustThread(t, s, "asking", amiran)
-	if _, err := s.Say(ctx, asking.ID, Say{Author: amiran, Body: "which token?", AwaitReply: true}); err != nil {
+	if _, err := s.Say(ctx, asking.ID, Draft{Author: amiran, Body: "which token?", AwaitReply: true}); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 5 {
@@ -833,14 +896,14 @@ func TestPublisherSeesFramesOnlyAfterTheCommit(t *testing.T) {
 		// If this ran inside the transaction, the row would not be readable yet
 		// from the reader pool.
 		for _, fr := range f {
-			if fr.Stream == StreamMessage && fr.Msg != nil {
+			if fr.Stream == StreamMessage && fr.Message != nil {
 				var n int
 				if err := s.r.QueryRowContext(ctx,
-					`SELECT count(*) FROM messages WHERE seq = ?`, fr.Msg.Seq).Scan(&n); err != nil {
+					`SELECT count(*) FROM messages WHERE seq = ?`, fr.Message.Seq).Scan(&n); err != nil {
 					t.Error(err)
 				}
 				if n != 1 {
-					t.Errorf("frame for seq %d published before its row was committed", fr.Msg.Seq)
+					t.Errorf("frame for seq %d published before its row was committed", fr.Message.Seq)
 				}
 			}
 		}
@@ -870,10 +933,12 @@ func TestPublisherSeesFramesOnlyAfterTheCommit(t *testing.T) {
 	}
 }
 
+// The payload has to stay JSON on the wire. As a []byte it would be base64'd
+// into a string the browser would have to decode to find the event it was sent.
 func TestFrameJSONKeepsTheEventPayloadAsJSON(t *testing.T) {
-	f := Frame{Seq: 7, Stream: StreamEvent, Thread: "t_0102030405060708",
+	f := Frame{Seq: 7, Stream: StreamEvent, ThreadID: "t_0102030405060708",
 		Event: []byte(`{"kind":"tool_end","text":"ok"}`)}
-	b, err := f.MarshalJSON()
+	b, err := json.Marshal(f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -881,7 +946,7 @@ func TestFrameJSONKeepsTheEventPayloadAsJSON(t *testing.T) {
 		t.Fatalf("event was not embedded as JSON: %s", b)
 	}
 	var back Frame
-	if err := back.UnmarshalJSON(b); err != nil {
+	if err := json.Unmarshal(b, &back); err != nil {
 		t.Fatal(err)
 	}
 	if string(back.Event) != string(f.Event) || back.Seq != f.Seq || back.Stream != f.Stream {
@@ -898,6 +963,35 @@ func TestValidThreadID(t *testing.T) {
 	for _, bad := range []string{"", "t_", "t_zzzz", "t_0102030405060708extra", "0102030405060708"} {
 		if ValidThreadID(bad) {
 			t.Fatalf("%q is accepted as a thread id", bad)
+		}
+	}
+}
+
+// The WAL and SHM sidecars hold the same plaintext as the database, and SQLite
+// copies the database file's mode onto them when it creates them - so chmodding
+// only chat.db protected a third of the data.
+func TestTheDatabaseAndItsSidecarsArePrivate(t *testing.T) {
+	dir := t.TempDir()
+	ctx := t.Context()
+	s, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	seedActors(t, s)
+	th := mustThread(t, s, "retries", amiran)
+	mustSay(t, s, th.ID, amiran, "something worth not leaking")
+
+	for _, name := range []string{"chat.db", "chat.db-wal", "chat.db-shm"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if os.IsNotExist(err) {
+			continue // the sidecars only exist while a connection is open
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Errorf("%s is mode %04o, want 0600", name, mode)
 		}
 	}
 }

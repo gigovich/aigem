@@ -22,3 +22,9 @@ CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, body) VALUES ('delete', old.seq, old.body);
   INSERT INTO messages_fts(rowid, body) VALUES (new.seq, new.body);
 END;
+
+-- Index what is already there. The triggers above only fire from here on, so a
+-- store that existed before this migration would have every one of its earlier
+-- messages permanently unfindable - and search returning nothing reads to a bot
+-- exactly like nothing having been said.
+INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');

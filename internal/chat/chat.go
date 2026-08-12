@@ -13,9 +13,21 @@ package chat
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
+)
+
+// Limits on what one message may carry. Attachments were always bounded; text,
+// mentions and the attachment count were not, and every one of them is written
+// inside the transaction that holds the single writer.
+const (
+	MaxBodyBytes      = 256 << 10
+	MaxMentions       = 32
+	MaxAttachments    = 8
+	MaxTitleChars     = 200
+	MaxEventBytes     = 64 << 10
+	MaxEventBlobBytes = 4 << 20
 )
 
 // Actor kinds. An actor id is "<kind>:<name>", so it is readable in a log and
@@ -30,12 +42,14 @@ const (
 const Operator = "human:operator"
 
 // Thread states. They are derived from what is in the store, never guessed:
-// see Store.recomputeState.
+// the resting ones by Store.restingState, and the live one by the effectiveState
+// expression the queries share.
 const (
 	// StateNeedsYou means a bot asked the operator for something and is waiting.
 	// This is the only state the UI spends its accent on.
 	StateNeedsYou = "needs_you"
-	// StateWorking means a turn is running in this thread right now.
+	// StateWorking means a turn is running in this thread right now. It is never
+	// stored - see liveTurn - only computed at read time.
 	StateWorking = "working"
 	// StateWaiting means the operator spoke last and no bot has answered yet.
 	StateWaiting = "waiting"
@@ -57,8 +71,23 @@ const (
 // ErrNoSuchThread is returned when a thread id names nothing - and also when it
 // names a thread the caller is not a participant in. The two are deliberately
 // indistinguishable: a bot that could tell them apart could probe for the
-// existence of conversations it is not allowed to see.
+// existence of conversations it is not allowed to see. For the same reason it
+// carries no thread id.
 var ErrNoSuchThread = errors.New("chat: no such thread")
+
+// ErrInvalid wraps every refusal that is the caller's fault rather than a
+// missing thing. It exists so the HTTP layer's whole error mapping is two
+// lines - ErrInvalid is a 400, ErrNoSuchThread is a 404 - instead of a string
+// match against a growing list of messages.
+var ErrInvalid = errors.New("chat: invalid request")
+
+// ErrNoSuchTurn is returned when a turn id names nothing the caller may write
+// to. Losing a turn's spend accounting silently is worse than an error.
+var ErrNoSuchTurn = errors.New("chat: no such turn")
+
+func invalid(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
+}
 
 // Actor is a participant identity: the operator, or a bot in the fleet.
 type Actor struct {
@@ -124,11 +153,13 @@ type Message struct {
 	Attachments []string `json:"attachments,omitempty"`
 }
 
-// Say describes a message being written. AwaitReply marks the thread as needing
-// the operator, which is what puts it at the top of the inbox with the accent
-// marker. It is explicit rather than inferred: guessing from a trailing question
-// mark is how a bot ends up shouting for attention it does not need.
-type Say struct {
+// Draft describes a message being written. AwaitReply marks the thread as
+// needing the operator, which is what puts it at the top of the inbox with the
+// accent marker. It is explicit rather than inferred: guessing from a trailing
+// question mark is how a bot ends up shouting for attention it does not need.
+//
+// Kind may be MsgMessage or MsgHandoff. MsgSystem is reserved for the store.
+type Draft struct {
 	Author      string
 	Body        string
 	Kind        string
@@ -162,8 +193,9 @@ type Usage struct {
 	Uncounted    int `json:"uncounted,omitempty"`
 }
 
-// IsZero reports whether nothing was recorded, so a turn that never reached the
-// provider renders as no cost rather than as a row of zeroes.
+// IsZero is what the `omitzero` tag on Turn.Usage calls: a turn that never
+// reached the provider renders as no cost rather than as a row of zeroes. It
+// looks unused, and is not.
 func (u Usage) IsZero() bool { return u == Usage{} }
 
 // Attachment is a file on a message.
@@ -183,14 +215,19 @@ type Attachment struct {
 // reconnects with one number sees everything that happened, in the order it
 // happened.
 type Frame struct {
-	Seq    uint64      `json:"seq"`
-	Stream string      `json:"stream"`
-	Thread string      `json:"thread,omitempty"`
-	Msg    *Message    `json:"msg,omitempty"`
-	Thr    *ThreadView `json:"thr,omitempty"`
+	Seq    uint64 `json:"seq"`
+	Stream string `json:"stream"`
+	// ThreadID is set on every frame. A thread frame with no Thread on it is a
+	// tombstone: the conversation is gone and there is nothing left to describe.
+	ThreadID string      `json:"thread,omitempty"`
+	Message  *Message    `json:"msg,omitempty"`
+	Thread   *ThreadView `json:"thr,omitempty"`
 	// Event carries a uisession.Event as the JSON the browser already decodes.
-	// It is raw here so this package does not depend on uisession.
-	Event []byte `json:"event,omitempty"`
+	// It is raw here so this package does not depend on uisession, and it is
+	// json.RawMessage rather than []byte so the type itself states that the
+	// bytes are already-encoded JSON - and so it survives a round trip without
+	// being base64'd into a string the browser would have to decode.
+	Event json.RawMessage `json:"event,omitempty"`
 	// From is the resume point on a desync frame.
 	From uint64 `json:"from,omitempty"`
 }
@@ -203,52 +240,25 @@ const (
 	StreamDesync  = "desync"
 )
 
-// MarshalJSON keeps a Frame's Event as the JSON it already is. Without it the
-// []byte would be base64-encoded, and the browser would have to decode a string
-// to find the event it was sent.
-func (f Frame) MarshalJSON() ([]byte, error) {
-	type alias Frame
-	return json.Marshal(struct {
-		alias
-		Event json.RawMessage `json:"event,omitempty"`
-	}{alias: alias(f), Event: json.RawMessage(f.Event)})
-}
-
-// UnmarshalJSON is the inverse, so a Frame survives a round trip through the
-// wire in tests and in any Go client.
-func (f *Frame) UnmarshalJSON(b []byte) error {
-	type alias Frame
-	var raw struct {
-		alias
-		Event json.RawMessage `json:"event,omitempty"`
-	}
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return err
-	}
-	*f = Frame(raw.alias)
-	f.Event = raw.Event
-	return nil
-}
-
-// preview bounds the denormalised tail kept on a thread row.
+// previewChars bounds the denormalised tail kept on a thread row.
 const previewChars = 240
 
-// preview trims a body to what an inbox row can show. It cuts on a rune
-// boundary, because a preview ending in half a character is a bug you only see
-// in the one language that has them.
+// preview trims a body to what an inbox row can show.
+//
+// It counts runes, not bytes. Bounding by bytes would show a Georgian or
+// Japanese row a third of what an English one gets, for no reason the reader
+// could see - and it would cut inside a character, which is a bug you only ever
+// meet in the languages that have them.
 func preview(body string) string {
 	body = strings.TrimSpace(body)
-	if len(body) <= previewChars {
-		return body
-	}
-	cut := body[:previewChars]
-	// Drop a rune the cut landed inside. A preview ending in half a character is
-	// a bug you only ever see in the one language that has them.
-	for len(cut) > 0 {
-		if r, size := utf8.DecodeLastRuneInString(cut); r != utf8.RuneError || size != 1 {
-			break
+	// Ranging a string yields the byte offset of each rune start, so n counts
+	// runes while i stays the offset to cut at.
+	n := 0
+	for i := range body {
+		if n == previewChars {
+			return strings.TrimSpace(body[:i])
 		}
-		cut = cut[:len(cut)-1]
+		n++
 	}
-	return strings.TrimSpace(cut)
+	return body
 }

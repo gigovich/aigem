@@ -1,3 +1,9 @@
+-- Reclaiming space has to be decided while the database is empty: auto_vacuum
+-- can only be changed here or by a full VACUUM. Prune deletes timeline events
+-- by age, and without this the file would only ever grow - which would undercut
+-- the whole reason for pruning.
+PRAGMA auto_vacuum = INCREMENTAL;
+
 -- One global monotonic sequence, allocated inside every write transaction.
 -- Messages and timeline events must interleave in one resumable stream, so a
 -- per-table AUTOINCREMENT would give a client two numbers to hold and no way to
@@ -34,10 +40,32 @@ CREATE TABLE threads (
   last_author TEXT    NOT NULL DEFAULT '',
   last_text   TEXT    NOT NULL DEFAULT '',
   state       TEXT    NOT NULL DEFAULT 'idle',
-  archived_at INTEGER
+  archived_at INTEGER,
+  -- changed_seq is the sequence of the last change of any kind to this thread:
+  -- a message, a rename, an archive, a participant, a turn starting or ending.
+  -- last_seq only moves for messages, so without this a client that slept
+  -- through a rename would never hear about it - every one of those changes
+  -- publishes live and would otherwise leave nothing behind to replay.
+  changed_seq INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX threads_inbox ON threads(archived_at, last_seq DESC);
-CREATE INDEX threads_state ON threads(state, last_seq DESC) WHERE archived_at IS NULL;
+-- The inbox orders by changed_seq, not last_seq: a thread someone just opened
+-- has no messages yet and would otherwise sort to the bottom of the list it was
+-- created from. There is deliberately no index on state - the inbox filters on
+-- the effective state, which is a CASE over the turns table, so an index on the
+-- stored column could never serve it and would only cost every write.
+CREATE INDEX threads_inbox ON threads(archived_at, changed_seq DESC);
+
+-- Tombstones, so a client that was away learns a thread is gone rather than
+-- rendering one that no longer exists. One row per former participant, because
+-- the participants rows are cascaded away with the thread and there would
+-- otherwise be no way to tell who was entitled to hear about the deletion.
+CREATE TABLE deleted_threads (
+  seq       INTEGER NOT NULL,
+  thread_id TEXT    NOT NULL,
+  actor_id  TEXT    NOT NULL,
+  PRIMARY KEY (seq, actor_id)
+) WITHOUT ROWID;
+CREATE INDEX deleted_threads_by_actor ON deleted_threads(actor_id, seq);
 
 -- Participation is the whole authorization boundary. There is no channel above
 -- a thread, so this table is the only thing that decides who may read or write.
@@ -63,7 +91,10 @@ CREATE TABLE messages (
   await      INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX messages_by_thread ON messages(thread_id, seq);
+-- author_id is in the index so the inbox's unread count is index-only. Without
+-- it every candidate row costs a table lookup, and for a reader who has never
+-- marked anything read that is the thread's entire history, on every draw.
+CREATE INDEX messages_by_thread ON messages(thread_id, seq, author_id);
 
 -- The agent timeline. One row per uisession.Event, payload stored as the JSON
 -- the browser already decodes, so there is no second wire format to keep in
@@ -78,8 +109,7 @@ CREATE TABLE events (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX events_by_thread ON events(thread_id, seq);
-CREATE INDEX events_by_turn   ON events(turn_seq, seq);
--- Pruning walks by age across every thread, which neither index above serves.
+-- Pruning walks by age across every thread, which the index above does not serve.
 CREATE INDEX events_by_age ON events(created_at);
 
 -- Oversized tool results, exactly as uisession/journal.go splits them: the
@@ -90,20 +120,31 @@ CREATE TABLE blobs (
   body BLOB NOT NULL
 );
 
+-- An attachment belongs to a thread. The bytes on disk are content-addressed
+-- and shared, but the row is not: the same image uploaded into two threads is
+-- two records, because thread_id is what the participation check reads, and one
+-- row would mean the second uploader could not see their own file.
 CREATE TABLE attachments (
-  id          TEXT    PRIMARY KEY,
-  thread_id   TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-  -- NULL until the message carrying it is written, so an upload that is never
-  -- sent is collectable rather than orphaned onto some other message.
-  message_seq INTEGER REFERENCES messages(seq) ON DELETE CASCADE,
-  filename    TEXT    NOT NULL,
-  mime        TEXT    NOT NULL,
-  size        INTEGER NOT NULL,
-  sha256      TEXT    NOT NULL,
-  created_at  INTEGER NOT NULL
+  id         TEXT    PRIMARY KEY,
+  thread_id  TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  filename   TEXT    NOT NULL,
+  mime       TEXT    NOT NULL,
+  size       INTEGER NOT NULL,
+  sha256     TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (thread_id, sha256)
 );
-CREATE INDEX attachments_by_message ON attachments(message_seq);
 CREATE INDEX attachments_by_sha ON attachments(sha256);
+
+-- Which messages carry which files. It is a relation rather than a column on
+-- attachments because one upload may legitimately ride on several messages, and
+-- a single message_seq column silently moved the file off the earlier one.
+CREATE TABLE message_attachments (
+  message_seq   INTEGER NOT NULL REFERENCES messages(seq) ON DELETE CASCADE,
+  attachment_id TEXT    NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  PRIMARY KEY (message_seq, attachment_id)
+) WITHOUT ROWID;
+CREATE INDEX message_attachments_by_attachment ON message_attachments(attachment_id);
 
 CREATE TABLE read_state (
   actor_id      TEXT    NOT NULL,
