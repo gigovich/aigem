@@ -32,10 +32,10 @@ describe("Header", () => {
     const more = screen.getByRole("button", { name: "More controls" });
 
     expect(more).toHaveAttribute("aria-expanded", "false");
-    expect(more).toHaveClass("lg:hidden");
+    expect(more).toHaveClass("md:hidden");
     expect(screen.getByRole("group", { name: "Desktop session controls" })).toHaveClass(
       "hidden",
-      "lg:flex",
+      "md:flex",
     );
     expect(document.querySelector("#mobile-header-controls")).not.toBeInTheDocument();
 
@@ -44,7 +44,7 @@ describe("Header", () => {
     expect(more).toHaveAttribute("aria-expanded", "true");
     const controls = document.querySelector("#mobile-header-controls");
     expect(controls).toBeInTheDocument();
-    expect(controls).toHaveClass("lg:hidden");
+    expect(controls).toHaveClass("md:hidden");
     fireEvent.click(within(controls as HTMLElement).getByRole("button", { name: "Providers" }));
 
     expect(onToggleProviders).toHaveBeenCalledOnce();
@@ -83,7 +83,7 @@ describe("Header", () => {
     const { onToggleFiles } = renderHeader();
 
     const session = screen.getByRole("button", { name: "Session" });
-    expect(session).not.toHaveClass("lg:flex");
+    expect(session).not.toHaveClass("md:flex");
     fireEvent.click(session);
 
     expect(onToggleFiles).toHaveBeenCalledOnce();

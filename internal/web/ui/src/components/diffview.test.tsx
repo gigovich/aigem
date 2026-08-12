@@ -95,9 +95,15 @@ describe("DiffView", () => {
       expect(screen.getByText("\\ No newline at end of file")).toBeInTheDocument();
     });
     expect(screen.queryByText("No line changed.")).not.toBeInTheDocument();
-    const marker = screen.getByText("\\ No newline at end of file");
-    const number = marker.previousElementSibling;
-    expect(number).toHaveTextContent("");
+    // Four cells to a unified line - old number, new number, marker, text - and
+    // the marker line carries neither number, being metadata about the line
+    // above it rather than a line of the file.
+    const text = screen.getByText("\\ No newline at end of file");
+    const marker = text.previousElementSibling;
+    const newNum = marker?.previousElementSibling;
+    const oldNum = newNum?.previousElementSibling;
+    expect(oldNum?.textContent).toBe("");
+    expect(newNum?.textContent).toBe("");
     expect(container.querySelectorAll(".grid > div")).toHaveLength(12);
   });
 
@@ -108,14 +114,35 @@ describe("DiffView", () => {
     await waitFor(() => expect(screen.getByText("This file is empty.")).toBeInTheDocument());
   });
 
-  it("drops the empty half for a file that has no previous version", async () => {
+  it("marks every line of a created file as an addition, with no old numbers", async () => {
     stubFetch([[{ path: "a/b.txt", created: true, new: "one\ntwo" }]]);
     const { container } = render(
       <DiffView sessionID="s1" artifact={{ ...stub, created: true }} version={1} onClose={vi.fn()} />,
     );
 
     await waitFor(() => expect(screen.getByText("one")).toBeInTheDocument());
-    // Two columns, not four: a created file has no old side to leave blank.
-    expect(container.querySelector(".grid")).toHaveClass("grid-cols-[auto_1fr]");
+    const cells = Array.from(container.querySelectorAll(".grid > div"));
+    // Two lines, four cells each. A created file has no old side, so the first
+    // gutter stays empty rather than inventing numbers for it.
+    expect(cells).toHaveLength(8);
+    expect(cells[0].textContent).toBe("");
+    expect(cells[1].textContent).toBe("1");
+    expect(cells[2].textContent).toBe("+");
+    expect(cells[3].textContent).toBe("one");
+  });
+
+  it("reads as a diff with the colour taken away", async () => {
+    stubFetch([[{ path: "a/b.txt", created: false, old: "one\nkeep", new: "two\nkeep" }]]);
+    const { container } = render(
+      <DiffView sessionID="s1" artifact={stub} version={1} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() => expect(screen.getByText("two")).toBeInTheDocument());
+    const markers = Array.from(container.querySelectorAll(".grid > div"))
+      .filter((_, i) => i % 4 === 2)
+      .map((el) => el.textContent);
+    // Removed before added, then the untouched line: the order every other diff
+    // prints, said in characters rather than in red and green.
+    expect(markers).toEqual(["-", "+", " "]);
   });
 });

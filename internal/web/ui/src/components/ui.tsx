@@ -3,21 +3,30 @@ import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 const button = cva(
-  "inline-flex items-center justify-center gap-1.5 rounded-md text-sm font-medium " +
-    "transition-colors disabled:pointer-events-none disabled:opacity-50 " +
-    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 select-none",
+  "inline-flex items-center justify-center gap-1.5 rounded-md font-medium " +
+    "transition-colors duration-[120ms] ease-out " +
+    "disabled:pointer-events-none disabled:opacity-50 " +
+    // Tactile push, not a scale and not a glow. Keyboard focus is the only ring.
+    "active:translate-y-px " +
+    // 44px on a coarse pointer. Keyed off the pointer rather than the viewport,
+    // because a touch laptop is a wide screen someone still taps.
+    "[@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11 " +
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 " +
+    "focus-visible:ring-offset-1 focus-visible:ring-offset-canvas select-none",
   {
     variants: {
       variant: {
-        default: "bg-accent text-bg hover:bg-accent/90",
-        outline: "border border-border bg-panel hover:bg-panel-2 text-fg",
-        ghost: "hover:bg-panel-2 text-muted hover:text-fg",
-        danger: "bg-bad/15 text-bad border border-bad/40 hover:bg-bad/25",
+        default: "bg-accent text-canvas hover:bg-accent/90",
+        outline: "border border-line bg-panel text-fg hover:bg-raised",
+        ghost: "text-muted hover:bg-raised hover:text-fg",
+        // Closing a conversation is not undoable, so it is always labelled and
+        // always carries the failure colour rather than a neutral one.
+        danger: "border border-bad/40 bg-bad/12 text-bad hover:bg-bad/20",
       },
       size: {
         // 36px minimum: this is used on a phone, where a 28px target is a miss.
-        default: "h-9 px-3",
-        sm: "h-8 px-2.5 text-xs",
+        default: "h-9 px-3 text-[13px]",
+        sm: "h-8 px-2.5 text-[12px]",
         icon: "h-9 w-9",
       },
     },
@@ -41,8 +50,8 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border border-border bg-panel-2 " +
-          "px-2 py-0.5 text-[11px] font-medium text-muted",
+        "inline-flex items-center rounded-sm border border-line bg-raised " +
+          "px-1.5 py-0.5 text-[11px] leading-none font-medium text-muted",
         className,
       )}
       {...props}
@@ -52,13 +61,48 @@ export function Badge({
   );
 }
 
-export function Spinner({ className }: { className?: string }) {
+/** "This is running", the one live indicator in the interface. A spinner says
+ *  the same thing with more ink and a rotation nobody can read a rate from; the
+ *  reduced-motion fallback here is the same dot, holding still. */
+export function RunDot({ className, label }: { className?: string; label?: string }) {
   return (
     <span
-      className={cn(
-        "inline-block h-3 w-3 animate-spin rounded-full border-2 border-muted border-t-transparent",
-        className,
-      )}
+      // A named graphic when it is the only thing saying "running", and hidden
+      // when adjacent text already says it. Never a live region: a dozen of
+      // these appear in a turn, and none of them is an announcement.
+      role={label ? "img" : undefined}
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
+      className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-sm bg-accent animate-run", className)}
     />
+  );
+}
+
+/** A block the exact size of the content that will replace it. The point is
+ *  that the layout does not move when the answer lands. */
+function Skeleton({ className }: { className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn("relative block overflow-hidden rounded-sm bg-raised", className)}
+    >
+      <span
+        className={cn(
+          "absolute inset-0 animate-shimmer",
+          "bg-gradient-to-r from-transparent via-line-faint to-transparent",
+        )}
+      />
+    </span>
+  );
+}
+
+/** Rows of skeleton at the height of a list row, for a list that is loading. */
+export function SkeletonRows({ rows = 3, className }: { rows?: number; className?: string }) {
+  return (
+    <div className={cn("flex flex-col gap-1.5", className)} aria-hidden>
+      {Array.from({ length: rows }, (_, i) => (
+        <Skeleton key={i} className="h-8 w-full" />
+      ))}
+    </div>
   );
 }

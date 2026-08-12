@@ -17,20 +17,20 @@ export function Spend() {
   }, []);
   if (rows.length === 0) return null;
   return (
-    <div className="shrink-0 border-b border-border bg-panel-2 px-3 py-2">
-      <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3">
-        <Gauge className="h-4 w-4 text-accent" />
+    <div className="shrink-0 border-b border-line bg-raised px-4 py-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <Gauge className="h-4 w-4 text-muted" aria-hidden />
         {rows.map((r) => (
           <div key={r.provider} className="flex items-center gap-1.5">
             <Badge>{r.provider}</Badge>
             {r.limits.plan && <span className="text-[12px] text-muted">{r.limits.plan}</span>}
             {(r.limits.windows ?? []).map((w, i) => (
-              <span key={i} className="text-[12px] text-muted">
+              <span key={i} className="font-mono text-[12px] text-muted">
                 {w.label ?? "window"} {Math.round(w.used_pct ?? 0)}%
               </span>
             ))}
             {r.limits.credits && (
-              <span className="text-[12px] text-muted">{r.limits.credits}</span>
+              <span className="font-mono text-[12px] text-muted">{r.limits.credits}</span>
             )}
           </div>
         ))}

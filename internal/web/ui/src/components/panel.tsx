@@ -3,22 +3,27 @@ import { X } from "lucide-react";
 import { Button } from "./ui";
 import { cn } from "@/lib/utils";
 
+/** Where a panel sits at the current width. Docked is a standing column; the
+ *  other two cover the page, which is what makes them dialogs and Escape a way
+ *  out. Passed in rather than expressed as CSS breakpoints so the layout and the
+ *  focus trap cannot disagree about where the line is. */
+export type PanelLayout = "docked" | "drawer" | "sheet";
+
 interface SidePanelProps {
   side: "left" | "right";
   open: boolean;
-  /** true below the breakpoint, where the panel covers the page rather than
-   *  standing beside it - which is what makes it a dialog and Escape a way out. */
-  modal: boolean;
+  layout: PanelLayout;
   title: string;
   onDismiss: () => void;
   children: ReactNode;
 }
 
-/** A standing column on a wide screen and a dismissable drawer on a narrow one,
- *  from one piece of state: a rail that only exists at one width is a rail the
- *  phone never gets. */
-export function SidePanel({ side, open, modal, title, onDismiss, children }: SidePanelProps) {
+/** A standing column on a wide screen, a drawer on a medium one and a bottom
+ *  sheet on a phone, from one piece of state: a rail that only exists at one
+ *  width is a rail the phone never gets. */
+export function SidePanel({ side, open, layout, title, onDismiss, children }: SidePanelProps) {
   const panel = useRef<HTMLElement>(null);
+  const modal = layout !== "docked";
   // Held in a ref: keyed off the callback's identity, this effect re-ran on
   // every render of the app and dragged focus back to the drawer each time, so
   // the list inside it could not be tabbed through.
@@ -70,7 +75,9 @@ export function SidePanel({ side, open, modal, title, onDismiss, children }: Sid
   if (!open) return null;
   return (
     <>
-      <div onClick={onDismiss} aria-hidden className="fixed inset-0 z-30 bg-black/60 lg:hidden" />
+      {modal && (
+        <div onClick={onDismiss} aria-hidden className="fixed inset-0 z-30 bg-canvas/70" />
+      )}
       <aside
         ref={panel}
         tabIndex={-1}
@@ -78,23 +85,34 @@ export function SidePanel({ side, open, modal, title, onDismiss, children }: Sid
         role={modal ? "dialog" : undefined}
         aria-modal={modal ? true : undefined}
         className={cn(
-          "z-40 flex w-72 max-w-[85vw] shrink-0 flex-col bg-panel outline-none",
-          "fixed inset-y-0 pb-[env(safe-area-inset-bottom)] shadow-xl lg:static lg:pb-0 lg:shadow-none",
-          side === "left" ? "left-0 border-r border-border" : "right-0 border-l border-border",
+          "z-40 flex min-h-0 shrink-0 flex-col bg-panel outline-none",
+          layout === "docked" && "h-full",
+          layout === "docked" && (side === "left" ? "w-[260px]" : "w-[420px]"),
+          layout === "drawer" &&
+            "fixed inset-y-0 w-[320px] max-w-[85vw] pb-[env(safe-area-inset-bottom)]",
+          layout === "drawer" && (side === "left" ? "left-0" : "right-0"),
+          // A sheet rises from the edge the thumb is already at. Capped so the
+          // conversation it was opened from stays visible above it.
+          layout === "sheet" &&
+            "fixed inset-x-0 bottom-0 max-h-[75dvh] rounded-t-lg border-t border-line " +
+              "pb-[env(safe-area-inset-bottom)]",
+          layout !== "sheet" && (side === "left" ? "border-r border-line" : "border-l border-line"),
         )}
       >
-        <div className="flex shrink-0 items-center border-b border-border px-3 py-2 lg:hidden">
-          <span className="text-[13px] font-medium">{title}</span>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="ml-auto"
-            aria-label={`Close ${title}`}
-            onClick={onDismiss}
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
+        {modal && (
+          <div className="flex shrink-0 items-center border-b border-line px-3 py-2">
+            <span className="text-[15px] font-medium">{title}</span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ml-auto"
+              aria-label={`Close ${title}`}
+              onClick={onDismiss}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
       </aside>
     </>

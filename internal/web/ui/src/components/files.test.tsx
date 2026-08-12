@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_ROWS, diff, shortPath, uniqueLabels } from "./files";
+import { MAX_ROWS, diff, shortPath, unified, uniqueLabels } from "./files";
 
 describe("shortPath", () => {
   it("keeps the tail that identifies the file, without a stray slash", () => {
@@ -100,5 +100,35 @@ describe("diff", () => {
       ["add", 1],
       ["add", 2],
     ]);
+  });
+});
+
+describe("unified", () => {
+  it("splits a replacement into the old line then the new one", () => {
+    expect(unified(diff("one\nkeep", "two\nkeep")).map((l) => [l.marker, l.text, l.ln, l.rn]))
+      .toEqual([
+        ["-", "one", 1, undefined],
+        ["+", "two", undefined, 1],
+        [" ", "keep", 2, 2],
+      ]);
+  });
+
+  it("numbers each side in its own gutter", () => {
+    // A deletion advances the old file's numbering and not the new file's, which
+    // is the whole reason both gutters are shown rather than one.
+    expect(unified(diff("a\nb\nc", "a\nc")).map((l) => [l.marker, l.text, l.ln, l.rn])).toEqual([
+      [" ", "a", 1, 1],
+      ["-", "b", 2, undefined],
+      [" ", "c", 3, 2],
+    ]);
+  });
+
+  it("leaves the newline marker unnumbered and unmarked", () => {
+    const marker = unified(diff("one\ntwo", "one\ntwo\n")).at(-1);
+    expect(marker).toEqual({
+      marker: " ",
+      text: "\\ No newline at end of file",
+      tone: "meta",
+    });
   });
 });

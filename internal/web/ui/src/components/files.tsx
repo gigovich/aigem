@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FileDiff, X } from "lucide-react";
 import { api } from "@/lib/protocol";
-import { Badge, Button, Spinner } from "./ui";
+import { Badge, Button, SkeletonRows } from "./ui";
 import { cn } from "@/lib/utils";
 
 export interface Artifact { path: string; created: boolean; old?: string; new?: string }
@@ -147,57 +147,88 @@ export function diff(oldText: string, newText: string): Row[] {
   return markMissingNewline(rows, oldText, newText);
 }
 
-function Num({ n, tone }: { n?: number; tone?: string }) {
-  return (
-    <div className={cn("bg-panel px-2 py-0.5 text-right text-muted select-none", tone)}>
-      {n ?? ""}
-    </div>
-  );
+export type UnifiedLine = {
+  /** The conventional leading character. It is rendered, not implied by colour,
+   *  so the diff still reads when the colour is gone - printed, screenshotted
+   *  into a chat, or seen by a reader who does not separate red from green. */
+  marker: " " | "+" | "-";
+  text: string;
+  ln?: number;
+  rn?: number;
+  tone: "same" | "add" | "del" | "meta";
+};
+
+/** Side-by-side rows flattened into one column. A replacement is the only row
+ *  that becomes two lines: its old text and its new text, in that order, which
+ *  is the order every other diff in the world prints them in. */
+export function unified(rows: Row[]): UnifiedLine[] {
+  const out: UnifiedLine[] = [];
+  for (const r of rows) {
+    // Metadata about the preceding line rather than a line of the file, so it
+    // carries no marker and no number of its own.
+    if (r.left === noNewline || r.right === noNewline) {
+      out.push({ marker: " ", text: noNewline, tone: "meta" });
+      continue;
+    }
+    if (r.kind === "same") {
+      out.push({ marker: " ", text: r.left ?? r.right ?? "", ln: r.ln, rn: r.rn, tone: "same" });
+      continue;
+    }
+    if (r.left !== undefined) {
+      out.push({ marker: "-", text: r.left, ln: r.ln, tone: "del" });
+    }
+    if (r.right !== undefined) {
+      out.push({ marker: "+", text: r.right, rn: r.rn, tone: "add" });
+    }
+  }
+  return out;
 }
 
-function Line({ text, tone }: { text?: string; tone?: string }) {
-  return <div className={cn("bg-panel px-2 py-0.5 whitespace-pre", tone)}>{text ?? ""}</div>;
-}
+const TONE: Record<UnifiedLine["tone"], string> = {
+  same: "",
+  add: "bg-good/16",
+  del: "bg-bad/16",
+  meta: "text-muted",
+};
 
-/** Side by side, except when there is no other side: a created file has no old
- *  version, and half a screen of empty boxes reads as content that failed to
- *  load rather than as a file that is new. */
-function Side({ rows }: { rows: Row[] }) {
-  const hasOld = rows.some((r) => r.left !== undefined);
-  const hasNew = rows.some((r) => r.right !== undefined);
+const MARKER_TONE: Record<UnifiedLine["tone"], string> = {
+  same: "text-disabled",
+  add: "text-good",
+  del: "text-bad",
+  meta: "text-muted",
+};
+
+/** One column, old and new numbered in their own gutters. Side by side needed
+ *  two of every line to show one of them changing, and on the width this
+ *  overlay actually gets it spent that on ellipsis. */
+function Unified({ lines }: { lines: UnifiedLine[] }) {
   return (
-    <div
-      className={cn(
-        "grid min-w-max gap-px bg-border font-mono text-[12px]",
-        hasOld && hasNew ? "grid-cols-[auto_1fr_auto_1fr]" : "grid-cols-[auto_1fr]",
-      )}
-    >
-      {rows.map((r, i) => {
-        const removed = r.kind === "del" || r.kind === "replace";
-        const added = r.kind === "add" || r.kind === "replace";
-        return (
-          <Fragment key={i}>
-            {hasOld && (
-              <>
-                <Num n={r.ln} tone={removed ? "bg-bad/15" : undefined} />
-                <Line
-                  text={r.left}
-                  tone={cn(removed && "bg-bad/15 text-bad", added && !removed && "bg-panel-2")}
-                />
-              </>
+    // No table role: the cells here are plain divs, and a table announced with
+    // no rows in it is worse than preformatted text announced as itself. The
+    // dialog around this already carries the file's name.
+    <div className="grid min-w-max grid-cols-[auto_auto_auto_1fr] font-mono text-[12px] leading-[1.45]">
+      {lines.map((l, i) => (
+        <Fragment key={i}>
+          {/* Muted, not disabled: a line number is read, and the disabled token
+              is 3.9:1 on this canvas - a decorative contrast, not a legible
+              one. */}
+          <div className={cn("px-2 text-right text-muted select-none", TONE[l.tone])}>
+            {l.ln ?? ""}
+          </div>
+          <div
+            className={cn(
+              "border-r border-line px-2 text-right text-muted select-none",
+              TONE[l.tone],
             )}
-            {hasNew && (
-              <>
-                <Num n={r.rn} tone={added ? "bg-good/15" : undefined} />
-                <Line
-                  text={r.right}
-                  tone={cn(added && "bg-good/15 text-good", removed && !added && "bg-panel-2")}
-                />
-              </>
-            )}
-          </Fragment>
-        );
-      })}
+          >
+            {l.rn ?? ""}
+          </div>
+          <div className={cn("pl-2 select-none", TONE[l.tone], MARKER_TONE[l.tone])}>
+            {l.marker}
+          </div>
+          <div className={cn("pr-3 pl-1 whitespace-pre", TONE[l.tone])}>{l.text}</div>
+        </Fragment>
+      ))}
     </div>
   );
 }
@@ -250,11 +281,11 @@ export function ChangedFiles({
   return (
     <section aria-label="Changed files" className="flex shrink-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
-        <h2 className="text-[13px] font-medium">Changed</h2>
-        <Badge className="ml-auto">{list.length}</Badge>
+        <h2 className="text-[15px] font-medium">Changed</h2>
+        <Badge className="ml-auto font-mono">{list.length}</Badge>
       </div>
       {failed && (
-        <p className="px-3 pb-2 text-[12px] text-warn">
+        <p className="px-3 pb-2 text-[12px] text-bad">
           {list.length === 0
             ? "Could not load the list."
             : "Could not reach the daemon; this list may be stale."}
@@ -264,27 +295,34 @@ export function ChangedFiles({
         <p className="px-3 pb-2 text-[12px] text-muted">Nothing written yet.</p>
       )}
       {list.length > 0 && (
-        <ul className="px-2 pb-2">
-          {list.map((a) => (
-            <li key={a.path}>
-              <button
-                onClick={() => onOpen(a)}
-                title={a.path}
-                aria-current={a.path === openPath ? "true" : undefined}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[12px]",
-                  a.path === openPath
-                    ? "bg-panel-2 text-fg"
-                    : "text-muted hover:bg-panel-2 hover:text-fg",
-                )}
-              >
-                <span className="truncate">{labels.get(a.path) ?? a.path}</span>
-                {a.created && (
-                  <Badge className="ml-auto shrink-0 border-good/40 text-good">new</Badge>
-                )}
-              </button>
-            </li>
-          ))}
+        <ul className="border-t border-line-faint">
+          {list.map((a) => {
+            const open = a.path === openPath;
+            return (
+              <li key={a.path} className="border-b border-line-faint">
+                <button
+                  onClick={() => onOpen(a)}
+                  title={a.path}
+                  aria-current={open ? "true" : undefined}
+                  className={cn(
+                    "flex h-8 w-full items-center gap-2 pr-2 pl-0 text-left font-mono text-[12px]",
+                    "[@media(pointer:coarse)]:h-11",
+                    "transition-colors duration-[120ms] ease-out",
+                    open ? "bg-raised text-fg" : "text-muted hover:bg-raised hover:text-fg",
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className={cn("h-full w-0.5 shrink-0", open ? "bg-accent" : "bg-transparent")}
+                  />
+                  <span className="truncate pl-1.5">{labels.get(a.path) ?? a.path}</span>
+                  {a.created && (
+                    <Badge className="ml-auto shrink-0 border-good/40 text-good">new</Badge>
+                  )}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
@@ -365,6 +403,7 @@ export function DiffView({
     return marker && !first.includes(marker) ? [...first, marker] : first;
   }, [rows]);
   const unchanged = rows.length > 0 && rows.every((r) => r.kind === "same");
+  const flat = useMemo(() => unified(shown), [shown]);
 
   return (
     <div
@@ -372,11 +411,11 @@ export function DiffView({
       tabIndex={-1}
       role="dialog"
       aria-label={`Diff of ${path}`}
-      className="absolute inset-0 z-20 flex flex-col bg-bg outline-none"
+      className="absolute inset-0 z-20 flex flex-col bg-canvas outline-none"
     >
-      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-panel px-3 py-2">
-        <FileDiff className="h-4 w-4 shrink-0 text-accent" />
-        <span title={path} className="truncate font-mono text-[13px]">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-panel px-3">
+        <FileDiff className="h-4 w-4 shrink-0 text-muted" aria-hidden />
+        <span title={path} className="truncate font-mono text-[12px]">
           {shortPath(path, 4)}
         </span>
         {artifact.created && <Badge className="shrink-0 border-good/40 text-good">new</Badge>}
@@ -391,19 +430,19 @@ export function DiffView({
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        {error && <p className="p-4 text-sm text-bad">{error}</p>}
-        {!error && !full && (
-          <p className="flex items-center gap-2 p-4 text-sm text-muted">
-            <Spinner /> loading
-          </p>
-        )}
+        {error && <p className="p-4 text-[13px] text-bad">{error}</p>}
+        {/* Rows at the height the diff rows will be, so the panel does not jump
+            when the file lands. */}
+        {!error && !full && <SkeletonRows rows={12} className="gap-px p-3" />}
         {!error && full && rows.length === 0 && (
-          <p className="p-4 text-sm text-muted">This file is empty.</p>
+          <p className="p-4 text-[13px] text-muted">This file is empty.</p>
         )}
         {unchanged && <p className="p-3 text-[12px] text-muted">No line changed.</p>}
-        {!error && rows.length > 0 && <Side rows={shown} />}
+        {!error && rows.length > 0 && <Unified lines={flat} />}
         {rows.length > MAX_ROWS && (
-          <p className="p-3 text-[12px] text-warn">
+          // Silent truncation reads as "that was the whole file", so the count
+          // that was dropped is stated rather than implied.
+          <p className="border-t border-line p-3 font-mono text-[12px] text-muted">
             Showing the first {MAX_ROWS} of {rows.length} lines.
           </p>
         )}

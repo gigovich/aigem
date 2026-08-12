@@ -29,17 +29,19 @@ function SessionBadges({
 }: Pick<HeaderProps, "model" | "tokens" | "ctx" | "clientCount" | "connected">) {
   return (
     <>
-      {model && <Badge className="max-w-40 truncate">{model}</Badge>}
+      {model && <Badge className="max-w-40 truncate font-mono">{model}</Badge>}
+      {/* Every number in this interface is monospaced, so a context figure that
+          grows a digit mid-turn does not shift the badges beside it. */}
       {tokens > 0 && (
-        <Badge>
+        <Badge className="font-mono">
           {Math.round(tokens / 1000)}k
           {ctx > 0 && ` / ${Math.round(ctx / 1000)}k`} ctx
         </Badge>
       )}
-      {clientCount > 1 && <Badge>{clientCount} attached</Badge>}
+      {clientCount > 1 && <Badge className="font-mono">{clientCount} attached</Badge>}
       {!connected && (
-        <Badge className="border-warn/40 text-warn">
-          <WifiOff className="mr-1 h-3 w-3" /> reconnecting
+        <Badge className="border-accent/40 text-accent">
+          <WifiOff className="mr-1 h-3 w-3" aria-hidden /> reconnecting
         </Badge>
       )}
     </>
@@ -72,7 +74,7 @@ export function Header({
 
   return (
     <>
-      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-panel px-3 py-2">
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-panel px-3">
         <Button
           variant="ghost"
           size="sm"
@@ -81,11 +83,13 @@ export function Header({
           aria-expanded={navOpen}
         >
           <MessagesSquare className="h-4 w-4" />
-          {conversationCount > 1 && <span className="text-xs">{conversationCount}</span>}
+          {conversationCount > 1 && (
+            <span className="font-mono text-[12px]">{conversationCount}</span>
+          )}
         </Button>
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="shrink-0 font-semibold tracking-tight">aigem</span>
-          {title && <span className="truncate text-sm text-muted">{title}</span>}
+          <span className="shrink-0 text-[15px] font-medium">aigem</span>
+          {title && <span className="truncate text-[13px] text-muted">{title}</span>}
         </div>
 
         {/* Progress stays in the bar at every width: with the rail closed on a
@@ -95,7 +99,7 @@ export function Header({
             aria-label={`Plan ${planDone} of ${planTotal} done`}
             className={cn("shrink-0 font-mono", planDone === planTotal && "border-good/40 text-good")}
           >
-            <ListChecks className="mr-1 h-3 w-3" />
+            <ListChecks className="mr-1 h-3 w-3" aria-hidden />
             {planDone}/{planTotal}
           </Badge>
         ) : null}
@@ -114,18 +118,18 @@ export function Header({
           <FileDiff className="h-4 w-4" />
         </Button>
 
-        <div role="group" aria-label="Desktop session controls" className="hidden shrink-0 items-center gap-2 lg:flex">
+        <div role="group" aria-label="Desktop session controls" className="hidden shrink-0 items-center gap-2 md:flex">
           <Button variant="ghost" size="icon" onClick={openProviders} aria-label="Providers">
             <KeyRound className="h-4 w-4" />
           </Button>
           <SessionBadges {...status} />
         </div>
 
-        {!connected && <WifiOff className="h-4 w-4 shrink-0 text-warn lg:hidden" aria-label="Reconnecting" />}
+        {!connected && <WifiOff className="h-4 w-4 shrink-0 text-accent md:hidden" aria-label="Reconnecting" />}
         <Button
           variant="ghost"
           size="icon"
-          className="shrink-0 lg:hidden"
+          className="shrink-0 md:hidden"
           onClick={() => setMobileOpen((open) => !open)}
           aria-label="More controls"
           aria-expanded={mobileOpen}
@@ -140,7 +144,7 @@ export function Header({
           id="mobile-header-controls"
           role="group"
           aria-label="Mobile session controls"
-          className="shrink-0 overflow-x-auto border-b border-border bg-panel-2 lg:hidden"
+          className="shrink-0 overflow-x-auto border-b border-line bg-raised md:hidden"
         >
           <div className="flex min-w-max items-center gap-2 px-3 py-2">
             <Button variant="ghost" size="sm" onClick={openProviders}>

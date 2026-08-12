@@ -27,18 +27,20 @@ describe("Plan", () => {
     expect(current[0]).toHaveTextContent("Rename the flag");
   });
 
-  it("survives an empty plan without dividing by zero", () => {
-    const { container } = render(<Plan todos={[]} />);
+  it("counts an empty plan rather than rendering a bar with no width", () => {
+    render(<Plan todos={[]} />);
 
+    // A count, not a proportion: there is no ratio to compute and so nothing to
+    // divide by zero, which is what the bar this replaced had to guard against.
     expect(screen.getByText("0/0")).toBeInTheDocument();
-    // The guard being tested is the bar's width, not the counter's text.
-    expect(container.querySelector(".bg-accent")).toHaveStyle({ width: "0%" });
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
   });
 
-  it("fills the bar in proportion to the steps that are done", () => {
-    const { container } = render(<Plan todos={todos} />);
-    expect(container.querySelector(".bg-accent")).toHaveStyle({
-      width: `${(1 / 3) * 100}%`,
-    });
+  it("says a step is done without relying on the colour to say it", () => {
+    render(<Plan todos={todos} />);
+
+    const done = screen.getByText("Read the config");
+    expect(done).toHaveClass("line-through");
+    expect(screen.getByLabelText("Done")).toBeInTheDocument();
   });
 });

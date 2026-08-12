@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { KeyRound, X } from "lucide-react";
 import { api } from "@/lib/protocol";
-import { Badge, Button, Spinner } from "./ui";
+import { Badge, Button, RunDot } from "./ui";
 
 interface ModelView {
   ref: string;
@@ -93,11 +93,11 @@ export function Login({ onClose }: { onClose: () => void }) {
   );
 
   return (
-    <div className="shrink-0 border-b border-border bg-panel-2">
-      <div className="mx-auto max-w-3xl px-3 py-3">
+    <div className="shrink-0 border-b border-line bg-raised">
+      <div className="px-4 py-3">
         <div className="flex items-center gap-2">
           <KeyRound className="h-4 w-4 text-accent" />
-          <span className="text-sm font-medium">Providers</span>
+          <span className="text-[15px] font-medium">Providers</span>
           <Button variant="ghost" size="icon" className="ml-auto" onClick={onClose} title="Close">
             <X className="h-4 w-4" />
           </Button>
@@ -124,7 +124,7 @@ export function Login({ onClose }: { onClose: () => void }) {
         </div>
 
         {flow && (
-          <div className="mt-3 rounded-lg border border-border bg-panel p-3">
+          <div className="mt-3 rounded-lg border border-line bg-panel p-3">
             {flow.state === "done" ? (
               <p className="text-[13px] text-good">Signed in to {flow.provider}.</p>
             ) : flow.state === "failed" ? (
@@ -148,10 +148,10 @@ export function Login({ onClose }: { onClose: () => void }) {
                   </p>
                 )}
                 <div className="mt-2 flex items-center gap-2 text-[12px] text-muted">
-                  <Spinner /> waiting for approval
+                  <RunDot /> waiting for approval
                 </div>
                 {flow.paste && (
-                  <div className="mt-3 border-t border-border pt-3">
+                  <div className="mt-3 border-t border-line pt-3">
                     {/* The provider sends the browser back to that browser's own
                         localhost. On this machine it arrives by itself; from a
                         phone it never can, so it comes back by hand. */}
@@ -163,7 +163,7 @@ export function Login({ onClose }: { onClose: () => void }) {
                         value={pasted}
                         onChange={(e) => setPasted(e.target.value)}
                         placeholder="http://localhost:1455/auth/callback?code=..."
-                        className="min-w-0 flex-1 rounded-md border border-border bg-panel-2 px-2 py-1.5 text-[13px] outline-none placeholder:text-muted focus:border-accent/60"
+                        className="min-w-0 flex-1 rounded-md border border-line bg-raised px-2 py-1.5 text-[13px] outline-none placeholder:text-muted focus:border-accent/60"
                       />
                       <Button size="sm" onClick={() => void paste()} disabled={!pasted.trim()}>
                         Submit

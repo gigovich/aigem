@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Item } from "@/lib/session";
 import { Timeline } from "./timeline";
@@ -29,14 +29,20 @@ describe("Timeline", () => {
     expect(screen.getByText("bash")).toBeInTheDocument();
   });
 
-  it("keeps a plan write that failed, which the rail cannot show", () => {
+  it("keeps a plan write that failed, which the rail cannot show", async () => {
     render(<Timeline items={[...items, failedPlan]} sessionID="s" />);
 
     expect(screen.getByText("todo_write")).toBeInTheDocument();
-    expect(screen.getByText("invalid todos: text is required")).toBeInTheDocument();
+    expect(screen.getByText("failed")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /todo_write/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText("invalid todos: text is required")).toBeInTheDocument();
+    });
   });
 
-  it("prefers the error over the output in the preview", () => {
+  it("says a call failed on the closed row, without its output", () => {
     render(
       <Timeline
         items={[{
@@ -47,29 +53,33 @@ describe("Timeline", () => {
       />,
     );
 
-    expect(screen.getByText("exit status 1")).toBeInTheDocument();
+    // The word, not only the colour. The output that explains it is one click
+    // away rather than crowding the row.
+    expect(screen.getByText("failed")).toBeInTheDocument();
+    expect(screen.queryByText("exit status 1")).not.toBeInTheDocument();
     expect(screen.queryByText("stdout line")).not.toBeInTheDocument();
   });
 
-  it("shows no preview line for a result that is only whitespace", () => {
-    const { container } = render(
-      <Timeline
-        items={[{
-          kind: "tool", seq: 10, id: "10", name: "bash", done: true,
-          args: { cmd: "true" }, result: "   \n  ",
-        }]}
-        sessionID="s"
-      />,
-    );
-
-    expect(container.querySelectorAll("button > span")).toHaveLength(1);
-  });
-
-  it("previews the first line of a result on the closed card", () => {
+  it("closes a call down to one line: the name, one argument and the outcome", () => {
     render(<Timeline items={items} sessionID="s" />);
 
-    expect(screen.getByText("cmd/aigem/main.go:146")).toBeInTheDocument();
+    expect(screen.getByText("bash")).toBeInTheDocument();
+    expect(screen.getByText("grep -R main cmd/")).toBeInTheDocument();
+    expect(screen.getByLabelText("Succeeded")).toBeInTheDocument();
+    // No result, first line or otherwise, until it is opened.
+    expect(screen.queryByText(/cmd\/aigem\/main\.go/)).not.toBeInTheDocument();
     expect(screen.queryByText(/second line/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /bash/ })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("shows the result only once the row is opened", async () => {
+    render(<Timeline items={items} sessionID="s" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /bash/ }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /bash/ })).toHaveAttribute("aria-expanded", "true");
+    });
+    expect(screen.getByText(/cmd\/aigem\/main\.go:146/)).toBeInTheDocument();
   });
 });

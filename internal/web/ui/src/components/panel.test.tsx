@@ -7,7 +7,7 @@ afterEach(cleanup);
 function renderPanel(props: Partial<Parameters<typeof SidePanel>[0]> = {}) {
   const onDismiss = vi.fn();
   render(
-    <SidePanel side="left" open modal title="Conversations" onDismiss={onDismiss} {...props}>
+    <SidePanel side="left" open layout="drawer" title="Conversations" onDismiss={onDismiss} {...props}>
       <p>contents</p>
     </SidePanel>,
   );
@@ -32,7 +32,7 @@ describe("SidePanel", () => {
 
   it("traps Tab and Shift+Tab inside a modal drawer", () => {
     render(
-      <SidePanel side="left" open modal title="Conversations" onDismiss={vi.fn()}>
+      <SidePanel side="left" open layout="drawer" title="Conversations" onDismiss={vi.fn()}>
         <button>First item</button>
         <button>Last item</button>
       </SidePanel>,
@@ -68,13 +68,13 @@ describe("SidePanel", () => {
     document.body.appendChild(opener);
     opener.focus();
     const { rerender } = render(
-      <SidePanel side="left" open modal title="Conversations" onDismiss={vi.fn()}>
+      <SidePanel side="left" open layout="drawer" title="Conversations" onDismiss={vi.fn()}>
         <p>contents</p>
       </SidePanel>,
     );
 
     rerender(
-      <SidePanel side="left" open={false} modal title="Conversations" onDismiss={vi.fn()}>
+      <SidePanel side="left" open={false} layout="drawer" title="Conversations" onDismiss={vi.fn()}>
         <p>contents</p>
       </SidePanel>,
     );
@@ -88,7 +88,7 @@ describe("SidePanel", () => {
     expect(screen.getByRole("dialog", { name: "Conversations" })).toBeInTheDocument();
 
     cleanup();
-    const { onDismiss } = renderPanel({ modal: false });
+    const { onDismiss } = renderPanel({ layout: "docked" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     // Escape belongs to the drawer; a standing column is not something to escape.
     fireEvent.keyDown(window, { key: "Escape" });
