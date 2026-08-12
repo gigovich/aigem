@@ -58,15 +58,19 @@ func (d *LocalDelivery) busyNote(to string) string {
 // operator reading along, which is worse than not sending it.
 func sayAndDeliver(ctx context.Context, w ThreadWriter, d *LocalDelivery, to string,
 	thread ThreadID, text string, o SayOpts) (bool, error) {
-	if err := w.Say(ctx, thread, text, o); err != nil {
+	seq, err := w.Say(ctx, thread, text, o)
+	if err != nil {
 		return false, err
 	}
 	local := d.target(to)
 	if local == "" {
 		return false, nil
 	}
+	// The sequence is what makes the two copies one message. Without it the
+	// recipient acts on both: the store's own fan-out delivers the written
+	// message, and this hands them a second copy with no identity to compare.
 	return d.deliver(ctx, local, Inbound{
-		Kind: "mention", Thread: thread, Author: d.SelfActor, Text: text,
+		Kind: "mention", Thread: thread, Author: d.SelfActor, Text: text, MessageSeq: seq,
 	}), nil
 }
 

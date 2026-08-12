@@ -60,7 +60,11 @@ type ThreadActor = string
 // creating a conversation now means naming its participants, which a channel
 // never required.
 type ThreadWriter interface {
-	Say(ctx context.Context, thread ThreadID, text string, o SayOpts) error
+	// Say writes a message and returns its sequence number. The number is not a
+	// convenience: it is the only identity the in-process copy of a delivered
+	// message shares with the stored one, and without it the recipient runs the
+	// same handoff twice.
+	Say(ctx context.Context, thread ThreadID, text string, o SayOpts) (uint64, error)
 	Open(ctx context.Context, title string, participants []ThreadActor, text string) (ThreadID, error)
 	Join(ctx context.Context, thread ThreadID, actor ThreadActor) error
 	// ActorFor maps a teammate's name to the id the store knows them by, or ""

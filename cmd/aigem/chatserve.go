@@ -52,7 +52,7 @@ func startChatServer(ctx context.Context, addr string, names []string, log *slog
 		return nil, err
 	}
 	hub := chat.NewHub()
-	store.AddPublisher(hub.Publish)
+	_ = store.AddPublisher("hub", hub.Publish)
 
 	if err := registerActors(ctx, store, names); err != nil {
 		_ = store.Close()

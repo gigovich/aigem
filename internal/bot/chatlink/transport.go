@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gigovich/aigem/internal/bot"
 	"github.com/gigovich/aigem/internal/chat"
@@ -47,8 +48,9 @@ type Transport struct {
 	name string
 	log  *slog.Logger
 
-	events   chan bot.Inbound
-	debounce *threadDebouncer
+	events    chan bot.Inbound
+	debounce  *threadDebouncer
+	unpublish func()
 
 	mu      sync.Mutex
 	queue   []bot.Inbound
@@ -71,8 +73,11 @@ func Open(store *chat.Store, name string, log *slog.Logger) *Transport {
 		stopped: make(chan struct{}),
 	}
 	t.debounce = newThreadDebouncer(threadQuietPeriod, t.fireThreadUpdate)
-	store.AddPublisher(t.onFrames)
 	go t.pump()
+	// Registered last, and keyed by this bot's actor id, so a restart replaces
+	// its own predecessor rather than leaving it on the write path - and so no
+	// frame reaches a transport that is still being built.
+	t.unpublish = store.AddPublisher(t.self, t.onFrames)
 	return t
 }
 
@@ -95,6 +100,10 @@ func (t *Transport) Close() error {
 	}
 	t.closed = true
 	t.mu.Unlock()
+	// Unregister this registration, not the key: a restarted bot registers under
+	// the same key before its predecessor closes, and removing by key here would
+	// take the successor off the write path.
+	t.unpublish()
 	t.debounce.stop()
 	close(t.stopped)
 	return nil
@@ -143,18 +152,28 @@ func (t *Transport) enqueue(in bot.Inbound) {
 		// Drop the oldest thread update rather than a message addressed to this
 		// bot: an update is a nudge to re-read a thread that is still there, and
 		// a mention is work someone is waiting on.
-		if i := firstOfKind(t.queue, "thread_update"); i >= 0 {
-			t.queue = append(t.queue[:i], t.queue[i+1:]...)
-			t.logger().Warn("inbound queue is full; dropped a thread update")
-		} else {
+		dropped := firstOfKind(t.queue, "thread_update")
+		if dropped < 0 {
 			t.mu.Unlock()
 			t.logger().Error("inbound queue is full of addressed messages; dropping one",
 				"thread", in.Thread)
 			return
 		}
+		t.queue = append(t.queue[:dropped], t.queue[dropped+1:]...)
+		t.queue = append(t.queue, in)
+		t.mu.Unlock()
+		// Logged outside the lock: this runs on the goroutine that just held the
+		// store's single writer, and a slow log handler there stalls the fleet.
+		t.logger().Warn("inbound queue is full; dropped a thread update")
+		t.signal()
+		return
 	}
 	t.queue = append(t.queue, in)
 	t.mu.Unlock()
+	t.signal()
+}
+
+func (t *Transport) signal() {
 	select {
 	case t.wake <- struct{}{}:
 	default:
@@ -211,16 +230,41 @@ func (t *Transport) pump() {
 // ---- writing ----
 
 // Reply answers in the thread the turn was woken in.
+//
+// The context is Background rather than the turn's: an answer that has already
+// been produced should be written even as the bot is being shut down. It is
+// safe because the fleet waits for every bot before closing the store.
 func (t *Transport) Reply(thread bot.ThreadID, text string) error {
-	return t.Say(context.Background(), thread, text, bot.SayOpts{})
+	_, err := t.Say(context.Background(), thread, text, bot.SayOpts{})
+	return err
 }
 
-// Say posts into a thread this bot is in.
-func (t *Transport) Say(ctx context.Context, thread bot.ThreadID, text string, o bot.SayOpts) error {
-	_, err := t.store.Say(ctx, string(thread), chat.Draft{
-		Author: t.self, Body: text, Mentions: o.Mentions, AwaitReply: o.AwaitReply,
+// Say posts into a thread this bot is in and returns the message's sequence.
+//
+// A body past what the store accepts is truncated rather than refused. The
+// alternative is what the old transport avoided by splitting into 16k chunks:
+// the model believes it answered, the write is rejected, and the human sees
+// silence.
+func (t *Transport) Say(ctx context.Context, thread bot.ThreadID, text string, o bot.SayOpts) (uint64, error) {
+	m, err := t.store.Say(ctx, string(thread), chat.Draft{
+		Author: t.self, Body: bound(text), Mentions: o.Mentions, AwaitReply: o.AwaitReply,
 	})
-	return err
+	return m.Seq, err
+}
+
+// bound trims a message to what the store accepts, saying that it did. The
+// deliverable belongs in a file - the long-deliverables skill says so - but a
+// truncated answer with a note beats an answer nobody ever sees.
+func bound(text string) string {
+	const note = "\n\n[truncated: the rest belongs in a file, not a message]"
+	if len(text) <= chat.MaxBodyBytes {
+		return text
+	}
+	cut := text[:chat.MaxBodyBytes-len(note)]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + note
 }
 
 // Open starts a conversation. Participants are the whole authorization

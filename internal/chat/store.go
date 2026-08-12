@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite" // pure Go; see openDB
@@ -50,6 +52,8 @@ type Store struct {
 
 	// now is injectable so tests can place events in time without sleeping.
 	now func() time.Time
+
+	pubMu sync.RWMutex
 	// publish receives the frames a committed write produced.
 	//
 	// There is a slice of them because the daemon has two consumers that must
@@ -62,7 +66,17 @@ type Store struct {
 	// need the hub, which needs the store - and are called synchronously from
 	// the write path, so none of them may block: a slow one would stall the
 	// writer the whole fleet is queued behind.
-	publishers []func([]Frame)
+	publishers map[string]publisher
+	pubGen     uint64
+}
+
+// publisher is one registered consumer, tagged with the registration that
+// installed it. The tag is what makes unregistering safe: a bot that restarts
+// registers under the same key before the old transport closes, and an
+// untagged delete would then remove its successor.
+type publisher struct {
+	gen uint64
+	fn  func([]Frame)
 }
 
 // Open opens (and migrates) the store under dir, which holds the database and
@@ -149,8 +163,47 @@ func openDB(path string, maxOpen int) (*sql.DB, error) {
 	return db, nil
 }
 
-// AddPublisher registers a consumer of committed writes. See the field.
-func (s *Store) AddPublisher(f func([]Frame)) { s.publishers = append(s.publishers, f) }
+// AddPublisher registers a consumer of committed writes under a key, replacing
+// whatever was registered under it before, and returns a function that
+// unregisters exactly this registration.
+//
+// Keyed rather than appended because a bot that crashes is restarted in place:
+// appending would leave the dead transport's callback pinned for the life of
+// the process, called on every write, one more copy per restart. The returned
+// function is scoped to its own registration because the restart order is
+// register-then-close, so a plain delete-by-key would remove the successor.
+func (s *Store) AddPublisher(key string, f func([]Frame)) (remove func()) {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	if s.publishers == nil {
+		s.publishers = map[string]publisher{}
+	}
+	s.pubGen++
+	gen := s.pubGen
+	s.publishers[key] = publisher{gen: gen, fn: f}
+	return func() {
+		s.pubMu.Lock()
+		defer s.pubMu.Unlock()
+		if cur, ok := s.publishers[key]; ok && cur.gen == gen {
+			delete(s.publishers, key)
+		}
+	}
+}
+
+// publishersSnapshot copies the map under the read lock. Registration happens
+// while the store is already serving - bots start one after another, and a
+// supervisor restarts one while the others write - so ranging the map directly
+// from the write path is a race, and one that loses a registration outright
+// would leave a bot running, logging healthily, and hearing nothing.
+func (s *Store) publishersSnapshot() []func([]Frame) {
+	s.pubMu.RLock()
+	defer s.pubMu.RUnlock()
+	out := make([]func([]Frame), 0, len(s.publishers))
+	for _, p := range s.publishers {
+		out = append(out, p.fn)
+	}
+	return out
+}
 
 // Dir is where the store keeps its files.
 func (s *Store) Dir() string { return s.dir }
@@ -182,7 +235,7 @@ func (s *Store) write(ctx context.Context, op string, fn func(tx *sql.Tx, out *[
 		return fmt.Errorf("chat: %s: %w", op, err)
 	}
 	if len(frames) > 0 {
-		for _, publish := range s.publishers {
+		for _, publish := range s.publishersSnapshot() {
 			publish(frames)
 		}
 	}
@@ -633,6 +686,18 @@ func (s *Store) Say(ctx context.Context, threadID string, m Draft) (Message, err
 		if err := requireParticipant(ctx, tx, threadID, m.Author); err != nil {
 			return err
 		}
+		// "@name" in the body is a mention. Nothing else in the product produces
+		// one - the composer and the CLI both post plain text - so without this a
+		// person could address a bot only in a thread where they were alone with
+		// it, and every message in a shared thread would wait out the quiet
+		// period and arrive as an unaddressed update.
+		named, err := mentionedInBody(ctx, tx, threadID, body)
+		if err != nil {
+			return err
+		}
+		if len(named) > 0 {
+			out.Mentions = dedupeActors(append(slices.Clone(out.Mentions), named...))
+		}
 		seq, err := nextSeq(ctx, tx)
 		if err != nil {
 			return err
@@ -641,7 +706,7 @@ func (s *Store) Say(ctx context.Context, threadID string, m Draft) (Message, err
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO messages (seq, thread_id, author_id, body, kind, mentions, await, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			seq, threadID, m.Author, body, m.Kind, padMentions(mentions),
+			seq, threadID, m.Author, body, m.Kind, padMentions(out.Mentions),
 			boolInt(m.AwaitReply), out.Created.UnixMilli()); err != nil {
 			return err
 		}
@@ -664,6 +729,49 @@ func (s *Store) Say(ctx context.Context, threadID string, m Draft) (Message, err
 // claimAttachments links uploads to the message carrying them, and refuses an
 // id that is not an upload in this thread. Ignoring those silently let a
 // published frame advertise a file the stored transcript would never return.
+// mentionRe finds "@name" at a word boundary, which is how a person writes one
+// and what every chat product they have used would have parsed.
+var mentionRe = regexp.MustCompile(`@([A-Za-z0-9._-]{1,64})`)
+
+// mentionedInBody resolves the "@name"s in a message to participants of this
+// thread.
+//
+// Only participants: naming someone who is not in the conversation cannot wake
+// them - they cannot see it - and silently resolving it would make the message
+// look addressed to a reader who will never get it.
+func mentionedInBody(ctx context.Context, tx *sql.Tx, threadID, body string) ([]string, error) {
+	found := mentionRe.FindAllStringSubmatch(body, -1)
+	if len(found) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx,
+		`SELECT a.id, a.name FROM participants p JOIN actors a ON a.id = p.actor_id
+		  WHERE p.thread_id = ?`, threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	byName := map[string]string{}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		byName[strings.ToLower(name)] = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, m := range found {
+		if id, ok := byName[strings.ToLower(m[1])]; ok {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
 func claimAttachments(ctx context.Context, tx *sql.Tx, threadID string, seq uint64, ids []string) error {
 	for _, id := range ids {
 		res, err := tx.ExecContext(ctx,

@@ -152,8 +152,8 @@ func TestOperatingProtocolWarnsAgainstMentionLoops(t *testing.T) {
 	if !strings.Contains(got, "acknowledgement loop") {
 		t.Error("operating protocol must warn against bot-to-bot acknowledgement loops")
 	}
-	if !strings.Contains(got, "wakes every bot in it") {
-		t.Error("operating protocol must explain that posting into a thread wakes the bots in it")
+	if !strings.Contains(got, "wakes them now") {
+		t.Error("operating protocol must explain that naming someone is what wakes them")
 	}
 }
 

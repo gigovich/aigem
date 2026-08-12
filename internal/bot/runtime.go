@@ -616,6 +616,13 @@ func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in I
 
 	log.Info("inbound", "thread", key, "kind", in.Kind, "author", in.Author)
 
+	// Captured by the deferred journal close below, which has to report what the
+	// turn actually ended with.
+	var (
+		lastAnswer string
+		lastErr    error
+	)
+
 	if in.Kind == "mention" {
 		r.noteAddressed(st, in)
 	}
@@ -625,9 +632,18 @@ func (r *Runtime) runTurn(ctx context.Context, key string, st *threadState, in I
 
 	budgetReason := ""
 	ev := r.logEvents(in)
+	// The timeline is what puts this turn's tool calls, diffs and plan in front
+	// of a person. Without it a bot's work reaches only the log, which is what
+	// the chat product it replaced could show and no more.
+	if j, ok := r.transport.(Journaller); ok {
+		jev, done := j.TurnEvents(in.Thread, in.Author)
+		ev = mergeEvents(ev, jev)
+		defer func() { done(lastAnswer, lastErr) }()
+	}
 	ev.OnBudgetExhausted = func(reason string) { budgetReason = reason }
 
 	answer, err := r.run(ctx, st.runner, input, images, ev)
+	lastAnswer, lastErr = answer, err
 	if err != nil {
 		r.handleRunErr(ctx, key, st, in, err)
 		return
@@ -798,4 +814,109 @@ func appendNote(answer, note string) string {
 		return note
 	}
 	return answer + "\n\n" + note
+}
+
+// mergeEvents calls both sinks for every callback.
+//
+// agent.Events is a struct of functions rather than an interface, so there is
+// no wrapping to do: each field is either present on one side, the other, or
+// both. A bot's steps go to the log and to the thread's timeline, and neither
+// is allowed to swallow the other.
+func mergeEvents(a, b agent.Events) agent.Events {
+	return agent.Events{
+		OnContent:          both1(a.OnContent, b.OnContent),
+		OnReasoning:        both1(a.OnReasoning, b.OnReasoning),
+		OnAssistantMessage: both1(a.OnAssistantMessage, b.OnAssistantMessage),
+		OnNotice:           both1(a.OnNotice, b.OnNotice),
+		OnUsage:            both1(a.OnUsage, b.OnUsage),
+		OnTodoUpdate:       both1(a.OnTodoUpdate, b.OnTodoUpdate),
+		OnBudgetExhausted:  both1(a.OnBudgetExhausted, b.OnBudgetExhausted),
+		OnToolBatch:        both2(a.OnToolBatch, b.OnToolBatch),
+		OnToolStart: func(id, name string, args json.RawMessage) {
+			call1(a.OnToolStart, id, name, args)
+			call1(b.OnToolStart, id, name, args)
+		},
+		OnToolEnd: func(id, name, result string, err error) {
+			call2(a.OnToolEnd, id, name, result, err)
+			call2(b.OnToolEnd, id, name, result, err)
+		},
+		OnAgentStart: func(id, name, prompt string) {
+			call3(a.OnAgentStart, id, name, prompt)
+			call3(b.OnAgentStart, id, name, prompt)
+		},
+		OnAgentEnd: func(id, result string, err error) {
+			call4(a.OnAgentEnd, id, result, err)
+			call4(b.OnAgentEnd, id, result, err)
+		},
+		OnSubToolStart: func(runID, name, callID, tool string, args json.RawMessage) {
+			call5(a.OnSubToolStart, runID, name, callID, tool, args)
+			call5(b.OnSubToolStart, runID, name, callID, tool, args)
+		},
+		OnSubToolEnd: func(runID, name, callID, tool, result string, err error) {
+			call6(a.OnSubToolEnd, runID, name, callID, tool, result, err)
+			call6(b.OnSubToolEnd, runID, name, callID, tool, result, err)
+		},
+		OnSubNotice: func(runID, name, text string) {
+			call3(a.OnSubNotice, runID, name, text)
+			call3(b.OnSubNotice, runID, name, text)
+		},
+	}
+}
+
+func both1[T any](a, b func(T)) func(T) {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return func(v T) { a(v); b(v) }
+}
+
+func both2(a, b func(int, []agent.ToolCallRef)) func(int, []agent.ToolCallRef) {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return func(round int, calls []agent.ToolCallRef) { a(round, calls); b(round, calls) }
+}
+
+func call1(f func(string, string, json.RawMessage), id, name string, args json.RawMessage) {
+	if f != nil {
+		f(id, name, args)
+	}
+}
+
+func call2(f func(string, string, string, error), id, name, result string, err error) {
+	if f != nil {
+		f(id, name, result, err)
+	}
+}
+
+func call3(f func(string, string, string), a, b, c string) {
+	if f != nil {
+		f(a, b, c)
+	}
+}
+
+func call4(f func(string, string, error), id, result string, err error) {
+	if f != nil {
+		f(id, result, err)
+	}
+}
+
+func call5(f func(string, string, string, string, json.RawMessage), runID, name, callID, tool string,
+	args json.RawMessage) {
+	if f != nil {
+		f(runID, name, callID, tool, args)
+	}
+}
+
+func call6(f func(string, string, string, string, string, error), runID, name, callID, tool,
+	result string, err error) {
+	if f != nil {
+		f(runID, name, callID, tool, result, err)
+	}
 }

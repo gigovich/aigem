@@ -14,7 +14,7 @@ func TestEveryPublishedFrameCarriesItsAudience(t *testing.T) {
 	ctx := t.Context()
 
 	var got []Frame
-	s.AddPublisher(func(f []Frame) { got = append(got, f...) })
+	_ = s.AddPublisher("test", func(f []Frame) { got = append(got, f...) })
 
 	th, err := s.NewThread(ctx, "retries", Operator, []string{amiran})
 	if err != nil {
@@ -83,7 +83,7 @@ func TestARemovedParticipantHearsAboutIt(t *testing.T) {
 	th := mustThread(t, s, "retries", amiran, demetre)
 
 	var got []Frame
-	s.AddPublisher(func(f []Frame) { got = append(got, f...) })
+	_ = s.AddPublisher("test", func(f []Frame) { got = append(got, f...) })
 	if err := s.RemoveParticipant(ctx, Operator, th.ID, demetre); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestHubCloseDetachesEveryone(t *testing.T) {
 func TestAttachLosesNothingWrittenWhileTheBacklogIsRead(t *testing.T) {
 	s := newStore(t)
 	hub := NewHub()
-	s.AddPublisher(hub.Publish)
+	_ = s.AddPublisher("hub", hub.Publish)
 	ctx := t.Context()
 	th := mustThread(t, s, "retries", amiran)
 	first := mustSay(t, s, th.ID, amiran, "before the fetch")

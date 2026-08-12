@@ -29,6 +29,9 @@ func (t *Transport) TurnEvents(thread bot.ThreadID, _ string) (agent.Events, fun
 		return agent.Events{}, func(string, error) {}
 	}
 	emit := func(ev uisession.Event) {
+		if skipInTimeline(ev.Kind) {
+			return
+		}
 		payload, blob := split(ev)
 		body, err := json.Marshal(payload)
 		if err != nil {
@@ -53,6 +56,22 @@ func (t *Transport) TurnEvents(thread bot.ThreadID, _ string) (agent.Events, fun
 	}
 	emit(uisession.Event{Kind: uisession.KindTurnStart})
 	return uisession.Bridge(emit), done
+}
+
+// skipInTimeline drops the per-delta events.
+//
+// uisession.Bridge fires OnContent and OnReasoning once per streamed chunk, and
+// its journal is a buffered file that can take that. Here every event is a
+// transaction on the single writer the whole fleet queues behind, plus a
+// thread frame and a fan-out to every subscriber - so one turn's streaming
+// would stall every other bot's message.
+//
+// Nothing is lost that a reader needs: the assistant's finished text arrives as
+// assistant_message, and the answer arrives again on turn_end. What the browser
+// gives up is the token-by-token caret, which a turn nobody is watching live
+// does not need.
+func skipInTimeline(kind uisession.Kind) bool {
+	return kind == uisession.KindContent || kind == uisession.KindReasoning
 }
 
 // split prepares an event for storage: an oversized tool result is replaced by

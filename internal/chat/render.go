@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Transcript renders a thread the way a model should read it: oldest first,
@@ -42,9 +43,16 @@ func (s *Store) Transcript(ctx context.Context, actor, threadID string, budget i
 	used, dropped := 0, 0
 	for _, m := range msgs {
 		line := transcriptLine(m, names)
-		if used+len(line) > budget && len(lines) > 0 {
-			dropped = len(msgs) - len(lines)
-			break
+		if used+len(line) > budget {
+			if len(lines) > 0 {
+				dropped = len(msgs) - len(lines)
+				break
+			}
+			// The newest message alone is over budget. Including it whole - which
+			// a "always keep at least one" guard would do - hands the model a
+			// quarter-megabyte input on every later turn in this thread, and the
+			// provider refuses the lot.
+			line = clip(line, budget)
 		}
 		used += len(line)
 		lines = append(lines, line)
@@ -66,6 +74,19 @@ func (s *Store) Transcript(ctx context.Context, actor, threadID string, budget i
 		b.WriteString(line)
 	}
 	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// clip cuts a line to a byte budget on a rune boundary and says that it did.
+func clip(line string, budget int) string {
+	const note = "… [message truncated]\n"
+	if budget <= len(note) {
+		return note
+	}
+	cut := line[:budget-len(note)]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + note
 }
 
 func transcriptLine(m Message, names map[string]string) string {

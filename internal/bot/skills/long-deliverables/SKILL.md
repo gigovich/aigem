@@ -4,8 +4,9 @@ description: >-
   How to deliver a long-form result (research note, design, report). Load when a reply would
   exceed roughly a screen, before posting it.
 ---
-Nothing truncates a message, but a long dump is hard to read and easy to lose in a thread, and
-it costs every reader of that thread the context window to hold it. Do not paste the whole
+A message past a quarter of a megabyte is cut with a note saying so, and long before that a dump
+is hard to read, easy to lose in a thread, and costs every reader of that thread the context
+window to hold it. Do not paste the whole
 deliverable into the thread. Save it instead: write the full content to a Markdown file with
 write_file (under the working directory, for example docs/), or add it to the project wiki.
 Then reply with a short summary, the key findings, and a pointer to the full result, and ask

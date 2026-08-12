@@ -22,7 +22,7 @@ func testAPI(t *testing.T) (*Store, *httptest.Server) {
 	t.Helper()
 	s := newStore(t)
 	hub := NewHub()
-	s.AddPublisher(hub.Publish)
+	_ = s.AddPublisher("hub", hub.Publish)
 
 	mux := http.NewServeMux()
 	NewAPI(s, hub).Mount(mux, func(h http.HandlerFunc) http.HandlerFunc { return h })
@@ -462,7 +462,7 @@ func TestThreadSocketEmitsBareEvents(t *testing.T) {
 func TestHubDeliversOnlyToTheAudienceOnTheFrame(t *testing.T) {
 	s := newStore(t)
 	hub := NewHub()
-	s.AddPublisher(hub.Publish)
+	_ = s.AddPublisher("hub", hub.Publish)
 	ctx := t.Context()
 
 	th := mustThread(t, s, "private", amiran)
@@ -505,7 +505,7 @@ func TestHubDeliversOnlyToTheAudienceOnTheFrame(t *testing.T) {
 func TestHubDropsASubscriberThatStopsReading(t *testing.T) {
 	s := newStore(t)
 	hub := NewHub()
-	s.AddPublisher(hub.Publish)
+	_ = s.AddPublisher("hub", hub.Publish)
 	th := mustThread(t, s, "busy", amiran)
 
 	client := attachClient(t, hub, Operator)

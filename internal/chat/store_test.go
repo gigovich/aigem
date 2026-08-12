@@ -890,7 +890,7 @@ func TestPublisherSeesFramesOnlyAfterTheCommit(t *testing.T) {
 
 	var mu sync.Mutex
 	var got []Frame
-	s.AddPublisher(func(f []Frame) {
+	_ = s.AddPublisher("test", func(f []Frame) {
 		mu.Lock()
 		defer mu.Unlock()
 		// If this ran inside the transaction, the row would not be readable yet

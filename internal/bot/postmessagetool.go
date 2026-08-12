@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/gigovich/aigem/internal/tools"
@@ -34,8 +35,10 @@ func (t *postMessageTool) Description() string {
 		"answer: it puts the thread at the top of their inbox and marks it as waiting for them. " +
 		"Do not set it for progress notes; a thread that asks for attention it does not need " +
 		"trains them to ignore the marker. Use this to deliver a scheduled run's result: pass " +
-		"the thread id you recorded in the job's prompt. When you are answering someone live, do " +
-		"not use this at all - your turn's answer is posted into the thread you were woken in."
+		"the thread id you recorded in the job's prompt. Pass mentions (names) to address the " +
+		"message to particular people: they are woken now, and everyone else in the thread reads " +
+		"it when they next look. When you are answering someone live, do not use this at all - " +
+		"your turn's answer is posted into the thread you were woken in."
 }
 
 func (t *postMessageTool) Schema() json.RawMessage {
@@ -47,7 +50,9 @@ func (t *postMessageTool) Schema() json.RawMessage {
 				"description":"to open a new thread: bot names and/or \"operator\""},
 			"title":{"type":"string","description":"short title for a new thread"},
 			"text":{"type":"string","description":"the message to post"},
-			"await_reply":{"type":"boolean","description":"true when the operator must answer"}
+			"await_reply":{"type":"boolean","description":"true when the operator must answer"},
+			"mentions":{"type":"array","items":{"type":"string"},
+				"description":"names to address the message to; they are woken now"}
 		},
 		"required":["text"]
 	}`)
@@ -60,6 +65,7 @@ func (t *postMessageTool) Run(ctx context.Context, rawArgs json.RawMessage) (str
 		Title        string   `json:"title"`
 		Text         string   `json:"text"`
 		AwaitReply   bool     `json:"await_reply"`
+		Mentions     []string `json:"mentions"`
 	}
 	if err := json.Unmarshal(rawArgs, &a); err != nil {
 		return "", err
@@ -68,10 +74,14 @@ func (t *postMessageTool) Run(ctx context.Context, rawArgs json.RawMessage) (str
 	if text == "" {
 		return "", fmt.Errorf("text is required")
 	}
-	opts := SayOpts{AwaitReply: a.AwaitReply}
+	mentions, err := t.actors(a.Mentions)
+	if err != nil {
+		return "", err
+	}
+	opts := SayOpts{AwaitReply: a.AwaitReply, Mentions: mentions}
 
 	if thread := strings.TrimSpace(a.Thread); thread != "" {
-		if err := t.w.Say(ctx, ThreadID(thread), text, opts); err != nil {
+		if _, err := t.w.Say(ctx, ThreadID(thread), text, opts); err != nil {
 			return "", err
 		}
 		return "posted in thread " + thread, nil
@@ -86,6 +96,12 @@ func (t *postMessageTool) Run(ctx context.Context, rawArgs json.RawMessage) (str
 	actors, err := t.actors(a.Participants)
 	if err != nil {
 		return "", err
+	}
+	// A thread with no person in it is one the operator will never see. handoff
+	// puts them in for exactly this reason, and there is no case where a bot
+	// should open a conversation nobody can read.
+	if op := t.w.ActorFor("operator"); op != "" && !slices.Contains(actors, op) {
+		actors = append(actors, op)
 	}
 	title := strings.TrimSpace(a.Title)
 	if title == "" {

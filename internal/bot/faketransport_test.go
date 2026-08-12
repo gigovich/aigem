@@ -67,17 +67,17 @@ func newFakeWriter(threads ...string) *fakeWriter {
 	return f
 }
 
-func (f *fakeWriter) Say(_ context.Context, thread ThreadID, text string, o SayOpts) error {
+func (f *fakeWriter) Say(_ context.Context, thread ThreadID, text string, o SayOpts) (uint64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sayErr != nil {
-		return f.sayErr
+		return 0, f.sayErr
 	}
 	if !f.threads[string(thread)] {
-		return errors.New("chat: no such thread")
+		return 0, errors.New("chat: no such thread")
 	}
 	f.said = append(f.said, saidMessage{Thread: thread, Text: text, Opts: o})
-	return nil
+	return uint64(len(f.said)), nil
 }
 
 func (f *fakeWriter) Open(_ context.Context, title string, participants []ThreadActor, text string) (ThreadID, error) {

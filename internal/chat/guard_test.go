@@ -358,7 +358,7 @@ func TestCloseStaleTurnsPublishesTheThreadsItTouched(t *testing.T) {
 	}
 
 	var published []Frame
-	s.AddPublisher(func(f []Frame) { published = append(published, f...) })
+	_ = s.AddPublisher("test", func(f []Frame) { published = append(published, f...) })
 	n, err := s.CloseStaleTurns(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -385,7 +385,7 @@ func TestARefusedWritePublishesNothing(t *testing.T) {
 	th := mustThread(t, s, "private", amiran)
 
 	var published int
-	s.AddPublisher(func(f []Frame) { published += len(f) })
+	_ = s.AddPublisher("test", func(f []Frame) { published += len(f) })
 	if _, err := s.Say(ctx, th.ID, Draft{Author: jane, Body: "hello"}); err == nil {
 		t.Fatal("an outsider's message was accepted")
 	}
