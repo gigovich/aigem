@@ -1,6 +1,6 @@
 //go:build !windows
 
-package chat
+package daemonstate
 
 import "syscall"
 

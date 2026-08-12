@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,12 +50,19 @@ type Store struct {
 
 	// now is injectable so tests can place events in time without sleeping.
 	now func() time.Time
-	// publish receives the frames a committed write produced. It is set once by
-	// the hub before the store serves - a constructor argument would need the
-	// hub, which needs the store. It is called synchronously from the write
-	// path, so it must not block: a slow subscriber would otherwise stall the
-	// fleet's writer.
-	publish func([]Frame)
+	// publish receives the frames a committed write produced.
+	//
+	// There is a slice of them because the daemon has two consumers that must
+	// both see every write: the hub, which fans out to the browser, and the
+	// fleet's router, which turns a message into work for the bot it addresses.
+	// A single slot would have let the second registration silently replace the
+	// first.
+	//
+	// They are registered before the store serves - a constructor argument would
+	// need the hub, which needs the store - and are called synchronously from
+	// the write path, so none of them may block: a slow one would stall the
+	// writer the whole fleet is queued behind.
+	publishers []func([]Frame)
 }
 
 // Open opens (and migrates) the store under dir, which holds the database and
@@ -141,8 +149,8 @@ func openDB(path string, maxOpen int) (*sql.DB, error) {
 	return db, nil
 }
 
-// SetPublisher installs the fan-out a committed write feeds. See the field.
-func (s *Store) SetPublisher(f func([]Frame)) { s.publish = f }
+// AddPublisher registers a consumer of committed writes. See the field.
+func (s *Store) AddPublisher(f func([]Frame)) { s.publishers = append(s.publishers, f) }
 
 // Dir is where the store keeps its files.
 func (s *Store) Dir() string { return s.dir }
@@ -173,8 +181,10 @@ func (s *Store) write(ctx context.Context, op string, fn func(tx *sql.Tx, out *[
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("chat: %s: %w", op, err)
 	}
-	if s.publish != nil && len(frames) > 0 {
-		s.publish(frames)
+	if len(frames) > 0 {
+		for _, publish := range s.publishers {
+			publish(frames)
+		}
 	}
 	return nil
 }
@@ -423,6 +433,17 @@ func (s *Store) DeleteThread(ctx context.Context, actor, threadID string) error 
 	})
 }
 
+// countKind counts actors of one kind in an id list.
+func countKind(actors []string, kind string) int {
+	n := 0
+	for _, a := range actors {
+		if kindOf(a) == kind {
+			n++
+		}
+	}
+	return n
+}
+
 func participantsOf(ctx context.Context, tx *sql.Tx, threadID string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT actor_id FROM participants WHERE thread_id = ? ORDER BY actor_id`, threadID)
@@ -491,13 +512,20 @@ func (s *Store) RemoveParticipant(ctx context.Context, removedBy, threadID, acto
 		if removedBy != actor && kindOf(removedBy) != KindHuman {
 			return invalid("a bot may only remove itself from a thread")
 		}
-		var left int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT count(*) FROM participants WHERE thread_id = ?`, threadID).Scan(&left); err != nil {
+		// Read the audience before the removal. The frames of this write have to
+		// reach the actor who just left, or their client keeps rendering a thread
+		// it no longer has access to until someone reloads it.
+		before, err := participantsOf(ctx, tx, threadID)
+		if err != nil {
 			return err
 		}
-		if left <= 1 {
+		if len(before) <= 1 {
 			return invalid("a thread cannot be left with no participants")
+		}
+		if kindOf(actor) == KindHuman && countKind(before, KindHuman) <= 1 {
+			// The operator has no way back in: adding a participant requires
+			// being one. Self-eviction would be an irrecoverable lockout.
+			return invalid("the last person in a thread cannot be removed from it")
 		}
 		res, err := tx.ExecContext(ctx,
 			`DELETE FROM participants WHERE thread_id = ? AND actor_id = ?`, threadID, actor)
@@ -507,10 +535,17 @@ func (s *Store) RemoveParticipant(ctx context.Context, removedBy, threadID, acto
 		if n, err := res.RowsAffected(); err != nil {
 			return err
 		} else if n == 0 {
-			return nil
+			return invalid("%s is not in this thread", actor)
 		}
 		_, name := ActorName(actor)
-		return s.systemMessage(ctx, tx, out, threadID, removedBy, name+" left the thread")
+		if err := s.systemMessage(ctx, tx, out, threadID, removedBy, name+" left the thread"); err != nil {
+			return err
+		}
+		// Overwrite, not fill: publishThread has already addressed these frames
+		// to the participants that are left, and the one who was just removed is
+		// exactly who most needs to hear it.
+		readdressTo(*out, threadID, before)
+		return nil
 	})
 }
 
@@ -782,9 +817,25 @@ func (s *Store) publishThread(ctx context.Context, tx *sql.Tx, frames *[]Frame, 
 // addressTo fills in the audience of every frame for a thread that does not
 // have one yet.
 func addressTo(frames []Frame, threadID string, participants []string) {
+	address(frames, threadID, participants, false)
+}
+
+// readdressTo replaces the audience of a thread's frames, for the one write
+// where it has to widen after the fact.
+func readdressTo(frames []Frame, threadID string, participants []string) {
+	address(frames, threadID, participants, true)
+}
+
+func address(frames []Frame, threadID string, participants []string, overwrite bool) {
+	// Cloned because the same slice would otherwise back every frame of the
+	// write and, through ThreadView.Participants, reach the wire as well.
+	audience := slices.Clone(participants)
 	for i := range frames {
-		if frames[i].ThreadID == threadID && frames[i].To == nil {
-			frames[i].To = participants
+		if frames[i].ThreadID != threadID {
+			continue
+		}
+		if overwrite || frames[i].To == nil {
+			frames[i].To = audience
 		}
 	}
 }

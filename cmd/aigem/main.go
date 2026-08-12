@@ -73,6 +73,7 @@ const topLevelUsage = `usage:
   aigem bot ...              define and run unattended chat bots
   aigem web run              serve the web UI on 127.0.0.1
   aigem attach [<id>]        follow a conversation running in the daemon
+  aigem chat ...             read and drive the bot fleet's conversations
   aigem version              print the version
 
 flags:`

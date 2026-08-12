@@ -52,13 +52,12 @@ type fleetResources struct {
 // botStart runs the named bots, or the whole configured fleet when no name is
 // given. Every bot gets its own goroutine, transport, scheduler and agent; they
 // share this process, its provider connections and its caps.
-func botStart(names []string) error {
-	for _, a := range names {
-		if strings.HasPrefix(a, "-") {
-			return fmt.Errorf("unknown flag %q\n\nusage: aigem bot start [<name>...]", a)
-		}
+func botStart(args []string) error {
+	addr, names, err := chatAddrFlag(args)
+	if err != nil {
+		return fmt.Errorf("%w\n\nusage: aigem bot start [--addr host:port] [<name>...]", err)
 	}
-	names, err := resolveBotNames(names)
+	names, err = resolveBotNames(names)
 	if err != nil {
 		return err
 	}
@@ -83,6 +82,16 @@ func botStart(names []string) error {
 	}
 	slog.Info("fleet limits", "bots", len(names), "max_turns", shared.turns.Cap(),
 		"max_browsers", limits.BrowserCap())
+
+	// The conversation store and the daemon serving it come up before any bot,
+	// so a bot that fails to start is still visible in a UI that is already
+	// running - and so the operator can reach the fleet even when none of it
+	// came up.
+	chatSrv, err := startChatServer(ctx, addr, names, slog.Default())
+	if err != nil {
+		return err
+	}
+	defer chatSrv.Close()
 
 	// Start sequentially and wait for each to be connected before the next: one
 	// Mattermost account allows one websocket, and opening several at once is what

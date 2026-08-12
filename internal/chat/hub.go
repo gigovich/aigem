@@ -19,63 +19,84 @@ const queueCap = 512
 // the database once per frame per subscriber on a path that holds the writer.
 type Hub struct {
 	mu   sync.Mutex
-	subs map[uint64]*subscriber
-	next uint64
+	subs map[*Client]struct{}
 }
 
-type subscriber struct {
+// Client is one attached reader. It is a handle rather than an id because the
+// only thing an id bought was a map lookup that silently did nothing when the
+// client had already detached.
+type Client struct {
+	hub   *Hub
 	actor string
+	out   *fanout.Sub[Frame]
+	once  sync.Once
+
 	// watch is the one thread whose timeline this client wants. A fleet
 	// mid-turn produces hundreds of events a minute across every thread, and
 	// shipping all of them to a client showing a list is how the fan-out budget
-	// goes.
+	// goes. It is guarded by the hub's lock, which Publish already holds.
 	watch string
-	out   *fanout.Sub[Frame]
 }
 
-func NewHub() *Hub { return &Hub{subs: map[uint64]*subscriber{}} }
+func NewHub() *Hub { return &Hub{subs: map[*Client]struct{}{}} }
 
-// Attach adds a client and returns its stream, a handle for Watch, and a
-// function to detach. backlog is history the client already asked for; it does
-// not count against the queue bound.
-func (h *Hub) Attach(actor string, backlog []Frame) (id uint64, out <-chan Frame, detach func()) {
-	sub := &subscriber{
+// Attach adds a client and gives it everything after since.
+//
+// The hub fetches the backlog rather than taking one, because only doing it in
+// this order closes the window: the client is registered first, with everything
+// at or below since suppressed, and the history is then spliced in front of
+// whatever arrived while it was being read. Fetching first and registering
+// after would lose any write that committed in between - which for a SQLite
+// read is a real interval, not a theoretical one.
+func (h *Hub) Attach(actor string, since uint64, backlog func(uint64) ([]Frame, error)) (*Client, error) {
+	c := &Client{
+		hub:   h,
 		actor: actor,
 		out: fanout.New(fanout.Config[Frame]{
 			QueueCap: queueCap,
-			Backlog:  backlog,
+			SkipTo:   since,
 			SeqOf:    func(f Frame) uint64 { return f.Seq },
 			OnDrop: func(last uint64) Frame {
-				return Frame{Stream: StreamDesync, From: last}
+				return Frame{Seq: last, Stream: StreamDesync, From: last}
 			},
 		}),
 	}
 	h.mu.Lock()
-	h.next++
-	id = h.next
-	h.subs[id] = sub
+	h.subs[c] = struct{}{}
 	h.mu.Unlock()
 
-	go sub.out.Run()
-	var once sync.Once
-	return id, sub.out.Out(), func() {
-		once.Do(func() {
-			h.mu.Lock()
-			delete(h.subs, id)
-			h.mu.Unlock()
-			sub.out.Stop()
-		})
+	if backlog != nil {
+		history, err := backlog(since)
+		if err != nil {
+			c.Detach()
+			return nil, err
+		}
+		c.out.Prepend(history)
 	}
+	go c.out.Run()
+	return c, nil
 }
 
-// Watch points a client's timeline at one thread, or at none when thread is
+// Frames is what the client reads. It closes when the client detaches or is
+// dropped.
+func (c *Client) Frames() <-chan Frame { return c.out.Out() }
+
+// Watch points the client's timeline at one thread, or at none when thread is
 // empty. Events for anything else are not sent to it.
-func (h *Hub) Watch(id uint64, thread string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if sub, ok := h.subs[id]; ok {
-		sub.watch = thread
-	}
+func (c *Client) Watch(thread string) {
+	c.hub.mu.Lock()
+	defer c.hub.mu.Unlock()
+	c.watch = thread
+}
+
+// Detach is safe to call more than once, and from either end of the connection.
+func (c *Client) Detach() {
+	c.once.Do(func() {
+		c.hub.mu.Lock()
+		delete(c.hub.subs, c)
+		c.hub.mu.Unlock()
+		c.out.Stop()
+	})
 }
 
 // Publish delivers a committed write's frames. It never blocks: a subscriber
@@ -85,20 +106,37 @@ func (h *Hub) Publish(frames []Frame) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, f := range frames {
-		for _, sub := range h.subs {
-			if !f.visibleTo(sub.actor) {
+		for c := range h.subs {
+			if !f.visibleTo(c.actor) {
 				continue
 			}
-			if f.Stream == StreamEvent && sub.watch != f.ThreadID {
+			if f.Stream == StreamEvent && c.watch != f.ThreadID {
 				continue
 			}
-			sub.out.Push(f)
+			c.out.Push(f)
 		}
 	}
 }
 
-// Attached is how many clients are following, for the fleet screen and for
-// tests.
+// Close detaches every client, which closes their streams and ends the
+// goroutines pumping them.
+//
+// http.Server.Close does not touch a hijacked connection, so without this every
+// attached socket outlives the daemon - and once the store is closed behind it,
+// answers every op with "database is closed" while staying connected.
+func (h *Hub) Close() {
+	h.mu.Lock()
+	subs := make([]*Client, 0, len(h.subs))
+	for c := range h.subs {
+		subs = append(subs, c)
+	}
+	h.mu.Unlock()
+	for _, c := range subs {
+		c.Detach()
+	}
+}
+
+// Attached is how many clients are following.
 func (h *Hub) Attached() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()

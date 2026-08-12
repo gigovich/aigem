@@ -149,7 +149,7 @@ func botTurn(ctx context.Context, t *testing.T, s *Store, threadID string) {
 func TestTheAPIMountsIntoAServerWithNoSessions(t *testing.T) {
 	s := newStore(t)
 	hub := NewHub()
-	s.SetPublisher(hub.Publish)
+	s.AddPublisher(hub.Publish)
 
 	var guarded int
 	mux := http.NewServeMux()

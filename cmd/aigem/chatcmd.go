@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -22,15 +24,17 @@ import (
 )
 
 const chatUsage = `usage:
-  aigem chat threads [--state <state>] [--archived]   list the inbox
+  aigem chat threads [--state <s>] [--archived]        list the inbox
   aigem chat new --with <bot>[,<bot>] [--title t] <text>
-                                                     open a thread; prints its id
-  aigem chat send <thread> <text>                     post into a thread
-  aigem chat read <thread>                            print a thread
-  aigem chat tail [<thread>]                          follow live (blocks)
-  aigem chat fleet                                    roster and who is running
+                                                      open a thread; prints its id
+  aigem chat send <thread> <text>                      post; prints the message seq
+  aigem chat read <thread> [--limit n] [--before seq]  print a thread
+  aigem chat search <words> [--limit n]                search the threads you are in
+  aigem chat tail [<thread>]                           follow live (blocks)
+  aigem chat fleet                                     roster and who is running
 
 States: needs_you, working, waiting, idle.
+Listing commands take --json for scripting.
 Threads are the fleet's conversations; the daemon is whichever "aigem bot start"
 is running.`
 
@@ -42,27 +46,36 @@ func runChatCommand(args []string) error {
 		fmt.Println(chatUsage)
 		return nil
 	}
+	// The verb is checked before the daemon is dialled, so a typo reports the
+	// typo rather than "no fleet is running".
+	run, ok := chatVerbs[args[0]]
+	if !ok {
+		return fmt.Errorf("unknown command %q\n\n%s", args[0], chatUsage)
+	}
 	c, err := dialChat()
 	if err != nil {
 		return err
 	}
-	ctx := context.Background()
-	switch args[0] {
-	case "threads":
-		return c.threads(ctx, args[1:])
-	case "new":
-		return c.newThread(ctx, args[1:])
-	case "send":
-		return c.send(ctx, args[1:])
-	case "read":
-		return c.read(ctx, args[1:])
-	case "tail":
-		return c.tail(ctx, args[1:])
-	case "fleet":
-		return c.fleet(ctx)
-	default:
-		return fmt.Errorf("unknown command %q\n\n%s", args[0], chatUsage)
-	}
+	return run(c, context.Background(), args[1:])
+}
+
+var chatVerbs = map[string]func(*chatClient, context.Context, []string) error{
+	"threads": (*chatClient).threads,
+	"new":     (*chatClient).newThread,
+	"send":    (*chatClient).send,
+	"read":    (*chatClient).read,
+	"tail":    (*chatClient).tail,
+	"search":  (*chatClient).search,
+	"fleet":   (*chatClient).fleet,
+}
+
+// flags builds a parser for one subcommand, so every one of them accepts the
+// same forms the rest of the CLI does - "--x v", "--x=v", "-h", and "--" to end
+// the flags. Hand-rolling this per verb is how they came to disagree.
+func flags(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet("aigem chat "+name, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	return fs
 }
 
 // chatClient talks to the running fleet daemon.
@@ -121,24 +134,26 @@ func (c *chatClient) do(ctx context.Context, method, path string, body, out any)
 }
 
 func (c *chatClient) threads(ctx context.Context, args []string) error {
+	fs := flags("threads")
+	state := fs.String("state", "", "only threads in this state")
+	archived := fs.Bool("archived", false, "the archive instead of the inbox")
+	asJSON := fs.Bool("json", false, "print the raw response")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	q := url.Values{}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--state":
-			if i+1 >= len(args) {
-				return errors.New("--state needs a value")
-			}
-			i++
-			q.Set("state", args[i])
-		case "--archived":
-			q.Set("archived", "true")
-		default:
-			return fmt.Errorf("unknown flag %q\n\n%s", args[i], chatUsage)
-		}
+	if *state != "" {
+		q.Set("state", *state)
+	}
+	if *archived {
+		q.Set("archived", "true")
 	}
 	var views []chat.ThreadView
 	if err := c.do(ctx, http.MethodGet, "/api/chat/threads?"+q.Encode(), nil, &views); err != nil {
 		return err
+	}
+	if *asJSON {
+		return printJSON(views)
 	}
 	if len(views) == 0 {
 		fmt.Println("no threads")
@@ -157,41 +172,29 @@ func (c *chatClient) threads(ctx context.Context, args []string) error {
 }
 
 func (c *chatClient) newThread(ctx context.Context, args []string) error {
+	fs := flags("new")
+	bots := fs.String("with", "", "comma-separated bot names to open the thread with")
+	head := fs.String("title", "", "thread title (default: the first line of the text)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	var with []string
-	var head string
-	text := []string{}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--with":
-			if i+1 >= len(args) {
-				return errors.New("--with needs at least one bot name")
-			}
-			i++
-			for _, name := range strings.Split(args[i], ",") {
-				if name = strings.TrimSpace(name); name != "" {
-					with = append(with, chat.BotActor(name))
-				}
-			}
-		case "--title":
-			if i+1 >= len(args) {
-				return errors.New("--title needs a value")
-			}
-			i++
-			head = args[i]
-		default:
-			text = append(text, args[i])
+	for _, name := range strings.Split(*bots, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			with = append(with, chat.BotActor(name))
 		}
 	}
 	if len(with) == 0 {
 		return errors.New("name at least one bot with --with")
 	}
-	body := strings.Join(text, " ")
-	if head == "" {
-		head = oneLine(body)
+	body := strings.Join(fs.Args(), " ")
+	title := *head
+	if title == "" {
+		title = oneLine(body)
 	}
 	var view chat.ThreadView
 	if err := c.do(ctx, http.MethodPost, "/api/chat/threads", map[string]any{
-		"title": head, "participants": with, "text": body,
+		"title": title, "participants": with, "text": body,
 	}, &view); err != nil {
 		return err
 	}
@@ -199,22 +202,72 @@ func (c *chatClient) newThread(ctx context.Context, args []string) error {
 	return nil
 }
 
+// send posts into a thread and prints the message's sequence number, which is
+// what a script needs to follow up on what it just wrote.
 func (c *chatClient) send(ctx context.Context, args []string) error {
-	if len(args) < 2 {
+	fs := flags("send")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) < 2 {
 		return errors.New("usage: aigem chat send <thread> <text>")
 	}
-	return c.do(ctx, http.MethodPost, "/api/chat/threads/"+args[0]+"/messages",
-		map[string]any{"text": strings.Join(args[1:], " ")}, nil)
+	var m chat.Message
+	if err := c.do(ctx, http.MethodPost, "/api/chat/threads/"+rest[0]+"/messages",
+		map[string]any{"text": strings.Join(rest[1:], " ")}, &m); err != nil {
+		return err
+	}
+	fmt.Println(m.Seq)
+	return nil
+}
+
+func (c *chatClient) search(ctx context.Context, args []string) error {
+	fs := flags("search")
+	limit := fs.Int("limit", 20, "how many hits to print")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) == 0 {
+		return errors.New("usage: aigem chat search <words>")
+	}
+	q := url.Values{}
+	q.Set("q", strings.Join(fs.Args(), " "))
+	q.Set("limit", strconv.Itoa(*limit))
+	var hits []chat.Message
+	if err := c.do(ctx, http.MethodGet, "/api/chat/search?"+q.Encode(), nil, &hits); err != nil {
+		return err
+	}
+	for _, m := range hits {
+		fmt.Printf("%s  ", m.Thread)
+		printMessage(m)
+	}
+	return nil
 }
 
 func (c *chatClient) read(ctx context.Context, args []string) error {
-	if len(args) < 1 {
+	fs := flags("read")
+	limit := fs.Int("limit", 200, "how many messages to print")
+	before := fs.Uint64("before", 0, "print the messages below this sequence")
+	asJSON := fs.Bool("json", false, "print the raw response")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) < 1 {
 		return errors.New("usage: aigem chat read <thread>")
+	}
+	q := url.Values{}
+	q.Set("limit", strconv.Itoa(*limit))
+	if *before > 0 {
+		q.Set("before", strconv.FormatUint(*before, 10))
 	}
 	var msgs []chat.Message
 	if err := c.do(ctx, http.MethodGet,
-		"/api/chat/threads/"+args[0]+"/messages?limit=200", nil, &msgs); err != nil {
+		"/api/chat/threads/"+fs.Args()[0]+"/messages?"+q.Encode(), nil, &msgs); err != nil {
 		return err
+	}
+	if *asJSON {
+		return printJSON(msgs)
 	}
 	// Newest first over the wire, because that is what a paging UI wants; a
 	// transcript reads the other way.
@@ -230,13 +283,21 @@ func (c *chatClient) tail(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	watch := ""
-	if len(args) > 0 {
-		watch = args[0]
+	fs := flags("tail")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	u := "ws" + strings.TrimPrefix(c.base, "http") + "/api/chat/socket?token=" +
-		url.QueryEscape(c.token)
-	conn, _, _, err := ws.Dial(ctx, u)
+	watch := ""
+	if len(fs.Args()) > 0 {
+		watch = fs.Args()[0]
+	}
+	// The token goes in a header, not the query string: only a browser cannot
+	// set one on a handshake, and a URL carrying a credential lands in proxy
+	// logs and in every process listing.
+	d := ws.Dialer{Header: ws.HandshakeHeaderHTTP(http.Header{
+		"Authorization": []string{"Bearer " + c.token},
+	})}
+	conn, _, _, err := d.Dial(ctx, "ws"+strings.TrimPrefix(c.base, "http")+"/api/chat/socket")
 	if err != nil {
 		return err
 	}
@@ -272,21 +333,37 @@ func (c *chatClient) tail(ctx context.Context, args []string) error {
 		}
 		switch {
 		case f.Stream == chat.StreamMessage && f.Message != nil:
-			if watch == "" || f.ThreadID == watch {
-				printMessage(*f.Message)
+			if watch != "" && f.ThreadID != watch {
+				continue
 			}
+			if watch == "" {
+				// Following everything interleaves threads, so each line has to
+				// say which one it belongs to.
+				fmt.Printf("%s  ", f.ThreadID)
+			}
+			printMessage(*f.Message)
 		case f.Stream == chat.StreamEvent:
 			printEvent(f.Event)
 		case f.Stream == chat.StreamDesync:
-			fmt.Printf("-- reconnect from %d: the stream ran ahead of this client\n", f.From)
+			fmt.Printf("-- dropped at %d: this client fell behind; reconnect from there\n", f.From)
+		case f.Stream == chat.StreamTruncated:
+			fmt.Printf("-- history continues below %d; `aigem chat read` has the rest\n", f.From)
 		}
 	}
 }
 
-func (c *chatClient) fleet(ctx context.Context) error {
+func (c *chatClient) fleet(ctx context.Context, args []string) error {
+	fs := flags("fleet")
+	asJSON := fs.Bool("json", false, "print the raw response")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	var actors []chat.Actor
 	if err := c.do(ctx, http.MethodGet, "/api/chat/fleet", nil, &actors); err != nil {
 		return err
+	}
+	if *asJSON {
+		return printJSON(actors)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	for _, a := range actors {
@@ -300,6 +377,17 @@ func (c *chatClient) fleet(ctx context.Context) error {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", a.Name, a.Role, state)
 	}
 	return w.Flush()
+}
+
+// printJSON is what a script reads. Every listing verb takes --json so driving
+// the fleet from a script does not mean parsing a table.
+func printJSON(v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
 }
 
 func printMessage(m chat.Message) {

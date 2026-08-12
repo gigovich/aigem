@@ -54,13 +54,11 @@ func (a *API) Mount(mux *http.ServeMux, guard func(http.HandlerFunc) http.Handle
 
 // ---- threads ----
 
+// listThreads returns the inbox. Searching is its own route: answering two
+// different types on one URL, chosen by a query parameter, is not something a
+// typed client can consume.
 func (a *API) listThreads(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	if term := q.Get("q"); term != "" {
-		hits, err := a.store.Search(r.Context(), Operator, term, intParam(q.Get("limit")))
-		writeResult(w, hits, err)
-		return
-	}
 	views, err := a.store.Inbox(r.Context(), Operator,
 		q.Get("state"), q.Get("archived") == "true", intParam(q.Get("limit")))
 	writeResult(w, views, err)
@@ -75,14 +73,22 @@ func (a *API) newThread(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
+	// Validate the opening message before creating anything. Creating the thread
+	// and then failing on the text would leave an empty thread behind and answer
+	// with an error, which is the worst of both.
+	text := strings.TrimSpace(body.Text)
+	if text != "" && len(text) > MaxBodyBytes {
+		writeErr(w, invalid("a message may be at most %s", HumanSize(MaxBodyBytes)))
+		return
+	}
 	th, err := a.store.NewThread(r.Context(), body.Title, Operator, body.Participants)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if strings.TrimSpace(body.Text) != "" {
+	if text != "" {
 		if _, err := a.store.Say(r.Context(), th.ID,
-			Draft{Author: Operator, Body: body.Text}); err != nil {
+			Draft{Author: Operator, Body: text}); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -202,9 +208,17 @@ func (a *API) addParticipant(w http.ResponseWriter, r *http.Request) {
 		a.store.AddParticipant(r.Context(), Operator, r.PathValue("id"), body.Actor))
 }
 
+// removeParticipant drops a bot from a thread. The operator is not removable
+// through the API at all: they have no way back in, since adding a participant
+// requires being one, and a mistyped argument should not be a lockout.
 func (a *API) removeParticipant(w http.ResponseWriter, r *http.Request) {
+	actor := r.PathValue("a")
+	if actor == Operator {
+		writeErr(w, invalid("you cannot remove yourself from a thread"))
+		return
+	}
 	writeErrOrNoContent(w,
-		a.store.RemoveParticipant(r.Context(), Operator, r.PathValue("id"), r.PathValue("a")))
+		a.store.RemoveParticipant(r.Context(), Operator, r.PathValue("id"), actor))
 }
 
 // ---- attachments ----

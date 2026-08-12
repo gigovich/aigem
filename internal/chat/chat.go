@@ -250,7 +250,14 @@ const (
 	StreamMessage = "message"
 	StreamThread  = "thread"
 	StreamEvent   = "event"
-	StreamDesync  = "desync"
+	// StreamDesync means the reader fell behind and frames were dropped: set
+	// your cursor to From and reconnect.
+	StreamDesync = "desync"
+	// StreamTruncated means the reader is still in order, but its backlog did
+	// not fit in one page: ask for the rest from From. It is a separate stream
+	// from desync because the two call for opposite reactions, and a client
+	// that confused them would throw away the backlog it had just been given.
+	StreamTruncated = "truncated"
 )
 
 // previewChars bounds the denormalised tail kept on a thread row.

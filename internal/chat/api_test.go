@@ -22,7 +22,7 @@ func testAPI(t *testing.T) (*Store, *httptest.Server) {
 	t.Helper()
 	s := newStore(t)
 	hub := NewHub()
-	s.SetPublisher(hub.Publish)
+	s.AddPublisher(hub.Publish)
 
 	mux := http.NewServeMux()
 	NewAPI(s, hub).Mount(mux, func(h http.HandlerFunc) http.HandlerFunc { return h })
@@ -376,7 +376,7 @@ func TestSocketOpsWriteThroughTheStore(t *testing.T) {
 	th := mustThread(t, s, "retries", amiran)
 
 	c := dialSocket(t, srv, "/api/chat/socket")
-	c.send(clientOp{Op: "send", Thread: th.ID, Text: "please look", Await: true})
+	c.send(clientOp{Op: "send", Thread: th.ID, Text: "please look"})
 	c.next(isMessage("please look"))
 
 	msgs, err := s.Messages(t.Context(), Operator, th.ID, 0, 10)
@@ -462,14 +462,16 @@ func TestThreadSocketEmitsBareEvents(t *testing.T) {
 func TestHubDeliversOnlyToTheAudienceOnTheFrame(t *testing.T) {
 	s := newStore(t)
 	hub := NewHub()
-	s.SetPublisher(hub.Publish)
+	s.AddPublisher(hub.Publish)
 	ctx := t.Context()
 
 	th := mustThread(t, s, "private", amiran)
-	_, mine, detachMine := hub.Attach(amiran, nil)
-	defer detachMine()
-	_, theirs, detachTheirs := hub.Attach(jane, nil)
-	defer detachTheirs()
+	participant := attachClient(t, hub, amiran)
+	defer participant.Detach()
+	mine := participant.Frames()
+	outsider := attachClient(t, hub, jane)
+	defer outsider.Detach()
+	theirs := outsider.Frames()
 
 	mustSay(t, s, th.ID, amiran, "between us")
 
@@ -503,11 +505,12 @@ func TestHubDeliversOnlyToTheAudienceOnTheFrame(t *testing.T) {
 func TestHubDropsASubscriberThatStopsReading(t *testing.T) {
 	s := newStore(t)
 	hub := NewHub()
-	s.SetPublisher(hub.Publish)
+	s.AddPublisher(hub.Publish)
 	th := mustThread(t, s, "busy", amiran)
 
-	_, slow, detach := hub.Attach(Operator, nil)
-	defer detach()
+	client := attachClient(t, hub, Operator)
+	defer client.Detach()
+	slow := client.Frames()
 
 	done := make(chan struct{})
 	go func() {
@@ -538,15 +541,26 @@ func TestHubDropsASubscriberThatStopsReading(t *testing.T) {
 
 func TestHubDetachIsIdempotent(t *testing.T) {
 	hub := NewHub()
-	_, out, detach := hub.Attach(Operator, nil)
-	detach()
-	detach()
+	client := attachClient(t, hub, Operator)
+	out := client.Frames()
+	client.Detach()
+	client.Detach()
 	if _, ok := <-out; ok {
 		t.Fatal("the channel must close when the subscriber detaches")
 	}
 	if n := hub.Attached(); n != 0 {
 		t.Fatalf("%d subscribers left after detaching", n)
 	}
+}
+
+// attachClient adds a hub client that follows from now, with no backlog.
+func attachClient(t *testing.T, hub *Hub, actor string) *Client {
+	t.Helper()
+	c, err := hub.Attach(actor, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 func itoa(n uint64) string { return strconv.FormatUint(n, 10) }

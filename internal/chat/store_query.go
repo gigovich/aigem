@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -323,14 +324,25 @@ func (s *Store) Tail(ctx context.Context, actor string, since uint64, limit int)
 	if err != nil {
 		return nil, 0, false, err
 	}
-	views, err := s.threadViewsFor(ctx, actor, changed)
+	ids := make([]string, 0, len(changed))
+	for _, c := range changed {
+		ids = append(ids, c.id)
+	}
+	views, err := s.threadViewsFor(ctx, actor, ids)
 	if err != nil {
 		return nil, 0, false, err
 	}
+	at := make(map[string]uint64, len(changed))
+	for _, c := range changed {
+		at[c.id] = c.seq
+	}
 	for i := range views {
 		v := views[i]
+		// changed_seq, not last_seq: a rename or an archived flag moves the
+		// former and not the latter, so a frame stamped with last_seq would sort
+		// below the cursor a client is about to resume from, and be dropped.
 		frames = append(frames, Frame{
-			Seq: v.LastSeq, Stream: StreamThread, ThreadID: v.ID, Thread: &v,
+			Seq: at[v.ID], Stream: StreamThread, ThreadID: v.ID, Thread: &v,
 		})
 	}
 	tombs, err := tombstones(ctx, tx, actor, since, top)
@@ -338,7 +350,7 @@ func (s *Store) Tail(ctx context.Context, actor string, since uint64, limit int)
 		return nil, 0, false, err
 	}
 	frames = append(frames, tombs...)
-	slices.SortStableFunc(frames, func(a, b Frame) int { return int(a.Seq) - int(b.Seq) })
+	slices.SortStableFunc(frames, func(a, b Frame) int { return cmp.Compare(a.Seq, b.Seq) })
 	return frames, top, false, nil
 }
 
@@ -370,9 +382,15 @@ func tailMessages(ctx context.Context, tx *sql.Tx, actor string, since, top uint
 // archive, a participant, a turn starting or ending - not only the ones that
 // received a message. Without changed_seq every one of those changes published
 // live and left nothing behind for a client that was away.
-func changedThreads(ctx context.Context, tx *sql.Tx, actor string, since, top uint64) ([]string, error) {
+// threadChange is a thread that moved, and the sequence at which it moved.
+type threadChange struct {
+	id  string
+	seq uint64
+}
+
+func changedThreads(ctx context.Context, tx *sql.Tx, actor string, since, top uint64) ([]threadChange, error) {
 	rows, err := tx.QueryContext(ctx,
-		`SELECT t.id FROM threads t
+		`SELECT t.id, t.changed_seq FROM threads t
 		   JOIN participants p ON p.thread_id = t.id AND p.actor_id = ?
 		  WHERE t.changed_seq > ? AND t.changed_seq <= ?
 		  ORDER BY t.changed_seq`, actor, since, top)
@@ -381,13 +399,13 @@ func changedThreads(ctx context.Context, tx *sql.Tx, actor string, since, top ui
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []string
+	var out []threadChange
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var c threadChange
+		if err := rows.Scan(&c.id, &c.seq); err != nil {
 			return nil, err
 		}
-		out = append(out, id)
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }
