@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { modeOf, replaceMode, threadOf, useMode, useThread } from "./route";
+import { FLEET_PATH, modeOf, replaceMode, threadOf, useFleetScreen, useMode, useThread } from "./route";
 
 beforeEach(() => window.history.replaceState({}, "", "/"));
 afterEach(cleanup);
@@ -129,5 +129,66 @@ describe("useThread", () => {
 
     act(() => result.current.open("t_1"));
     expect(window.history.length).toBe(depth);
+  });
+});
+
+describe("useFleetScreen", () => {
+  it("reads the roster out of the URL", () => {
+    window.history.replaceState({}, "", FLEET_PATH);
+    const { result } = renderHook(() => useFleetScreen());
+    expect(result.current.fleet).toBe(true);
+  });
+
+  it("is not a thread", () => {
+    // Thread ids are `t_` + hex, so this segment can never be one - but the
+    // decode below it would happily return "fleet" as a thread id.
+    expect(threadOf(FLEET_PATH)).toBeNull();
+  });
+
+  it("pushes an entry, then pops it rather than pushing another", () => {
+    window.history.replaceState({}, "", "/chat");
+    const { result } = renderHook(() => useFleetScreen());
+
+    act(() => result.current.open());
+    expect(window.location.pathname).toBe(FLEET_PATH);
+    const depth = window.history.length;
+
+    act(() => result.current.close());
+    expect(window.history.length).toBe(depth);
+  });
+
+  it("rewrites in place when the operator arrived on the link itself", () => {
+    window.history.replaceState({}, "", FLEET_PATH);
+    const { result } = renderHook(() => useFleetScreen());
+
+    act(() => result.current.close());
+
+    expect(window.location.pathname).toBe("/chat");
+    expect(result.current.fleet).toBe(false);
+  });
+
+  // The bug the shared path store exists to prevent: pushState fires no event,
+  // so two hooks each holding their own copy of the URL only agree until one of
+  // them navigates. Opening the roster over a thread left the thread hook still
+  // naming the thread, and the screen drew both.
+  it("closes the open thread, because both hooks read one URL", () => {
+    window.history.replaceState({}, "", "/chat/t_1");
+    const { result } = renderHook(() => ({ thread: useThread(), roster: useFleetScreen() }));
+    expect(result.current.thread.thread).toBe("t_1");
+
+    act(() => result.current.roster.open());
+
+    expect(result.current.roster.fleet).toBe(true);
+    expect(result.current.thread.thread).toBeNull();
+  });
+
+  it("and the other way round", () => {
+    window.history.replaceState({}, "", FLEET_PATH);
+    const { result } = renderHook(() => ({ thread: useThread(), roster: useFleetScreen() }));
+
+    act(() => result.current.thread.open("t_1"));
+
+    expect(result.current.thread.thread).toBe("t_1");
+    expect(result.current.roster.fleet).toBe(false);
   });
 });

@@ -18,7 +18,7 @@ func TestTheCLIReachesTheDaemonTheFleetStarts(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	ctx := t.Context()
 
-	srv, err := startChatServer(ctx, "127.0.0.1:0", nil, slog.New(slog.DiscardHandler))
+	srv, err := startChatServer(ctx, "127.0.0.1:0", nil, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestTheDaemonComesUpBeforeAnyBot(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	srv, err := startChatServer(t.Context(), "127.0.0.1:0", []string{"nosuchbot"}, slog.New(slog.DiscardHandler))
+	srv, err := startChatServer(t.Context(), "127.0.0.1:0", []string{"nosuchbot"}, nil, slog.New(slog.DiscardHandler))
 	if err == nil {
 		srv.Close()
 		t.Fatal("registering an unknown bot was accepted")
@@ -92,7 +92,7 @@ func TestReadingAThreadShowsWhatItCost(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	ctx := t.Context()
 
-	srv, err := startChatServer(ctx, "127.0.0.1:0", nil, slog.New(slog.DiscardHandler))
+	srv, err := startChatServer(ctx, "127.0.0.1:0", nil, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

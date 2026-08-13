@@ -262,6 +262,37 @@ func (s *Scheduler) List() []CronJob {
 	return out
 }
 
+// NextRun reports which job fires soonest after now, and when.
+//
+// Built-ins are included. The work heartbeat is the job an idle bot is usually
+// waiting on, and a roster that hid it would show nothing scheduled for a bot
+// that is in fact due back in half an hour.
+//
+// A one-shot whose instant has already passed is reported at that instant
+// rather than skipped: that is what tick does with it - it fires on the next
+// minute - and a roster disagreeing with the scheduler is the one thing this
+// column must not do.
+func (s *Scheduler) NextRun(now time.Time) (id string, at time.Time, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, jobID := range s.order {
+		sj := s.jobs[jobID]
+		var when time.Time
+		if !sj.at.IsZero() {
+			when = sj.at
+		} else if next, found := sj.sched.Next(now); found {
+			when = next
+		} else {
+			continue
+		}
+		if ok && !when.Before(at) {
+			continue
+		}
+		id, at, ok = jobID, when, true
+	}
+	return id, at, ok
+}
+
 // tick fires at most one due job. A due one-shot is removed before it runs so it fires exactly
 // once, even across a restart (its At persists and fires on the next tick). Anything else that was
 // due keeps its turn for a later tick: only one scheduled agent runs at a time, because each one

@@ -21,6 +21,28 @@ export interface Actor {
   created: string;
 }
 
+/** What only the process running the bots can report. It is absent on a member
+ *  nobody reported one for - the operator, and any bot this daemon does not
+ *  run - and the screen says so rather than drawing a stopped bot. */
+export interface LiveBot {
+  running: boolean;
+  model?: string;
+  /** The wake-up interval in force ("30m"), and how far the idle backoff has
+   *  walked from the working cadence. */
+  heartbeat?: string;
+  tier: number;
+  next_job?: string;
+  next_run?: string;
+}
+
+/** A roster row: the actor, what the store can count about it, and what the
+ *  daemon adds. */
+export interface FleetMember extends Actor {
+  threads: number;
+  working: boolean;
+  live?: LiveBot;
+}
+
 export interface ThreadView {
   id: string;
   title?: string;

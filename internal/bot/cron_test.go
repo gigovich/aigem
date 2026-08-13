@@ -507,3 +507,64 @@ func TestSchedulerHandlesBackwardsClockWithoutLosingMinutes(t *testing.T) {
 		t.Fatal("the held occurrence was lost across the clock step")
 	}
 }
+
+func TestNextRunNamesTheSoonestJob(t *testing.T) {
+	s, warns := NewScheduler([]CronJob{
+		{ID: "nightly", Expr: "0 4 * * *", Prompt: "p"},
+		{ID: "hourly", Expr: "10 * * * *", Prompt: "p"},
+	}, nil)
+	if len(warns) != 0 {
+		t.Fatalf("warnings: %v", warns)
+	}
+	now := at(t, "2026-06-20 03:00")
+	id, when, ok := s.NextRun(now)
+	if !ok {
+		t.Fatal("nothing scheduled")
+	}
+	if id != "hourly" || !when.Equal(at(t, "2026-06-20 03:10")) {
+		t.Errorf("NextRun = %q at %s, want hourly at 03:10", id, when)
+	}
+}
+
+// The heartbeat is the job an idle bot is waiting on. A roster that hid it
+// would say "nothing scheduled" for a bot due back in half an hour.
+func TestNextRunIncludesBuiltins(t *testing.T) {
+	s, _ := NewScheduler(nil, nil)
+	if err := s.SetBuiltin(CronJob{ID: WorkHeartbeatJobID, Expr: "7,37 * * * *", Prompt: "p"}); err != nil {
+		t.Fatalf("SetBuiltin: %v", err)
+	}
+	id, when, ok := s.NextRun(at(t, "2026-06-20 03:00"))
+	if !ok || id != WorkHeartbeatJobID {
+		t.Fatalf("NextRun = %q, %v; want the heartbeat", id, ok)
+	}
+	if !when.Equal(at(t, "2026-06-20 03:07")) {
+		t.Errorf("NextRun at %s, want 03:07", when)
+	}
+}
+
+// A one-shot whose instant has passed still fires on the next tick, so the
+// roster has to report it as overdue rather than drop it.
+func TestNextRunReportsAnOverdueOneShot(t *testing.T) {
+	past := at(t, "2026-06-20 02:00")
+	s, warns := NewScheduler([]CronJob{
+		{ID: "once", At: past.Format(time.RFC3339), Prompt: "p"},
+		{ID: "hourly", Expr: "10 * * * *", Prompt: "p"},
+	}, nil)
+	if len(warns) != 0 {
+		t.Fatalf("warnings: %v", warns)
+	}
+	id, when, ok := s.NextRun(at(t, "2026-06-20 03:00"))
+	if !ok || id != "once" {
+		t.Fatalf("NextRun = %q, %v; want the overdue one-shot", id, ok)
+	}
+	if !when.Equal(past) {
+		t.Errorf("NextRun at %s, want %s", when, past)
+	}
+}
+
+func TestNextRunOnAnEmptyScheduler(t *testing.T) {
+	s, _ := NewScheduler(nil, nil)
+	if _, _, ok := s.NextRun(time.Now()); ok {
+		t.Error("an empty scheduler reported a next run")
+	}
+}

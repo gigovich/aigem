@@ -41,8 +41,10 @@ const pruneEvery = 6 * time.Hour
 
 // startChatServer opens the store, registers the fleet's identities, and serves
 // the API. addr is the listen address; an empty one means loopback on a port
-// the OS picks.
-func startChatServer(ctx context.Context, addr string, names []string, log *slog.Logger) (*chatServer, error) {
+// the OS picks. live may be nil, for a daemon that serves the store without
+// running any bots - the roster then reports only what the store can count.
+func startChatServer(ctx context.Context, addr string, names []string, live *liveFleet,
+	log *slog.Logger) (*chatServer, error) {
 	dir, err := config.StateDir()
 	if err != nil {
 		return nil, err
@@ -68,6 +70,9 @@ func startChatServer(ctx context.Context, addr string, names []string, log *slog
 	}
 
 	api := chat.NewAPI(store, hub)
+	if live != nil {
+		api.SetFleetStatus(live.status)
+	}
 	srv, err := web.New(web.Config{
 		Addr:   addr,
 		Assets: webAssets(),
@@ -100,6 +105,12 @@ func startChatServer(ctx context.Context, addr string, names []string, log *slog
 // role or a newly added bot is reflected without a migration. Presence is
 // cleared first: a process that was killed had no chance to clear its own flag,
 // and the only honest reading of the column after a crash is "unknown".
+//
+// A bot is registered as not present. This runs before a single bot has been
+// started, and marking them present here made the flag mean "configured" - so a
+// bot whose model could not be opened showed a running dot beside its name in
+// the inbox, the composer and every participant list. startBot sets it, and its
+// teardown clears it.
 func registerActors(ctx context.Context, store *chat.Store, names []string) error {
 	if err := store.ClearPresence(ctx); err != nil {
 		return err
@@ -113,7 +124,7 @@ func registerActors(ctx context.Context, store *chat.Store, names []string) erro
 			return err
 		}
 		if err := store.PutActor(ctx, chat.Actor{
-			ID: chat.BotActor(name), Name: name, Role: cfg.Role, Present: true,
+			ID: chat.BotActor(name), Name: name, Role: cfg.Role,
 		}); err != nil {
 			return err
 		}

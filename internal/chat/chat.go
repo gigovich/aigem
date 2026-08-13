@@ -116,6 +116,42 @@ type Actor struct {
 	Created time.Time `json:"created"`
 }
 
+// FleetMember is one identity on the fleet screen: what the store knows about
+// it, plus what only the process running the bots can say.
+type FleetMember struct {
+	Actor
+	// Threads is how many unarchived threads this actor takes part in.
+	Threads int `json:"threads"`
+	// Working is true while this actor has a turn open anywhere. It is read
+	// from the turns table, exactly as the inbox reads its own working flag, so
+	// the roster and the inbox cannot disagree about what a bot is doing.
+	Working bool `json:"working"`
+	// Live is what the daemon running the fleet knows and the store cannot.
+	//
+	// It is absent rather than zeroed when nobody reported one: a daemon
+	// serving this store without running the bots - and every actor that is not
+	// a bot - knows none of this, and a row of confident zeroes claiming a
+	// stopped bot with no heartbeat is worse than an empty one.
+	Live *LiveBot `json:"live,omitempty"`
+}
+
+// LiveBot is a bot's operational state inside the process running the fleet.
+type LiveBot struct {
+	// Running is false for a configured bot that could not be started and is
+	// being retried - the state an operator would otherwise have to read
+	// journalctl to discover.
+	Running bool   `json:"running"`
+	Model   string `json:"model,omitempty"`
+	// Heartbeat is the wake-up interval currently in force ("30m"), and Tier is
+	// how far the idle backoff has walked from the working cadence.
+	Heartbeat string `json:"heartbeat,omitempty"`
+	Tier      int    `json:"tier"`
+	// NextJob is the scheduled job due soonest, and NextRun when. A bot with
+	// nothing scheduled reports neither rather than a zero time.
+	NextJob string     `json:"next_job,omitempty"`
+	NextRun *time.Time `json:"next_run,omitempty"`
+}
+
 // BotActor builds the actor id for a bot name. Ids are built in one place, and
 // carry their kind, so a bot named "operator" cannot collide with the human.
 func BotActor(name string) string { return KindBot + ":" + strings.TrimSpace(name) }

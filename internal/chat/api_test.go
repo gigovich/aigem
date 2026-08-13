@@ -674,3 +674,69 @@ func attachClient(t *testing.T, hub *Hub, actor string) *Client {
 }
 
 func itoa(n uint64) string { return strconv.FormatUint(n, 10) }
+
+// The fleet screen's columns come from two places: what the store can count,
+// and what only the process running the bots can say. A daemon serving the
+// store without running any bots must say the second part is missing rather
+// than report a stopped fleet with no heartbeat.
+func TestFleetFoldsTheDaemonsAnswerOntoTheStores(t *testing.T) {
+	s, srv := testAPI(t)
+	if _, err := s.NewThread(t.Context(), "t", Operator, []string{amiran}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := decode[[]FleetMember](t, do(t, srv, http.MethodGet, "/api/chat/fleet", nil))
+	byID := map[string]FleetMember{}
+	for _, m := range rows {
+		byID[m.ID] = m
+	}
+	if got := byID[amiran]; got.Threads != 1 {
+		t.Errorf("amiran carries %d threads, want 1", got.Threads)
+	}
+	for _, m := range rows {
+		if m.Live != nil {
+			t.Errorf("%s reports live state on a daemon that runs no bots: %+v", m.ID, m.Live)
+		}
+	}
+}
+
+func TestFleetReportsWhatOnlyTheDaemonKnows(t *testing.T) {
+	s := newStore(t)
+	hub := NewHub()
+	api := NewAPI(s, hub)
+	next := time.Date(2026, 6, 20, 4, 10, 0, 0, time.UTC)
+	api.SetFleetStatus(func() map[string]LiveBot {
+		return map[string]LiveBot{
+			amiran:  {Running: true, Model: "xai/grok-4.3", Heartbeat: "30m", Tier: 0, NextJob: "memory-review", NextRun: &next},
+			demetre: {Running: false},
+		}
+	})
+	mux := http.NewServeMux()
+	api.Mount(mux, func(h http.HandlerFunc) http.HandlerFunc { return h })
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	byID := map[string]FleetMember{}
+	for _, m := range decode[[]FleetMember](t, do(t, srv, http.MethodGet, "/api/chat/fleet", nil)) {
+		byID[m.ID] = m
+	}
+	live := byID[amiran].Live
+	if live == nil {
+		t.Fatal("amiran has no live state")
+	}
+	if !live.Running || live.Model != "xai/grok-4.3" || live.Heartbeat != "30m" {
+		t.Errorf("amiran's live state came through as %+v", live)
+	}
+	if live.NextJob != "memory-review" || live.NextRun == nil || !live.NextRun.Equal(next) {
+		t.Errorf("amiran's next job came through as %q at %v", live.NextJob, live.NextRun)
+	}
+	// A bot the daemon is still retrying is the state worth reading journalctl
+	// for, so it has to survive the round trip as a fact rather than an absence.
+	if stopped := byID[demetre].Live; stopped == nil || stopped.Running {
+		t.Errorf("demetre reports %+v, want a live entry saying it is not running", stopped)
+	}
+	// jane is configured in this store but was not named by the daemon.
+	if byID[jane].Live != nil {
+		t.Errorf("jane reports live state nobody supplied: %+v", byID[jane].Live)
+	}
+}

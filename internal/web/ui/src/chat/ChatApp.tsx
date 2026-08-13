@@ -4,8 +4,8 @@ import { api } from "@/lib/protocol";
 import { countsOf, useChat } from "@/lib/chat";
 import {
   OPERATOR,
-  type Actor,
   type ChatMeta,
+  type FleetMember,
   type Message,
   type Spend as ThreadSpend,
   type ThreadView,
@@ -14,7 +14,7 @@ import {
 import { PANEL_DOCKS, RAIL_DOCKS, useMedia } from "@/lib/media";
 import { useTraces } from "@/lib/trace";
 import { cn } from "@/lib/utils";
-import { useThread } from "@/lib/route";
+import { useFleetScreen, useThread } from "@/lib/route";
 import { useNotifications, useTitleBadge } from "@/lib/notify";
 import { Fatal } from "@/components/fatal";
 import { Login } from "@/components/login";
@@ -28,6 +28,7 @@ import { Composer } from "./Composer";
 import { AgentTrace } from "./AgentTrace";
 import { Participants } from "./Participants";
 import { ThreadPanel } from "./ThreadPanel";
+import { Fleet } from "./Fleet";
 
 /** The fallback limits, used only for the moment before the daemon answers.
  *  They are the daemon's own numbers, not guesses, and they never outlive the
@@ -56,6 +57,10 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
   // The open thread lives in the URL, so the back button leaves a thread
   // instead of leaving the app, and a thread is a link that can be sent.
   const { thread: active, open: openThread, close: closeThread } = useThread();
+  // The roster is a screen over the inbox, like a thread: reachable by link,
+  // left by the back button, and never both open at once - the URL is one or
+  // the other.
+  const { fleet: onFleet, open: openFleet, close: closeFleet } = useFleetScreen();
   // The agent timeline is held apart from the conversation, and only for the
   // thread on screen. These are the highest-volume frames on the wire, and
   // nothing the inbox draws comes from one.
@@ -121,7 +126,7 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
     turns: fetchTurns, spend: fetchSpend, addActor, removeActor,
   } = useChat(setNotice, onEvent, traceResumed);
   const [meta, setMeta] = useState<ChatMeta | null>(null);
-  const [fleet, setFleet] = useState<Actor[]>([]);
+  const [fleet, setFleet] = useState<FleetMember[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [diff, setDiff] = useState<Artifact | null>(null);
   // Two kinds of failure, and only one of them is the end of the screen. The
@@ -159,7 +164,7 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
       try {
         const [m, f] = await Promise.all([
           api<ChatMeta>("/api/chat/meta"),
-          api<Actor[]>("/api/chat/fleet"),
+          api<FleetMember[]>("/api/chat/fleet"),
         ]);
         setMeta(m);
         setFleet(f);
@@ -179,7 +184,7 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
   useEffect(() => {
     if (!loaded) return;
     const poll = () => {
-      api<Actor[]>("/api/chat/fleet").then(setFleet).catch(() => {});
+      api<FleetMember[]>("/api/chat/fleet").then(setFleet).catch(() => {});
     };
     const timer = window.setInterval(poll, FLEET_POLL_MS);
     return () => window.clearInterval(timer);
@@ -356,8 +361,9 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
   // row, two new-thread forms with their own half-typed state.
   //
   // On a wide screen both stand, because switching threads while one is working
-  // is the reason to have a rail at all.
-  const showsThread = railDocks || !!thread;
+  // is the reason to have a rail at all. The roster is pushed over the inbox on
+  // the same terms as a thread.
+  const showsMain = railDocks || !!thread || onFleet;
 
   return (
     <div className="flex h-full flex-col">
@@ -367,9 +373,13 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
         needsYou={counts.needs_you}
         botCount={fleet.filter((a) => a.kind === "bot").length}
         connected={state.connected}
-        showBack={!railDocks && showsThread}
+        // The roster is a pushed screen at every width, so it always offers the
+        // way out. A thread on a wide screen is not: the rail beside it is how
+        // one is chosen, and a back arrow over a standing list leads nowhere.
+        showBack={onFleet || (!railDocks && showsMain)}
         askNotify={permission === "default" ? ask : undefined}
-        onBack={closeThread}
+        onBack={onFleet ? closeFleet : closeThread}
+        onOpenFleet={onFleet ? undefined : openFleet}
         onToggleProviders={() => setLogin((v) => !v)}
         // Only where it does something: with no thread open the panel has
         // nothing to describe, and a docked column needs no button to reveal it.
@@ -408,7 +418,7 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
           // Not while the providers block is open: below the rail breakpoint
           // that block lives in `main`, and two siblings both claiming flex-1
           // turn a 375px viewport into two unusable columns.
-          !showsThread && !login && (
+          !showsMain && !login && (
             <div className="flex min-h-0 flex-1 flex-col bg-panel">{inbox}</div>
           )
         )}
@@ -419,13 +429,15 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
         <main
           className={cn(
             "relative flex min-w-0 flex-col",
-            railDocks || showsThread || login ? "flex-1" : "hidden",
+            railDocks || showsMain || login ? "flex-1" : "hidden",
           )}
         >
           {login && <Login onClose={() => setLogin(false)} />}
           {login && <Spend />}
 
-          {showsThread && thread ? (
+          {onFleet ? (
+            <Fleet members={fleet} loaded={loaded} />
+          ) : showsMain && thread ? (
             <>
               <div className="shrink-0 border-b border-line px-4 py-2">
                 <p className="truncate text-[15px] font-medium">{thread.title || "untitled"}</p>
@@ -549,6 +561,7 @@ interface ChatHeaderProps {
   showBack: boolean;
   askNotify?: () => void;
   onBack: () => void;
+  onOpenFleet?: () => void;
   onToggleProviders: () => void;
   onTogglePanel?: () => void;
 }
@@ -562,6 +575,7 @@ function ChatHeader({
   showBack,
   askNotify,
   onBack,
+  onOpenFleet,
   onToggleProviders,
   onTogglePanel,
 }: ChatHeaderProps) {
@@ -582,9 +596,25 @@ function ChatHeader({
       </div>
 
       <div className="hidden shrink-0 items-center gap-2 md:flex">
-        <Badge className="font-mono">
-          {botCount} {botCount === 1 ? "bot" : "bots"}
-        </Badge>
+        {/* The count was already here and already meant "the fleet"; making it
+            the way in costs no room in a header that has none. It stays a plain
+            badge on the roster itself, where it would only lead back to the
+            screen the reader is on. */}
+        {onOpenFleet ? (
+          <button
+            type="button"
+            onClick={onOpenFleet}
+            className="rounded-sm focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none"
+          >
+            <Badge className="font-mono hover:border-line hover:text-fg">
+              {botCount} {botCount === 1 ? "bot" : "bots"}
+            </Badge>
+          </button>
+        ) : (
+          <Badge className="font-mono">
+            {botCount} {botCount === 1 ? "bot" : "bots"}
+          </Badge>
+        )}
         {needsYou > 0 && (
           <Badge className="border-accent/40 font-mono text-accent">{needsYou} need you</Badge>
         )}

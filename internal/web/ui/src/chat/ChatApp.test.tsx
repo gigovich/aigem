@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeSocket, installFakeSocket } from "@/test/socket";
-import type { Actor, ChatMeta, Frame, Message, Spend, ThreadView, Turn } from "@/lib/chatprotocol";
+import type { ChatMeta, FleetMember, Frame, Message, Spend, ThreadView, Turn } from "@/lib/chatprotocol";
 import { ChatApp } from "./ChatApp";
 
 const meta: ChatMeta = {
@@ -12,9 +12,16 @@ const meta: ChatMeta = {
   max_unread: 99,
 };
 
-const fleet: Actor[] = [
-  { id: "bot:amiran", kind: "bot", name: "amiran", role: "developer", present: true, created: "" },
-  { id: "human:operator", kind: "human", name: "operator", present: false, created: "" },
+const fleet: FleetMember[] = [
+  {
+    id: "bot:amiran", kind: "bot", name: "amiran", role: "developer", present: true, created: "",
+    threads: 1, working: false,
+    live: { running: true, model: "xai/grok-4.3", heartbeat: "30m", tier: 0 },
+  },
+  {
+    id: "human:operator", kind: "human", name: "operator", present: false, created: "",
+    threads: 1, working: false,
+  },
 ];
 
 const thread: ThreadView = {
@@ -465,5 +472,36 @@ describe("ChatApp paging back", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Older messages" })).toBeNull(),
     );
+  });
+});
+
+describe("ChatApp roster", () => {
+  it("opens the fleet screen from the bot count in the header", async () => {
+    stubDaemon();
+    renderChat();
+    await screen.findByText("Refresh-token rotation drops sessions");
+
+    const badge = screen.getByRole("button", { name: /1 bot/ });
+    act(() => badge.click());
+
+    // The roster is a URL, so a reload and a shared link land on it too.
+    expect(window.location.pathname).toBe("/chat/fleet");
+    expect(await screen.findByRole("heading", { name: "Fleet" })).toBeInTheDocument();
+    expect(screen.getByText("30m (t0)")).toBeInTheDocument();
+    // And the operator is not a member of the fleet.
+    expect(screen.queryByText("operator")).not.toBeInTheDocument();
+  });
+
+  it("comes back to the inbox", async () => {
+    window.history.replaceState({}, "", "/chat/fleet");
+    stubDaemon();
+    renderChat();
+    await screen.findByRole("heading", { name: "Fleet" });
+
+    const back = screen.getByRole("button", { name: "Threads" });
+    act(() => back.click());
+
+    await waitFor(() => expect(window.location.pathname).toBe("/chat"));
+    expect(screen.queryByRole("heading", { name: "Fleet" })).toBeNull();
   });
 });

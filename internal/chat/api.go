@@ -19,9 +19,20 @@ import (
 type API struct {
 	store *Store
 	hub   *Hub
+	live  func() map[string]LiveBot
 }
 
 func NewAPI(s *Store, h *Hub) *API { return &API{store: s, hub: h} }
+
+// SetFleetStatus installs the source of what only the process running the bots
+// can report: the model each one opened, its heartbeat, its next scheduled job,
+// and whether it came up at all. It is keyed by actor id.
+//
+// This package must not import the one that runs bots - the store is the seam
+// between them - so the daemon hands the fact in rather than being asked for
+// it. Set once, before the server starts; a daemon that runs no bots sets
+// nothing and every row simply says less.
+func (a *API) SetFleetStatus(f func() map[string]LiveBot) { a.live = f }
 
 // Mount registers the routes. guard is the daemon's wrapper: it applies the
 // origin check, the token check and the security headers, so nothing here can
@@ -307,9 +318,23 @@ func (a *API) search(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, hits, err)
 }
 
+// fleet serves the roster: the store's answer for every actor, with the running
+// daemon's answer folded onto the bots it is running.
 func (a *API) fleet(w http.ResponseWriter, r *http.Request) {
-	actors, err := a.store.Actors(r.Context())
-	writeResult(w, actors, err)
+	members, err := a.store.Roster(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if a.live != nil {
+		live := a.live()
+		for i := range members {
+			if l, ok := live[members[i].ID]; ok {
+				members[i].Live = &l
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, members)
 }
 
 // Meta is what a client needs to know about this store before it draws

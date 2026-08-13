@@ -83,12 +83,12 @@ func parseField(field string, min, max int) (uint64, bool, error) {
 
 // Matches reports whether the schedule fires at minute-resolution time t.
 func (s Schedule) Matches(t time.Time) bool {
-	if s.min&(1<<uint(t.Minute())) == 0 {
-		return false
-	}
-	if s.hour&(1<<uint(t.Hour())) == 0 {
-		return false
-	}
+	return s.matchesDay(t) && s.matchesMinute(t)
+}
+
+// matchesDay is the part of the expression that can only change at midnight, so
+// Next can reject a whole day without walking its 1440 minutes.
+func (s Schedule) matchesDay(t time.Time) bool {
 	if s.month&(1<<uint(int(t.Month()))) == 0 {
 		return false
 	}
@@ -100,4 +100,46 @@ func (s Schedule) Matches(t time.Time) bool {
 		return domMatch || dowMatch
 	}
 	return domMatch && dowMatch
+}
+
+func (s Schedule) matchesMinute(t time.Time) bool {
+	return s.min&(1<<uint(t.Minute())) != 0 && s.hour&(1<<uint(t.Hour())) != 0
+}
+
+// nextHorizonDays bounds how far Next looks ahead. Four years covers the rarest
+// expression that legitimately fires - February 29 in a named month - and stops
+// one that can never fire at all ("0 0 30 2 *") from becoming an unbounded loop.
+const nextHorizonDays = 366 * 4
+
+// Next returns the first minute strictly after t at which the schedule fires,
+// and reports whether it found one inside the horizon.
+//
+// Days are tested before minutes, so a schedule that fires once a month costs
+// one comparison per skipped day rather than 1440. Time is advanced in the
+// caller's location: a job written "0 4 * * *" means four in the morning where
+// the operator lives, and stepping through UTC would move it twice a year.
+func (s Schedule) Next(after time.Time) (time.Time, bool) {
+	t := after.Truncate(time.Minute).Add(time.Minute)
+	for day := 0; day <= nextHorizonDays; day++ {
+		end := midnightAfter(t)
+		if s.matchesDay(t) {
+			for ; t.Before(end); t = t.Add(time.Minute) {
+				if s.matchesMinute(t) {
+					return t, true
+				}
+			}
+		}
+		if end.After(t) {
+			t = end
+		}
+	}
+	return time.Time{}, false
+}
+
+// midnightAfter is the start of the calendar day following t's, which is always
+// later than t - so the loop above always advances even where a zone has no
+// midnight on the day in question and time.Date normalises past it.
+func midnightAfter(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, t.Location())
 }

@@ -40,7 +40,22 @@ const (
 	// botStableFor is how long a restarted bot must stay up before its backoff is
 	// considered spent. Below it, the restart counts as part of the same failure.
 	botStableFor = time.Minute
+
+	// presenceWriteTimeout bounds the one store write a stopping bot makes. It
+	// runs on a context the process shutdown has already cancelled, so it needs
+	// a deadline of its own rather than the fleet's writer queue for however
+	// long that takes.
+	presenceWriteTimeout = 5 * time.Second
 )
+
+// setPresent records whether a bot is running. A failure is worth saying and not
+// worth failing over: the flag decides whether a dot is drawn beside a name, and
+// refusing to start a working bot over it would be the wrong trade.
+func setPresent(ctx context.Context, store *chat.Store, actor string, present bool, log *slog.Logger) {
+	if err := store.SetPresent(ctx, actor, present); err != nil {
+		log.Warn("could not record whether the bot is running", "present", present, "err", err)
+	}
+}
 
 // fleetResources are the things every bot in the process shares. They exist once
 // per run and are what makes one process cheaper than one process per bot.
@@ -52,6 +67,10 @@ type fleetResources struct {
 	// not one per bot: it is a single SQLite writer, and the whole point of the
 	// participants table is that one place decides who may see what.
 	store *chat.Store
+	// live is what the fleet screen reads for the columns the store cannot
+	// answer: the model, the heartbeat, the next scheduled job, and which bots
+	// are up.
+	live *liveFleet
 }
 
 // botStart runs the named bots, or the whole configured fleet when no name is
@@ -79,6 +98,7 @@ func botStart(args []string) error {
 		fleet:    bot.NewFleet(),
 		turns:    bot.NewTurnLimiter(limits.TurnCap()),
 		launches: search.NewLaunchGate(limits.BrowserCap()),
+		live:     newLiveFleet(names),
 	}
 	if len(names) == 1 {
 		// One bot cannot contend with anyone, and a cap it can hit on its own would
@@ -92,7 +112,7 @@ func botStart(args []string) error {
 	// so a bot that fails to start is still visible in a UI that is already
 	// running - and so the operator can reach the fleet even when none of it
 	// came up.
-	chatSrv, err := startChatServer(ctx, addr, names, slog.Default())
+	chatSrv, err := startChatServer(ctx, addr, names, shared.live, slog.Default())
 	if err != nil {
 		return err
 	}
@@ -458,6 +478,24 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 	shared.fleet.Register(bot.Member{Name: name, Role: role.Name, Actor: self,
 		Runtime: rt, Participation: shared.store})
 	closers = append(closers, func() { shared.fleet.Unregister(name) })
+	if shared.live != nil {
+		shared.live.started(name, &runningBot{model: client.Model().Ref(), hb: heartbeat, sched: scheduler})
+		closers = append(closers, func() { shared.live.stopped(name) })
+	}
+	// The durable half of the same fact. `present` is what the inbox, the
+	// composer and every participant list draw a running dot from, and what
+	// `aigem chat fleet` reads; the live roster above is what the fleet screen
+	// adds to it. Both are written here and cleared together, so they cannot
+	// disagree about whether this bot is up.
+	setPresent(ctx, shared.store, self, true, log)
+	closers = append(closers, func() {
+		// Not ctx: on shutdown it is already cancelled, and the flag would be
+		// left set for a fleet that has stopped. The next start clears it
+		// anyway, but only after however long the machine was off.
+		off, cancel := context.WithTimeout(context.WithoutCancel(ctx), presenceWriteTimeout)
+		defer cancel()
+		setPresent(off, shared.store, self, false, log)
+	})
 
 	return &botHandle{name: name, role: role.Name, rt: rt, sched: scheduler, log: log,
 		ctx: botCtx, close: closeAll}, nil

@@ -426,25 +426,66 @@ func (c *chatClient) fleet(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	var actors []chat.Actor
-	if err := c.do(ctx, http.MethodGet, "/api/chat/fleet", nil, &actors); err != nil {
+	var members []chat.FleetMember
+	if err := c.do(ctx, http.MethodGet, "/api/chat/fleet", nil, &members); err != nil {
 		return err
 	}
 	if *asJSON {
-		return printJSON(actors)
+		return printJSON(members)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	for _, a := range actors {
-		state := "stopped"
-		switch {
-		case a.Kind == chat.KindHuman:
-			state = "you"
-		case a.Present:
-			state = "running"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", a.Name, a.Role, state)
+	fmt.Fprintln(w, "bot\trole\tstate\tthreads\theartbeat\tnext job\tmodel")
+	for _, m := range members {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", m.Name, m.Role, fleetState(m), m.Threads,
+			heartbeatOf(m.Live), nextJobOf(m.Live), dash(modelOf(m.Live)))
 	}
 	return w.Flush()
+}
+
+// fleetState is the one word for what a bot is doing. Working comes from the
+// store, so it is the same answer the inbox gives; the rest comes from the
+// daemon, and a bot no daemon reported gets "-" rather than a guess.
+func fleetState(m chat.FleetMember) string {
+	switch {
+	case m.Kind == chat.KindHuman:
+		return "you"
+	case m.Working:
+		return "working"
+	case m.Live == nil:
+		return "-"
+	case !m.Live.Running:
+		return "stopped"
+	default:
+		return "idle"
+	}
+}
+
+func heartbeatOf(l *chat.LiveBot) string {
+	if l == nil || !l.Running || l.Heartbeat == "" {
+		return "-"
+	}
+	return fmt.Sprintf("%s (t%d)", l.Heartbeat, l.Tier)
+}
+
+func nextJobOf(l *chat.LiveBot) string {
+	if l == nil || l.NextJob == "" || l.NextRun == nil {
+		return "-"
+	}
+	return l.NextJob + " " + l.NextRun.Local().Format("15:04")
+}
+
+func modelOf(l *chat.LiveBot) string {
+	if l == nil {
+		return ""
+	}
+	return l.Model
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // printJSON is what a script reads. Every listing verb takes --json so driving

@@ -59,6 +59,11 @@ func everyMinutes(offset, step int) string {
 	return strings.Join(mins, ",") + " * * * *"
 }
 
+// heartbeatIntervals label the cadences above for a reader. They are a parallel array to
+// heartbeatCadences and must stay the same length and order: the tier indexes both.
+// TestHeartbeatCadencesAreAllLabelled is the guard.
+var heartbeatIntervals = []string{"30m", "1h", "2h", "4h"}
+
 // idlesPerTier is how many consecutive idle heartbeats it takes to drop to the next tier.
 const idlesPerTier = 2
 
@@ -183,6 +188,14 @@ func (h *Heartbeat) Tier() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.tierLocked()
+}
+
+// Cadence is the current interval as a label. The roster shows it beside the tier, because "t3"
+// on its own says a bot has been idle a while without saying when it next looks.
+func (h *Heartbeat) Cadence() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return heartbeatIntervals[h.tierLocked()]
 }
 
 // Armed is the cron expression currently installed.

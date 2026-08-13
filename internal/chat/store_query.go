@@ -568,6 +568,44 @@ func (s *Store) Actors(ctx context.Context) ([]Actor, error) {
 	return out, rows.Err()
 }
 
+// Roster is the fleet as the fleet screen needs it: every identity the store
+// knows, how much conversation each is carrying, and which are mid-run.
+//
+// Both counts come from the store rather than from the running fleet, because
+// both are things the reader can check by opening the inbox - and because a bot
+// that was working is still working after the process supervising it restarts,
+// which no in-memory flag survives to say.
+//
+// Archived threads are left out of the count. The column answers "how much is
+// this bot carrying now", and a bot that closed forty threads last month is not
+// carrying them.
+func (s *Store) Roster(ctx context.Context) ([]FleetMember, error) {
+	rows, err := s.r.QueryContext(ctx,
+		`SELECT a.id, a.kind, a.name, a.role, a.present, a.created_at,
+		        (SELECT COUNT(*) FROM participants p
+		           JOIN threads t ON t.id = p.thread_id
+		          WHERE p.actor_id = a.id AND t.archived_at IS NULL),
+		        EXISTS(SELECT 1 FROM turns WHERE actor_id = a.id AND ended_at IS NULL)
+		   FROM actors a ORDER BY a.kind, a.name`)
+	if err != nil {
+		return nil, fmt.Errorf("chat: read roster: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []FleetMember{}
+	for rows.Next() {
+		var m FleetMember
+		var created int64
+		if err := rows.Scan(&m.ID, &m.Kind, &m.Name, &m.Role, &m.Present, &created,
+			&m.Threads, &m.Working); err != nil {
+			return nil, err
+		}
+		m.Created = time.UnixMilli(created)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // ThreadsFor lists the thread ids an actor participates in, including archived
 // ones: participation does not lapse when a thread leaves the inbox, and a bot
 // asked about old work must be able to find it.

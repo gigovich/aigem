@@ -1749,3 +1749,78 @@ func mustEvent(t *testing.T, s *Store, threadID, actor string, turn uint64, kind
 	}
 	return seq
 }
+
+func TestRosterCountsThreadsAndOpenTurns(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+
+	th, err := s.NewThread(ctx, "refresh-token rotation", Operator, []string{amiran})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.NewThread(ctx, "the settings pane", Operator, []string{amiran, demetre})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Archived work is not work anyone is carrying, so it is not counted.
+	archived, err := s.NewThread(ctx, "last month", Operator, []string{amiran})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetArchived(ctx, Operator, archived.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BeginTurn(ctx, th.ID, amiran); err != nil {
+		t.Fatal(err)
+	}
+
+	byID := map[string]FleetMember{}
+	roster, err := s.Roster(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range roster {
+		byID[m.ID] = m
+	}
+	if got := byID[amiran]; got.Threads != 2 || !got.Working {
+		t.Errorf("amiran: threads=%d working=%v, want 2 and working", got.Threads, got.Working)
+	}
+	if got := byID[demetre]; got.Threads != 1 || got.Working {
+		t.Errorf("demetre: threads=%d working=%v, want 1 and idle", got.Threads, got.Working)
+	}
+	// The operator opened all three, and one of them is archived.
+	if got := byID[Operator]; got.Threads != 2 || got.Working {
+		t.Errorf("operator: threads=%d working=%v, want 2 and idle", got.Threads, got.Working)
+	}
+	if got := byID[amiran]; got.Name != "amiran" || got.Role != "developer" {
+		t.Errorf("the roster lost the actor's own fields: %+v", got)
+	}
+	_ = other
+}
+
+// The roster and the inbox read the same table, so a turn that ended must stop
+// showing as working in both at once.
+func TestRosterStopsWorkingWhenTheTurnEnds(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th, err := s.NewThread(ctx, "t", Operator, []string{amiran})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := s.BeginTurn(ctx, th.ID, amiran)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
+		t.Fatal(err)
+	}
+	roster, err := s.Roster(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range roster {
+		if m.Working {
+			t.Errorf("%s still reads as working after its turn ended", m.ID)
+		}
+	}
+}

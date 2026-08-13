@@ -370,3 +370,27 @@ func TestNameOffsetIsStableAndBounded(t *testing.T) {
 		}
 	}
 }
+
+// The tier indexes both arrays. A cadence added without a label is an index out
+// of range on the roster, in a getter no unit test would otherwise reach.
+func TestHeartbeatCadencesAreAllLabelled(t *testing.T) {
+	if len(heartbeatIntervals) != len(heartbeatCadences) {
+		t.Fatalf("%d cadences but %d labels", len(heartbeatCadences), len(heartbeatIntervals))
+	}
+}
+
+func TestHeartbeatCadenceFollowsTheTier(t *testing.T) {
+	h, _ := newArmedHeartbeat(t, "amiran")
+	if got := h.Cadence(); got != "30m" {
+		t.Errorf("a working heartbeat reports %q, want 30m", got)
+	}
+	for range idlesPerTier {
+		h.AfterCronRun(WorkHeartbeatJobID, HeartbeatIdleMarker)
+	}
+	if h.Tier() != 1 {
+		t.Fatalf("tier is %d after %d idle runs, want 1", h.Tier(), idlesPerTier)
+	}
+	if got := h.Cadence(); got != "1h" {
+		t.Errorf("tier 1 reports %q, want 1h", got)
+	}
+}
