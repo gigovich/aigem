@@ -24,6 +24,9 @@ the workflow.
 | `internal/local`     | the local llama.cpp server: config, daemon lifecycle, download progress, health (the setup wizard itself lives in `cmd/aigem`) |
 | `internal/tui`       | the Bubble Tea front-end                                              |
 | `internal/bot`       | unattended bots, roles, memory, cron, and the store adapter           |
+| `internal/chat`      | the fleet's threads, messages, agent timeline and spend               |
+| `internal/uisession` | one conversation's lifecycle and its event journal                    |
+| `internal/web`       | the daemon: HTTP, websocket, auth, and the built browser UI           |
 
 Roughly 28k lines of non-test Go, plus about 17k lines of tests.
 

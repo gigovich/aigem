@@ -261,18 +261,23 @@ func (c *chatClient) read(ctx context.Context, args []string) error {
 	if *before > 0 {
 		q.Set("before", strconv.FormatUint(*before, 10))
 	}
-	var msgs []chat.Message
+	var page chat.Page[chat.Message]
 	if err := c.do(ctx, http.MethodGet,
-		"/api/chat/threads/"+fs.Args()[0]+"/messages?"+q.Encode(), nil, &msgs); err != nil {
+		"/api/chat/threads/"+fs.Args()[0]+"/messages?"+q.Encode(), nil, &page); err != nil {
 		return err
 	}
 	if *asJSON {
-		return printJSON(msgs)
+		return printJSON(page)
+	}
+	if page.More {
+		// Said before the transcript rather than after it, where the reader is
+		// already at the newest message and has stopped looking up.
+		fmt.Printf("(older messages not shown; --before %d for the rest)\n\n", page.Cursor)
 	}
 	// Newest first over the wire, because that is what a paging UI wants; a
 	// transcript reads the other way.
-	for i := len(msgs) - 1; i >= 0; i-- {
-		printMessage(msgs[i])
+	for i := len(page.Items) - 1; i >= 0; i-- {
+		printMessage(page.Items[i])
 	}
 	c.printSpend(ctx, fs.Args()[0])
 	return nil

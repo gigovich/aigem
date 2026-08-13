@@ -211,8 +211,11 @@ last chunk and it never got there.
 Three things about the line are worth knowing before comparing it to anything.
 It is always the whole thread, never the window `--limit` and `--before` print,
 and it counts only turns that actually spent something. It is dropped from
-`--json`, which is for scripts that want the messages and nothing wrapped around
-them. And a turn that is still running is behind by up to 16 calls: the spend is
+`--json`, which prints the paging envelope and nothing else: an `items` array,
+plus `cursor` and `more` when older messages remain. Both are omitted when the
+whole thread fit in one page, so their absence is the signal that it did, and a
+script pages back with `--before <cursor>` rather than guessing. And a turn that
+is still running is behind by up to 16 calls: the spend is
 written in batches, so that recording it never blocks the model call that is
 still streaming. Read the thread again once the bot is idle for the final figure.
 

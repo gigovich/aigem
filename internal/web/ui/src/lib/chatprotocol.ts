@@ -1,0 +1,156 @@
+import type { Event } from "./protocol";
+
+/** The wire format of internal/chat. Every type here mirrors a Go struct in
+ *  that package; the field names are its JSON tags, not renamed on the way in,
+ *  so a change on either side is a type error rather than an empty column. */
+
+/** Thread states, as the store derives them. Never guessed here: `working` is a
+ *  turn row with no end, `needs_you` is a bot's message flagged await. */
+export type ThreadState = "needs_you" | "working" | "waiting" | "idle";
+
+/** Actor ids carry their kind, so a bot named "operator" cannot collide with
+ *  the human. */
+export const OPERATOR = "human:operator";
+
+export interface Actor {
+  id: string;
+  kind: "human" | "bot";
+  name: string;
+  role?: string;
+  present: boolean;
+  created: string;
+}
+
+export interface ThreadView {
+  id: string;
+  title?: string;
+  created: string;
+  created_by: string;
+  last_seq: number;
+  last_at: string;
+  last_author?: string;
+  last_text?: string;
+  state: ThreadState;
+  archived?: boolean;
+  participants: string[];
+  unread: number;
+  working: boolean;
+}
+
+export interface Message {
+  seq: number;
+  thread: string;
+  author: string;
+  body: string;
+  kind: "message" | "system" | "handoff";
+  mentions?: string[];
+  await?: boolean;
+  created: string;
+  attachments?: string[];
+}
+
+/** The streams a frame can belong to. `desync` and `truncated` call for
+ *  opposite reactions and are deliberately distinct: a client that confused
+ *  them would throw away the backlog it had just been handed. */
+export type Stream = "message" | "thread" | "event" | "desync" | "truncated";
+
+export interface Frame {
+  seq: number;
+  stream: Stream;
+  /** Set on every frame. A thread frame carrying no `thr` is a tombstone: the
+   *  conversation is gone and there is nothing left to describe. */
+  thread?: string;
+  msg?: Message;
+  thr?: ThreadView;
+  event?: Event;
+  /** The resume point on a desync or a truncated backlog. */
+  from?: number;
+}
+
+/** A rejection of one client's op. Not a Frame, and deliberately so: frames are
+ *  what happened in the conversation, and a bad request did not happen in it. */
+export interface ClientError {
+  kind: "client_error";
+  op?: string;
+  error: string;
+}
+
+export type Incoming = Frame | ClientError;
+
+export function isClientError(v: Incoming): v is ClientError {
+  return (v as ClientError).kind === "client_error";
+}
+
+/** Everything the operator can do to the fleet's conversations. */
+export interface ClientOp {
+  op: "send" | "watch" | "unwatch" | "read" | "add" | "remove" | "title" | "archive" | "ping";
+  thread?: string;
+  text?: string;
+  actor?: string;
+  seq?: number;
+  title?: string;
+  mentions?: string[];
+  attachments?: string[];
+  archived?: boolean;
+}
+
+/** A bounded slice of a stream plus where to resume it. Cursor is only set when
+ *  More is: a route that stopped at its limit has to say so, because a bare
+ *  array reads exactly like the end of the conversation. */
+export interface Page<T> {
+  items: T[];
+  cursor?: number;
+  more?: boolean;
+}
+
+/** What the daemon says about itself before the page draws anything. Served
+ *  rather than compiled in: a browser holding yesterday's bundle against
+ *  today's binary is the ordinary case, and a limit copied into the client is a
+ *  limit that drifts until an upload starts failing. */
+export interface ChatMeta {
+  operator: string;
+  states: ThreadState[];
+  max_body_bytes: number;
+  max_title_chars: number;
+  max_unread: number;
+}
+
+/** What each state is called on screen. One map, because the rail's filter
+ *  chips and the rows they filter must agree - two copies is how a chip comes
+ *  to say something the list under it does not. A state the daemon grows that
+ *  is not here still appears, under its own name. */
+const STATE_LABEL: Record<string, string> = {
+  needs_you: "needs you",
+  working: "working",
+  waiting: "waiting",
+  idle: "idle",
+};
+
+export function stateLabel(state: string): string {
+  return STATE_LABEL[state] ?? state;
+}
+
+/** clock renders the time something last happened. Date-less: every row in an
+ *  inbox is either today or old enough that the time of day says nothing, and a
+ *  date belongs in the thread itself. */
+export function clock(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+/** firstLine is a one-line stand-in for a body: the fallback label for a thread
+ *  with no title, now that the row has no room for a preview of its own. */
+export function firstLine(text: string, max = 80): string {
+  const line = text.split("\n", 1)[0].trim();
+  return line.length > max ? line.slice(0, max).trimEnd() + "…" : line;
+}
+
+/** displayName strips the kind off an actor id. "you" for the operator, because
+ *  a transcript addressed to the reader in the third person reads as someone
+ *  else's log. */
+export function displayName(actorID: string, operator = OPERATOR): string {
+  if (actorID === operator) return "you";
+  const at = actorID.indexOf(":");
+  return at < 0 ? actorID : actorID.slice(at + 1);
+}

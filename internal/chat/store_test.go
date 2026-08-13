@@ -3,6 +3,7 @@ package chat
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -429,7 +430,7 @@ func TestAnOutsiderCannotReachAThread(t *testing.T) {
 	if _, err := s.Say(ctx, th.ID, Draft{Author: jane, Body: "hello"}); !errors.Is(err, ErrNoSuchThread) {
 		t.Fatalf("Say by an outsider: %v, want ErrNoSuchThread", err)
 	}
-	if _, err := s.Messages(ctx, jane, th.ID, 0, 10); !errors.Is(err, ErrNoSuchThread) {
+	if _, _, _, err := s.Messages(ctx, jane, th.ID, 0, 10); !errors.Is(err, ErrNoSuchThread) {
 		t.Fatalf("Messages for an outsider: %v, want ErrNoSuchThread", err)
 	}
 	if _, err := s.ThreadFor(ctx, jane, th.ID); !errors.Is(err, ErrNoSuchThread) {
@@ -485,7 +486,7 @@ func TestMembershipChangesAreInTheTranscript(t *testing.T) {
 	if err := s.RemoveParticipant(ctx, Operator, th.ID, demetre); err != nil {
 		t.Fatal(err)
 	}
-	msgs, err := s.Messages(ctx, Operator, th.ID, 0, 50)
+	msgs, _, _, err := s.Messages(ctx, Operator, th.ID, 0, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,20 +637,91 @@ func TestMessagesPageBackwards(t *testing.T) {
 		seqs = append(seqs, mustSay(t, s, th.ID, amiran, string(rune('a'+i))).Seq)
 	}
 
-	page, err := s.Messages(ctx, Operator, th.ID, 0, 4)
+	page, cursor, more, err := s.Messages(ctx, Operator, th.ID, 0, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page) != 4 || page[0].Seq != seqs[9] {
 		t.Fatalf("first page starts at %d with %d rows; want %d and 4", page[0].Seq, len(page), seqs[9])
 	}
-	older, err := s.Messages(ctx, Operator, th.ID, page[len(page)-1].Seq, 4)
+	// The cursor is the whole point of the envelope: a caller that took the
+	// lowest seq it saw would be right here and wrong on the last page, which is
+	// the one where the difference loses history.
+	if !more || cursor != page[len(page)-1].Seq {
+		t.Fatalf("first page reported more=%v cursor=%d; want true and %d",
+			more, cursor, page[len(page)-1].Seq)
+	}
+	older, _, _, err := s.Messages(ctx, Operator, th.ID, cursor, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(older) != 4 || older[0].Seq >= page[len(page)-1].Seq {
-		t.Fatalf("the second page overlaps the first: %d then %d",
-			page[len(page)-1].Seq, older[0].Seq)
+	if len(older) != 4 || older[0].Seq >= cursor {
+		t.Fatalf("the second page overlaps the first: %d then %d", cursor, older[0].Seq)
+	}
+
+	// The last page is the one a client must be able to recognise. Ten messages
+	// in pages of four means the third holds two and ends the thread.
+	_, _, more2, err := s.Messages(ctx, Operator, th.ID, older[len(older)-1].Seq, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if more2 {
+		t.Fatal("the page holding the oldest messages still reported more")
+	}
+
+	// A page that exactly fills its limit with nothing behind it must not claim
+	// otherwise: this is the off-by-one the limit+1 read exists to get right.
+	whole, cursor3, more3, err := s.Messages(ctx, Operator, th.ID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(whole) != 10 || more3 || cursor3 != 0 {
+		t.Fatalf("an exact-fit page reported %d rows, more=%v, cursor=%d; want 10, false, 0",
+			len(whole), more3, cursor3)
+	}
+}
+
+func TestTimelinePagesForwards(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "long turn", amiran)
+	turn, err := s.BeginTurn(ctx, th.ID, amiran)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 6 {
+		if _, err := s.AppendEvent(ctx, EventRecord{
+			Thread: th.ID, Actor: amiran, TurnSeq: turn, Kind: "tool_start",
+			Payload: []byte(fmt.Sprintf(`{"kind":"tool_start","name":"step%d"}`, i)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, cursor, more, err := s.Timeline(ctx, Operator, th.ID, 0, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 4 || !more || cursor != first[len(first)-1].Seq {
+		t.Fatalf("first page: %d events, more=%v, cursor=%d; want 4, true and %d",
+			len(first), more, cursor, first[len(first)-1].Seq)
+	}
+	// Forwards, so the cursor is where the next since starts - the newest
+	// delivered event, not the oldest.
+	rest, _, more2, err := s.Timeline(ctx, Operator, th.ID, cursor, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Checked before the message below indexes it: reporting an empty second
+	// page as an index-out-of-range panic hides the very thing that failed.
+	if len(rest) == 0 {
+		t.Fatal("the second page is empty; the cursor did not advance past the first")
+	}
+	if more2 || rest[0].Seq <= cursor {
+		t.Fatalf("second page: %d events starting at %d, more=%v", len(rest), rest[0].Seq, more2)
+	}
+	if len(first)+len(rest) != 6 {
+		t.Fatalf("paging saw %d events, want all six steps", len(first)+len(rest))
 	}
 }
 
@@ -757,7 +829,7 @@ func TestTimelineReturnsEventsAfterSince(t *testing.T) {
 		seqs = append(seqs, seq)
 	}
 
-	frames, err := s.Timeline(ctx, Operator, th.ID, seqs[0], 100)
+	frames, _, _, err := s.Timeline(ctx, Operator, th.ID, seqs[0], 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -817,14 +889,14 @@ func TestPruneDropsOldEventsAndKeepsMessages(t *testing.T) {
 	if events != 1 || blobs != 1 {
 		t.Fatalf("pruned %d events and %d blobs, want 1 and 1", events, blobs)
 	}
-	frames, err := s.Timeline(ctx, Operator, th.ID, 0, 100)
+	frames, _, _, err := s.Timeline(ctx, Operator, th.ID, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(frames) != 1 || frames[0].Seq != freshSeq {
 		t.Fatalf("after pruning the timeline has %d events, want only the fresh one", len(frames))
 	}
-	msgs, err := s.Messages(ctx, Operator, th.ID, 0, 50)
+	msgs, _, _, err := s.Messages(ctx, Operator, th.ID, 0, 50)
 	if err != nil {
 		t.Fatal(err)
 	}

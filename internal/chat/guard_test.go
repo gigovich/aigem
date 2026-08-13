@@ -43,7 +43,7 @@ func TestEveryEntryPointRefusesAnOutsider(t *testing.T) {
 			return err
 		}, ErrNoSuchThread},
 		{"Messages", func() error {
-			_, err := s.Messages(ctx, jane, th.ID, 0, 10)
+			_, _, _, err := s.Messages(ctx, jane, th.ID, 0, 10)
 			return err
 		}, ErrNoSuchThread},
 		{"ThreadFor", func() error {
@@ -51,7 +51,7 @@ func TestEveryEntryPointRefusesAnOutsider(t *testing.T) {
 			return err
 		}, ErrNoSuchThread},
 		{"Timeline", func() error {
-			_, err := s.Timeline(ctx, jane, th.ID, 0, 10)
+			_, _, _, err := s.Timeline(ctx, jane, th.ID, 0, 10)
 			return err
 		}, ErrNoSuchThread},
 		{"Turns", func() error {
@@ -110,7 +110,7 @@ func TestEveryEntryPointRefusesAnOutsider(t *testing.T) {
 	}
 
 	// And nothing an outsider did leaked into the thread.
-	msgs, err := s.Messages(ctx, Operator, th.ID, 0, 50)
+	msgs, _, _, err := s.Messages(ctx, Operator, th.ID, 0, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestEveryEntryPointRefusesAnOutsider(t *testing.T) {
 	if turns[0].Model != "" || turns[0].Error != "" || !turns[0].Ended.IsZero() {
 		t.Fatalf("an outsider changed the turn: %+v", turns[0])
 	}
-	frames, err := s.Timeline(ctx, Operator, th.ID, 0, 50)
+	frames, _, _, err := s.Timeline(ctx, Operator, th.ID, 0, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +668,7 @@ func TestAMessageRoundTrips(t *testing.T) {
 			t.Fatalf("%s: body = %q, want %q", where, got.Body, sent.Body)
 		}
 	}
-	page, err := s.Messages(ctx, Operator, th.ID, 0, 10)
+	page, _, _, err := s.Messages(ctx, Operator, th.ID, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

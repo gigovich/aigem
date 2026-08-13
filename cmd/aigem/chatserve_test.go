@@ -44,12 +44,15 @@ func TestTheCLIReachesTheDaemonTheFleetStarts(t *testing.T) {
 		t.Fatalf("the daemon lists %+v, want the thread just opened", views)
 	}
 
-	var msgs []chat.Message
-	if err := c.do(ctx, "GET", "/api/chat/threads/"+views[0].ID+"/messages", nil, &msgs); err != nil {
+	var page chat.Page[chat.Message]
+	if err := c.do(ctx, "GET", "/api/chat/threads/"+views[0].ID+"/messages", nil, &page); err != nil {
 		t.Fatal(err)
 	}
-	if len(msgs) != 1 || !strings.Contains(msgs[0].Body, "reach the daemon") {
-		t.Fatalf("the thread holds %+v, want the opening message", msgs)
+	if len(page.Items) != 1 || !strings.Contains(page.Items[0].Body, "reach the daemon") {
+		t.Fatalf("the thread holds %+v, want the opening message", page.Items)
+	}
+	if page.More {
+		t.Fatal("a one-message thread reported more pages")
 	}
 
 	// And the record goes when the daemon does, so the next `aigem chat` does

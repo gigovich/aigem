@@ -48,9 +48,16 @@ func TestOperatorCanDriveAThreadThroughTheAPIAlone(t *testing.T) {
 	go botTurn(ctx, t, store, th.ID)
 
 	// 4. The operator sees the work and the answer, in order, over one socket.
-	var sawWorking, sawTool, sawAnswer bool
+	//
+	// The turn ending is one of the things waited for, not something assumed to
+	// have happened by the time the answer arrives: the bot says its piece and
+	// ends the turn in two separate writes, in that order, so a reader that
+	// stopped at the answer would go on to ask about a turn that is still open
+	// for another instant. That is a race in the test, and it only ever showed
+	// up under -race, which is exactly when it is least welcome.
+	var sawWorking, sawTool, sawAnswer, sawDone bool
 	deadline := time.Now().Add(10 * time.Second)
-	for (!sawWorking || !sawTool || !sawAnswer) && time.Now().Before(deadline) {
+	for (!sawWorking || !sawTool || !sawAnswer || !sawDone) && time.Now().Before(deadline) {
 		_ = conn.SetReadDeadline(deadline)
 		data, err := wsutil.ReadServerText(conn)
 		if err != nil {
@@ -63,6 +70,11 @@ func TestOperatorCanDriveAThreadThroughTheAPIAlone(t *testing.T) {
 		switch {
 		case f.Stream == StreamThread && f.Thread != nil && f.Thread.Working:
 			sawWorking = true
+		// EndTurn republishes the thread, and "working" is derived from the
+		// turns table, so a thread frame that has stopped working after the
+		// answer is the store saying the turn is closed.
+		case f.Stream == StreamThread && f.Thread != nil && !f.Thread.Working && sawAnswer:
+			sawDone = true
 		case f.Stream == StreamEvent && strings.Contains(string(f.Event), "go test"):
 			sawTool = true
 		case f.Stream == StreamMessage && f.Message != nil &&
@@ -70,21 +82,21 @@ func TestOperatorCanDriveAThreadThroughTheAPIAlone(t *testing.T) {
 			sawAnswer = true
 		}
 	}
-	if !sawWorking || !sawTool || !sawAnswer {
-		t.Fatalf("the operator saw working=%v tool=%v answer=%v; want all three",
-			sawWorking, sawTool, sawAnswer)
+	if !sawWorking || !sawTool || !sawAnswer || !sawDone {
+		t.Fatalf("the operator saw working=%v tool=%v answer=%v done=%v; want all four",
+			sawWorking, sawTool, sawAnswer, sawDone)
 	}
 
 	// 5. And the thread reads back the same way over plain HTTP, which is what
 	//    `aigem chat read` does.
 	res = do(t, srv, http.MethodGet, "/api/chat/threads/"+th.ID+"/messages", nil)
-	msgs := decode[[]Message](t, res)
-	if len(msgs) != 2 {
-		t.Fatalf("the thread has %d messages, want the ask and the answer", len(msgs))
+	msgs := decode[Page[Message]](t, res)
+	if len(msgs.Items) != 2 {
+		t.Fatalf("the thread has %d messages, want the ask and the answer", len(msgs.Items))
 	}
 	res = do(t, srv, http.MethodGet, "/api/chat/threads/"+th.ID+"/timeline", nil)
-	if frames := decode[[]Frame](t, res); len(frames) != 3 {
-		t.Fatalf("the timeline has %d events, want the three the turn produced", len(frames))
+	if tl := decode[Page[Frame]](t, res); len(tl.Items) != 3 {
+		t.Fatalf("the timeline has %d events, want the three the turn produced", len(tl.Items))
 	}
 	res = do(t, srv, http.MethodGet, "/api/chat/threads/"+th.ID+"/turns", nil)
 	turns := decode[[]Turn](t, res)

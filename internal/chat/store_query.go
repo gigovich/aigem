@@ -208,20 +208,29 @@ func scanMessage(row scanner) (Message, error) {
 
 // Messages returns a page of a thread's messages, newest first, ending just
 // below before. A zero before starts at the newest.
-func (s *Store) Messages(ctx context.Context, actor, threadID string, before uint64, limit int) ([]Message, error) {
+//
+// cursor is what to pass as the next before, and more says whether older
+// messages remain. They are returned rather than inferred for the same reason
+// Tail returns them: a caller cannot tell a page that filled its limit from the
+// start of the conversation, and one that guesses loses the rest of the thread
+// without ever being told it had one.
+func (s *Store) Messages(ctx context.Context, actor, threadID string, before uint64, limit int) (
+	msgs []Message, cursor uint64, more bool, err error) {
 	if err := s.requireParticipantR(ctx, threadID, actor); err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
 	limit = clampLimit(limit, 100, 500)
+	// One more than asked for, so a full page is distinguishable from the end of
+	// the thread without a second query.
 	rows, err := s.r.QueryContext(ctx,
 		`SELECT `+messageColumns+`
 		   FROM messages m
 		  WHERE m.thread_id = ? AND m.seq < ?
 		  ORDER BY m.seq DESC
 		  LIMIT ?`,
-		threadID, sqlSeq(before), limit)
+		threadID, sqlSeq(before), limit+1)
 	if err != nil {
-		return nil, fmt.Errorf("chat: read messages: %w", err)
+		return nil, 0, false, fmt.Errorf("chat: read messages: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -229,28 +238,42 @@ func (s *Store) Messages(ctx context.Context, actor, threadID string, before uin
 	for rows.Next() {
 		m, err := scanMessage(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, false, err
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, false, err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+		// The page runs newest to oldest, so the oldest delivered message is the
+		// bound the next page asks below.
+		return out, out[len(out)-1].Seq, true, nil
+	}
+	return out, 0, false, nil
 }
 
 // Timeline returns a thread's agent events after since, oldest first. It is how
 // a client that reconnected backfills the thread it is watching, over HTTP
 // rather than down the socket, so a large backfill cannot blow the socket's
 // queue.
-func (s *Store) Timeline(ctx context.Context, actor, threadID string, since uint64, limit int) ([]Frame, error) {
+//
+// cursor is what to pass as the next since, and more says whether the thread
+// continues past this page. A single bot turn can be hundreds of events, so a
+// backfill hitting the limit is ordinary rather than exceptional.
+func (s *Store) Timeline(ctx context.Context, actor, threadID string, since uint64, limit int) (
+	frames []Frame, cursor uint64, more bool, err error) {
 	if err := s.requireParticipantR(ctx, threadID, actor); err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
 	limit = clampLimit(limit, 500, 2000)
 	rows, err := s.r.QueryContext(ctx,
 		`SELECT seq, payload FROM events
 		  WHERE thread_id = ? AND seq > ?
-		  ORDER BY seq LIMIT ?`, threadID, since, limit)
+		  ORDER BY seq LIMIT ?`, threadID, since, limit+1)
 	if err != nil {
-		return nil, fmt.Errorf("chat: read timeline: %w", err)
+		return nil, 0, false, fmt.Errorf("chat: read timeline: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -258,11 +281,18 @@ func (s *Store) Timeline(ctx context.Context, actor, threadID string, since uint
 	for rows.Next() {
 		f := Frame{Stream: StreamEvent, ThreadID: threadID}
 		if err := rows.Scan(&f.Seq, &f.Event); err != nil {
-			return nil, err
+			return nil, 0, false, err
 		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, false, err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+		return out, out[len(out)-1].Seq, true, nil
+	}
+	return out, 0, false, nil
 }
 
 // Tail returns everything an actor is entitled to see after since, oldest

@@ -3,11 +3,13 @@
 !!! note "Partly built"
 
     Steps 0 to 10 of the work breakdown have landed, in part, and have been
-    through a review pass: call ids on tool events,
-    `internal/uisession`, the terminal ported onto it, the journal, and the
-    daemon with its protocol. There is no UI yet: `aigem web run` serves the API
-    and says so. The design below is kept in step with the code as it is
-    written, and the places where building it changed the design say so.
+    through a review pass: call ids on tool events, `internal/uisession`, the
+    terminal ported onto it, the journal, and the daemon with its protocol.
+    The browser front-end is built and served: `aigem web run` opens the
+    session workspace, and `aigem bot start` opens the fleet's Bots screen -
+    one bundle, two screens, chosen by `GET /api/modes`. The design below is
+    kept in step with the code as it is written, and the places where building
+    it changed the design say so.
 
 aigem's terminal front-end is one way to drive the agent, not the only possible
 one. This design adds a second, independent front-end: a browser UI served by a
@@ -327,10 +329,23 @@ GET    /api/models                      registry + which are authenticated
 POST   /api/auth/login/{provider}       begin a login, returns a flow id
 GET    /api/auth/login/{flow}           poll: pending / done / error
 POST   /api/auth/login/{flow}/paste     redirect-URL fallback (see below)
+GET    /api/modes                       which screens this daemon serves
 GET    /healthz
 ```
 
 HTTP uses `Authorization: Bearer <token>`.
+
+`GET /api/modes` answers `{"sessions": bool, "chat": bool}`. One bundle serves
+both screens and only the daemon knows which it is: `aigem web run` has no fleet
+to talk to and `aigem bot start` creates no sessions. The page hides the screen
+switch when only one is served, rather than offering one whose every request
+would 404. The fleet's own routes are documented in `bots.md`.
+
+Because the page routes `/chat` in the browser, a path that names no file is
+answered with `index.html` instead of 404 - that is what makes a reload, a
+bookmark or a shared thread link work. Anything under `/api/` is excluded, so a
+route the daemon does not serve is still a clean 404 rather than a page the
+caller's JSON decoder reports as `unexpected token <`.
 
 ### Provider login from the browser
 

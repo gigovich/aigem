@@ -40,6 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `aigem chat read --json` prints a paging envelope rather than a bare array:
+  `{"items": [...]}`, plus `cursor` and `more` when older messages remain. A
+  bare array that stopped at `--limit` was indistinguishable from the start of
+  the conversation, so a script reading a long thread silently saw part of it
+  and could not tell. The same envelope is on `GET /api/chat/threads/{id}/
+  messages` and `/timeline`. Scripts that consumed the array need `.items`.
+
 - Input history records prompts only: slash commands are skipped, since `/new` is
   the last thing most sessions see and would be the first thing Up offered, and
   so are empty submissions and anything past 16 KiB. Abandoned temp files are
@@ -60,7 +67,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the missing half of the advice, since a second context costs more than reading
   one file.
 
+### Removed
+
+- Mattermost. The bot fleet no longer talks to it, and the ~2600-line REST and
+  websocket client is gone. It was the transport and the history store at once,
+  which meant the authorisation boundary - channel membership - was a question
+  asked of an external server with the bot's own credentials, and answered by
+  falling back to a guess when it could not be confirmed. Participation in a
+  thread replaces it: a bot reads and writes exactly the threads it is in, there
+  is no second authority to disagree with, and a refusal is final.
+
+  `bot create` is four questions and no network call; the `transport:` block in
+  an existing `bot.yaml` is ignored rather than rejected. Bot tokens in the auth
+  store go with `aigem bot rm`, and tokens already issued to a Mattermost server
+  should be revoked there. Nothing in aigem reads them any more, so an existing
+  server can stay up read-only for as long as its old threads are wanted.
+
+- The `aigem-bot@.service` unit. Its `Conflicts=aigem-bots.service` line existed
+  only because one Mattermost account allows one websocket; with the fleet on
+  its own store, two units means two SQLite writers serving two copies of the UI
+  on two ports. `superviseBot` already restarts an individual bot inside the one
+  process, and `aigem bot start <name>` is the way to debug one in the
+  foreground.
+
 ### Added
+
+- The bot fleet has its own conversation store and its own browser screen. A
+  thread is one task with an explicit set of participants - the operator and one
+  or more bots - kept in SQLite at `$XDG_STATE_HOME/aigem/chat/chat.db`. There
+  are no channels and no rooms: posting into a thread wakes everyone in it, and
+  that is the whole wake mechanism, so the class of failure where a mention
+  reached a bot that was not in the channel is gone.
+
+  `aigem bot start` serves it, and `aigem chat threads|new|send|read|search|tail|
+  fleet` drives it from a terminal. In a browser the same daemon opens a Bots
+  screen beside the existing session workspace - an inbox sorted by what needs
+  the operator, the thread itself, and a composer - with the screen switch
+  appearing only on a daemon that serves both. What each bot did while answering
+  is recorded per turn and will be shown inline next; today it is in the store
+  and reachable over the API.
+
+  Bot conversation history was never persisted, so there is nothing to migrate:
+  a restart already cost the fleet its in-memory context, and switching backends
+  costs it exactly that much.
 
 - A bot thread now records what the work in it cost. A model call made while a
   bot is working in a thread is billed to that turn - including the calls its

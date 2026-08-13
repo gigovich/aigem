@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,6 +19,13 @@ import (
 
 // testAPI stands up the store, the hub and the routes on a real listener, with
 // the same no-op guard the daemon's own tests use in place of the token check.
+// socketWait bounds a read in these tests. It is generous rather than tight:
+// the thing being asserted is that a frame arrives at all, and a machine also
+// running the frontend suite has taken longer than three seconds to schedule
+// the goroutine that writes it - which failed as "no frame" and pointed at the
+// hub rather than at the load.
+const socketWait = 15 * time.Second
+
 func testAPI(t *testing.T) (*Store, *httptest.Server) {
 	t.Helper()
 	s := newStore(t)
@@ -65,6 +73,36 @@ func decode[T any](t *testing.T, res *http.Response) T {
 	return v
 }
 
+// The client draws its filters from States and validates a message against the
+// limits before sending it. A state the store can produce but this list omits
+// is a thread the operator has no filter for; a limit that drifts is a write
+// the daemon refuses after the composer accepted it.
+func TestMetaCarriesEveryStateAndLimit(t *testing.T) {
+	_, srv := testAPI(t)
+
+	meta := decode[Meta](t, do(t, srv, http.MethodGet, "/api/chat/meta", nil))
+	for _, state := range []string{StateNeedsYou, StateWorking, StateWaiting, StateIdle} {
+		if !slices.Contains(meta.States, state) {
+			t.Errorf("meta omits the %q state the store can put on a thread", state)
+		}
+	}
+	if meta.Operator != Operator {
+		t.Errorf("meta names the operator %q, want %q", meta.Operator, Operator)
+	}
+	for _, l := range []struct {
+		name      string
+		got, want int
+	}{
+		{"max_body_bytes", meta.MaxBodyBytes, MaxBodyBytes},
+		{"max_title_chars", meta.MaxTitleChars, MaxTitleChars},
+		{"max_unread", meta.MaxUnread, MaxUnread},
+	} {
+		if l.got != l.want {
+			t.Errorf("meta reports %s = %d, but the store enforces %d", l.name, l.got, l.want)
+		}
+	}
+}
+
 func TestAPIThreadLifecycle(t *testing.T) {
 	_, srv := testAPI(t)
 
@@ -88,9 +126,12 @@ func TestAPIThreadLifecycle(t *testing.T) {
 	}
 
 	res = do(t, srv, http.MethodGet, "/api/chat/threads/"+th.ID+"/messages", nil)
-	msgs := decode[[]Message](t, res)
-	if len(msgs) != 1 || msgs[0].Body != "the logout is back" {
-		t.Fatalf("the opening text was not stored: %+v", msgs)
+	page := decode[Page[Message]](t, res)
+	if len(page.Items) != 1 || page.Items[0].Body != "the logout is back" {
+		t.Fatalf("the opening text was not stored: %+v", page.Items)
+	}
+	if page.More || page.Cursor != 0 {
+		t.Fatalf("a one-message thread paged: more=%v cursor=%d", page.More, page.Cursor)
 	}
 
 	res = do(t, srv, http.MethodPatch, "/api/chat/threads/"+th.ID,
@@ -243,7 +284,7 @@ func (c *wsClient) send(v any) {
 // rest.
 func (c *wsClient) next(want func(Frame) bool) Frame {
 	c.t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(socketWait)
 	for time.Now().Before(deadline) {
 		if d, ok := c.conn.(interface{ SetReadDeadline(time.Time) error }); ok {
 			_ = d.SetReadDeadline(deadline)
@@ -269,7 +310,7 @@ func (c *wsClient) next(want func(Frame) bool) Frame {
 // hears about the conversation before it hears about its own mistake.
 func (c *wsClient) nextError() wsError {
 	c.t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(socketWait)
 	for time.Now().Before(deadline) {
 		if d, ok := c.conn.(interface{ SetReadDeadline(time.Time) error }); ok {
 			_ = d.SetReadDeadline(deadline)
@@ -379,7 +420,7 @@ func TestSocketOpsWriteThroughTheStore(t *testing.T) {
 	c.send(clientOp{Op: "send", Thread: th.ID, Text: "please look"})
 	c.next(isMessage("please look"))
 
-	msgs, err := s.Messages(t.Context(), Operator, th.ID, 0, 10)
+	msgs, _, _, err := s.Messages(t.Context(), Operator, th.ID, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +478,7 @@ func TestThreadSocketEmitsBareEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(socketWait))
 	data, err := wsutil.ReadServerText(conn)
 	if err != nil {
 		t.Fatal(err)
@@ -480,7 +521,7 @@ func TestHubDeliversOnlyToTheAudienceOnTheFrame(t *testing.T) {
 		if f.Stream != StreamMessage && f.Stream != StreamThread {
 			t.Fatalf("participant got %q", f.Stream)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(socketWait):
 		t.Fatal("a participant was not delivered their own thread's message")
 	}
 	select {
@@ -495,7 +536,7 @@ func TestHubDeliversOnlyToTheAudienceOnTheFrame(t *testing.T) {
 	}
 	select {
 	case <-theirs:
-	case <-time.After(3 * time.Second):
+	case <-time.After(socketWait):
 		t.Fatal("a new participant hears nothing")
 	}
 }

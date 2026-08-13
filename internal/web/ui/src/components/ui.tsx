@@ -96,12 +96,24 @@ function Skeleton({ className }: { className?: string }) {
   );
 }
 
-/** Rows of skeleton at the height of a list row, for a list that is loading. */
-export function SkeletonRows({ rows = 3, className }: { rows?: number; className?: string }) {
+/** Rows of skeleton at the height of a list row, for a list that is loading.
+ *
+ *  rowClass is the height of the row that will replace it. The default is a
+ *  list row; a caller whose rows are taller has to say so, because the point of
+ *  a skeleton is that the layout does not move when the answer lands. */
+export function SkeletonRows({
+  rows = 3,
+  rowClass = "h-8",
+  className,
+}: {
+  rows?: number;
+  rowClass?: string;
+  className?: string;
+}) {
   return (
     <div className={cn("flex flex-col gap-1.5", className)} aria-hidden>
       {Array.from({ length: rows }, (_, i) => (
-        <Skeleton key={i} className="h-8 w-full" />
+        <Skeleton key={i} className={cn("w-full", rowClass)} />
       ))}
     </div>
   );

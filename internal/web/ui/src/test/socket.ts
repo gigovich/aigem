@@ -38,7 +38,10 @@ export class FakeSocket {
     this.onopen?.();
   }
 
-  deliver(frame: Frame) {
+  /** Whatever the daemon writes down this socket. Two protocols share this
+   *  stand-in - session events and chat frames - so the shape is the caller's
+   *  to state, not this helper's to constrain. */
+  deliver(frame: Frame | object) {
     this.onmessage?.({ data: JSON.stringify(frame) });
   }
 

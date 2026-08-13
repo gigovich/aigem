@@ -214,6 +214,19 @@ func (u Usage) Add(o Usage) Usage {
 	}
 }
 
+// Page is a bounded slice of a stream, plus where to resume it.
+//
+// It exists so that a route which truncates has to say so. A bare JSON array
+// that stopped at its limit is indistinguishable from the end of the
+// conversation, and a reader built on one loses history without ever being
+// told there was any. Cursor is what to pass back as the paging parameter -
+// before for messages, since for a timeline - and is only set when More is.
+type Page[T any] struct {
+	Items  []T    `json:"items"`
+	Cursor uint64 `json:"cursor,omitempty"`
+	More   bool   `json:"more,omitempty"`
+}
+
 // Attachment is a file on a message.
 type Attachment struct {
 	ID       string    `json:"id"`

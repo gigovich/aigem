@@ -27,7 +27,7 @@ func (s *Store) Transcript(ctx context.Context, actor, threadID string, budget i
 	if err != nil {
 		return "", err
 	}
-	msgs, err := s.Messages(ctx, actor, threadID, 0, 500)
+	msgs, _, deeper, err := s.Messages(ctx, actor, threadID, 0, 500)
 	if err != nil {
 		return "", err
 	}
@@ -67,7 +67,14 @@ func (s *Store) Transcript(ctx context.Context, actor, threadID string, budget i
 		fmt.Fprintf(&b, " - %s", view.Title)
 	}
 	fmt.Fprintf(&b, "\nParticipants: %s\n", strings.Join(displayNames(view.Participants, names), ", "))
-	if dropped > 0 {
+	// deeper means the page itself stopped short of the thread's start, so how
+	// much is missing is not known here - only that something is. Printing the
+	// count of what the budget dropped would understate it, and a model told a
+	// definite number believes it.
+	switch {
+	case deeper:
+		b.WriteString("(older messages not shown)\n")
+	case dropped > 0:
 		fmt.Fprintf(&b, "(%d older messages not shown)\n", dropped)
 	}
 	for _, line := range lines {

@@ -148,7 +148,7 @@ func (a *API) threadSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client.Watch(threadID)
-	backlog, err := a.store.Timeline(r.Context(), Operator, threadID, since, 0)
+	backlog, cursor, more, err := a.store.Timeline(r.Context(), Operator, threadID, since, 0)
 	if err != nil {
 		client.Detach()
 		writeErr(w, err)
@@ -164,10 +164,27 @@ func (a *API) threadSocket(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// The same close the main socket's pump has, and for the same reason:
+		// every path out of this goroutine - a write failure, a desync, a
+		// truncated backlog - leaves the handler parked in drain() on a
+		// connection nothing will ever write to again, holding the subscriber
+		// and its goroutine until the client happens to go away by itself.
+		defer c.close()
 		for _, f := range backlog {
 			if err := c.sendRaw(f.Event); err != nil {
 				return
 			}
+		}
+		// A backlog too long for one page leaves a hole between what was just
+		// sent and the live tail. Say where it starts and stop, exactly as the
+		// desync below does: this socket carries bare events with no envelope,
+		// so a client cannot splice a refetch into the live stream it is
+		// already reading - reconnecting from the named point is the only way
+		// it can act on this at all, and streaming on would draw a turn's
+		// middle as though nothing were missing.
+		if more {
+			_ = c.send(Frame{Stream: StreamTruncated, From: cursor})
+			return
 		}
 		for f := range client.Frames() {
 			// A drop is the one non-event worth saying out loud: the client is

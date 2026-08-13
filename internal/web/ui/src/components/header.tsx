@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { FileDiff, KeyRound, ListChecks, MessagesSquare, MoreHorizontal, WifiOff } from "lucide-react";
 import { Badge, Button } from "./ui";
 import { cn } from "@/lib/utils";
 
 interface HeaderProps {
+  /** The top-level screen selector, when this daemon serves more than one. */
+  modeSwitch?: ReactNode;
   conversationCount: number;
   title: string;
   model: string;
@@ -39,8 +41,10 @@ function SessionBadges({
         </Badge>
       )}
       {clientCount > 1 && <Badge className="font-mono">{clientCount} attached</Badge>}
+      {/* Not the accent: a socket retrying itself is not a decision the reader
+          has to make, and this badge sits beside ones that are. */}
       {!connected && (
-        <Badge className="border-accent/40 text-accent">
+        <Badge>
           <WifiOff className="mr-1 h-3 w-3" aria-hidden /> reconnecting
         </Badge>
       )}
@@ -49,6 +53,7 @@ function SessionBadges({
 }
 
 export function Header({
+  modeSwitch,
   conversationCount,
   title,
   model,
@@ -87,8 +92,9 @@ export function Header({
             <span className="font-mono text-[12px]">{conversationCount}</span>
           )}
         </Button>
-        <div className="flex min-w-0 flex-1 items-baseline gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className="shrink-0 text-[15px] font-medium">aigem</span>
+          {modeSwitch}
           {title && <span className="truncate text-[13px] text-muted">{title}</span>}
         </div>
 
@@ -125,7 +131,9 @@ export function Header({
           <SessionBadges {...status} />
         </div>
 
-        {!connected && <WifiOff className="h-4 w-4 shrink-0 text-accent md:hidden" aria-label="Reconnecting" />}
+        {!connected && (
+          <WifiOff className="h-4 w-4 shrink-0 text-muted md:hidden" role="img" aria-label="Reconnecting" />
+        )}
         <Button
           variant="ghost"
           size="icon"

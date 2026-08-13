@@ -147,7 +147,7 @@ func TestAttachmentIsClaimedByItsMessage(t *testing.T) {
 	if len(on) != 1 || on[0].ID != att.ID {
 		t.Fatalf("message %d carries %d attachments, want the one uploaded", m.Seq, len(on))
 	}
-	page, err := s.Messages(ctx, Operator, th.ID, 0, 10)
+	page, _, _, err := s.Messages(ctx, Operator, th.ID, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestAMessageCannotClaimAnotherThreadsAttachment(t *testing.T) {
 			t.Fatalf("claiming %q: %v, want ErrInvalid", id, err)
 		}
 	}
-	msgs, err := s.Messages(ctx, Operator, mine.ID, 0, 10)
+	msgs, _, _, err := s.Messages(ctx, Operator, mine.ID, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

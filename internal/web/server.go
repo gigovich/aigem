@@ -209,6 +209,9 @@ func (s *Server) routes() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	// Through Guard rather than the bare check, so a refusal carries the
+	// security headers too - which is the whole reason Guard sets them first.
+	s.mux.HandleFunc("GET /api/modes", s.Guard(s.handleModes))
 	// Without a factory there are no conversations to list, create or attach to,
 	// and handleCreate would have nothing to call. Leaving the routes off is
 	// what makes a mount-only daemon answer 404 there instead of panicking.
@@ -259,6 +262,21 @@ func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.assets.ServeHTTP(w, r)
+}
+
+// Modes says which halves of the product a daemon serves.
+type Modes struct {
+	Sessions bool `json:"sessions"`
+	Chat     bool `json:"chat"`
+}
+
+// handleModes reports them. One bundle serves both modes, and it must not offer
+// a switch to one that answers 404: `aigem web run` has no fleet to talk to and
+// `aigem bot start` creates no sessions. Asking the daemon is the only way the
+// page can know which it is talking to, since both are served from this origin
+// by the same binary.
+func (s *Server) handleModes(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, Modes{Sessions: s.factory != nil, Chat: s.mount != nil})
 }
 
 // ---- sessions ----

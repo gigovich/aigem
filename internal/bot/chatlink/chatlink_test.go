@@ -227,7 +227,7 @@ func TestAnOversizedReplyIsTruncatedRatherThanLost(t *testing.T) {
 	if err := tr.Reply(bot.ThreadID(th), string(huge)); err != nil {
 		t.Fatalf("an oversized reply was lost: %v", err)
 	}
-	msgs, err := s.Messages(t.Context(), amiran, th, 0, 10)
+	msgs, _, _, err := s.Messages(t.Context(), amiran, th, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestATurnRecordsItsStepsIntoTheThread(t *testing.T) {
 	spend(llm.Usage{}, "xai/grok-4.3")
 	done("reproduced", nil)
 
-	frames, err := s.Timeline(t.Context(), operator, th, 0, 100)
+	frames, _, _, err := s.Timeline(t.Context(), operator, th, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestAnOversizedToolResultGoesToABlob(t *testing.T) {
 	ev.OnToolEnd("c1", "bash", string(body), nil)
 	done("", nil)
 
-	frames, err := s.Timeline(t.Context(), operator, th, 0, 100)
+	frames, _, _, err := s.Timeline(t.Context(), operator, th, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}

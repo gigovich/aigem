@@ -46,6 +46,7 @@ func (a *API) Mount(mux *http.ServeMux, guard func(http.HandlerFunc) http.Handle
 		"GET /api/chat/attachments/{id}":                 a.getAttachment,
 		"GET /api/chat/search":                           a.search,
 		"GET /api/chat/fleet":                            a.fleet,
+		"GET /api/chat/meta":                             a.meta,
 		"GET /api/chat/socket":                           a.socket,
 		"GET /api/chat/threads/{id}/socket":              a.threadSocket,
 	} {
@@ -136,9 +137,9 @@ func (a *API) deleteThread(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) listMessages(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	msgs, err := a.store.Messages(r.Context(), Operator, r.PathValue("id"),
+	msgs, cursor, more, err := a.store.Messages(r.Context(), Operator, r.PathValue("id"),
 		uintParam(q.Get("before")), intParam(q.Get("limit")))
-	writeResult(w, msgs, err)
+	writeResult(w, Page[Message]{Items: msgs, Cursor: cursor, More: more}, err)
 }
 
 func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
@@ -159,9 +160,9 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) timeline(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	frames, err := a.store.Timeline(r.Context(), Operator, r.PathValue("id"),
+	frames, cursor, more, err := a.store.Timeline(r.Context(), Operator, r.PathValue("id"),
 		uintParam(q.Get("since")), intParam(q.Get("limit")))
-	writeResult(w, frames, err)
+	writeResult(w, Page[Frame]{Items: frames, Cursor: cursor, More: more}, err)
 }
 
 func (a *API) turns(w http.ResponseWriter, r *http.Request) {
@@ -296,6 +297,39 @@ func (a *API) search(w http.ResponseWriter, r *http.Request) {
 func (a *API) fleet(w http.ResponseWriter, r *http.Request) {
 	actors, err := a.store.Actors(r.Context())
 	writeResult(w, actors, err)
+}
+
+// Meta is what a client needs to know about this store before it draws
+// anything: the vocabulary it will receive and the bounds it must enforce
+// before a write reaches the wire.
+//
+// It is served rather than compiled into the page because the page and the
+// daemon are two artefacts with two lifetimes - a browser holding yesterday's
+// bundle against today's binary is the ordinary case, not the exotic one - and
+// a limit copied into the client is a limit that drifts silently until an
+// upload starts failing.
+// It carries what a client actually consumes, and nothing kept warm for later:
+// a field served and dropped is a contract nobody is checking. Attachments and
+// blobs belong here too when the screen that shows them exists.
+type Meta struct {
+	Operator      string   `json:"operator"`
+	States        []string `json:"states"`
+	MaxBodyBytes  int      `json:"max_body_bytes"`
+	MaxTitleChars int      `json:"max_title_chars"`
+	MaxUnread     int      `json:"max_unread"`
+}
+
+func (a *API) meta(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, Meta{
+		Operator: Operator,
+		// In inbox order, which is the order the filters are drawn in: the one
+		// state that spends the accent first, then what is live, then what is
+		// merely outstanding.
+		States:        []string{StateNeedsYou, StateWorking, StateWaiting, StateIdle},
+		MaxBodyBytes:  MaxBodyBytes,
+		MaxTitleChars: MaxTitleChars,
+		MaxUnread:     MaxUnread,
+	})
 }
 
 // ---- helpers ----
