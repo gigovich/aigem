@@ -285,26 +285,59 @@ func safeFilename(name string) string {
 // and line/paragraph separators are invisible, so two different strings would
 // look identical to whoever has to decide whether to trust one.
 func SanitizeField(s string) string {
-	s = strings.Map(func(r rune) rune {
-		switch {
-		case r < 0x20, r == 0x7f:
-			return ' '
-		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069: // bidi
-			return -1
-		case r == 0x200b, r == 0x200c, r == 0x200d, r == 0xfeff: // zero width
-			return -1
-		case r == 0x2028, r == 0x2029: // line and paragraph separators
-			return ' '
-		default:
-			return r
-		}
-	}, s)
+	s = strings.Map(stripUnreadable, s)
 	s = strings.TrimSpace(s)
 	const max = 120
 	if r := []rune(s); len(r) > max {
 		s = string(r[:max]) + "…"
 	}
 	return s
+}
+
+// ReadablePath makes a path a bot wrote safe to put in front of a human.
+//
+// It strips what SanitizeField strips - a bidi override in a filename shows the
+// operator a reversed extension - but it does not shorten to a display width. A
+// path is an identity, not a label: it is half the primary key of an artifact,
+// so two files sharing a long prefix cut to a common string would become one
+// row holding the first file's "before" against the second file's "after",
+// under a name that is neither.
+//
+// It is named for what it does and not "sanitize", because it makes no claim
+// about containment: it does not reject "..", an absolute path, or anything
+// else path-shaped. Whether a path may be written is decided by the tool
+// registry's sandbox root, long before this.
+//
+// The bound is generous and exists only so a pathological name cannot be
+// unbounded; a path that reaches it was not going to be readable anyway.
+func ReadablePath(s string) string {
+	s = strings.Map(stripUnreadable, s)
+	// Truncated before the trim, not after. The other order leaves a trailing
+	// space on a path whose cut falls on one, and this runs twice on the way in
+	// - once where the timeline event is built and once in the store - so the
+	// two would produce different strings for one file.
+	if r := []rune(s); len(r) > MaxPathChars {
+		s = string(r[:MaxPathChars])
+	}
+	return strings.TrimSpace(s)
+}
+
+// stripUnreadable removes what must never reach a line the operator reads: the
+// C0 controls, the bidi overrides that reverse a filename's extension, and the
+// zero-width characters that make two different strings look identical.
+func stripUnreadable(r rune) rune {
+	switch {
+	case r < 0x20, r == 0x7f:
+		return ' '
+	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069: // bidi
+		return -1
+	case r == 0x200b, r == 0x200c, r == 0x200d, r == 0xfeff: // zero width
+		return -1
+	case r == 0x2028, r == 0x2029: // line and paragraph separators
+		return ' '
+	default:
+		return r
+	}
 }
 
 // HumanSize renders a byte count for a note a model reads.

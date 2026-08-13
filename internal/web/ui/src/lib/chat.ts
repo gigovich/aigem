@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { api, token } from "./protocol";
+import type { Event } from "./protocol";
 import {
   isClientError,
   type ClientOp,
@@ -7,8 +8,10 @@ import {
   type Incoming,
   type Message,
   type Page,
+  type Spend,
   type ThreadState,
   type ThreadView,
+  type Turn,
 } from "./chatprotocol";
 
 /** A thread's messages as this client holds them: oldest first, deduplicated by
@@ -181,9 +184,12 @@ export function chatReducer(s: ChatState, a: ChatAction): ChatState {
       }
       // A frame this screen draws nothing from returns the state it was given,
       // identity and all. Anything else is a re-render of the whole screen per
-      // frame, and a fleet mid-turn produces hundreds a minute - the timeline
-      // events nothing renders until stage 7, and every message belonging to a
-      // thread nobody has open.
+      // frame, and a fleet mid-turn produces hundreds a minute - every timeline
+      // event, and every message belonging to a thread nobody has open.
+      //
+      // Timeline events are not lost: the socket hands them to the trace store,
+      // which is per-thread and which the inbox does not read. Keeping them out
+      // of this object is the whole reason that store is separate.
       //
       // The resume point survives: the socket resumes from its own ref, which
       // is advanced for every frame including the ones ignored here.
@@ -231,6 +237,10 @@ export function countsOf(s: ChatState): Record<ThreadState, number> {
 
 const MESSAGE_PAGE = 100;
 
+/** How many turns the panel asks for. One per inbound message, so this is the
+ *  same order as the message page it accompanies. */
+const TURN_PAGE = 100;
+
 /** useChat keeps one socket for the whole screen and reconnects with the last
  *  sequence number it saw.
  *
@@ -238,14 +248,29 @@ const MESSAGE_PAGE = 100;
  *  and the inbox has to stay live while a thread is open. Messages and thread
  *  rows arrive for every conversation the operator is in; the agent timeline
  *  arrives only for the one the client says it is watching. */
-export function useChat(onRefused?: (message: string) => void) {
+export function useChat(
+  onRefused?: (message: string) => void,
+  /** Where the watched thread's agent timeline goes. It is a side channel out
+   *  of the socket rather than a branch of the reducer above: these are the
+   *  highest-volume frames on the wire, and nothing the inbox draws comes from
+   *  one. */
+  onEvent?: (thread: string, turn: number, ev: Event) => void,
+  /** Called when the socket comes back. A resume replays messages, threads and
+   *  tombstones but never timeline events, so whoever holds those has to know
+   *  that what it holds may now have a hole in it. */
+  onResume?: () => void,
+) {
   const [state, dispatch] = useReducer(chatReducer, emptyChat);
   // Held in a ref so the socket's callbacks, which are built once, always reach
   // the current one rather than the one that existed at mount.
   const refused = useRef(onRefused);
+  const event = useRef(onEvent);
+  const resumed = useRef(onResume);
   useEffect(() => {
     refused.current = onRefused;
-  }, [onRefused]);
+    event.current = onEvent;
+    resumed.current = onResume;
+  }, [onRefused, onEvent, onResume]);
   const sock = useRef<WebSocket | null>(null);
   // The resume point lives in a ref rather than in the reducer state the socket
   // could read: the socket is opened once and reconnects from a timer, and a
@@ -268,6 +293,9 @@ export function useChat(onRefused?: (message: string) => void) {
     let cancelled = false;
     let timer: number | undefined;
     let attempt = 0;
+    // Whether a connection has already been made in this mount, so the first
+    // one is not reported as a resume.
+    let reconnected = false;
 
     const connect = () => {
       if (cancelled) return;
@@ -286,7 +314,14 @@ export function useChat(onRefused?: (message: string) => void) {
         // going on inside it.
         if (watching.current) {
           ws.send(JSON.stringify({ op: "watch", thread: watching.current } satisfies ClientOp));
+          // And on a *re*connect - not the first one - say so: the resume
+          // replays messages and threads but never events, so the timeline
+          // whoever holds it is holding may now be missing a stretch of the run
+          // on screen, which is the one thing worse than holding none. The
+          // first connection has nothing to invalidate.
+          if (reconnected) resumed.current?.();
         }
+        reconnected = true;
         dispatch({ t: "connected", on: true });
       };
       ws.onmessage = (m) => {
@@ -311,6 +346,11 @@ export function useChat(onRefused?: (message: string) => void) {
           return;
         }
         seq.current = Math.max(seq.current, msg.seq);
+        // Before the dispatch, and outside it: a reducer must be pure, and this
+        // is where the timeline leaves the socket.
+        if (msg.stream === "event" && msg.event && msg.thread) {
+          event.current?.(msg.thread, msg.turn ?? 0, msg.event);
+        }
         dispatch({ t: "frame", f: msg });
       };
       ws.onclose = () => {
@@ -405,10 +445,50 @@ export function useChat(onRefused?: (message: string) => void) {
     [],
   );
 
+  /** turns is the thread's runs, newest first. It is what the collapsed trace
+   *  summaries and the thread panel are drawn from, and it is fetched rather
+   *  than streamed: the row's counters move on every step of a running turn,
+   *  and publishing a frame for each would put the whole inbox back on the
+   *  path this screen keeps timeline events off.
+   *
+   *  before pages further back, and is what the transcript's own paging needs:
+   *  a message has a trace only if its run's row is held, so scrolling past the
+   *  first page of runs would otherwise make every trace above it disappear.
+   *  The envelope is what says whether there are more. */
+  const turns = useCallback(
+    async (thread: string, before = 0, limit = TURN_PAGE): Promise<Page<Turn>> => {
+      const at = before > 0 ? `&before=${before}` : "";
+      const page = await api<Page<Turn>>(
+        `/api/chat/threads/${encodeURIComponent(thread)}/turns?limit=${limit}${at}`,
+      );
+      return { items: page.items ?? [], cursor: page.cursor, more: page.more };
+    },
+    [],
+  );
+
+  const spend = useCallback(
+    (thread: string) => api<Spend>(`/api/chat/threads/${encodeURIComponent(thread)}/spend`),
+    [],
+  );
+
+  const addActor = useCallback(
+    (thread: string, actor: string): boolean => send({ op: "add", thread, actor }),
+    [send],
+  );
+
+  const removeActor = useCallback(
+    (thread: string, actor: string): boolean => send({ op: "remove", thread, actor }),
+    [send],
+  );
+
   const alerted = useCallback(() => dispatch({ t: "alerted" }), []);
 
   return useMemo(
-    () => ({ state, refresh, archived, open, older, say, markRead, create, alerted }),
-    [state, refresh, archived, open, older, say, markRead, create, alerted],
+    () => ({
+      state, refresh, archived, open, older, say, markRead, create, alerted,
+      turns, spend, addActor, removeActor,
+    }),
+    [state, refresh, archived, open, older, say, markRead, create, alerted,
+      turns, spend, addActor, removeActor],
   );
 }

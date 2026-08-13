@@ -356,10 +356,26 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 		return nil, err
 	}
 
-	buildAgent := func() (*agent.Agent, func() string, error) {
+	// threadKey is the thread this agent belongs to, and is empty for the one the
+	// scheduler builds: a cron job runs against no conversation, so there is
+	// nothing for its file changes or its plan to be filed under.
+	buildAgent := func(threadKey string) (*agent.Agent, func() string, error) {
 		reg, rerr := tools.NewRegistry(c.Workdir)
 		if rerr != nil {
 			return nil, nil, rerr
+		}
+		// Before Subset, which copies the hook onto the child. Registering after
+		// would in fact still work - a subset shares the parent's tool instances,
+		// and each one calls reportFileChange on the registry it was built with -
+		// but relying on that makes the wiring depend on a detail two packages
+		// away. Registered here, it holds however Subset is implemented.
+		if threadKey != "" {
+			root := reg.Root()
+			reg.OnFileChange(func(c tools.FileChange) {
+				tr.FileChanged(bot.ThreadID(threadKey), chat.Artifact{
+					Path: tools.RelTo(root, c.Path), Created: c.Created, Old: c.Old, New: c.New,
+				})
+			})
 		}
 		reg.Register(bot.NewMemoryTool(store))
 		reg.Register(bot.NewScheduleTool(scheduler))
@@ -387,7 +403,8 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 		if at := search.NewBrowserActionTool(searchCfg); at != nil {
 			reg.Register(at)
 		}
-		sub := reg.Subset(intersectTools(role.Allow, capProfile.Allow))
+		allowed := intersectTools(role.Allow, capProfile.Allow)
+		sub := reg.Subset(allowed)
 		catalog := skills.Prompt()
 		build := func() string {
 			idx, ierr := store.Index()
@@ -397,6 +414,12 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 			return bot.ComposeSystem(c, role, idx, catalog, extra)
 		}
 		ag := agent.New(paced, sub, 0.3, gate, build())
+		// After the agent, because the plan tool writes into it, and gated by the
+		// role like every other tool: a bot that may not plan should not be handed
+		// the tool that does it.
+		if slices.Contains(allowed, agent.TodoToolName) {
+			sub.Register(agent.NewTodoTool(ag))
+		}
 		ag.SetTurnBudget(turnBudget)
 		// Enable auto-compaction. Without this the per-thread agent accumulates every turn's
 		// tool output until it overflows the model context window and then fails every wake with
@@ -410,8 +433,8 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 		ag.SetCompaction(compactCfg)
 		return ag, build, nil
 	}
-	mk := func(string) bot.Runner {
-		ag, build, aerr := buildAgent()
+	mk := func(threadKey string) bot.Runner {
+		ag, build, aerr := buildAgent(threadKey)
 		if aerr != nil {
 			return errRunner{err: fmt.Errorf("workdir %q became unusable: %w", c.Workdir, aerr)}
 		}
@@ -426,7 +449,7 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 	scheduler.SetBusy(rt.Busy)
 	rt.SetOnAddressed(heartbeat.Addressed)
 	scheduler.SetRunner(bot.NewCronRunner(log, func() (bot.Runner, error) {
-		ag, _, aerr := buildAgent()
+		ag, _, aerr := buildAgent("")
 		return ag, aerr
 	}, heartbeat, rt.EnterTurn, shared.turns))
 

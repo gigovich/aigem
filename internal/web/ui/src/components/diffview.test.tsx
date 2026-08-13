@@ -31,11 +31,11 @@ describe("DiffView", () => {
       [{ path: "a/b.txt", created: false, old: "one", new: "three" }],
     ]);
     const { rerender } = render(
-      <DiffView sessionID="s1" artifact={stub} version={1} onClose={vi.fn()} />,
+      <DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={stub} version={1} onClose={vi.fn()} />,
     );
     await waitFor(() => expect(screen.getByText("two")).toBeInTheDocument());
 
-    rerender(<DiffView sessionID="s1" artifact={stub} version={2} onClose={vi.fn()} />);
+    rerender(<DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={stub} version={2} onClose={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText("three")).toBeInTheDocument());
     expect(calls).toHaveLength(2);
@@ -44,7 +44,7 @@ describe("DiffView", () => {
   it("leaves on Escape, as the rails do", async () => {
     stubFetch([[{ path: "a/b.txt", created: false, old: "one", new: "two" }]]);
     const onClose = vi.fn();
-    render(<DiffView sessionID="s1" artifact={stub} version={1} onClose={onClose} />);
+    render(<DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={stub} version={1} onClose={onClose} />);
 
     fireEvent.keyDown(window, { key: "Escape" });
 
@@ -56,14 +56,14 @@ describe("DiffView", () => {
     const outside = document.createElement("input");
     document.body.appendChild(outside);
     const { rerender } = render(
-      <DiffView sessionID="s1" artifact={stub} version={1} onClose={vi.fn()} />,
+      <DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={stub} version={1} onClose={vi.fn()} />,
     );
     await waitFor(() => expect(screen.getByText("two")).toBeInTheDocument());
 
     // The composer sits outside this overlay on purpose; a streamed token must
     // not pull focus out of it.
     outside.focus();
-    rerender(<DiffView sessionID="s1" artifact={stub} version={1} onClose={vi.fn()} />);
+    rerender(<DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={stub} version={1} onClose={vi.fn()} />);
 
     expect(document.activeElement).toBe(outside);
     outside.remove();
@@ -72,7 +72,7 @@ describe("DiffView", () => {
   it("leaves Escape to a drawer opened over it", async () => {
     stubFetch([[{ path: "a/b.txt", created: false, old: "one", new: "two" }]]);
     const onClose = vi.fn();
-    render(<DiffView sessionID="s1" artifact={stub} version={1} onClose={onClose} />);
+    render(<DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={stub} version={1} onClose={onClose} />);
 
     const drawer = document.createElement("aside");
     drawer.setAttribute("role", "dialog");
@@ -88,7 +88,7 @@ describe("DiffView", () => {
       { path: "a/b.txt", created: false, old: "one\ntwo", new: "one\ntwo\n" },
     ]]);
     const { container } = render(
-      <DiffView sessionID="s1" artifact={stub} version={1} onClose={vi.fn()} />,
+      <DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={stub} version={1} onClose={vi.fn()} />,
     );
 
     await waitFor(() => {
@@ -109,7 +109,7 @@ describe("DiffView", () => {
 
   it("says a file is empty rather than showing a blank pane", async () => {
     stubFetch([[{ path: "a/b.txt", created: true, new: "" }]]);
-    render(<DiffView sessionID="s1" artifact={stub} version={1} onClose={vi.fn()} />);
+    render(<DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={stub} version={1} onClose={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText("This file is empty.")).toBeInTheDocument());
   });
@@ -117,7 +117,7 @@ describe("DiffView", () => {
   it("marks every line of a created file as an addition, with no old numbers", async () => {
     stubFetch([[{ path: "a/b.txt", created: true, new: "one\ntwo" }]]);
     const { container } = render(
-      <DiffView sessionID="s1" artifact={{ ...stub, created: true }} version={1} onClose={vi.fn()} />,
+      <DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={{ ...stub, created: true }} version={1} onClose={vi.fn()} />,
     );
 
     await waitFor(() => expect(screen.getByText("one")).toBeInTheDocument());
@@ -134,7 +134,7 @@ describe("DiffView", () => {
   it("reads as a diff with the colour taken away", async () => {
     stubFetch([[{ path: "a/b.txt", created: false, old: "one\nkeep", new: "two\nkeep" }]]);
     const { container } = render(
-      <DiffView sessionID="s1" artifact={stub} version={1} onClose={vi.fn()} />,
+      <DiffView artifactsURL="/api/sessions/s1/artifacts" artifact={stub} version={1} onClose={vi.fn()} />,
     );
 
     await waitFor(() => expect(screen.getByText("two")).toBeInTheDocument());

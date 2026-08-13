@@ -29,6 +29,22 @@ const (
 	MaxTitleChars     = 200
 	MaxEventBytes     = 64 << 10
 	MaxEventBlobBytes = 4 << 20
+	// MaxArtifactBytes bounds one side of a stored diff. A file past it is
+	// recorded as a path with no content rather than dropped: that a turn wrote
+	// a 40MB generated file is the useful half of the fact, and the diff of one
+	// is not something a browser was going to render.
+	//
+	// 128KiB rather than something generous, because this is the product of two
+	// limits: both sides of MaxTurnArtifacts files, all of it written through the
+	// single writer and held for the retention window.
+	MaxArtifactBytes = 128 << 10
+	// MaxTurnArtifacts bounds how many distinct files one turn records. A turn
+	// that rewrites a whole tree is real, and every path it touched would
+	// otherwise be a row and two file bodies on the single writer.
+	MaxTurnArtifacts = 200
+	// MaxPathChars bounds a recorded path. Far above any real one: it is a
+	// backstop against a pathological name, not a display width.
+	MaxPathChars = 1024
 )
 
 // Actor kinds. An actor id is "<kind>:<name>", so it is readable in a log and
@@ -152,6 +168,14 @@ type Message struct {
 	Created  time.Time `json:"created"`
 	// Attachments are ids, resolved through the attachment routes.
 	Attachments []string `json:"attachments,omitempty"`
+	// Turn is the run that produced this message, or zero for one said outside
+	// any run - which is every message the operator writes.
+	//
+	// It is recorded rather than inferred from the sequence. Messages and events
+	// share one cursor, so a reader could bracket a turn between its start and
+	// its end, except that a bot may post several times inside one turn and a
+	// turn killed with the process never wrote an end at all.
+	Turn uint64 `json:"turn,omitempty"`
 }
 
 // Draft describes a message being written. AwaitReply marks the thread as
@@ -167,6 +191,10 @@ type Draft struct {
 	Mentions    []string
 	AwaitReply  bool
 	Attachments []string
+	// TurnSeq files this message under the run that produced it. It must be a
+	// turn the author owns in this thread; zero means the message was not said
+	// inside one.
+	TurnSeq uint64
 }
 
 // Turn is one bot's run inside a thread, and what it cost. A turn row exists
@@ -181,6 +209,38 @@ type Turn struct {
 	Usage   Usage     `json:"usage,omitzero"`
 	Model   string    `json:"model,omitempty"`
 	Error   string    `json:"error,omitempty"`
+
+	// What the turn did, counted as it happened. The collapsed summary line is
+	// drawn for every bot message on screen, and deriving it from the timeline
+	// would mean shipping a thread's whole history to render a hundred one-line
+	// summaries.
+	Steps int `json:"steps,omitempty"`
+	Tools int `json:"tools,omitempty"`
+	Files int `json:"files,omitempty"`
+	// Plan is the working plan as this turn last left it, as the JSON the
+	// browser already decodes. Empty on a turn that never wrote one; the panel
+	// shows the newest turn that did.
+	Plan json.RawMessage `json:"plan,omitempty"`
+}
+
+// Artifact is one file a turn changed. Old is the content as it stood before
+// the turn first touched it, so a turn that edited a file five times still
+// shows one diff of its whole effect.
+//
+// Old and New are carried only when a path is asked for by name: the list is
+// opened far more often than any one diff is read, and a turn that rewrote a
+// large tree would otherwise ship all of it to draw a filename.
+type Artifact struct {
+	Turn    uint64 `json:"turn"`
+	Path    string `json:"path"`
+	Created bool   `json:"created"`
+	// Truncated says the content was too large to keep, so the path is all there
+	// is. Said out loud rather than served as an empty diff, which reads as a
+	// file that was emptied.
+	Truncated bool      `json:"truncated,omitempty"`
+	Old       string    `json:"old,omitempty"`
+	New       string    `json:"new,omitempty"`
+	Changed   time.Time `json:"changed"`
 }
 
 // Usage is what a turn spent, accumulated across its model calls.
@@ -257,6 +317,12 @@ type Frame struct {
 	// bytes are already-encoded JSON - and so it survives a round trip without
 	// being base64'd into a string the browser would have to decode.
 	Event json.RawMessage `json:"event,omitempty"`
+	// Turn is the run an event frame belongs to. It is on the frame rather than
+	// inside the payload because the payload is a uisession.Event, which knows
+	// nothing about threads or runs - and without it a live step cannot be filed
+	// under the collapsed trace it belongs to, only under "the latest one",
+	// which is wrong the moment two bots work in a thread at once.
+	Turn uint64 `json:"turn,omitempty"`
 	// From is the resume point on a desync frame.
 	From uint64 `json:"from,omitempty"`
 	// To is who may see this frame: the thread's participants at the moment it

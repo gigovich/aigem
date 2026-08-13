@@ -18,9 +18,19 @@ type CapabilityProfile struct {
 
 var baseReadTools = []string{"read_file", "list_dir", "grep", "fuzzy_find", "web_search", "open_url", "browser_action"}
 var baseWriteTools = []string{"write_file", "edit_file"}
+
+// botTools are the tools only the fleet has. Every profile allows all of them:
+// a profile bounds what a bot may do to the machine, and talking to its own
+// threads is not that.
+//
+// It must stay in step with roles.full - a name here that no tool answers to is
+// harmless, but a tool missing from here is silently absent from every bot,
+// however plainly the role allows it. "read_chat" sat here for a release after
+// the tool was renamed read_threads, and no bot could search its own threads
+// for the whole of it. TestEveryRoleToolIsInTheBotProfile is what catches that.
 var botTools = []string{
-	"memory", "schedule", "post_message", "handoff", "read_chat", "team_status",
-	"save_skill", "delete_skill", "skill",
+	"memory", "schedule", "post_message", "handoff", "read_threads", "team_status",
+	"save_skill", "delete_skill", "skill", "todo_write",
 }
 
 // CapabilityProfiles are ordered from least to most permissive. The default for

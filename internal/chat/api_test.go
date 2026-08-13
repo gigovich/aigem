@@ -410,6 +410,75 @@ func TestSocketSendsTimelineEventsOnlyForTheWatchedThread(t *testing.T) {
 	if !strings.Contains(string(f.Event), "bash") {
 		t.Fatalf("event payload = %s, want the watched thread's", f.Event)
 	}
+	// The run the step belongs to, on the frame rather than in the payload: a
+	// uisession.Event knows nothing about runs, and this is the only thing that
+	// files a live step under the collapsed trace it belongs to. Dropping it
+	// empties every live trace in the browser and fails nothing else.
+	if f.Turn != loud {
+		t.Fatalf("event frame turn = %d, want %d", f.Turn, loud)
+	}
+}
+
+// The one-shot backfill a trace is expanded with has to carry the same turn the
+// socket does, or the two halves of one run are filed apart.
+func TestTimelineFramesCarryTheirTurn(t *testing.T) {
+	s, srv := testAPI(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+	turn, err := s.BeginTurn(ctx, th.ID, amiran)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendEvent(ctx, EventRecord{
+		Thread: th.ID, Actor: amiran, TurnSeq: turn, Kind: "tool_start",
+		Payload: []byte(`{"kind":"tool_start","name":"grep"}`), Step: true, Tool: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res := do(t, srv, http.MethodGet, "/api/chat/threads/"+th.ID+"/timeline", nil)
+	page := decode[Page[Frame]](t, res)
+	if len(page.Items) != 1 || page.Items[0].Turn != turn {
+		t.Fatalf("timeline = %+v, want one frame filed under turn %d", page.Items, turn)
+	}
+}
+
+// The route the panel and every collapsed summary read.
+func TestArtifactsOverHTTP(t *testing.T) {
+	s, srv := testAPI(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+	turn, err := s.BeginTurn(ctx, th.ID, amiran)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, turn,
+		Artifact{Path: "internal/auth/flow.go", Old: "a\n", New: "b\n"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res := do(t, srv, http.MethodGet, "/api/chat/threads/"+th.ID+"/artifacts", nil)
+	list := decode[[]Artifact](t, res)
+	if len(list) != 1 || list[0].Path != "internal/auth/flow.go" {
+		t.Fatalf("artifacts = %+v", list)
+	}
+	if list[0].Old != "" || list[0].New != "" {
+		t.Fatalf("the list shipped content: %+v", list[0])
+	}
+	res = do(t, srv, http.MethodGet,
+		"/api/chat/threads/"+th.ID+"/artifacts?path=internal%2Fauth%2Fflow.go", nil)
+	one := decode[[]Artifact](t, res)
+	if len(one) != 1 || one[0].New != "b\n" {
+		t.Fatalf("named artifact = %+v, want its content", one)
+	}
+	// A thread the operator is in, a turn in another thread: the id is a small
+	// integer and guessing one must not read another conversation's files.
+	other := mustThread(t, s, "docs", demetre)
+	res = do(t, srv, http.MethodGet,
+		"/api/chat/threads/"+other.ID+"/artifacts?turn="+itoa(turn), nil)
+	if got := decode[[]Artifact](t, res); len(got) != 0 {
+		t.Fatalf("a turn from another thread returned %+v", got)
+	}
 }
 
 func TestSocketOpsWriteThroughTheStore(t *testing.T) {

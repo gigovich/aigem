@@ -4,7 +4,52 @@ import { api } from "@/lib/protocol";
 import { Badge, Button, SkeletonRows } from "./ui";
 import { cn } from "@/lib/utils";
 
-export interface Artifact { path: string; created: boolean; old?: string; new?: string }
+export interface Artifact {
+  path: string;
+  created: boolean;
+  /** The content was too large to keep, so the path is all there is. Said out
+   *  loud rather than served as an empty diff, which reads as a file that was
+   *  emptied. Only the fleet daemon sets it; a session keeps its artifacts in
+   *  memory and has no reason to. */
+  truncated?: boolean;
+  /** The run that changed it. Only the fleet daemon sets it - a session's
+   *  artifacts are the session's, and it has no runs to file them under. */
+  turn?: number;
+  old?: string;
+  new?: string;
+}
+
+/** Where a conversation's changed files are listed. Generalised from a session
+ *  id for the reason `blobURL` was generalised on the timeline: the same two
+ *  components serve a session's artifacts and a bot turn's, and those live
+ *  under different routes.
+ *
+ *  A string and not a builder function, deliberately. Both components key a
+ *  fetch effect on this prop, and a caller's inline arrow is a new identity on
+ *  every render - which is a refetch per render, silently, forever. A string
+ *  compares by value and cannot do that.
+ *
+ *  It may already carry a query (`...?turn=42`); withPath appends to it. */
+export type ArtifactsURL = string;
+
+/** withPath asks the same route for one file's content. */
+function withPath(base: ArtifactsURL, path: string): string {
+  return `${base}${base.includes("?") ? "&" : "?"}path=${encodeURIComponent(path)}`;
+}
+
+/** sessionArtifacts is the session daemon's route, named here so the workspace
+ *  and its tests cannot drift apart on the spelling. */
+export function sessionArtifacts(sessionID: string): ArtifactsURL {
+  return `/api/sessions/${sessionID}/artifacts`;
+}
+
+/** threadArtifacts is the fleet daemon's, for one turn of one thread. A turn of
+ *  zero means the newest that changed anything, which is what the panel wants
+ *  before the reader has picked a run. */
+export function threadArtifacts(thread: string, turn = 0): ArtifactsURL {
+  const base = `/api/chat/threads/${encodeURIComponent(thread)}/artifacts`;
+  return turn ? `${base}?turn=${turn}` : base;
+}
 
 /** The tail of a path, which is what identifies a file; the head is shared by
  *  everything in the project and eats the column. The daemon reports paths
@@ -237,15 +282,29 @@ function Unified({ lines }: { lines: UnifiedLine[] }) {
  *  the transcript, where there is room to read it: a side-by-side diff in a 288px
  *  column is two columns of ellipsis. */
 export function ChangedFiles({
-  sessionID,
+  artifactsURL,
   version,
   onOpen,
   openPath,
+  title = "Changed",
+  empty = "Nothing written yet.",
+  count,
+  whose,
 }: {
-  sessionID: string;
+  artifactsURL: ArtifactsURL;
   version: number;
   onOpen: (a: Artifact) => void;
   openPath?: string;
+  title?: string;
+  empty?: string;
+  /** Who produced them, when the caller knows and it is not obvious. */
+  whose?: string;
+  /** How many files the run changed, when the daemon counted them separately.
+   *  It parts company with the number of rows when the diffs have been pruned:
+   *  the count lives on a turn row, which is kept, and the rows age out with
+   *  the timeline. A badge reading the length of what came back would then say
+   *  a run that rewrote three files wrote none. */
+  count?: number;
 }) {
   const [list, setList] = useState<Artifact[]>([]);
   const [failed, setFailed] = useState(false);
@@ -254,7 +313,7 @@ export function ChangedFiles({
   const refresh = useCallback(async () => {
     const mine = ++request.current;
     try {
-      const next = await api<Artifact[]>(`/api/sessions/${sessionID}/artifacts`);
+      const next = await api<Artifact[]>(artifactsURL);
       // Two writes in quick succession race; the older answer must not win.
       if (mine !== request.current) return;
       setList(next);
@@ -265,7 +324,7 @@ export function ChangedFiles({
       // written nothing, which is the opposite of what a failed fetch means.
       setFailed(true);
     }
-  }, [sessionID]);
+  }, [artifactsURL]);
 
   useEffect(() => {
     // refresh only sets state after its await, so this is a subscription to the
@@ -281,9 +340,25 @@ export function ChangedFiles({
   return (
     <section aria-label="Changed files" className="flex shrink-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
-        <h2 className="text-[15px] font-medium">Changed</h2>
-        <Badge className="ml-auto font-mono">{list.length}</Badge>
+        <h2 className="text-[15px] font-medium">{title}</h2>
+        {/* Whose run these belong to, for the same reason the plan carries a
+            name: two bots working one thread each change files, and the panel
+            shows one run's. */}
+        {whose && <span className="truncate text-[12px] text-muted">{whose}</span>}
+        <Badge className="ml-auto font-mono">{count ?? list.length}</Badge>
       </div>
+      {/* The run's own count against the rows that came back. They part company
+          in two ways, and they read very differently: a run past the file cap
+          recorded some of what it wrote, and a run whose diffs have aged out of
+          the store recorded all of it and kept none. Saying "showing 0 of them"
+          under a badge of three is the reading neither of them deserves. */}
+      {count !== undefined && count > list.length && !failed && (
+        <p className="px-3 pb-2 text-[12px] text-muted">
+          {list.length === 0
+            ? "these diffs have been pruned; only the count is still recorded"
+            : `showing ${list.length} of them`}
+        </p>
+      )}
       {failed && (
         <p className="px-3 pb-2 text-[12px] text-bad">
           {list.length === 0
@@ -291,8 +366,11 @@ export function ChangedFiles({
             : "Could not reach the daemon; this list may be stale."}
         </p>
       )}
-      {list.length === 0 && !failed && (
-        <p className="px-3 pb-2 text-[12px] text-muted">Nothing written yet.</p>
+      {/* Only when there is genuinely nothing: a run whose diffs were pruned has
+          its own line above, and "no run has written a file" would contradict
+          the count beside it. */}
+      {list.length === 0 && !failed && !(count && count > 0) && (
+        <p className="px-3 pb-2 text-[14px] text-muted">{empty}</p>
       )}
       {list.length > 0 && (
         <ul className="border-t border-line-faint">
@@ -316,7 +394,11 @@ export function ChangedFiles({
                     className={cn("h-full w-0.5 shrink-0", open ? "bg-accent" : "bg-transparent")}
                   />
                   <span className="truncate pl-1.5">{labels.get(a.path) ?? a.path}</span>
-                  {a.created && (
+                  {/* Said in the list, not only on opening it: a row that looks
+                      like every other one, opening onto "nothing to show", is
+                      how a reader concludes the tool is broken. */}
+                  {a.truncated && <Badge className="ml-auto shrink-0">too large</Badge>}
+                  {a.created && !a.truncated && (
                     <Badge className="ml-auto shrink-0 border-good/40 text-good">new</Badge>
                   )}
                 </button>
@@ -332,12 +414,12 @@ export function ChangedFiles({
 /** The diff itself, over the transcript rather than in place of the app, so the
  *  approval and the composer stay reachable while a file is being read. */
 export function DiffView({
-  sessionID,
+  artifactsURL,
   artifact,
   version,
   onClose,
 }: {
-  sessionID: string;
+  artifactsURL: ArtifactsURL;
   artifact: Artifact;
   /** bumped on every file change, so a file written again while its diff is open
    *  is refetched rather than read at the version it had when it was opened. */
@@ -353,9 +435,7 @@ export function DiffView({
     let live = true;
     void (async () => {
       try {
-        const got = await api<Artifact[]>(
-          `/api/sessions/${sessionID}/artifacts?path=${encodeURIComponent(path)}`,
-        );
+        const got = await api<Artifact[]>(withPath(artifactsURL, path));
         if (!live) return;
         setFull(got[0] ?? null);
         setError(null);
@@ -366,7 +446,7 @@ export function DiffView({
     return () => {
       live = false;
     };
-  }, [sessionID, path, version]);
+  }, [artifactsURL, path, version]);
 
   // The overlay is opaque, so what is under it must not be where the keyboard
   // lands. Once, on mount: re-running this pulled the caret out of the composer
@@ -430,11 +510,24 @@ export function DiffView({
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        {error && <p className="p-4 text-[13px] text-bad">{error}</p>}
+        {error && <p className="p-4 font-mono text-[13px] text-bad">{error}</p>}
         {/* Rows at the height the diff rows will be, so the panel does not jump
-            when the file lands. */}
-        {!error && !full && <SkeletonRows rows={12} className="gap-px p-3" />}
-        {!error && full && rows.length === 0 && (
+            when the file lands. Diff rows are 12px at 1.45, not the 32px of a
+            list row, and the container has no padding of its own. */}
+        {!error && !full && (
+          <SkeletonRows rows={12} rowClass="h-[17px]" className="gap-px py-2" />
+        )}
+        {/* Said before the empty-file case below it, because it is the reason
+            there is nothing to diff. Reporting a 40MB generated file as empty is
+            a false statement about a real file, which is worse than the silent
+            truncation this codebase already bans. */}
+        {!error && full?.truncated && (
+          <p className="p-4 font-mono text-[13px] text-muted">
+            This file was too large to keep either side of, so only the path was
+            recorded.
+          </p>
+        )}
+        {!error && full && !full.truncated && rows.length === 0 && (
           <p className="p-4 text-[13px] text-muted">This file is empty.</p>
         )}
         {unchanged && <p className="p-3 text-[12px] text-muted">No line changed.</p>}

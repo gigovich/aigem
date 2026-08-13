@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeSocket, installFakeSocket } from "@/test/socket";
-import type { Actor, ChatMeta, Frame, Message, ThreadView } from "@/lib/chatprotocol";
+import type { Actor, ChatMeta, Frame, Message, Spend, ThreadView, Turn } from "@/lib/chatprotocol";
 import { ChatApp } from "./ChatApp";
 
 const meta: ChatMeta = {
@@ -42,9 +42,29 @@ const said: Message = {
   created: "2026-08-13T14:02:00Z",
 };
 
+/** The run that produced the answer above, and what it cost. Opening a thread
+ *  reads both: the collapsed trace under a bot's message is drawn from the row,
+ *  not from replaying the timeline. */
+const turn: Turn = {
+  seq: 3,
+  thread: "t_1",
+  actor: "bot:amiran",
+  started: "2026-08-13T14:01:00Z",
+  ended: "2026-08-13T14:02:00Z",
+  steps: 14,
+  tools: 6,
+  files: 2,
+};
+
+const spend: Spend = {
+  usage: { input_tokens: 48000, output_tokens: 1200, calls: 6 },
+  turns: 1,
+  runs: 1,
+};
+
 /** The daemon, as far as this screen is concerned. Only the routes it actually
  *  calls are answered; anything else is a failure worth seeing. */
-function stubDaemon(messages: Message[] = [said]) {
+function stubDaemon(messages: Message[] = [said], turns: Turn[] = [turn], artifacts: unknown[] = []) {
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
@@ -55,9 +75,15 @@ function stubDaemon(messages: Message[] = [said]) {
           ? fleet
           : url.includes("/messages")
             ? { items: messages }
-            : url.endsWith("/api/chat/threads")
-              ? [thread]
-              : null;
+            : url.includes("/turns")
+              ? { items: turns }
+              : url.includes("/spend")
+                ? spend
+                : url.includes("/artifacts")
+                  ? artifacts
+                  : url.endsWith("/api/chat/threads")
+                    ? [thread]
+                    : null;
       if (body === null) throw new Error(`unexpected request: ${url}`);
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -132,7 +158,12 @@ describe("ChatApp", () => {
 
     act(() => row.click());
 
-    expect(await screen.findByText("Reproduced on staging.")).toBeInTheDocument();
+    // Awaited, not held. findByText already fails the test if the message never
+    // arrives, and asserting on the node it returns adds nothing while making
+    // the test race the commit that first fills the markdown body: React writes
+    // that subtree through innerHTML, which orphans the node this line was
+    // holding even though the message is on screen throughout.
+    await screen.findByText("Reproduced on staging.");
     expect(screen.getByRole("textbox", { name: "Message" })).toBeInTheDocument();
     // Watching the thread is what the timeline follows, and it has to go up
     // before the page is fetched or anything said in between is lost.
@@ -175,6 +206,47 @@ describe("ChatApp", () => {
   });
 });
 
+describe("ChatApp while a bot is working", () => {
+  it("shows the run in flight, before it has produced a message", async () => {
+    // A trace otherwise hangs off the message its run produced, and that is the
+    // last thing a run writes - so for the whole of a four-minute run the
+    // transcript said "working" and nothing else. Watching a bot work is the
+    // reason this screen exists.
+    stubDaemon([said], [{ ...turn, ended: undefined, steps: 9, tools: 4, files: 1 }]);
+    const working: ThreadView = { ...thread, working: true };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        const body = url.includes("/api/chat/meta")
+          ? meta
+          : url.includes("/api/chat/fleet")
+            ? fleet
+            : url.includes("/messages")
+              ? { items: [said] }
+              : url.includes("/turns")
+                ? { items: [{ ...turn, ended: undefined, steps: 9, tools: 4, files: 1 }] }
+                : url.includes("/spend")
+                  ? spend
+                  : url.includes("/artifacts")
+                    ? []
+                    : [working];
+        return Promise.resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+    renderChat();
+    const row = await threadRow();
+    act(() => row.click());
+
+    expect(await screen.findByText("9 steps · 4 tools · 1 file")).toBeInTheDocument();
+  });
+});
+
 describe("ChatApp across a reconnect", () => {
   it("watches the open thread again on the new socket", async () => {
     // The daemon builds a fresh client watching nothing on every attach, and
@@ -214,7 +286,13 @@ describe("ChatApp when one request fails", () => {
           ? meta
           : url.includes("/api/chat/fleet")
             ? fleet
-            : [thread];
+            : url.includes("/turns")
+              ? { items: [turn] }
+              : url.includes("/spend")
+                ? spend
+                : url.includes("/artifacts")
+                  ? []
+                  : [thread];
         return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
       }),
     );
@@ -303,7 +381,12 @@ describe("ChatApp on a phone", () => {
     window.history.replaceState({}, "", "/chat/t_1");
     renderChat();
 
-    expect(await screen.findByText("Reproduced on staging.")).toBeInTheDocument();
+    // Awaited, not held. findByText already fails the test if the message never
+    // arrives, and asserting on the node it returns adds nothing while making
+    // the test race the commit that first fills the markdown body: React writes
+    // that subtree through innerHTML, which orphans the node this line was
+    // holding even though the message is on screen throughout.
+    await screen.findByText("Reproduced on staging.");
     // The link survives arrival: a daemon serving only this mode used to
     // rewrite it away, which lost the thread on reload and left the back
     // button doing nothing.
@@ -324,7 +407,9 @@ describe("ChatApp on a phone", () => {
           ? meta
           : url.includes("/api/chat/fleet")
             ? fleet
-            : [];
+            : url.includes("/turns")
+              ? { items: [] }
+              : [];
         return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
       }),
     );
@@ -356,7 +441,13 @@ describe("ChatApp paging back", () => {
           ? meta
           : url.includes("/api/chat/fleet")
             ? fleet
-            : [thread];
+            : url.includes("/turns")
+              ? { items: [turn] }
+              : url.includes("/spend")
+                ? spend
+                : url.includes("/artifacts")
+                  ? []
+                  : [thread];
         return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
       }),
     );

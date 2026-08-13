@@ -224,6 +224,24 @@ The per-turn breakdown is at `GET /api/chat/threads/{id}/turns` and the total at
 holds its address and bearer token. The two counts of `calls` differ on purpose:
 see [Models and providers](models.md#usage-and-quota).
 
+`/turns` answers a paging envelope - `{"items": [...]}`, plus `cursor` and `more`
+when older runs remain - and takes `?before=` and `?limit=`. Each run carries
+what it did as well as what it cost: `steps`, `tools`, `files`, and the working
+plan as that run last left it. A run that wrote no plan omits the field, and the
+newest run that did is the thread's current plan.
+
+Two routes go with it, both scoped to a run:
+
+```
+GET /api/chat/threads/{id}/timeline?turn=<seq>   one run's steps
+GET /api/chat/threads/{id}/artifacts?turn=<seq>  the files it changed
+```
+
+`/artifacts` lists paths only; add `&path=<path>` for the content before and
+after. `truncated` on a row means the file was too large to keep either side of,
+so the path is all there is. A run records at most 200 files and 128 KiB of each
+side, and stored diffs age out with the timeline they belong to.
+
 ## Running as a service
 
 `deploy/systemd/aigem-bots.service` runs the whole fleet as a systemd **user**

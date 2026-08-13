@@ -1,5 +1,5 @@
 import { cva, type VariantProps } from "class-variance-authority";
-import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode, Ref } from "react";
 import { cn } from "@/lib/utils";
 
 const button = cva(
@@ -36,7 +36,12 @@ const button = cva(
 
 export interface ButtonProps
   extends ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof button> {}
+    VariantProps<typeof button> {
+  /** Forwarded so a caller can hand focus back to the control a popover was
+   *  opened from. Closing one unmounts whatever had focus, and without this a
+   *  keyboard reader is dropped at the top of the document. */
+  ref?: Ref<HTMLButtonElement>;
+}
 
 export function Button({ className, variant, size, ...props }: ButtonProps) {
   return <button className={cn(button({ variant, size }), className)} {...props} />;

@@ -171,12 +171,26 @@ bag of pills: **4px** (badges, inline code, dots), **6px** (buttons, inputs, row
 ### Cards: mostly banned
 
 At density 8, cards fragment the stream. Use **hairline dividers and negative space**
-instead. Nested panels are permitted in exactly three places, where elevation encodes a
+instead. Nested panels are permitted in exactly four places, where elevation encodes a
 real containment relationship:
 
 1. A tool call inside a timeline turn.
 2. A diff inside the side panel.
 3. A modal or drawer over the workspace.
+4. A popover for a choice that has to be made in place: the participant picker in the
+   thread header, the `@mention` list above the composer. It is not a dialog - it takes no
+   backdrop and traps no focus - and Escape or moving away closes it. A choice that
+   warrants covering the conversation is a drawer instead.
+
+   Anchored to a control (the picker), it returns focus to that control on close. Anchored
+   to the caret (the mention list), there is no control to return to: it is driven by the
+   arrow keys, closes on blur, and announces itself as a combobox on the field it belongs
+   to, because a list a screen reader is never told about is a list only some readers get.
+
+A panel may not sit directly inside another panel: `raised` is the only step up from
+`panel`, so a `panel` fill inside a `panel` fill erases the boundary it was drawn for. An
+expanded agent trace is therefore indented under its summary line rather than boxed - the
+tool calls inside it are the panels.
 
 Everywhere else - conversation rows, changed-file rows, plan items, usage figures - use a
 `border-top` hairline and no background until hover.
@@ -265,7 +279,8 @@ buys more room for diffs and long tool output rather than more empty margin.
   scrolls inside its zone instead of stretching the grid.
 - Full-height regions use `min-h-[100dvh]`. `h-screen` is banned; it breaks on iOS Safari.
 - No overlapping elements. Nothing is absolutely positioned over content except the modal
-  layer and the row-action cluster inside its own row.
+  layer, a popover anchored to its trigger (§4), and the row-action cluster inside its own
+  row.
 - Zone gutters are `line` rules, not gaps and not shadows.
 - Spacing scale: 2, 4, 6, 8, 12, 16, 24, 32. Nothing between, nothing above 32 inside a
   panel.

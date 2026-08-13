@@ -57,6 +57,16 @@ type Transport struct {
 	closed  bool
 	wake    chan struct{}
 	stopped chan struct{}
+
+	// turnMu guards turns, and is its own lock rather than mu: mu is held on the
+	// path that drains the inbound queue, and a tool asking which run it is
+	// inside must not queue behind a burst of deliveries.
+	turnMu sync.Mutex
+	// turns is the run open in each thread: what the turn's own steps and its
+	// answer are filed under, so a trace and the message it produced are one
+	// fact rather than two adjacent ones. Keyed by thread because the runtime
+	// runs one turn per thread but several threads at once.
+	turns map[string]uint64
 }
 
 // Open connects a bot to the store. The returned transport registers itself as
@@ -71,6 +81,7 @@ func Open(store *chat.Store, name string, log *slog.Logger) *Transport {
 		events:  make(chan bot.Inbound),
 		wake:    make(chan struct{}, 1),
 		stopped: make(chan struct{}),
+		turns:   map[string]uint64{},
 	}
 	t.debounce = newThreadDebouncer(threadQuietPeriod, t.fireThreadUpdate)
 	go t.pump()
@@ -235,7 +246,9 @@ func (t *Transport) pump() {
 // been produced should be written even as the bot is being shut down. It is
 // safe because the fleet waits for every bot before closing the store.
 func (t *Transport) Reply(thread bot.ThreadID, text string) error {
-	_, err := t.Say(context.Background(), thread, text, bot.SayOpts{})
+	// The one write that is unambiguously the turn's own output, so the one that
+	// is filed under it. See say.
+	_, err := t.say(context.Background(), thread, text, bot.SayOpts{}, t.turnOf(string(thread)))
 	return err
 }
 
@@ -245,11 +258,48 @@ func (t *Transport) Reply(thread bot.ThreadID, text string) error {
 // alternative is what the old transport avoided by splitting into 16k chunks:
 // the model believes it answered, the write is rejected, and the human sees
 // silence.
+//
+// It carries no turn: a message written by a tool is not the run's answer, and
+// it may not even be in the run's thread. A bot runs up to four threads at once,
+// so post_message from a run in one can land in another where this same bot also
+// has a turn open - stamping by thread would file that note under a run that did
+// not produce it, and hang that run's trace beneath it. Leaving it unstamped
+// says the true thing: it was said during no run of its own.
 func (t *Transport) Say(ctx context.Context, thread bot.ThreadID, text string, o bot.SayOpts) (uint64, error) {
+	return t.say(ctx, thread, text, o, 0)
+}
+
+func (t *Transport) say(ctx context.Context, thread bot.ThreadID, text string,
+	o bot.SayOpts, turn uint64) (uint64, error) {
 	m, err := t.store.Say(ctx, string(thread), chat.Draft{
 		Author: t.self, Body: bound(text), Mentions: o.Mentions, AwaitReply: o.AwaitReply,
+		TurnSeq: turn,
 	})
 	return m.Seq, err
+}
+
+// turnOf is the run this bot has open in a thread, or zero.
+func (t *Transport) turnOf(thread string) uint64 {
+	t.turnMu.Lock()
+	defer t.turnMu.Unlock()
+	return t.turns[thread]
+}
+
+func (t *Transport) openTurn(thread string, seq uint64) {
+	t.turnMu.Lock()
+	defer t.turnMu.Unlock()
+	t.turns[thread] = seq
+}
+
+// closeTurn forgets a run, and only if it is still the current one. A turn that
+// has already been replaced was superseded by a later run in the same thread,
+// and clearing unconditionally would leave that one unattributed.
+func (t *Transport) closeTurn(thread string, seq uint64) {
+	t.turnMu.Lock()
+	defer t.turnMu.Unlock()
+	if t.turns[thread] == seq {
+		delete(t.turns, thread)
+	}
 }
 
 // bound trims a message to what the store accepts, saying that it did. The

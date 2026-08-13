@@ -185,7 +185,7 @@ func scanThreadView(row scanner) (ThreadView, error) {
 // messageColumns is every field a Message carries, so the three queries that
 // return one cannot hand back silently different fill levels.
 const messageColumns = `m.seq, m.thread_id, m.author_id, m.body, m.kind,
-	m.mentions, m.await, m.created_at,
+	m.mentions, m.await, m.created_at, m.turn_seq,
 	coalesce((SELECT group_concat(ma.attachment_id, ' ') FROM message_attachments ma
 	           WHERE ma.message_seq = m.seq), '')`
 
@@ -197,7 +197,7 @@ func scanMessage(row scanner) (Message, error) {
 		attachments string
 	)
 	if err := row.Scan(&m.Seq, &m.Thread, &m.Author, &m.Body, &m.Kind,
-		&mentions, &m.Await, &created, &attachments); err != nil {
+		&mentions, &m.Await, &created, &m.Turn, &attachments); err != nil {
 		return Message{}, err
 	}
 	m.Mentions = splitMentions(mentions)
@@ -262,16 +262,25 @@ func (s *Store) Messages(ctx context.Context, actor, threadID string, before uin
 // cursor is what to pass as the next since, and more says whether the thread
 // continues past this page. A single bot turn can be hundreds of events, so a
 // backfill hitting the limit is ordinary rather than exceptional.
-func (s *Store) Timeline(ctx context.Context, actor, threadID string, since uint64, limit int) (
-	frames []Frame, cursor uint64, more bool, err error) {
+// A zero turn is every event in the thread; a turn narrows it to that one run,
+// which is what expanding a collapsed trace asks for.
+func (s *Store) Timeline(ctx context.Context, actor, threadID string, since, turnSeq uint64,
+	limit int) (frames []Frame, cursor uint64, more bool, err error) {
 	if err := s.requireParticipantR(ctx, threadID, actor); err != nil {
 		return nil, 0, false, err
 	}
 	limit = clampLimit(limit, 500, 2000)
+	turnFilter := ""
+	args := []any{threadID, since}
+	if turnSeq != 0 {
+		turnFilter = " AND turn_seq = ?"
+		args = append(args, turnSeq)
+	}
+	args = append(args, limit+1)
 	rows, err := s.r.QueryContext(ctx,
-		`SELECT seq, payload FROM events
-		  WHERE thread_id = ? AND seq > ?
-		  ORDER BY seq LIMIT ?`, threadID, since, limit+1)
+		`SELECT seq, turn_seq, payload FROM events
+		  WHERE thread_id = ? AND seq > ?`+turnFilter+`
+		  ORDER BY seq LIMIT ?`, args...)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("chat: read timeline: %w", err)
 	}
@@ -280,7 +289,7 @@ func (s *Store) Timeline(ctx context.Context, actor, threadID string, since uint
 	out := []Frame{}
 	for rows.Next() {
 		f := Frame{Stream: StreamEvent, ThreadID: threadID}
-		if err := rows.Scan(&f.Seq, &f.Event); err != nil {
+		if err := rows.Scan(&f.Seq, &f.Turn, &f.Event); err != nil {
 			return nil, 0, false, err
 		}
 		out = append(out, f)

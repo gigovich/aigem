@@ -99,7 +99,7 @@ func TestOperatorCanDriveAThreadThroughTheAPIAlone(t *testing.T) {
 		t.Fatalf("the timeline has %d events, want the three the turn produced", len(tl.Items))
 	}
 	res = do(t, srv, http.MethodGet, "/api/chat/threads/"+th.ID+"/turns", nil)
-	turns := decode[[]Turn](t, res)
+	turns := decode[Page[Turn]](t, res).Items
 	if len(turns) != 1 || turns[0].Usage.Calls != 1 {
 		t.Fatalf("turns = %+v, want one with its spend recorded", turns)
 	}

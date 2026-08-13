@@ -18,12 +18,15 @@ function Mark({ status }: { status: string }) {
 /** The plan as a checklist that reads top to bottom. It was a row of pills
  *  across the full width, where six steps became two and a half on a phone and
  *  the one being worked on was wherever it happened to land. */
-export function Plan({ todos }: { todos: Todo[] }) {
+export function Plan({ todos, whose }: { todos: Todo[]; whose?: string }) {
   const { done, total } = planProgress(todos);
   return (
     <section aria-label="Plan" className="flex shrink-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
         <h2 className="text-[15px] font-medium">Plan</h2>
+        {/* Whose. A thread holds several bots, and a plan with no name on it is
+            one bot's plan presented as the thread's. */}
+        {whose && <span className="truncate text-[12px] text-muted">{whose}</span>}
         {/* A count, not a percentage: seven steps do not divide into a figure
             anyone can act on, and the reader is counting steps anyway. */}
         <span className="ml-auto font-mono text-[12px] text-muted">

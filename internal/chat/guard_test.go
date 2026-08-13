@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -51,11 +52,11 @@ func TestEveryEntryPointRefusesAnOutsider(t *testing.T) {
 			return err
 		}, ErrNoSuchThread},
 		{"Timeline", func() error {
-			_, _, _, err := s.Timeline(ctx, jane, th.ID, 0, 10)
+			_, _, _, err := s.Timeline(ctx, jane, th.ID, 0, 0, 10)
 			return err
 		}, ErrNoSuchThread},
 		{"Turns", func() error {
-			_, err := s.Turns(ctx, jane, th.ID)
+			_, _, _, err := s.Turns(ctx, jane, th.ID, 0, 0)
 			return err
 		}, ErrNoSuchThread},
 		{"Blob", func() error {
@@ -117,14 +118,14 @@ func TestEveryEntryPointRefusesAnOutsider(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("the thread has %d messages, want the one that was said", len(msgs))
 	}
-	turns, err := s.Turns(ctx, Operator, th.ID)
+	turns, _, _, err := s.Turns(ctx, Operator, th.ID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if turns[0].Model != "" || turns[0].Error != "" || !turns[0].Ended.IsZero() {
 		t.Fatalf("an outsider changed the turn: %+v", turns[0])
 	}
-	frames, _, _, err := s.Timeline(ctx, Operator, th.ID, 0, 50)
+	frames, _, _, err := s.Timeline(ctx, Operator, th.ID, 0, 0, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +335,7 @@ func TestTheFirstCloseOfATurnWins(t *testing.T) {
 	if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
 		t.Fatal(err)
 	}
-	turns, err := s.Turns(ctx, Operator, th.ID)
+	turns, _, _, err := s.Turns(ctx, Operator, th.ID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -747,6 +748,70 @@ func TestTheSearchIndexIsBackfilledOnUpgrade(t *testing.T) {
 
 // seedOld writes a thread and a message straight through SQL, which is how they
 // would have got there under a schema that predates the search index.
+// TestLaterMigrationsApplyToAPopulatedDatabase is the case a fresh store never
+// reaches: every migration running at once over empty tables says nothing about
+// what happens to rows that were already there. Upgrading is the ordinary path
+// - a fleet has a month of threads before a release - and an ALTER that a
+// populated table rejects would take the daemon down at startup.
+//
+// The pre-migration rows are read back afterwards, because applying cleanly and
+// reading correctly are different claims: turn_seq defaults to 0 on an old
+// message, which the product reads as "said outside a run", and the counters
+// default to 0, which reads as a run that recorded nothing. Both are the
+// intended meaning of a row from before the column existed.
+func TestLaterMigrationsApplyToAPopulatedDatabase(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	db, err := openDB(filepath.Join(dir, "chat.db"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The bookkeeping table Migrate would have made, so 0001 records itself and
+	// Open below picks up from there rather than re-running it.
+	if _, err := db.ExecContext(ctx,
+		`CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	first, err := migrationFS.ReadFile("migrations/0001_init.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMigration(ctx, db, "0001_init.sql", string(first)); err != nil {
+		t.Fatal(err)
+	}
+	seedOld(ctx, t, db)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Everything after 0001, over the rows above.
+	s, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("upgrading a populated database: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	msgs, _, _, err := s.Messages(ctx, amiran, "t_0102030405060708", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Turn != 0 {
+		t.Fatalf("an old message reads as %+v, want turn 0 (said outside a run)", msgs)
+	}
+	turns, _, _, err := s.Turns(ctx, amiran, "t_0102030405060708", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 1 || turns[0].Steps != 0 || turns[0].Files != 0 || turns[0].Plan != nil {
+		t.Fatalf("an old turn reads as %+v, want zeroed counters and no plan", turns)
+	}
+	// And the new tables are usable against the old rows, not merely present.
+	if _, err := s.Artifacts(ctx, amiran, "t_0102030405060708", turns[0].Seq, ""); err != nil {
+		t.Fatalf("reading artifacts after an upgrade: %v", err)
+	}
+}
+
 func seedOld(ctx context.Context, t *testing.T, db *sql.DB) {
 	t.Helper()
 	now := time.Now().UnixMilli()
@@ -763,7 +828,16 @@ func seedOld(ctx context.Context, t *testing.T, db *sql.DB) {
 		{`INSERT INTO messages (seq, thread_id, author_id, body, kind, created_at)
 		  VALUES (1, ?, ?, ?, 'message', ?)`,
 			[]any{"t_0102030405060708", amiran, "the rotation drops sessions", now}},
-		{`UPDATE cursor SET seq = 1 WHERE id = 1`, nil},
+		// A turn and one of its events, so the ALTERs that 0003 adds to `turns`
+		// and the index it adds to `events` are exercised against existing rows
+		// rather than against empty tables.
+		{`INSERT INTO turns (turn_seq, thread_id, actor_id, started_at, ended_at)
+		  VALUES (2, ?, ?, ?, ?)`,
+			[]any{"t_0102030405060708", amiran, now, now}},
+		{`INSERT INTO events (seq, thread_id, actor_id, turn_seq, kind, payload, created_at)
+		  VALUES (3, ?, ?, 2, 'tool_start', ?, ?)`,
+			[]any{"t_0102030405060708", amiran, []byte(`{"kind":"tool_start"}`), now}},
+		{`UPDATE cursor SET seq = 3 WHERE id = 1`, nil},
 	}
 	for _, s := range stmts {
 		if _, err := db.ExecContext(ctx, s.q, s.args...); err != nil {

@@ -31,7 +31,15 @@ import (
 // That is the right trade for a conversation log: losing the final message of a
 // turn the machine did not survive costs one re-ask, while fsyncing every
 // commit would put a disk flush inside the writer the whole fleet queues on.
-const dsnOptions = "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)" +
+//
+// auto_vacuum comes first, and is here rather than only in 0001_init.sql,
+// because it can only be set before the database file is initialised - and
+// journal_mode(WAL) initialises it. Declared in the migration alone it was a
+// no-op, so pruning returned pages to a free list that was never given back to
+// the filesystem. A database created before this keeps auto_vacuum 0 until
+// someone runs a full VACUUM; Prune copes with that rather than assuming.
+const dsnOptions = "_pragma=auto_vacuum(2)&_pragma=journal_mode(WAL)" +
+	"&_pragma=busy_timeout(5000)" +
 	"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
 
 // maxReaders caps the reader pool. Each SQLite connection carries its own page
@@ -681,9 +689,16 @@ func (s *Store) Say(ctx context.Context, threadID string, m Draft) (Message, err
 	out := Message{
 		Thread: threadID, Author: m.Author, Body: body, Kind: m.Kind,
 		Mentions: mentions, Await: m.AwaitReply, Created: s.now(), Attachments: attachments,
+		Turn: m.TurnSeq,
 	}
 	err := s.write(ctx, "say", func(tx *sql.Tx, frames *[]Frame) error {
 		if err := requireParticipant(ctx, tx, threadID, m.Author); err != nil {
+			return err
+		}
+		// The same check AppendEvent makes, for the same reason: turn sequences
+		// are small consecutive integers, so without it any author could file a
+		// message under another bot's run by guessing.
+		if err := requireTurnInThread(ctx, tx, m.TurnSeq, m.Author, threadID); err != nil {
 			return err
 		}
 		// "@name" in the body is a mention. Nothing else in the product produces
@@ -704,10 +719,11 @@ func (s *Store) Say(ctx context.Context, threadID string, m Draft) (Message, err
 		}
 		out.Seq = seq
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO messages (seq, thread_id, author_id, body, kind, mentions, await, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO messages
+			   (seq, thread_id, author_id, body, kind, mentions, await, created_at, turn_seq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			seq, threadID, m.Author, body, m.Kind, padMentions(out.Mentions),
-			boolInt(m.AwaitReply), out.Created.UnixMilli()); err != nil {
+			boolInt(m.AwaitReply), out.Created.UnixMilli(), m.TurnSeq); err != nil {
 			return err
 		}
 		if err := claimAttachments(ctx, tx, threadID, seq, attachments); err != nil {
@@ -731,7 +747,13 @@ func (s *Store) Say(ctx context.Context, threadID string, m Draft) (Message, err
 // published frame advertise a file the stored transcript would never return.
 // mentionRe finds "@name" at a word boundary, which is how a person writes one
 // and what every chat product they have used would have parsed.
-var mentionRe = regexp.MustCompile(`@([A-Za-z0-9._-]{1,64})`)
+//
+// The boundary is a leading group rather than \b because RE2 has no lookbehind,
+// so the name is submatch 2. Without it "mail me at someone@demetre" is a
+// mention, which is not what the writer meant - and the composer's own parser,
+// which decides whom to add to the thread, would have to reproduce the same
+// mistake to stay in step with this one.
+var mentionRe = regexp.MustCompile(`(^|[\s(])@([A-Za-z0-9._-]{1,64})`)
 
 // mentionedInBody resolves the "@name"s in a message to participants of this
 // thread.
@@ -765,7 +787,7 @@ func mentionedInBody(ctx context.Context, tx *sql.Tx, threadID, body string) ([]
 	}
 	var out []string
 	for _, m := range found {
-		if id, ok := byName[strings.ToLower(m[1])]; ok {
+		if id, ok := byName[strings.ToLower(m[2])]; ok {
 			out = append(out, id)
 		}
 	}

@@ -3,11 +3,10 @@ package web
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/gigovich/aigem/internal/llm"
+	"github.com/gigovich/aigem/internal/tools"
 )
 
 // What the browser can show that a terminal cannot: the whole of what a session
@@ -59,7 +58,7 @@ func (s *Server) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 
 	out := []artifactView{}
 	for path, c := range e.sess.Artifacts() {
-		v := artifactView{Path: relTo(root, path), Created: c.Created}
+		v := artifactView{Path: tools.RelTo(root, path), Created: c.Created}
 		if want != "" && want != v.Path {
 			continue
 		}
@@ -70,20 +69,6 @@ func (s *Server) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	writeJSON(w, out)
-}
-
-// relTo shortens an absolute path against the session's root. A path outside it
-// is left absolute rather than turned into a trail of "..", which reads as an
-// escape when it is really a file the user approved by name.
-func relTo(root, path string) string {
-	if root == "" {
-		return path
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return path
-	}
-	return filepath.ToSlash(rel)
 }
 
 // usageView is what the account has spent and how close it is to its limits.

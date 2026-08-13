@@ -2,6 +2,7 @@ package chatlink
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/bot"
 	"github.com/gigovich/aigem/internal/chat"
 	"github.com/gigovich/aigem/internal/llm"
@@ -274,7 +276,7 @@ func TestATurnRecordsItsStepsIntoTheThread(t *testing.T) {
 	spend(llm.Usage{}, "xai/grok-4.3")
 	done("reproduced", nil)
 
-	frames, _, _, err := s.Timeline(t.Context(), operator, th, 0, 100)
+	frames, _, _, err := s.Timeline(t.Context(), operator, th, 0, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +309,7 @@ func TestATurnRecordsItsStepsIntoTheThread(t *testing.T) {
 		t.Fatal("the thread still reports working after the turn ended")
 	}
 
-	turns, err := s.Turns(t.Context(), operator, th)
+	turns, _, _, err := s.Turns(t.Context(), operator, th, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +339,7 @@ func TestALongTurnsSpendIsRecordedBeforeItEnds(t *testing.T) {
 		spend(llm.Usage{InputTokens: 10, OutputTokens: 1}, "xai/grok-4.3")
 	}
 
-	turns, err := s.Turns(t.Context(), operator, th)
+	turns, _, _, err := s.Turns(t.Context(), operator, th, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +363,7 @@ func TestACallWithNoModelDoesNotEraseTheTurnsModel(t *testing.T) {
 	spend(llm.Usage{InputTokens: 10, OutputTokens: 1}, "")
 	done("", nil)
 
-	turns, err := s.Turns(t.Context(), operator, th)
+	turns, _, _, err := s.Turns(t.Context(), operator, th, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +394,7 @@ func TestConcurrentCallsDoNotLoseSpend(t *testing.T) {
 	wg.Wait()
 	done("", nil)
 
-	turns, err := s.Turns(t.Context(), operator, th)
+	turns, _, _, err := s.Turns(t.Context(), operator, th, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +420,7 @@ func TestAnOversizedToolResultGoesToABlob(t *testing.T) {
 	ev.OnToolEnd("c1", "bash", string(body), nil)
 	done("", nil)
 
-	frames, _, _, err := s.Timeline(t.Context(), operator, th, 0, 100)
+	frames, _, _, err := s.Timeline(t.Context(), operator, th, 0, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,3 +479,285 @@ func contains(s, sub string) bool { return strings.Contains(s, sub) }
 func containsAll(list []string, want string) bool { return slices.Contains(list, want) }
 
 func unmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+// The trace and the answer it produced have to be one fact, not two adjacent
+// ones. Without the stamp the browser would have to guess which run a message
+// came out of by bracketing it between a turn's start and end - which a bot
+// that posts twice in a turn, or a turn killed with the process, both defeat.
+func TestATurnsMessagesAreFiledUnderIt(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	_, _, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	if err := tr.Reply(bot.ThreadID(th), "reproduced on staging"); err != nil {
+		t.Fatal(err)
+	}
+	done("reproduced on staging", nil)
+
+	msgs, _, _, err := s.Messages(t.Context(), operator, th, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want the answer", len(msgs))
+	}
+	if msgs[0].Turn == 0 {
+		t.Fatal("the answer is not filed under the turn that produced it")
+	}
+
+	// A tool's own post carries no turn, even inside a live run and even in the
+	// run's own thread. A bot works up to four threads at once, so post_message
+	// from one run can land in another where this bot also has a turn open, and
+	// stamping by thread would hang that run's trace under a note it did not
+	// produce.
+	_, _, done2 := tr.TurnEvents(bot.ThreadID(th), operator)
+	defer done2("", nil)
+	if _, err := tr.Say(t.Context(), bot.ThreadID(th), "an aside", bot.SayOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _, _, err = s.Messages(t.Context(), operator, th, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msgs[0].Turn != 0 {
+		t.Fatalf("a tool's post was filed under a run: turn %d", msgs[0].Turn)
+	}
+}
+
+func TestAFileChangedInATurnBecomesADiffAndAStep(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	_, _, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	tr.FileChanged(bot.ThreadID(th), chat.Artifact{
+		Path: "internal/auth/flow.go", Old: "before\n", New: "middle\n",
+	})
+	// A second edit to the same file keeps the content from before the turn
+	// touched it, so the diff is the turn's whole effect rather than its last
+	// keystroke - and counts once.
+	tr.FileChanged(bot.ThreadID(th), chat.Artifact{
+		Path: "internal/auth/flow.go", Old: "middle\n", New: "after\n",
+	})
+	done("", nil)
+
+	got, err := s.Artifacts(t.Context(), operator, th, 0, "internal/auth/flow.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d artifacts, want the one file", len(got))
+	}
+	if got[0].Old != "before\n" || got[0].New != "after\n" {
+		t.Fatalf("diff = %q -> %q, want the turn's whole effect", got[0].Old, got[0].New)
+	}
+
+	turns, _, _, err := s.Turns(t.Context(), operator, th, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[0].Files != 1 {
+		t.Fatalf("turn files = %d, want 1", turns[0].Files)
+	}
+	// The panel's figure and the trace's have to come from the same events, so
+	// the write also lands in the timeline.
+	frames, _, _, err := s.Timeline(t.Context(), operator, th, 0, turns[0].Seq, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changes int
+	for _, f := range frames {
+		if strings.Contains(string(f.Event), `"file_changed"`) {
+			changes++
+		}
+	}
+	if changes != 2 {
+		t.Fatalf("the timeline has %d file_changed steps, want both edits", changes)
+	}
+}
+
+// A step announcing a diff the panel has no row for is how the summary line and
+// the file list come to disagree: the line counts these events, and it would
+// climb past the cap the list stops at while the panel stopped listing.
+func TestAFileTheStoreDidNotKeepIsNotAStep(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	_, _, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	defer done("", nil)
+	for i := range chat.MaxTurnArtifacts + 5 {
+		tr.FileChanged(bot.ThreadID(th), chat.Artifact{
+			Path: fmt.Sprintf("generated/file%03d.go", i), New: "x",
+		})
+	}
+
+	turns, _, _, err := s.Turns(t.Context(), operator, th, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[0].Files != chat.MaxTurnArtifacts {
+		t.Fatalf("turn files = %d, want the cap", turns[0].Files)
+	}
+	frames, _, _, err := s.Timeline(t.Context(), operator, th, 0, turns[0].Seq, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changes int
+	for _, f := range frames {
+		if strings.Contains(string(f.Event), `"file_changed"`) {
+			changes++
+		}
+	}
+	// One per file the store kept, and not one per file the bot wrote: the
+	// panel can only ever list the former.
+	if changes != chat.MaxTurnArtifacts {
+		t.Fatalf("the timeline has %d file_changed steps, want %d - the ones with a row",
+			changes, chat.MaxTurnArtifacts)
+	}
+}
+
+// A cron job runs against no conversation, so there is no turn for its writes
+// to hang off. Dropping them is right; attributing them to whatever ran last in
+// some thread is not.
+func TestAFileChangedOutsideATurnIsDropped(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	tr.FileChanged(bot.ThreadID(th), chat.Artifact{Path: "internal/auth/flow.go", New: "x"})
+
+	got, err := s.Artifacts(t.Context(), operator, th, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d artifacts with no turn open, want none", len(got))
+	}
+	// And nothing reached the timeline either. Asserting only on the artifacts
+	// could not tell "dropped before the write" from "one rejected write and a
+	// warning per file, for every cron run this bot ever makes".
+	frames, _, _, err := s.Timeline(t.Context(), operator, th, 0, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 0 {
+		t.Fatalf("a change outside a run reached the timeline: %d events", len(frames))
+	}
+}
+
+// closeTurn forgets a run only if it is still the current one. A superseded
+// turn clearing a later run's entry would leave that run's answer unstamped,
+// and its trace attached to nothing.
+func TestClosingASupersededTurnLeavesTheCurrentOneStamped(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	_, _, doneFirst := tr.TurnEvents(bot.ThreadID(th), operator)
+	_, _, doneSecond := tr.TurnEvents(bot.ThreadID(th), operator)
+	// Out of order on purpose: the first run finishing after the second began.
+	doneFirst("", nil)
+
+	if err := tr.Reply(bot.ThreadID(th), "still mine"); err != nil {
+		t.Fatal(err)
+	}
+	doneSecond("", nil)
+
+	msgs, _, _, err := s.Messages(t.Context(), operator, th, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msgs[0].Turn == 0 {
+		t.Fatal("the live run's answer lost its turn when an older one closed")
+	}
+}
+
+// The summary line is the point of the whole migration, so what it counts is
+// asserted rather than assumed. The turn's own brackets are not steps.
+func TestATurnCountsItsStepsAndTools(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	ev, _, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	ev.OnToolStart("c1", "grep", json.RawMessage(`{"pattern":"Refresh("}`))
+	ev.OnToolEnd("c1", "grep", "internal/auth/flow.go:88", nil)
+	// The plan write is a step but not a tool: the browser draws those calls as
+	// a plan rather than as a tool card, so counting one promises a card the
+	// trace does not hold.
+	ev.OnToolStart("c2", planTool, json.RawMessage(`{"todos":[]}`))
+	ev.OnToolEnd("c2", planTool, "ok", nil)
+	ev.OnAssistantMessage("looking")
+	done("done", nil)
+
+	turns, _, _, err := s.Turns(t.Context(), operator, th, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[0].Tools != 1 {
+		t.Fatalf("turn tools = %d, want only the grep", turns[0].Tools)
+	}
+	// Three: the two tool calls and the assistant message that said something.
+	// A step is a row the expanded trace draws, so the ends that complete a row
+	// rather than add one do not count, the run's own brackets do not, and the
+	// answer turn_end carries is drawn as the message the trace hangs under.
+	if turns[0].Steps != 3 {
+		t.Fatalf("turn steps = %d, want 3", turns[0].Steps)
+	}
+}
+
+// The agent announces an assistant message before every tool batch, and on a
+// round that produced tool calls and no prose it carries no text and the
+// renderer draws nothing for it. Counting those announced two steps per round
+// for a turn that took one.
+func TestAnEmptyAssistantMessageIsNotAStep(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	ev, _, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	for i := range 3 {
+		ev.OnAssistantMessage("")
+		id := fmt.Sprintf("c%d", i)
+		ev.OnToolStart(id, "grep", json.RawMessage(`{}`))
+		ev.OnToolEnd(id, "grep", "ok", nil)
+	}
+	done("Reproduced.", nil)
+
+	turns, _, _, err := s.Turns(t.Context(), operator, th, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[0].Steps != 3 {
+		t.Fatalf("turn steps = %d, want the three tool calls alone", turns[0].Steps)
+	}
+}
+
+// The plan panel reads the turn rather than replaying the timeline, so the
+// write has to reach the row.
+func TestAPlanWrittenInATurnIsStoredOnIt(t *testing.T) {
+	s := newStore(t)
+	tr := openTransport(t, s, "amiran")
+	th := thread(t, s, amiran)
+
+	ev, _, done := tr.TurnEvents(bot.ThreadID(th), operator)
+	ev.OnTodoUpdate([]agent.TodoItem{
+		{Text: "reproduce on staging", Status: agent.TodoCompleted},
+		{Text: "patch internal/auth", Status: agent.TodoInProgress},
+	})
+	done("", nil)
+
+	turns, _, _, err := s.Turns(t.Context(), operator, th, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []agent.TodoItem
+	if err := json.Unmarshal(turns[0].Plan, &plan); err != nil {
+		t.Fatalf("plan = %q: %v", turns[0].Plan, err)
+	}
+	if len(plan) != 2 || plan[1].Status != "in_progress" {
+		t.Fatalf("plan = %+v, want the two steps as written", plan)
+	}
+}

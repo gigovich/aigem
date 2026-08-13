@@ -30,26 +30,26 @@ describe("ChangedFiles", () => {
       [{ path: "/w/a.go", created: true }],
     ]);
     const { rerender } = render(
-      <ChangedFiles sessionID="s1" version={1} onOpen={vi.fn()} />,
+      <ChangedFiles artifactsURL="/api/sessions/s1/artifacts" version={1} onOpen={vi.fn()} />,
     );
     await waitFor(() => expect(calls).toHaveLength(1));
 
     // Same path, second write: the counter moves even though the path set does not.
-    rerender(<ChangedFiles sessionID="s1" version={2} onOpen={vi.fn()} />);
+    rerender(<ChangedFiles artifactsURL="/api/sessions/s1/artifacts" version={2} onOpen={vi.fn()} />);
     await waitFor(() => expect(calls).toHaveLength(2));
 
-    rerender(<ChangedFiles sessionID="s1" version={2} onOpen={vi.fn()} />);
+    rerender(<ChangedFiles artifactsURL="/api/sessions/s1/artifacts" version={2} onOpen={vi.fn()} />);
     expect(calls).toHaveLength(2);
   });
 
   it("keeps the last good list when the daemon cannot be reached", async () => {
     stubFetch([[{ path: "/w/a.go", created: true }], new Error("offline")]);
     const { rerender } = render(
-      <ChangedFiles sessionID="s1" version={1} onOpen={vi.fn()} />,
+      <ChangedFiles artifactsURL="/api/sessions/s1/artifacts" version={1} onOpen={vi.fn()} />,
     );
     await waitFor(() => expect(screen.getByText("w/a.go")).toBeInTheDocument());
 
-    rerender(<ChangedFiles sessionID="s1" version={2} onOpen={vi.fn()} />);
+    rerender(<ChangedFiles artifactsURL="/api/sessions/s1/artifacts" version={2} onOpen={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText(/may be stale/)).toBeInTheDocument());
     expect(screen.getByText("w/a.go")).toBeInTheDocument();
@@ -59,7 +59,7 @@ describe("ChangedFiles", () => {
   it("marks the file whose diff is open", async () => {
     stubFetch([[{ path: "/w/a.go", created: false }, { path: "/w/b.go", created: false }]]);
     render(
-      <ChangedFiles sessionID="s1" version={1} openPath="/w/b.go" onOpen={vi.fn()} />,
+      <ChangedFiles artifactsURL="/api/sessions/s1/artifacts" version={1} openPath="/w/b.go" onOpen={vi.fn()} />,
     );
 
     await waitFor(() => expect(screen.getByText("w/b.go")).toBeInTheDocument());

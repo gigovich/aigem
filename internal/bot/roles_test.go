@@ -1,9 +1,11 @@
 package bot
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/tools"
 )
 
@@ -44,6 +46,40 @@ func TestEveryRoleHasFullTooling(t *testing.T) {
 		for _, want := range full {
 			if !have[want] {
 				t.Errorf("role %q must allow %q (full toolset)", r.Name, want)
+			}
+		}
+	}
+}
+
+// TestEveryRoleToolIsInTheBotProfile is the other half of the allowlist, and it
+// exists because the two halves silently disagreed once.
+//
+// A bot's toolset is the role's list intersected with its capability profile's,
+// so a tool the role allows and no profile mentions is absent from every bot
+// however plainly the role says otherwise - nothing fails, nothing is logged,
+// and the model simply never sees the tool. read_chat was renamed read_threads
+// in the Mattermost cutover and the profile kept the old name, so no bot could
+// search its own threads until this assertion was written.
+func TestEveryRoleToolIsInTheBotProfile(t *testing.T) {
+	// The plan tool is registered by the constant, and allowed by two string
+	// literals. Comparing the literals to each other cannot see a rename of the
+	// constant - which would leave both lists agreeing and no bot able to plan.
+	if !slices.Contains(full, agent.TodoToolName) {
+		t.Fatalf("roles allow %q but the tool registers as %q", "todo_write", agent.TodoToolName)
+	}
+	for _, p := range tools.CapabilityProfiles {
+		allowed := make(map[string]bool, len(p.Allow))
+		for _, name := range p.Allow {
+			allowed[name] = true
+		}
+		for _, want := range full {
+			// The tools a profile withholds on purpose: they are what a bot can
+			// do to the machine, which is exactly what a profile is for.
+			if want == "bash" || want == "write_file" || want == "edit_file" {
+				continue
+			}
+			if !allowed[want] {
+				t.Errorf("profile %q drops %q, so no bot on it has that tool", p.Name, want)
 			}
 		}
 	}

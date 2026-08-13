@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"github.com/gigovich/aigem/internal/tools"
 	"net/http"
 	"testing"
 )
@@ -50,8 +51,8 @@ func TestRelTo(t *testing.T) {
 		{"/proj", "/etc/hosts", "/etc/hosts"},
 		{"", "/proj/a.go", "/proj/a.go"},
 	} {
-		if got := relTo(c.root, c.path); got != c.want {
-			t.Errorf("relTo(%q, %q) = %q, want %q", c.root, c.path, got, c.want)
+		if got := tools.RelTo(c.root, c.path); got != c.want {
+			t.Errorf("tools.RelTo(%q, %q) = %q, want %q", c.root, c.path, got, c.want)
 		}
 	}
 }

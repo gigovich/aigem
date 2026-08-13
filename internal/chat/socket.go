@@ -148,7 +148,7 @@ func (a *API) threadSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client.Watch(threadID)
-	backlog, cursor, more, err := a.store.Timeline(r.Context(), Operator, threadID, since, 0)
+	backlog, cursor, more, err := a.store.Timeline(r.Context(), Operator, threadID, since, 0, 0)
 	if err != nil {
 		client.Detach()
 		writeErr(w, err)

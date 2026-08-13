@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -24,6 +25,13 @@ const BlobThreshold = 2048
 // next message - for seconds.
 const pruneBatch = 5000
 
+// artifactBatch is the same bound for stored diffs, and it is far smaller
+// because the rows are. An event is capped at 64KiB with anything larger held
+// in blobs; an artifact carries both sides of a file inline, so a batch of the
+// events' size would be gigabytes of deletes in one transaction on the writer
+// the whole fleet is queued behind.
+const artifactBatch = 200
+
 // EventRecord is one step of a bot's turn, ready to store. Payload is the event
 // as the browser already decodes it, so there is no second wire format to keep
 // in step with the front-end; this package never looks inside it beyond
@@ -40,6 +48,16 @@ type EventRecord struct {
 	Kind    string
 	Payload json.RawMessage
 	Blob    []byte
+
+	// Step says this event counts towards the turn's step total, and Tool says
+	// it is a tool call. Both are the producer's judgement rather than a switch
+	// on Kind here: which kinds are steps belongs to the event vocabulary, and
+	// this package deliberately knows nothing about it.
+	Step bool
+	Tool bool
+	// Plan is the working plan this event set, when it set one. Stored on the
+	// turn so the panel can show it without replaying the timeline.
+	Plan json.RawMessage
 }
 
 // BeginTurn opens a turn and returns its sequence number, which is also the id
@@ -120,6 +138,23 @@ func (s *Store) EndTurn(ctx context.Context, actor string, turnSeq uint64, turnE
 		}
 		return s.publishThread(ctx, tx, frames, threadID)
 	})
+}
+
+// requireTurnInThread checks that a turn an actor is filing something under is
+// their own and belongs to this thread. A zero turn means "outside any run" and
+// is always allowed.
+func requireTurnInThread(ctx context.Context, tx *sql.Tx, turnSeq uint64, actor, threadID string) error {
+	if turnSeq == 0 {
+		return nil
+	}
+	owning, err := requireOwnTurn(ctx, tx, turnSeq, actor)
+	if err != nil {
+		return err
+	}
+	if owning != threadID {
+		return invalid("turn %d belongs to another thread", turnSeq)
+	}
+	return nil
 }
 
 // requireOwnTurn resolves a turn the actor owns, and returns its thread.
@@ -204,6 +239,12 @@ func (s *Store) AppendEvent(ctx context.Context, rec EventRecord) (uint64, error
 		// thread un-encodable, permanently, because the payload is re-emitted as
 		// raw JSON rather than re-encoded.
 		return 0, invalid("an event payload must be JSON")
+	case len(rec.Plan) > MaxEventBytes:
+		return 0, invalid("a plan may be at most %s", HumanSize(MaxEventBytes))
+	case len(rec.Plan) > 0 && !json.Valid(rec.Plan):
+		// Stored raw and re-emitted raw, exactly as the payload is, so the same
+		// reasoning applies: one bad row would break the turns response forever.
+		return 0, invalid("a plan must be JSON")
 	}
 	var seq uint64
 	err := s.write(ctx, "append event", func(tx *sql.Tx, frames *[]Frame) error {
@@ -213,14 +254,8 @@ func (s *Store) AppendEvent(ctx context.Context, rec EventRecord) (uint64, error
 		if err := requireParticipant(ctx, tx, rec.Thread, rec.Actor); err != nil {
 			return err
 		}
-		if rec.TurnSeq != 0 {
-			threadID, err := requireOwnTurn(ctx, tx, rec.TurnSeq, rec.Actor)
-			if err != nil {
-				return err
-			}
-			if threadID != rec.Thread {
-				return invalid("turn %d belongs to another thread", rec.TurnSeq)
-			}
+		if err := requireTurnInThread(ctx, tx, rec.TurnSeq, rec.Actor, rec.Thread); err != nil {
+			return err
 		}
 		var err error
 		if seq, err = nextSeq(ctx, tx); err != nil {
@@ -239,6 +274,21 @@ func (s *Store) AppendEvent(ctx context.Context, rec EventRecord) (uint64, error
 				return err
 			}
 		}
+		// The turn's summary line, kept current in the transaction that already
+		// has the row - the same bargain last_seq and last_text struck for the
+		// inbox. Counters only move while the turn is open, so a late event from
+		// a goroutine that outlived its run cannot inflate a closed turn's total.
+		if rec.TurnSeq != 0 && (rec.Step || rec.Tool || len(rec.Plan) > 0) {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE turns SET
+				   steps = steps + ?, tool_calls = tool_calls + ?,
+				   plan = CASE WHEN ? = '' THEN plan ELSE ? END
+				 WHERE turn_seq = ? AND ended_at IS NULL`,
+				boolInt(rec.Step), boolInt(rec.Tool),
+				string(rec.Plan), string(rec.Plan), rec.TurnSeq); err != nil {
+				return err
+			}
+		}
 		// An event does not publish a thread frame - a turn produces hundreds of
 		// them and the row does not change - so it addresses itself.
 		audience, err := participantsOf(ctx, tx, rec.Thread)
@@ -246,7 +296,8 @@ func (s *Store) AppendEvent(ctx context.Context, rec EventRecord) (uint64, error
 			return err
 		}
 		*frames = append(*frames, Frame{
-			Seq: seq, Stream: StreamEvent, ThreadID: rec.Thread, Event: rec.Payload, To: audience,
+			Seq: seq, Stream: StreamEvent, ThreadID: rec.Thread, Turn: rec.TurnSeq,
+			Event: rec.Payload, To: audience,
 		})
 		return nil
 	})
@@ -273,17 +324,190 @@ func (s *Store) Blob(ctx context.Context, actor, threadID string, seq uint64) ([
 	return body, nil
 }
 
-// Turns returns a thread's turns, oldest first, with what each one spent.
-func (s *Store) Turns(ctx context.Context, actor, threadID string) ([]Turn, error) {
+// PutArtifact records a file a turn changed, and counts it on the turn.
+//
+// A path already recorded for this turn keeps the content it had when the turn
+// first touched it, so a turn that edited one file five times still shows one
+// diff of its whole effect - the same rule uisession applies to a session's
+// artifacts, for the same reason.
+//
+// It reports whether the file was recorded. A turn past its file cap, or one
+// that has already ended, is not an error - there is nothing the caller could
+// do about either - but the caller must not then write a timeline step claiming
+// a diff the panel has no row for.
+//
+// a.Turn and a.Changed are the store's to set and are ignored.
+func (s *Store) PutArtifact(ctx context.Context, actor, threadID string, turnSeq uint64,
+	a Artifact) (stored bool, err error) {
+	// Cleaned, not shortened - see ReadablePath. The caller is expected to have
+	// done this already so its timeline event carries the same string; doing it
+	// again here is what makes the store's own guarantee true either way.
+	a.Path = ReadablePath(a.Path)
+	switch {
+	case turnSeq == 0:
+		return false, invalid("an artifact needs the turn that changed it")
+	case a.Path == "":
+		return false, invalid("an artifact needs a path")
+	}
+	// Kept as a path with no content rather than refused: which files a turn
+	// touched is the half of the fact worth keeping, and a diff this large was
+	// never going to be drawn in a browser anyway.
+	tooBig := len(a.Old) > MaxArtifactBytes || len(a.New) > MaxArtifactBytes
+	if tooBig {
+		a.Old, a.New = "", ""
+	}
+	err = s.write(ctx, "put artifact", func(tx *sql.Tx, _ *[]Frame) error {
+		if err := requireParticipant(ctx, tx, threadID, actor); err != nil {
+			return err
+		}
+		if err := requireTurnInThread(ctx, tx, turnSeq, actor, threadID); err != nil {
+			return err
+		}
+		// Only while the turn is open, on the same reasoning AddUsage and
+		// AppendEvent carry: a row that keeps growing after the work stopped is
+		// not a record of it - and because pruning ages artifacts by changed_at,
+		// a late write would also push the row's expiry out another month.
+		var open bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT ended_at IS NULL FROM turns WHERE turn_seq = ?`, turnSeq).Scan(&open); err != nil {
+			return err
+		}
+		if !open {
+			return nil
+		}
+		stored = true
+		var known bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM artifacts WHERE turn_seq = ? AND path = ?)`,
+			turnSeq, a.Path).Scan(&known); err != nil {
+			return err
+		}
+		if !known {
+			// The turn's own counter, not count(*) over the artifacts. That table
+			// is WITHOUT ROWID, so its primary key is the table and counting a
+			// turn's rows walks records carrying whole file bodies - a third of a
+			// second per call at the size cap, inside the transaction the entire
+			// fleet queues behind, on every file a turn writes.
+			var have int
+			if err := tx.QueryRowContext(ctx,
+				`SELECT files FROM turns WHERE turn_seq = ?`, turnSeq).Scan(&have); err != nil {
+				return err
+			}
+			// Dropped rather than refused: a bot cannot act on being told its two
+			// hundred and first file was not recorded, and failing the write would
+			// fail the edit that caused it. The count stops here too, so the
+			// figure on the summary line is the number of files the panel can
+			// actually list rather than the number of times one was written.
+			if have >= MaxTurnArtifacts {
+				stored = false
+				return nil
+			}
+		}
+		// Only new and changed_at move on a later edit. old is what the file held
+		// before the turn first touched it, and truncated is sticky: once a side
+		// has been dropped there is nothing left to diff the next edit against.
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO artifacts
+			   (turn_seq, thread_id, path, created, truncated, changed_at, old, new)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT (turn_seq, path) DO UPDATE SET
+			   truncated  = truncated | excluded.truncated,
+			   new        = CASE WHEN truncated | excluded.truncated = 1 THEN ''
+			                     ELSE excluded.new END,
+			   old        = CASE WHEN truncated | excluded.truncated = 1 THEN ''
+			                     ELSE old END,
+			   changed_at = excluded.changed_at`,
+			turnSeq, threadID, a.Path, boolInt(a.Created), boolInt(tooBig),
+			s.now().UnixMilli(), a.Old, a.New); err != nil {
+			return err
+		}
+		if known {
+			return nil
+		}
+		_, err := tx.ExecContext(ctx,
+			`UPDATE turns SET files = files + 1 WHERE turn_seq = ?`, turnSeq)
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return stored, nil
+}
+
+// Artifacts returns the files a turn changed. A zero turn means the newest turn
+// in the thread that changed anything, which is what the panel asks for.
+//
+// Content comes back only for a path asked for by name, exactly as the session
+// daemon's own artifact route behaves: the list is opened far more often than
+// any one diff is read.
+func (s *Store) Artifacts(ctx context.Context, actor, threadID string, turnSeq uint64,
+	path string) ([]Artifact, error) {
 	if err := s.requireParticipantR(ctx, threadID, actor); err != nil {
 		return nil, err
 	}
+	if turnSeq == 0 {
+		if err := s.r.QueryRowContext(ctx,
+			`SELECT coalesce(max(turn_seq), 0) FROM artifacts WHERE thread_id = ?`,
+			threadID).Scan(&turnSeq); err != nil {
+			return nil, fmt.Errorf("chat: read artifacts: %w", err)
+		}
+		if turnSeq == 0 {
+			return []Artifact{}, nil
+		}
+	}
+	body := "'', ''"
+	args := []any{threadID, turnSeq}
+	where := ""
+	if path != "" {
+		body = "old, new"
+		where = " AND path = ?"
+		args = append(args, path)
+	}
+	rows, err := s.r.QueryContext(ctx,
+		`SELECT turn_seq, path, created, truncated, changed_at, `+body+`
+		   FROM artifacts WHERE thread_id = ? AND turn_seq = ?`+where+`
+		  ORDER BY path`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chat: read artifacts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []Artifact{}
+	for rows.Next() {
+		var a Artifact
+		var changed int64
+		if err := rows.Scan(&a.Turn, &a.Path, &a.Created, &a.Truncated, &changed,
+			&a.Old, &a.New); err != nil {
+			return nil, err
+		}
+		a.Changed = time.UnixMilli(changed)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// Turns returns a page of a thread's turns, newest first, ending just below
+// before. A zero before starts at the newest.
+//
+// Paged like the messages it accompanies. Nothing prunes this table and every
+// inbound message is a run, so a thread that has been worked for a month has
+// thousands of rows, and the panel wants the handful covering what is on screen.
+func (s *Store) Turns(ctx context.Context, actor, threadID string, before uint64, limit int) (
+	turns []Turn, cursor uint64, more bool, err error) {
+	if err := s.requireParticipantR(ctx, threadID, actor); err != nil {
+		return nil, 0, false, err
+	}
+	limit = clampLimit(limit, 100, 500)
 	rows, err := s.r.QueryContext(ctx,
 		`SELECT turn_seq, thread_id, actor_id, started_at, ended_at,
-		        in_tokens, cached_tokens, out_tokens, calls, uncounted, model, error
-		   FROM turns WHERE thread_id = ? ORDER BY turn_seq`, threadID)
+		        in_tokens, cached_tokens, out_tokens, calls, uncounted, model, error,
+		        steps, tool_calls, files, plan
+		   FROM turns
+		  WHERE thread_id = ? AND turn_seq < ?
+		  ORDER BY turn_seq DESC
+		  LIMIT ?`, threadID, sqlSeq(before), limit+1)
 	if err != nil {
-		return nil, fmt.Errorf("chat: read turns: %w", err)
+		return nil, 0, false, fmt.Errorf("chat: read turns: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -292,26 +516,45 @@ func (s *Store) Turns(ctx context.Context, actor, threadID string) ([]Turn, erro
 		var t Turn
 		var started int64
 		var ended sql.NullInt64
+		var plan string
 		if err := rows.Scan(&t.Seq, &t.Thread, &t.Actor, &started, &ended,
 			&t.Usage.InputTokens, &t.Usage.CachedTokens, &t.Usage.OutputTokens,
-			&t.Usage.Calls, &t.Usage.Uncounted, &t.Model, &t.Error); err != nil {
-			return nil, err
+			&t.Usage.Calls, &t.Usage.Uncounted, &t.Model, &t.Error,
+			&t.Steps, &t.Tools, &t.Files, &plan); err != nil {
+			return nil, 0, false, err
 		}
 		t.Started = time.UnixMilli(started)
 		if ended.Valid {
 			t.Ended = time.UnixMilli(ended.Int64)
 		}
+		if plan != "" {
+			t.Plan = json.RawMessage(plan)
+		}
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, false, err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+		return out, out[len(out)-1].Seq, true, nil
+	}
+	return out, 0, false, nil
 }
 
 // Spend is what the work in a thread has cost, summed over its turns. Turns
 // counts only the ones that spent something: a run that failed before it
 // reached the provider is not work the account paid for.
 type Spend struct {
-	Usage  Usage    `json:"usage,omitzero"`
+	Usage Usage `json:"usage,omitzero"`
+	// Turns counts the runs that reached the provider. Runs counts every run in
+	// the thread. They are both here because they answer different questions and
+	// were being confused for each other: a turn killed before its first flush
+	// spent nothing, so a thread of 100 runs routinely reports 94 turns - which
+	// is the right number to put beside a cost and the wrong one to label
+	// "turns" over a list of who ran what.
 	Turns  int      `json:"turns"`
+	Runs   int      `json:"runs"`
 	Models []string `json:"models,omitempty"`
 }
 
@@ -329,10 +572,11 @@ func (s *Store) Spend(ctx context.Context, actor, threadID string) (Spend, error
 	if err := s.r.QueryRowContext(ctx,
 		`SELECT coalesce(sum(in_tokens), 0), coalesce(sum(cached_tokens), 0),
 		        coalesce(sum(out_tokens), 0), coalesce(sum(calls), 0),
-		        coalesce(sum(uncounted), 0), count(*)
-		   FROM turns WHERE thread_id = ? AND `+turnSpent, threadID).
+		        coalesce(sum(uncounted), 0),
+		        count(*) FILTER (WHERE `+turnSpent+`), count(*)
+		   FROM turns WHERE thread_id = ?`, threadID).
 		Scan(&sp.Usage.InputTokens, &sp.Usage.CachedTokens, &sp.Usage.OutputTokens,
-			&sp.Usage.Calls, &sp.Usage.Uncounted, &sp.Turns); err != nil {
+			&sp.Usage.Calls, &sp.Usage.Uncounted, &sp.Turns, &sp.Runs); err != nil {
 		return Spend{}, fmt.Errorf("chat: read spend: %w", err)
 	}
 	// Every model the thread ran on, not the last one, which would put all of
@@ -378,8 +622,16 @@ const turnSpent = `NOT (in_tokens = 0 AND cached_tokens = 0 AND out_tokens = 0
 //
 // It reports what it removed so the caller can log it: a store that silently
 // discards history reads as one that never had it.
-func (s *Store) Prune(ctx context.Context, before time.Time) (events, blobs int, err error) {
+func (s *Store) Prune(ctx context.Context, before time.Time) (events, blobs, artifacts int, err error) {
 	cutoff := before.UnixMilli()
+	// Artifacts age out on the same terms and for the same reason: they are the
+	// diff behind a step in a timeline that is about to stop existing, and the
+	// turns they hang off are never pruned, so nothing else would ever reclaim
+	// them. Files belonging to a running turn are left alone.
+	artifacts, err = s.pruneArtifacts(ctx, cutoff)
+	if err != nil {
+		return 0, 0, 0, err
+	}
 	for {
 		var batchEvents, batchBlobs int
 		err := s.write(ctx, "prune", func(tx *sql.Tx, _ *[]Frame) error {
@@ -398,7 +650,7 @@ func (s *Store) Prune(ctx context.Context, before time.Time) (events, blobs int,
 			return err
 		})
 		if err != nil {
-			return events, blobs, err
+			return events, blobs, artifacts, err
 		}
 		events += batchEvents
 		blobs += batchBlobs
@@ -406,15 +658,78 @@ func (s *Store) Prune(ctx context.Context, before time.Time) (events, blobs int,
 			break
 		}
 	}
-	if events > 0 {
-		// Deleting rows returns their pages to SQLite's free list, not to the
-		// filesystem. The schema asks for incremental auto-vacuum precisely so
-		// this is one cheap statement rather than a whole-file rewrite.
-		if _, err := s.w.ExecContext(ctx, `PRAGMA incremental_vacuum`); err != nil {
-			return events, blobs, fmt.Errorf("chat: reclaim pruned space: %w", err)
+	if events > 0 || artifacts > 0 {
+		if err := s.reclaim(ctx); err != nil {
+			return events, blobs, artifacts, err
 		}
 	}
-	return events, blobs, nil
+	return events, blobs, artifacts, nil
+}
+
+// vacuumPages is how much of the free list one reclaim statement returns to the
+// filesystem. At SQLite's 4KiB page that is 8MiB a step, so the writer the whole
+// fleet queues behind is released between steps as it is between the deletes.
+const vacuumPages = 2000
+
+// reclaim returns the pages a prune freed to the filesystem, in bounded steps.
+//
+// It does nothing at all on a database that is not in incremental auto-vacuum
+// mode, and that is the common case rather than the exotic one: the pragma in
+// 0001_init.sql is a no-op, because the driver applies the DSN's journal_mode
+// pragma first and that initialises the file - after which auto_vacuum can only
+// be changed by a full VACUUM. New stores get it from the DSN; every store made
+// before that does not, and there `incremental_vacuum` frees nothing.
+//
+// Which is why the loop stops on the free list failing to shrink rather than on
+// it reaching zero. Trusting the statement to make progress turned a harmless
+// no-op into a hot loop on the single writer, forever, on every prune.
+func (s *Store) reclaim(ctx context.Context) error {
+	prev := -1
+	for {
+		var left int
+		if err := s.w.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&left); err != nil {
+			return fmt.Errorf("chat: reclaim pruned space: %w", err)
+		}
+		if left == 0 || (prev >= 0 && left >= prev) {
+			return nil
+		}
+		prev = left
+		if _, err := s.w.ExecContext(ctx, `PRAGMA incremental_vacuum(`+
+			strconv.Itoa(vacuumPages)+`)`); err != nil {
+			return fmt.Errorf("chat: reclaim pruned space: %w", err)
+		}
+	}
+}
+
+// pruneArtifacts drops stored diffs older than the cutoff, in the same batches
+// and on the same terms as the events.
+func (s *Store) pruneArtifacts(ctx context.Context, cutoff int64) (int, error) {
+	total := 0
+	for {
+		var batch int
+		err := s.write(ctx, "prune artifacts", func(tx *sql.Tx, _ *[]Frame) error {
+			// By primary key, not rowid: the table is WITHOUT ROWID and has none.
+			res, err := tx.ExecContext(ctx,
+				`DELETE FROM artifacts WHERE (turn_seq, path) IN (
+				   SELECT a.turn_seq, a.path FROM artifacts a
+				    LEFT JOIN turns t ON t.turn_seq = a.turn_seq
+				    WHERE a.changed_at < ? AND (t.turn_seq IS NULL OR t.ended_at IS NOT NULL)
+				    LIMIT ?)`, cutoff, artifactBatch)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			batch = int(n)
+			return err
+		})
+		if err != nil {
+			return total, err
+		}
+		total += batch
+		if batch < artifactBatch {
+			return total, nil
+		}
+	}
 }
 
 // prunable is one batch of events old enough to drop and not belonging to a

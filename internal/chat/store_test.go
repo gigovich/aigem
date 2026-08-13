@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -329,7 +331,7 @@ func TestTurnAccumulatesUsageAcrossCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	turns, err := s.Turns(ctx, Operator, th.ID)
+	turns, _, _, err := s.Turns(ctx, Operator, th.ID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +357,7 @@ func TestTurnAccumulatesUsageAcrossCalls(t *testing.T) {
 		Usage{InputTokens: 9999, Calls: 1}, "someone/else"); err != nil {
 		t.Fatal(err)
 	}
-	after, err := s.Turns(ctx, Operator, th.ID)
+	after, _, _, err := s.Turns(ctx, Operator, th.ID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,6 +368,39 @@ func TestTurnAccumulatesUsageAcrossCalls(t *testing.T) {
 
 // A thread's total is summed in the store, because the caller that wants it
 // wants one line and nothing prunes the turns table.
+// Spend carries both counts because the panel needs both, and printing one
+// where the other belonged is how "94 turns" appeared over a list of 100.
+func TestSpendCountsSpendingTurnsAndAllRunsSeparately(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+
+	spent := mustTurn(t, s, th.ID, amiran)
+	if err := s.AddUsage(ctx, amiran, spent, Usage{InputTokens: 10, Calls: 1}, "grok"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndTurn(ctx, amiran, spent, ""); err != nil {
+		t.Fatal(err)
+	}
+	// A turn killed before its first usage flush, which is every turn that died
+	// inside its first sixteen model calls.
+	quiet := mustTurn(t, s, th.ID, amiran)
+	if err := s.EndTurn(ctx, amiran, quiet, "interrupted by a restart"); err != nil {
+		t.Fatal(err)
+	}
+
+	sp, err := s.Spend(ctx, Operator, th.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sp.Turns != 1 {
+		t.Fatalf("spending turns = %d, want the one that reached the provider", sp.Turns)
+	}
+	if sp.Runs != 2 {
+		t.Fatalf("runs = %d, want both", sp.Runs)
+	}
+}
+
 func TestThreadSpendSumsOnlyTheTurnsThatReachedTheProvider(t *testing.T) {
 	s := newStore(t)
 	ctx := t.Context()
@@ -698,7 +733,7 @@ func TestTimelinePagesForwards(t *testing.T) {
 		}
 	}
 
-	first, cursor, more, err := s.Timeline(ctx, Operator, th.ID, 0, 4)
+	first, cursor, more, err := s.Timeline(ctx, Operator, th.ID, 0, 0, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +743,7 @@ func TestTimelinePagesForwards(t *testing.T) {
 	}
 	// Forwards, so the cursor is where the next since starts - the newest
 	// delivered event, not the oldest.
-	rest, _, more2, err := s.Timeline(ctx, Operator, th.ID, cursor, 4)
+	rest, _, more2, err := s.Timeline(ctx, Operator, th.ID, cursor, 0, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -829,7 +864,7 @@ func TestTimelineReturnsEventsAfterSince(t *testing.T) {
 		seqs = append(seqs, seq)
 	}
 
-	frames, _, _, err := s.Timeline(ctx, Operator, th.ID, seqs[0], 100)
+	frames, _, _, err := s.Timeline(ctx, Operator, th.ID, seqs[0], 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,14 +917,14 @@ func TestPruneDropsOldEventsAndKeepsMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events, blobs, err := s.Prune(ctx, time.Now().Add(-24*time.Hour))
+	events, blobs, _, err := s.Prune(ctx, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if events != 1 || blobs != 1 {
 		t.Fatalf("pruned %d events and %d blobs, want 1 and 1", events, blobs)
 	}
-	frames, _, _, err := s.Timeline(ctx, Operator, th.ID, 0, 100)
+	frames, _, _, err := s.Timeline(ctx, Operator, th.ID, 0, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -925,7 +960,7 @@ func TestPruneLeavesARunningTurnsEventsAlone(t *testing.T) {
 	}
 	s.now = time.Now
 
-	events, _, err := s.Prune(ctx, time.Now().Add(-24*time.Hour))
+	events, _, _, err := s.Prune(ctx, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -937,7 +972,7 @@ func TestPruneLeavesARunningTurnsEventsAlone(t *testing.T) {
 	if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
 		t.Fatal(err)
 	}
-	events, _, err = s.Prune(ctx, time.Now().Add(-24*time.Hour))
+	events, _, _, err = s.Prune(ctx, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1137,4 +1172,580 @@ func TestTheDatabaseAndItsSidecarsArePrivate(t *testing.T) {
 			t.Errorf("%s is mode %04o, want 0600", name, mode)
 		}
 	}
+}
+
+// ---- stage 7: the trace, its counters and its diffs ----
+
+func TestArtifactsDefaultToTheNewestTurnThatChangedAnything(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+
+	first := mustTurn(t, s, th.ID, amiran)
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, first,
+		Artifact{Path: "internal/auth/flow.go", Old: "a\n", New: "b\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndTurn(ctx, amiran, first, ""); err != nil {
+		t.Fatal(err)
+	}
+	second := mustTurn(t, s, th.ID, amiran)
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, second,
+		Artifact{Path: "internal/auth/store.go", New: "c\n", Created: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Artifacts(ctx, Operator, th.ID, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "internal/auth/store.go" {
+		t.Fatalf("artifacts = %+v, want only the newest turn's", got)
+	}
+	// The list draws filenames; content is shipped only for a path asked for by
+	// name, so the panel does not pay for every diff it is not showing.
+	if got[0].New != "" {
+		t.Fatalf("the list carried %d bytes of content", len(got[0].New))
+	}
+	one, err := s.Artifacts(ctx, Operator, th.ID, first, "internal/auth/flow.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 1 || one[0].Old != "a\n" || one[0].New != "b\n" {
+		t.Fatalf("named artifact = %+v, want its content", one)
+	}
+}
+
+// Participation is the whole authorization boundary here as everywhere else: a
+// diff is the content of the operator's files, and a bot outside the thread
+// must not be able to read one by guessing a turn number.
+func TestAnOutsiderCannotReadOrWriteArtifacts(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+	turn := mustTurn(t, s, th.ID, amiran)
+
+	if _, err := s.Artifacts(ctx, jane, th.ID, turn, ""); !errors.Is(err, ErrNoSuchThread) {
+		t.Fatalf("an outsider read artifacts: %v", err)
+	}
+	if _, err := s.PutArtifact(ctx, jane, th.ID, turn,
+		Artifact{Path: "internal/auth/flow.go", New: "x"}); !errors.Is(err, ErrNoSuchThread) {
+		t.Fatalf("an outsider wrote an artifact: %v", err)
+	}
+	// And a participant cannot file one under another bot's run: turn numbers
+	// are small consecutive integers, so guessing one is not a barrier.
+	if err := s.AddParticipant(ctx, Operator, th.ID, demetre); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutArtifact(ctx, demetre, th.ID, turn,
+		Artifact{Path: "internal/auth/flow.go", New: "x"}); !errors.Is(err, ErrNoSuchTurn) {
+		t.Fatalf("a participant wrote into another bot's turn: %v", err)
+	}
+}
+
+// A path is an identity, not a label: it is half an artifact's primary key.
+// Shortening it the way a model name is shortened made two files that shared a
+// long prefix into one row holding the first file's "before" against the
+// second's "after", under a name that was neither.
+func TestALongPathIsCleanedButNotShortened(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+	turn := mustTurn(t, s, th.ID, amiran)
+
+	deep := "internal/" + strings.Repeat("nested/", 20)
+	for _, path := range []string{deep + "flow.go", deep + "store.go"} {
+		if _, err := s.PutArtifact(ctx, amiran, th.ID, turn,
+			Artifact{Path: path, Old: "before", New: "after"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Artifacts(ctx, Operator, th.ID, turn, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("two deep paths collapsed into %d row(s): %+v", len(got), got)
+	}
+
+	// And it is idempotent at its bound, because it runs once where the timeline
+	// event is built and again in the store: an order that trimmed before
+	// truncating left a trailing space on a path whose cut fell on one, and two
+	// spellings of a path are two rows.
+	long := strings.Repeat("a", MaxPathChars-1) + " b.go"
+	if once, twice := ReadablePath(long), ReadablePath(ReadablePath(long)); once != twice {
+		t.Fatalf("ReadablePath is not idempotent: %q then %q", once, twice)
+	}
+
+	// The cleaning still happens: a bidi override in a filename shows the
+	// operator a reversed extension.
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, turn,
+		Artifact{Path: "report\u202egnp.exe", New: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.Artifacts(ctx, Operator, th.ID, turn, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range all {
+		if strings.ContainsRune(a.Path, 0x202e) {
+			t.Fatalf("a bidi override survived into %q", a.Path)
+		}
+	}
+}
+
+// A file too large to keep says so. Serving it as an empty diff would render as
+// a file that had been emptied, which is a different and alarming fact.
+func TestAnOversizedDiffIsMarkedTruncatedAndStaysThatWay(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+	turn := mustTurn(t, s, th.ID, amiran)
+
+	huge := strings.Repeat("x", MaxArtifactBytes+1)
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, turn,
+		Artifact{Path: "internal/web/ui/dist/bundle.js", Old: "", New: huge}); err != nil {
+		t.Fatal(err)
+	}
+	// The next edit is small, but there is nothing left to diff it against: the
+	// original content was never kept, so showing it alone would draw the whole
+	// file as created.
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, turn,
+		Artifact{Path: "internal/web/ui/dist/bundle.js", Old: huge, New: "small\n"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Artifacts(ctx, Operator, th.ID, turn, "internal/web/ui/dist/bundle.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got[0].Truncated {
+		t.Fatalf("artifact = %+v, want it marked truncated", got)
+	}
+	if got[0].Old != "" || got[0].New != "" {
+		t.Fatalf("a truncated artifact carried content: %+v", got[0])
+	}
+	turns, _, _, err := s.Turns(ctx, Operator, th.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[0].Files != 1 {
+		t.Fatalf("turn files = %d, want the one file counted once", turns[0].Files)
+	}
+}
+
+func TestTurnsPageNewestFirst(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+
+	var seqs []uint64
+	for range 5 {
+		turn := mustTurn(t, s, th.ID, amiran)
+		if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
+			t.Fatal(err)
+		}
+		seqs = append(seqs, turn)
+	}
+
+	page, cursor, more, err := s.Turns(ctx, Operator, th.ID, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 2 || !more {
+		t.Fatalf("page = %d turns, more = %v; want 2 and more", len(page), more)
+	}
+	if page[0].Seq != seqs[4] || page[1].Seq != seqs[3] {
+		t.Fatalf("page = %d,%d; want the two newest", page[0].Seq, page[1].Seq)
+	}
+	rest, _, more2, err := s.Turns(ctx, Operator, th.ID, cursor, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 3 || more2 {
+		t.Fatalf("rest = %d turns, more = %v; want the remaining 3 and no more", len(rest), more2)
+	}
+}
+
+// Expanding one collapsed trace must not pull the thread's whole history: a
+// working thread is thousands of events, and the reader asked about one run.
+func TestTimelineNarrowsToOneTurn(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+
+	first := mustTurn(t, s, th.ID, amiran)
+	mustEvent(t, s, th.ID, amiran, first, "tool_start")
+	if err := s.EndTurn(ctx, amiran, first, ""); err != nil {
+		t.Fatal(err)
+	}
+	second := mustTurn(t, s, th.ID, amiran)
+	mustEvent(t, s, th.ID, amiran, second, "tool_start")
+	mustEvent(t, s, th.ID, amiran, second, "tool_end")
+
+	all, _, _, err := s.Timeline(ctx, Operator, th.ID, 0, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("the whole timeline has %d events, want 3", len(all))
+	}
+	one, _, _, err := s.Timeline(ctx, Operator, th.ID, 0, second, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 2 {
+		t.Fatalf("the second turn has %d events, want 2", len(one))
+	}
+}
+
+// The counters are what the summary line reads, so they are asserted against
+// the store rather than against the producer that fills them in.
+func TestATurnsCountersAndPlanAreKeptOnTheRow(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+	turn := mustTurn(t, s, th.ID, amiran)
+
+	for _, rec := range []EventRecord{
+		{Kind: "tool_start", Step: true, Tool: true},
+		{Kind: "tool_end", Step: true},
+		{Kind: "todo", Step: true, Plan: json.RawMessage(`[{"text":"patch","status":"pending"}]`)},
+		{Kind: "turn_start"},
+	} {
+		rec.Thread, rec.Actor, rec.TurnSeq = th.ID, amiran, turn
+		rec.Payload = []byte(`{"kind":"` + rec.Kind + `"}`)
+		if _, err := s.AppendEvent(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	turns, _, _, err := s.Turns(ctx, Operator, th.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[0].Steps != 3 || turns[0].Tools != 1 {
+		t.Fatalf("turn = %d steps / %d tools, want 3 and 1", turns[0].Steps, turns[0].Tools)
+	}
+	if string(turns[0].Plan) != `[{"text":"patch","status":"pending"}]` {
+		t.Fatalf("plan = %q", turns[0].Plan)
+	}
+}
+
+// Artifacts hang off turns, and nothing prunes turns. Without this they are the
+// one thing in the store that only ever grows - and they are the largest thing
+// in it, because each one is two copies of a file.
+func TestPruneDropsOldArtifacts(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+
+	s.now = func() time.Time { return time.Now().Add(-72 * time.Hour) }
+	old := mustTurn(t, s, th.ID, amiran)
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, old,
+		Artifact{Path: "internal/auth/flow.go", Old: "a\n", New: "b\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndTurn(ctx, amiran, old, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	s.now = time.Now
+	fresh := mustTurn(t, s, th.ID, amiran)
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, fresh,
+		Artifact{Path: "internal/auth/store.go", Old: "c\n", New: "d\n"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := s.Prune(ctx, time.Now().Add(-24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	gone, err := s.Artifacts(ctx, Operator, th.ID, old, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gone) != 0 {
+		t.Fatalf("the old turn still has %d artifacts", len(gone))
+	}
+	kept, err := s.Artifacts(ctx, Operator, th.ID, fresh, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 {
+		t.Fatalf("the fresh turn has %d artifacts, want the one just written", len(kept))
+	}
+}
+
+// The same reasoning as an event's turn check, and it has to be made in Say
+// too: without it any participant could file a message under another bot's run
+// and it would render inside that bot's trace.
+func TestSayRefusesATurnTheAuthorDoesNotOwn(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran, demetre)
+	other := mustThread(t, s, "docs", amiran)
+	turn := mustTurn(t, s, th.ID, amiran)
+
+	if _, err := s.Say(ctx, th.ID, Draft{Author: demetre, Body: "mine now", TurnSeq: turn}); !errors.Is(err, ErrNoSuchTurn) {
+		t.Fatalf("a bot filed a message under another's turn: %v", err)
+	}
+	if _, err := s.Say(ctx, other.ID, Draft{Author: amiran, Body: "wrong thread", TurnSeq: turn}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a message was filed under a turn in another thread: %v", err)
+	}
+}
+
+// The comment on the counters update says a late event from a goroutine that
+// outlived its run cannot inflate a closed turn. Nothing asserted it, and
+// deleting the guard left every suite green.
+func TestAClosedTurnTakesNoMoreStepsOrFiles(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+	turn := mustTurn(t, s, th.ID, amiran)
+	mustEvent(t, s, th.ID, amiran, turn, "tool_start")
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, turn,
+		Artifact{Path: "internal/auth/flow.go", New: "b\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both writes still land - the timeline is a record of what happened, and a
+	// late step did happen - but neither moves a number on a finished run.
+	mustEvent(t, s, th.ID, amiran, turn, "tool_start")
+	if _, err := s.PutArtifact(ctx, amiran, th.ID, turn,
+		Artifact{Path: "internal/auth/store.go", New: "c\n"}); err != nil {
+		t.Fatal(err)
+	}
+
+	turns, _, _, err := s.Turns(ctx, Operator, th.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[0].Steps != 1 {
+		t.Fatalf("a closed turn took another step: %d", turns[0].Steps)
+	}
+	if turns[0].Files != 1 {
+		t.Fatalf("a closed turn took another file: %d", turns[0].Files)
+	}
+	got, err := s.Artifacts(ctx, Operator, th.ID, turn, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("a closed turn recorded %d files, want the one from before it ended", len(got))
+	}
+}
+
+// Past the cap a path is dropped rather than refused, and the count stops with
+// it - so the figure on the summary line is what the panel can actually list.
+func TestATurnStopsRecordingFilesPastTheCap(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+	turn := mustTurn(t, s, th.ID, amiran)
+
+	for i := range MaxTurnArtifacts + 5 {
+		stored, err := s.PutArtifact(ctx, amiran, th.ID, turn,
+			Artifact{Path: fmt.Sprintf("generated/file%03d.go", i), New: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The caller writes a timeline step only for a file that was kept, so a
+		// dropped one must say so - otherwise the summary line counts past the
+		// number of rows the panel can list.
+		if want := i < MaxTurnArtifacts; stored != want {
+			t.Fatalf("file %d: stored = %v, want %v", i, stored, want)
+		}
+	}
+	// And the ones past it, written again: a dropped path is not known, so a
+	// naive count would tick up once per edit rather than once per file.
+	for i := MaxTurnArtifacts; i < MaxTurnArtifacts+5; i++ {
+		if _, err := s.PutArtifact(ctx, amiran, th.ID, turn,
+			Artifact{Path: fmt.Sprintf("generated/file%03d.go", i), New: "y"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.Artifacts(ctx, Operator, th.ID, turn, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != MaxTurnArtifacts {
+		t.Fatalf("recorded %d files, want the cap of %d", len(got), MaxTurnArtifacts)
+	}
+	turns, _, _, err := s.Turns(ctx, Operator, th.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[0].Files != MaxTurnArtifacts {
+		t.Fatalf("turn files = %d, want the cap; the badge and the list must agree",
+			turns[0].Files)
+	}
+}
+
+// Parallel subagent tool calls write from several goroutines at once. The store
+// has one writer, but the dedupe is a read followed by a write and the counter
+// is what a summary line reads.
+func TestConcurrentFileChangesCountEachPathOnce(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	th := mustThread(t, s, "retries", amiran)
+	turn := mustTurn(t, s, th.ID, amiran)
+
+	var wg sync.WaitGroup
+	for w := range 8 {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := range 10 {
+				_, _ = s.PutArtifact(ctx, amiran, th.ID, turn, Artifact{
+					Path: fmt.Sprintf("internal/auth/f%d.go", i),
+					New:  fmt.Sprintf("by %d\n", w),
+				})
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	turns, _, _, err := s.Turns(ctx, Operator, th.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[0].Files != 10 {
+		t.Fatalf("turn files = %d, want the 10 distinct paths", turns[0].Files)
+	}
+}
+
+// Reclaiming space after a prune must finish, and it must not depend on
+// `incremental_vacuum` doing anything.
+//
+// The pragma in 0001_init.sql was a no-op for the whole life of the store: the
+// driver applies the DSN's journal_mode first, that initialises the file, and
+// auto_vacuum cannot be changed afterwards. A reclaim loop written to stop when
+// the free list reached zero therefore spun forever on the single writer, on
+// every prune, for the life of the daemon.
+func TestPruneReclaimsSpaceAndTerminates(t *testing.T) {
+	s := newStore(t)
+	ctx := t.Context()
+	var mode int
+	if err := s.w.QueryRowContext(ctx, `PRAGMA auto_vacuum`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != 2 {
+		t.Fatalf("auto_vacuum = %d, want 2 (incremental); the DSN sets it before "+
+			"journal_mode initialises the file, and a migration cannot", mode)
+	}
+
+	if err := prunes(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := s.w.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Fatalf("free list still holds %d pages; nothing was returned to the filesystem", left)
+	}
+}
+
+// The case the loop actually had to survive, and the one every deployed store
+// is in: a file created before auto_vacuum was in the DSN. The pragma cannot be
+// set afterwards, so `incremental_vacuum` frees nothing and the free list never
+// reaches zero - which is why the loop stops on it failing to shrink instead.
+func TestPruneTerminatesOnAStoreWithoutAutoVacuum(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat.db")
+
+	// Built the way a store was before the fix: journal_mode initialises the
+	// file, and auto_vacuum is silently stuck at 0 from then on.
+	old, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.ExecContext(ctx, `CREATE TABLE seed (x)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	seedActors(t, s)
+
+	var mode int
+	if err := s.w.QueryRowContext(ctx, `PRAGMA auto_vacuum`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != 0 {
+		t.Skipf("this store came up with auto_vacuum %d; the case under test needs 0", mode)
+	}
+	if err := prunes(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// prunes fills a store with prunable history, prunes it, and fails if that does
+// not return - a loop waiting for a free list that cannot shrink spins on the
+// single writer forever, on every prune, for the life of the daemon.
+func prunes(ctx context.Context, s *Store) error {
+	th, err := s.NewThread(ctx, "retries", Operator, []string{amiran})
+	if err != nil {
+		return err
+	}
+	s.now = func() time.Time { return time.Now().Add(-72 * time.Hour) }
+	turn, err := s.BeginTurn(ctx, th.ID, amiran)
+	if err != nil {
+		return err
+	}
+	for range 200 {
+		if _, err := s.AppendEvent(ctx, EventRecord{
+			Thread: th.ID, Actor: amiran, TurnSeq: turn, Kind: "tool_end",
+			Payload: []byte(`{"kind":"tool_end"}`), Blob: make([]byte, 60<<10),
+		}); err != nil {
+			return err
+		}
+	}
+	if err := s.EndTurn(ctx, amiran, turn, ""); err != nil {
+		return err
+	}
+	s.now = time.Now
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, err := s.Prune(ctx, time.Now().Add(-24*time.Hour))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(20 * time.Second):
+		return errors.New("Prune did not return; the reclaim loop is spinning on the writer")
+	}
+}
+
+func mustTurn(t *testing.T, s *Store, threadID, actor string) uint64 {
+	t.Helper()
+	turn, err := s.BeginTurn(t.Context(), threadID, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return turn
+}
+
+func mustEvent(t *testing.T, s *Store, threadID, actor string, turn uint64, kind string) uint64 {
+	t.Helper()
+	seq, err := s.AppendEvent(t.Context(), EventRecord{
+		Thread: threadID, Actor: actor, TurnSeq: turn, Kind: kind,
+		Payload: []byte(`{"kind":"` + kind + `"}`), Step: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return seq
 }

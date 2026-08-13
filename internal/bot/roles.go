@@ -31,7 +31,7 @@ type Role struct {
 var full = []string{
 	"read_file", "write_file", "edit_file", "list_dir", "bash", "grep", "fuzzy_find",
 	"web_search", "open_url", "browser_action", "memory", "schedule", "post_message", "handoff",
-	"read_threads", "team_status", "save_skill", "delete_skill", "skill",
+	"read_threads", "team_status", "save_skill", "delete_skill", "skill", "todo_write",
 }
 
 var roles = []Role{

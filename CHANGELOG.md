@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An "@name" is a mention only at a word boundary. The pattern had no leading
+  boundary, so "mail me at someone@demetre" named demetre and woke them. The
+  composer's autocomplete decides whom to add to a thread and the daemon decides
+  whom a message names, so the two now parse by the same rule - a name only one
+  of them recognised was a bot that joined without being addressed, or was
+  addressed without joining.
+
+- Bots can search their own threads again. `read_chat` was renamed `read_threads`
+  when the fleet moved off Mattermost, but the capability profile every bot's
+  toolset is intersected with kept the old name - so the tool was filtered out of
+  every bot, silently, with nothing logged and no error to notice. A role list
+  and a profile that disagree now fail a test rather than a bot.
+
 - Saving the input-history file no longer happens on the render loop. It takes a
   cross-process lock and two fsyncs, so a second aigem open on the same directory
   could freeze this one for the lock timeout - no redraw, no keys - and then
@@ -45,7 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bare array that stopped at `--limit` was indistinguishable from the start of
   the conversation, so a script reading a long thread silently saw part of it
   and could not tell. The same envelope is on `GET /api/chat/threads/{id}/
-  messages` and `/timeline`. Scripts that consumed the array need `.items`.
+  messages`, `/timeline` and `/turns`. Scripts that consumed the array need
+  `.items`.
 
 - Input history records prompts only: slash commands are skipped, since `/new` is
   the last thing most sessions see and would be the first thing Up offered, and
@@ -103,9 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fleet` drives it from a terminal. In a browser the same daemon opens a Bots
   screen beside the existing session workspace - an inbox sorted by what needs
   the operator, the thread itself, and a composer - with the screen switch
-  appearing only on a daemon that serves both. What each bot did while answering
-  is recorded per turn and will be shown inline next; today it is in the store
-  and reachable over the API.
+  appearing only on a daemon that serves both. Under each bot's answer is a one
+  line summary of the run that produced it - `14 steps - 6 tools - 2 files` -
+  which expands into the whole timeline: every tool call, its result, and the
+  nested runs of any subagent it delegated to. Beside the thread are that run's
+  changed files with their diffs, the bot's working plan, and what the thread
+  has cost. This is the thing a chat product could never show, and the reason
+  for the move.
 
   Bot conversation history was never persisted, so there is nothing to migrate:
   a restart already cost the fleet its in-memory context, and switching backends

@@ -5,7 +5,7 @@ import { useSession } from "@/lib/session";
 import { Timeline } from "@/components/timeline";
 import { Login } from "@/components/login";
 import { Fatal } from "@/components/fatal";
-import { ChangedFiles, DiffView, type Artifact } from "@/components/files";
+import { ChangedFiles, DiffView, sessionArtifacts, type Artifact } from "@/components/files";
 import { Spend } from "@/components/usage";
 import { Header } from "@/components/header";
 import { Sidebar } from "@/components/sidebar";
@@ -284,7 +284,7 @@ export function Workspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
             // diff, instead of showing it under the new file's name.
             <DiffView
               key={diff.path}
-              sessionID={id}
+              artifactsURL={sessionArtifacts(id)}
               artifact={diff}
               version={state.fileEvents}
               onClose={() => setDiff(null)}
@@ -341,7 +341,7 @@ export function Workspace({ modeSwitch }: { modeSwitch?: ReactNode }) {
               // conversation's files on screen, and a slow response for it could
               // land after this one's and stick.
               key={id}
-              sessionID={id}
+              artifactsURL={sessionArtifacts(id)}
               version={state.fileEvents}
               openPath={diff?.path}
               onOpen={(a) => { setDiff(a); if (railLayout !== "docked") showRail(false); }}

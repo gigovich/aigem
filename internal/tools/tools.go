@@ -127,6 +127,28 @@ func NewRegistry(root string) (*Registry, error) {
 // Root returns the registry's sandbox root, an absolute, symlink-resolved path.
 func (r *Registry) Root() string { return r.root }
 
+// RelTo shortens a changed file's path against a root, so a reader sees
+// internal/auth/flow.go rather than the whole of where a checkout happens to
+// live. A path outside the root is left absolute rather than turned into a
+// trail of "..", which reads as an escape when it is really a file the caller
+// was granted by name.
+//
+// It lives here because this package owns both ends: Root, and the absolute
+// FileChange.Path that every caller shortens. It was written twice before that
+// was noticed.
+func RelTo(root, path string) string {
+	if root == "" {
+		return path
+	}
+	rel, err := filepath.Rel(root, path)
+	// The escape is the ".." component, not the prefix: a directory legitimately
+	// named "..cache" inside the root is not one.
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path
+	}
+	return filepath.ToSlash(rel)
+}
+
 // OnFileChange registers a hook fired after write_file or edit_file mutates a
 // file, letting the front-end track per-session artifacts. Subsets inherit it,
 // so subagent edits are reported too.

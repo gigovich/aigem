@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type { ThreadMessages } from "@/lib/chat";
 import { clock, displayName, type Message, type ThreadView as View } from "@/lib/chatprotocol";
 import { Markdown } from "@/components/md";
@@ -7,8 +7,20 @@ import { cn } from "@/lib/utils";
 
 /** One thing someone said. Author and time in a label line, body below - not
  *  bubbles and not opposing alignment: a thread here holds several bots as well
- *  as the operator, and two sides cannot say which of five wrote a line. */
-function Said({ message, operator }: { message: Message; operator: string }) {
+ *  as the operator, and two sides cannot say which of five wrote a line.
+ *
+ *  trace is the collapsed record of the run that produced it, drawn between the
+ *  label and the answer: the order a reader wants is who, then what it took,
+ *  then what it concluded. */
+function Said({
+  message,
+  operator,
+  trace,
+}: {
+  message: Message;
+  operator: string;
+  trace?: ReactNode;
+}) {
   const mine = message.author === operator;
   if (message.kind === "system") {
     // What the store did rather than what anyone said. It is in the transcript
@@ -32,6 +44,7 @@ function Said({ message, operator }: { message: Message; operator: string }) {
         )}
         <span className="ml-auto font-mono text-[12px] text-muted">{clock(message.created)}</span>
       </div>
+      {trace}
       <div className="mt-0.5 max-w-[68ch]">
         <Markdown text={message.body} />
       </div>
@@ -44,12 +57,18 @@ interface ThreadPaneProps {
   operator: string;
   held: ThreadMessages | undefined;
   onOlder: () => void;
+  /** The collapsed trace for the run that produced a message, or nothing for a
+   *  message said outside one. Passed in rather than built here so this pane
+   *  stays a renderer: what a turn did is the trace store's business. */
+  traceFor?: (message: Message) => ReactNode;
+  /** The trace of the run happening now, if one is. It has no message to hang
+   *  under yet - the answer is the last thing a run writes. */
+  live?: ReactNode;
 }
 
-/** The thread itself. Stage 6 draws what was said; the agent timeline that
- *  produced it is the next stage, and the summary line it collapses into hangs
- *  under each bot's message. */
-export function ThreadPane({ thread, operator, held, onOlder }: ThreadPaneProps) {
+/** The thread itself: what was said, and under each bot's name the run that
+ *  produced it. */
+export function ThreadPane({ thread, operator, held, onOlder, traceFor, live }: ThreadPaneProps) {
   const bottom = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -99,13 +118,23 @@ export function ThreadPane({ thread, operator, held, onOlder }: ThreadPaneProps)
       )}
       <ul className="divide-y divide-line-faint">
         {items?.map((m) => (
-          <Said key={m.seq} message={m} operator={operator} />
+          <Said key={m.seq} message={m} operator={operator} trace={traceFor?.(m)} />
         ))}
       </ul>
+      {/* The run in flight, below everything that has been said. A trace
+          otherwise hangs off the message its run produced, and that message is
+          written at the very end - so for the whole of a four-minute run the
+          transcript said "working" and nothing else, and the summary line
+          appeared at the same instant as the answer it summarises. Watching a
+          bot work is the reason this screen exists. */}
       {thread.working && (
-        <p className="flex items-center gap-2 px-4 py-2 text-[12px] text-muted">
-          <RunDot /> working
-        </p>
+        <div className="px-4 py-2">
+          {live ?? (
+            <p className="flex items-center gap-2 text-[12px] text-muted">
+              <RunDot /> working
+            </p>
+          )}
+        </div>
       )}
       <div ref={bottom} />
     </div>

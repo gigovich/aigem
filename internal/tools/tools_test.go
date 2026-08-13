@@ -458,3 +458,65 @@ func TestEditFileExactStillWorks(t *testing.T) {
 		t.Fatalf("file = %q", got)
 	}
 }
+
+// The file-change hook is what puts a bot's diffs in front of the operator, and
+// the wiring in cmd/aigem depends on two properties of it that nothing else
+// states. cmd/aigem has no tests, so they are pinned at the layer that owns
+// them.
+func TestOnFileChangeReachesSubsetsAndSubagents(t *testing.T) {
+	reg, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	reg.OnFileChange(func(c FileChange) { seen = append(seen, c.Path) })
+
+	// A subset takes the hook with it: the agent runs on the subset, and a
+	// delegated subagent runs on a subset of that.
+	sub := reg.Subset([]string{"write_file"})
+	sub.reportFileChange(FileChange{Path: "internal/auth/flow.go"})
+	sub.Subset([]string{"write_file"}).reportFileChange(FileChange{Path: "internal/auth/store.go"})
+
+	if len(seen) != 2 {
+		t.Fatalf("the hook fired %d times, want once per subset level: %v", len(seen), seen)
+	}
+}
+
+// Registration order is what botrun's comment turns on. A hook installed after
+// a subset was taken does not reach that subset, so the wiring registers first.
+func TestASubsetTakesTheHookItWasBuiltWith(t *testing.T) {
+	reg, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := reg.Subset([]string{"write_file"})
+	fired := false
+	reg.OnFileChange(func(FileChange) { fired = true })
+
+	sub.reportFileChange(FileChange{Path: "internal/auth/flow.go"})
+	if fired {
+		t.Fatal("a subset picked up a hook registered after it was taken; " +
+			"if this is now true, botrun's ordering comment is wrong")
+	}
+}
+
+func TestRelToShortensAgainstTheRootAndLeavesEscapesAlone(t *testing.T) {
+	root := "/home/dev/project"
+	for _, c := range []struct{ name, root, path, want string }{
+		{"inside", root, root + "/internal/auth/flow.go", "internal/auth/flow.go"},
+		{"the root itself", root, root, "."},
+		// A file outside the root stays absolute. A trail of ".." reads as an
+		// escape when it is really a path the caller was granted by name.
+		{"outside", root, "/etc/hosts", "/etc/hosts"},
+		{"a sibling", root, "/home/dev/other/main.go", "/home/dev/other/main.go"},
+		// The escape is the ".." component, not the prefix.
+		{"a directory whose name starts with dots", root, root + "/..cache/x.go", "..cache/x.go"},
+		{"no root", "", "/etc/hosts", "/etc/hosts"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := RelTo(c.root, c.path); got != c.want {
+				t.Fatalf("RelTo(%q, %q) = %q, want %q", c.root, c.path, got, c.want)
+			}
+		})
+	}
+}

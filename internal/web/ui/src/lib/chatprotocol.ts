@@ -1,4 +1,4 @@
-import type { Event } from "./protocol";
+import type { Event, Todo } from "./protocol";
 
 /** The wire format of internal/chat. Every type here mirrors a Go struct in
  *  that package; the field names are its JSON tags, not renamed on the way in,
@@ -47,7 +47,57 @@ export interface Message {
   await?: boolean;
   created: string;
   attachments?: string[];
+  /** The run this message came out of, or absent for one said outside any -
+   *  which is every message the operator writes. It is what hangs a collapsed
+   *  trace under the answer that run produced. */
+  turn?: number;
 }
+
+/** One bot's run inside a thread, and what it did. The counts are kept on the
+ *  row by the daemon rather than derived here: the collapsed summary is drawn
+ *  for every bot message on screen, and computing it would mean pulling a long
+ *  thread's whole timeline to render a hundred one-line summaries. */
+export interface Turn {
+  seq: number;
+  thread: string;
+  actor: string;
+  started: string;
+  ended?: string;
+  usage?: Usage;
+  model?: string;
+  error?: string;
+  steps?: number;
+  tools?: number;
+  files?: number;
+  /** The working plan as this turn left it. Absent on a turn that never wrote
+   *  one; the panel shows the newest turn that did. */
+  plan?: Todo[];
+}
+
+export interface Usage {
+  input_tokens?: number;
+  cached_tokens?: number;
+  output_tokens?: number;
+  calls?: number;
+  uncounted?: number;
+}
+
+/** What a thread's work has cost, summed over its runs. `turns` counts the runs
+ *  that reached the provider - the right denominator beside a cost - and `runs`
+ *  counts every one of them, which is the number to put beside a list of who
+ *  ran what. */
+export interface Spend {
+  usage?: Usage;
+  turns: number;
+  runs: number;
+  models?: string[];
+}
+
+/** A turn's changed files are typed as `Artifact` in `components/files.tsx`,
+ *  not here: one pair of components draws them for both daemons, and the type
+ *  that pair consumes is the union of the two shapes. A second mirror in this
+ *  file would be a wire type with no reader, which is how the last five got
+ *  written. */
 
 /** The streams a frame can belong to. `desync` and `truncated` call for
  *  opposite reactions and are deliberately distinct: a client that confused
@@ -63,6 +113,9 @@ export interface Frame {
   msg?: Message;
   thr?: ThreadView;
   event?: Event;
+  /** The run an event frame belongs to. Not inside the event: a uisession.Event
+   *  knows nothing about threads or runs. */
+  turn?: number;
   /** The resume point on a desync or a truncated backlog. */
   from?: number;
 }

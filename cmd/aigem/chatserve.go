@@ -130,7 +130,7 @@ func prune(ctx context.Context, store *chat.Store, log *slog.Logger) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			events, blobs, err := store.Prune(ctx, time.Now().Add(-pruneAfter))
+			events, blobs, diffs, err := store.Prune(ctx, time.Now().Add(-pruneAfter))
 			if err != nil {
 				log.Warn("pruning the timeline failed", "err", err)
 				continue
@@ -139,8 +139,12 @@ func prune(ctx context.Context, store *chat.Store, log *slog.Logger) {
 			if err != nil {
 				log.Warn("sweeping attachments failed", "err", err)
 			}
-			if events > 0 || removed > 0 {
-				log.Info("pruned", "events", events, "blobs", blobs, "files", removed)
+			// diffs is its own key, and named apart from "files": that one counts
+			// swept attachment uploads. A sweep that dropped a million stored
+			// diffs and no events used to log nothing at all.
+			if events > 0 || diffs > 0 || removed > 0 {
+				log.Info("pruned", "events", events, "blobs", blobs,
+					"diffs", diffs, "files", removed)
 			}
 		}
 	}

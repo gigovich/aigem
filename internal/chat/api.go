@@ -37,6 +37,7 @@ func (a *API) Mount(mux *http.ServeMux, guard func(http.HandlerFunc) http.Handle
 		"POST /api/chat/threads/{id}/messages":           a.postMessage,
 		"GET /api/chat/threads/{id}/timeline":            a.timeline,
 		"GET /api/chat/threads/{id}/turns":               a.turns,
+		"GET /api/chat/threads/{id}/artifacts":           a.artifacts,
 		"GET /api/chat/threads/{id}/spend":               a.spend,
 		"GET /api/chat/threads/{id}/blobs/{seq}":         a.blob,
 		"POST /api/chat/threads/{id}/participants":       a.addParticipant,
@@ -161,13 +162,25 @@ func (a *API) postMessage(w http.ResponseWriter, r *http.Request) {
 func (a *API) timeline(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	frames, cursor, more, err := a.store.Timeline(r.Context(), Operator, r.PathValue("id"),
-		uintParam(q.Get("since")), intParam(q.Get("limit")))
+		uintParam(q.Get("since")), uintParam(q.Get("turn")), intParam(q.Get("limit")))
 	writeResult(w, Page[Frame]{Items: frames, Cursor: cursor, More: more}, err)
 }
 
 func (a *API) turns(w http.ResponseWriter, r *http.Request) {
-	turns, err := a.store.Turns(r.Context(), Operator, r.PathValue("id"))
-	writeResult(w, turns, err)
+	q := r.URL.Query()
+	turns, cursor, more, err := a.store.Turns(r.Context(), Operator, r.PathValue("id"),
+		uintParam(q.Get("before")), intParam(q.Get("limit")))
+	writeResult(w, Page[Turn]{Items: turns, Cursor: cursor, More: more}, err)
+}
+
+// artifacts lists the files a turn changed, with the content before and after
+// when a path is named. A missing turn means the newest one that changed
+// anything, which is what the thread panel asks for.
+func (a *API) artifacts(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	out, err := a.store.Artifacts(r.Context(), Operator, r.PathValue("id"),
+		uintParam(q.Get("turn")), q.Get("path"))
+	writeResult(w, out, err)
 }
 
 // spend is the thread's total. It is its own route rather than a field on the

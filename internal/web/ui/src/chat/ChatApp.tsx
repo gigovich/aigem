@@ -1,19 +1,33 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { ArrowLeft, Bell, KeyRound, WifiOff } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowLeft, Bell, KeyRound, PanelRight, WifiOff } from "lucide-react";
 import { api } from "@/lib/protocol";
 import { countsOf, useChat } from "@/lib/chat";
-import { displayName, OPERATOR, type Actor, type ChatMeta, type ThreadView } from "@/lib/chatprotocol";
-import { RAIL_DOCKS, useMedia } from "@/lib/media";
+import {
+  OPERATOR,
+  type Actor,
+  type ChatMeta,
+  type Message,
+  type Spend as ThreadSpend,
+  type ThreadView,
+  type Turn,
+} from "@/lib/chatprotocol";
+import { PANEL_DOCKS, RAIL_DOCKS, useMedia } from "@/lib/media";
+import { useTraces } from "@/lib/trace";
 import { cn } from "@/lib/utils";
 import { useThread } from "@/lib/route";
 import { useNotifications, useTitleBadge } from "@/lib/notify";
 import { Fatal } from "@/components/fatal";
 import { Login } from "@/components/login";
 import { Spend } from "@/components/usage";
+import { SidePanel, type PanelLayout } from "@/components/panel";
+import { DiffView, threadArtifacts, type Artifact } from "@/components/files";
 import { Badge, Button, RunDot } from "@/components/ui";
 import { Inbox } from "./Inbox";
 import { ThreadPane } from "./ThreadView";
 import { Composer } from "./Composer";
+import { AgentTrace } from "./AgentTrace";
+import { Participants } from "./Participants";
+import { ThreadPanel } from "./ThreadPanel";
 
 /** The fallback limits, used only for the moment before the daemon answers.
  *  They are the daemon's own numbers, not guesses, and they never outlive the
@@ -32,18 +46,84 @@ const PROVISIONAL: ChatMeta = {
  *  that happens inside a turn. */
 const FLEET_POLL_MS = 30_000;
 
+/** How long file changes are gathered before the panel re-reads them. A bot
+ *  rewriting a tree emits one event per file, and each refetch is a list whose
+ *  rows carry file contents on both sides. */
+const FILE_COALESCE_MS = 1_000;
+
 export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
   const [notice, setNotice] = useState<string | null>(null);
-  // A refusal of one of this client's ops is the answer to something the
-  // operator just did, so it goes where they are looking rather than nowhere.
-  const { state, refresh, archived, open, older, say, markRead, create, alerted } =
-    useChat(setNotice);
-  const [meta, setMeta] = useState<ChatMeta | null>(null);
-  const [fleet, setFleet] = useState<Actor[]>([]);
   // The open thread lives in the URL, so the back button leaves a thread
   // instead of leaving the app, and a thread is a link that can be sent.
   const { thread: active, open: openThread, close: closeThread } = useThread();
+  // The agent timeline is held apart from the conversation, and only for the
+  // thread on screen. These are the highest-volume frames on the wire, and
+  // nothing the inbox draws comes from one.
+  const traces = useTraces(active, setNotice);
+  const { live: liveEvent, ended: traceEnded, resumed: traceResumed } = traces;
+  // Turn frames are what the summary lines and the panel are drawn from, and
+  // the row's counters only settle when a run ends - so the end of one is what
+  // re-reads them, along with what the thread has now spent.
+  const [turns, setTurns] = useState<Turn[]>([]);
+  // What to ask for the next page of runs, and whether there is one. Held so
+  // paging the transcript back can page the runs with it: a message draws a
+  // trace only if its run's row is on hand.
+  const [turnCursor, setTurnCursor] = useState(0);
+  const [spend, setSpend] = useState<ThreadSpend | null>(null);
+  const [panelLoaded, setPanelLoaded] = useState(false);
+  const [panelError, setPanelError] = useState<string | null>(null);
+  // Bumped when a watched thread writes a file. It is both the version an open
+  // diff refetches at and the key the run rows are re-read on, because a file
+  // landing moves both and nothing else moves either.
+  const [fileEvents, setFileEvents] = useState(0);
+  // The pending coalesce timer for file changes, if any.
+  const filesDue = useRef(0);
+  useEffect(
+    () => () => {
+      if (filesDue.current) window.clearTimeout(filesDue.current);
+    },
+    [],
+  );
+
+  const onEvent = useCallback(
+    (thread: string, turn: number, ev: { kind: string }) => {
+      if (thread !== active) return;
+      liveEvent(turn, ev as never);
+      // Nothing is done with turn_end here. Dropping the buffered events on it
+      // was a visible flicker: the row this trace would fall back to was last
+      // read at turn start, when its counters were zero, so the summary went
+      // "14 steps · 6 tools" -> "working" -> back again, once per answer. The
+      // events are dropped on the `working` transition instead, which is the
+      // same signal that re-reads the row.
+      // A file written moves both: the diff list, and the run rows the panel
+      // picks its run from - without the second, the panel stays pinned to the
+      // last finished run for the whole of the one being watched, refreshing
+      // its files pointlessly on every write of a run it is not showing.
+      //
+      // Coalesced, because a bot rewriting a tree emits one of these per file
+      // and each is a fetch of a list whose rows carry file contents. The panel
+      // catching up a second late is not a fact anyone is reading that closely.
+      if (ev.kind === "file_changed") {
+        if (filesDue.current) return;
+        filesDue.current = window.setTimeout(() => {
+          filesDue.current = 0;
+          setFileEvents((n) => n + 1);
+        }, FILE_COALESCE_MS);
+      }
+    },
+    [active, liveEvent],
+  );
+
+  // A refusal of one of this client's ops is the answer to something the
+  // operator just did, so it goes where they are looking rather than nowhere.
+  const {
+    state, refresh, archived, open, older, say, markRead, create, alerted,
+    turns: fetchTurns, spend: fetchSpend, addActor, removeActor,
+  } = useChat(setNotice, onEvent, traceResumed);
+  const [meta, setMeta] = useState<ChatMeta | null>(null);
+  const [fleet, setFleet] = useState<Actor[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [diff, setDiff] = useState<Artifact | null>(null);
   // Two kinds of failure, and only one of them is the end of the screen. The
   // page cannot start without its meta and its inbox; a thread that failed to
   // open is one request, and taking the whole workspace down for it loses the
@@ -52,8 +132,25 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
   const [fatal, setFatal] = useState<string | null>(null);
   const [login, setLogin] = useState(false);
   const railDocks = useMedia(RAIL_DOCKS);
+  const panelDocks = useMedia(PANEL_DOCKS);
+  // On a phone the panel rises from the bottom edge, where the thumb already
+  // is; at the middle width it is a drawer over the thread, and only a genuinely
+  // wide window gets the third standing column.
+  const panelLayout: PanelLayout = panelDocks ? "docked" : railDocks ? "drawer" : "sheet";
+  const [panel, setPanel] = useState(panelDocks);
+
+  // Adjusted during render rather than in an effect, which is how React wants
+  // state that follows a prop: an effect would paint the wrong layout first.
+  const [lastDocks, setLastDocks] = useState(panelDocks);
+  if (lastDocks !== panelDocks) {
+    // Crossing the breakpoint changes what the panel *is*, so it also decides
+    // whether one should be showing: a column by default, a drawer only on ask.
+    setLastDocks(panelDocks);
+    setPanel(panelDocks);
+  }
 
   const thread = active ? state.threads[active]?.view : undefined;
+  const working = thread?.working;
   const counts = countsOf(state);
   const limits = meta ?? PROVISIONAL;
 
@@ -118,6 +215,105 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
     open(active).catch((e: unknown) => setNotice(e instanceof Error ? e.message : String(e)));
   }, [active, open]);
 
+  // The runs in the thread, and what they cost. Re-read when one starts or ends
+  // rather than streamed: the counters on a turn row move on every step, and a
+  // frame per step is the traffic this screen keeps off the inbox in the first
+  // place. Nothing else moves them, so nothing else has to ask.
+  useEffect(() => {
+    if (!active) return;
+    let live = true;
+    void (async () => {
+      try {
+        const [t, s] = await Promise.all([fetchTurns(active), fetchSpend(active)]);
+        if (!live) return;
+        setTurns(t.items);
+        setTurnCursor(t.more ? (t.cursor ?? 0) : 0);
+        setSpend(s);
+        setPanelLoaded(true);
+        setPanelError(null);
+      } catch (e) {
+        // The panel is not the screen. A thread whose runs could not be read
+        // still shows its conversation, which is the part that matters - so the
+        // failure is reported inside the panel, next to what is missing, rather
+        // than in the bar above the whole application.
+        if (live) setPanelError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => {
+      live = false;
+    };
+    // `working` rather than the turn_start/turn_end events: it is derived from
+    // the turns table and republished by the same transactions that open and
+    // close a run, so a frame carrying it is proof the rows are in the state it
+    // describes. Keying on the events read a row the daemon had not written yet.
+  }, [active, fileEvents, working, fetchTurns, fetchSpend]);
+
+  // Everything about a thread is dropped when the reader leaves it. A diff
+  // carried across would refetch a path the next thread never touched and leave
+  // a blank overlay titled with someone else's file; turns and spend carried
+  // across would draw the last thread's cost under this one's name until the
+  // fetch above lands, which is the worst moment to be confidently wrong.
+  //
+  // Adjusted during render rather than in an effect, which is how React wants
+  // state that follows a prop: an effect would paint the stale panel first.
+  const [lastThread, setLastThread] = useState(active);
+  if (lastThread !== active) {
+    setLastThread(active);
+    setDiff(null);
+    setTurns([]);
+    setTurnCursor(0);
+    setSpend(null);
+    setPanelLoaded(false);
+    setPanelError(null);
+  }
+
+  // A run's events are held only while it is worth holding them: once the thread
+  // stops working, the rows have been re-read and carry the same counts, so the
+  // buffers go. Keyed on the same transition as the refetch above, and not on
+  // turn_end, which arrives before the row it would be replaced by.
+  useEffect(() => {
+    if (working) return;
+    for (const t of turns) {
+      if (t.ended) traceEnded(t.seq);
+    }
+  }, [working, turns, traceEnded]);
+
+  const turnOf = useMemo(() => new Map(turns.map((t) => [t.seq, t])), [turns]);
+  // The run in flight, if there is one. Its row is the newest with no end.
+  const running = useMemo(() => turns.find((t) => !t.ended), [turns]);
+  // Stable per thread, not per render. An inline arrow here is a new identity
+  // for every trace on screen on every frame, which is exactly what the memo on
+  // AgentTrace exists to avoid.
+  const blobURL = useCallback(
+    (seq: number) => `/api/chat/threads/${encodeURIComponent(active ?? "")}/blobs/${seq}`,
+    [active],
+  );
+  const trace = useCallback(
+    (turn: Turn) => (
+      <AgentTrace
+        turn={turn}
+        held={traces.turns[turn.seq]}
+        open={traces.open.includes(turn.seq)}
+        blobURL={blobURL}
+        onToggle={traces.toggle}
+        onMore={traces.more}
+      />
+    ),
+    [traces, blobURL],
+  );
+
+  const traceFor = useCallback(
+    (m: Message) => {
+      if (!active || !m.turn) return null;
+      const turn = turnOf.get(m.turn);
+      // A run whose row has not been fetched yet, or has been pruned out of the
+      // page, draws nothing. An empty disclosure would be worse than none.
+      if (!turn) return null;
+      return trace(turn);
+    },
+    [active, turnOf, trace],
+  );
+
   // Reading a thread is what marks it read, and the mark follows the newest
   // message rather than the scroll position: an operator who opened it has seen
   // the row, which is what the unread count is counting.
@@ -175,6 +371,9 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
         askNotify={permission === "default" ? ask : undefined}
         onBack={closeThread}
         onToggleProviders={() => setLogin((v) => !v)}
+        // Only where it does something: with no thread open the panel has
+        // nothing to describe, and a docked column needs no button to reveal it.
+        onTogglePanel={thread && !panelDocks ? () => setPanel((v) => !v) : undefined}
       />
 
       {notice && (
@@ -206,7 +405,12 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
             {inbox}
           </aside>
         ) : (
-          !showsThread && <div className="flex min-h-0 flex-1 flex-col bg-panel">{inbox}</div>
+          // Not while the providers block is open: below the rail breakpoint
+          // that block lives in `main`, and two siblings both claiming flex-1
+          // turn a 375px viewport into two unusable columns.
+          !showsThread && !login && (
+            <div className="flex min-h-0 flex-1 flex-col bg-panel">{inbox}</div>
+          )
         )}
 
         {/* On a phone with no thread open, this holds nothing - and a zone that
@@ -225,23 +429,56 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
             <>
               <div className="shrink-0 border-b border-line px-4 py-2">
                 <p className="truncate text-[15px] font-medium">{thread.title || "untitled"}</p>
-                <p className="truncate text-[12px] text-muted">
-                  {thread.participants.map((p) => displayName(p, limits.operator)).join(" · ")}
-                </p>
+                <Participants
+                  participants={thread.participants}
+                  fleet={fleet}
+                  operator={limits.operator}
+                  connected={state.connected}
+                  onAdd={(actor) => addActor(thread.id, actor)}
+                  onRemove={(actor) => removeActor(thread.id, actor)}
+                />
               </div>
-              <ThreadPane
-                key={thread.id}
-                thread={thread}
-                operator={limits.operator}
-                held={held}
-                onOlder={() => {
-                  if (held?.more) {
-                    older(thread.id, held.cursor).catch((e: unknown) =>
-                      setNotice(e instanceof Error ? e.message : String(e)),
-                    );
-                  }
-                }}
-              />
+              {/* The diff covers the transcript and nothing else: the composer
+                  below it stays usable, so a file can be read while a reply is
+                  being written. That is what this wrapper is positioned for. */}
+              <div className="relative flex min-h-0 flex-1 flex-col">
+                <ThreadPane
+                  key={thread.id}
+                  thread={thread}
+                  operator={limits.operator}
+                  held={held}
+                  traceFor={traceFor}
+                  live={running ? trace(running) : undefined}
+                  onOlder={() => {
+                    if (held?.more) {
+                      older(thread.id, held.cursor).catch((e: unknown) =>
+                        setNotice(e instanceof Error ? e.message : String(e)),
+                      );
+                    }
+                    // And the runs behind them, or every message the older page
+                    // brings in loses the trace under it.
+                    if (turnCursor > 0) {
+                      fetchTurns(thread.id, turnCursor)
+                        .then((page) => {
+                          setTurns((held2) => [...held2, ...page.items]);
+                          setTurnCursor(page.more ? (page.cursor ?? 0) : 0);
+                        })
+                        .catch(() => {});
+                    }
+                  }}
+                />
+                {diff && (
+                  // Keyed by path: a fresh mount is what clears the previous
+                  // file's diff, instead of showing it under the new file's name.
+                  <DiffView
+                    key={diff.path}
+                    artifactsURL={threadArtifacts(thread.id, diff.turn)}
+                    artifact={diff}
+                    version={fileEvents}
+                    onClose={() => setDiff(null)}
+                  />
+                )}
+              </div>
               {/* Keyed, like the pane above it. Without a key React reuses the
                   fiber across a thread switch, so a half-typed reply follows
                   the reader into the next thread - and Enter sends it there. */}
@@ -249,7 +486,10 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
                 key={thread.id}
                 maxBytes={limits.max_body_bytes}
                 connected={state.connected}
+                fleet={fleet}
+                participants={thread.participants}
                 onSend={(text) => say(thread.id, text)}
+                onAdd={(actor) => addActor(thread.id, actor)}
               />
             </>
           ) : (
@@ -266,6 +506,35 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
             )
           )}
         </main>
+
+        {/* Only for a thread. What the panel holds - the plan, the files a run
+            touched, what it cost - are all properties of one conversation, and
+            a standing column of three empty sections beside an empty stream is
+            two empty zones where one would do. */}
+        {thread && (
+          <SidePanel
+            side="right"
+            open={panel}
+            layout={panelLayout}
+            title="Thread"
+            onDismiss={() => setPanel(false)}
+          >
+            <ThreadPanel
+              thread={thread.id}
+              operator={limits.operator}
+              turns={turns}
+              spend={spend}
+              loaded={panelLoaded}
+              failed={panelError}
+              openPath={diff?.path}
+              version={fileEvents}
+              onOpenDiff={(a) => {
+                setDiff(a);
+                if (panelLayout !== "docked") setPanel(false);
+              }}
+            />
+          </SidePanel>
+        )}
       </div>
     </div>
   );
@@ -281,6 +550,7 @@ interface ChatHeaderProps {
   askNotify?: () => void;
   onBack: () => void;
   onToggleProviders: () => void;
+  onTogglePanel?: () => void;
 }
 
 function ChatHeader({
@@ -293,6 +563,7 @@ function ChatHeader({
   askNotify,
   onBack,
   onToggleProviders,
+  onTogglePanel,
 }: ChatHeaderProps) {
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-panel px-3">
@@ -329,6 +600,11 @@ function ChatHeader({
       {askNotify && (
         <Button variant="ghost" size="icon" onClick={askNotify} aria-label="Enable notifications">
           <Bell className="h-4 w-4" />
+        </Button>
+      )}
+      {onTogglePanel && (
+        <Button variant="ghost" size="icon" onClick={onTogglePanel} aria-label="Thread panel">
+          <PanelRight className="h-4 w-4" />
         </Button>
       )}
       <Button variant="ghost" size="icon" onClick={onToggleProviders} aria-label="Providers">
