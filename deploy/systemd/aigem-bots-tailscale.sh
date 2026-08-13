@@ -63,10 +63,10 @@ serve)
 	# Idempotent, so running it on every start costs nothing.
 	#
 	# It is deliberately not undone when the fleet stops. The front door is a
-	# property of the machine rather than of this run, tailscaled persists it
-	# across reboots by design, and the only removal this version of the CLI
-	# offers - `tailscale serve reset` - would take every other service on the
-	# node down with it. Remove it by hand if you ever want it gone.
+	# property of the machine rather than of this run, and tailscaled persists it
+	# across reboots by design - a fleet that is briefly down should answer 502
+	# at its usual URL, not stop having one. Remove it with
+	# `tailscale serve --https=443 off` if you ever want it gone.
 	exec tailscale serve --bg --https=443 --yes "http://$ADDR"
 	;;
 *)

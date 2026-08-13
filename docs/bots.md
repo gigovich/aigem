@@ -346,8 +346,9 @@ certificate for, and `tailscale serve` has nothing to present.
 
 The systemd unit does all of this; see [Running as a service](#running-as-a-service).
 Serve config lives in tailscaled and persists across reboots, so it is set once
-and not torn down when the fleet stops - `sudo tailscale serve reset` removes
-it, and takes every other service on the node with it.
+and not torn down when the fleet stops: a fleet that is briefly down answers 502
+at its usual URL rather than losing one. `tailscale serve --https=443 off`
+removes it.
 
 Two things worth knowing. The tailnet is the authentication that matters here,
 but the daemon's token is still checked underneath, so a device on your tailnet
