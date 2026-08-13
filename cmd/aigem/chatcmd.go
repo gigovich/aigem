@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -459,7 +460,26 @@ func nextJobOf(l *chat.LiveBot) string {
 	if l == nil || l.NextJob == "" || l.NextRun == nil {
 		return "-"
 	}
-	return l.NextJob + " " + l.NextRun.Local().Format("15:04")
+	return l.NextJob + " " + whenLabel(l.NextRun.Local(), time.Now())
+}
+
+// whenLabel renders a scheduled instant the same way the fleet screen does, and
+// must keep doing so: the two draw one roster, and the CLI printing a bare
+// "09:00" for a job that is a day overdue - or a week away - is the screen and
+// the terminal disagreeing about the same row.
+func whenLabel(at, now time.Time) string {
+	switch {
+	case !at.After(now):
+		// The scheduler fires it on its next free tick, so a time is the wrong
+		// thing to print: read hours later it looks like an appointment.
+		return "overdue"
+	case at.YearDay() == now.YearDay() && at.Year() == now.Year():
+		return at.Format("15:04")
+	case at.Sub(now) < 7*24*time.Hour:
+		return at.Format("Mon 15:04")
+	default:
+		return at.Format("2 Jan 15:04")
+	}
 }
 
 func modelOf(l *chat.LiveBot) string {

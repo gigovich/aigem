@@ -99,6 +99,27 @@ func TestOriginsAreCheckedWhole(t *testing.T) {
 	}
 }
 
+// A browser lowercases the host it puts in an Origin header. An allowlist entry
+// that kept the operator's capitals could never match one, which is a 403 that
+// reads as a broken server - the exact failure --origin exists to prevent.
+func TestAnOriginIsMatchedCaseInsensitively(t *testing.T) {
+	srv, err := New(Config{
+		Addr:    "127.0.0.1:0",
+		Origins: []string{"https://AIGEM.Example.TS.net"},
+		Mount:   func(*http.ServeMux, func(http.HandlerFunc) http.HandlerFunc) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	req := &http.Request{Host: "aigem.example.ts.net", Header: http.Header{}, URL: mustURL(t, "/")}
+	req.Header.Set("Origin", "https://aigem.example.ts.net")
+	if !srv.originOK(req) {
+		t.Errorf("a browser's lowercase Origin was refused against %v", srv.allowed.origins)
+	}
+}
+
 func TestBadOriginsAreRefusedAtStartup(t *testing.T) {
 	for _, origin := range []string{
 		"aigem.example.ts.net",            // no scheme

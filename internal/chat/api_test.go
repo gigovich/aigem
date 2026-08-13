@@ -739,3 +739,41 @@ func TestFleetReportsWhatOnlyTheDaemonKnows(t *testing.T) {
 		t.Errorf("jane reports live state nobody supplied: %+v", byID[jane].Live)
 	}
 }
+
+// The roster's headline claim: `working` is a turn with no end, read from the
+// same table the inbox reads, so the two screens cannot disagree. Deleting that
+// branch left every suite green while every running bot showed as idle beside an
+// inbox drawing a run dot for it.
+func TestFleetSaysABotMidTurnIsWorking(t *testing.T) {
+	s, srv := testAPI(t)
+	th, err := s.NewThread(t.Context(), "t", Operator, []string{amiran})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := s.BeginTurn(t.Context(), th.ID, amiran)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := func() map[string]FleetMember {
+		out := map[string]FleetMember{}
+		for _, m := range decode[[]FleetMember](t, do(t, srv, http.MethodGet, "/api/chat/fleet", nil)) {
+			out[m.ID] = m
+		}
+		return out
+	}
+	if got := byID()[amiran]; got.State != FleetWorking || !got.Working {
+		t.Fatalf("a bot mid-turn is state=%q working=%v, want %q", got.State, got.Working, FleetWorking)
+	}
+	// A bot with no turn open is not working, whatever anyone else is doing.
+	if got := byID()[demetre]; got.State == FleetWorking {
+		t.Errorf("demetre reads as working while amiran holds the only open turn")
+	}
+
+	if err := s.EndTurn(t.Context(), amiran, turn, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := byID()[amiran]; got.State == FleetWorking {
+		t.Errorf("still %q after the turn ended", got.State)
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -291,5 +292,46 @@ func TestAKilledFleetLeavesNobodyLookingPresent(t *testing.T) {
 	}
 	if got := roster[chat.BotActor("amiran")]; got.Present {
 		t.Errorf("amiran reads present before startBot has run: %+v", got)
+	}
+}
+
+// Why the teardown writes on a context the shutdown has already cancelled,
+// stripped of its cancellation. Without that, every bot stays marked present
+// after the fleet stops - and stays that way until something starts again,
+// which on a machine that was powered off is however long it was off.
+func TestPresenceIsClearedOnAContextTheShutdownAlreadyCancelled(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	writeBot(t, "amiran", "developer")
+
+	srv, err := startChatServer(t.Context(), chatServerOpts{
+		addr: "127.0.0.1:0", names: []string{"amiran"},
+	}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	actor := chat.BotActor("amiran")
+	quiet := slog.New(slog.DiscardHandler)
+	setPresent(t.Context(), srv.store, actor, true, quiet)
+
+	// The process is shutting down: the bot's own context is done.
+	stopping, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := srv.store.SetPresent(stopping, actor, false); err == nil {
+		t.Fatal("a write on a cancelled context succeeded; this test proves nothing")
+	}
+	if got := fleetRoster(t, srv)[actor]; !got.Present {
+		t.Fatal("the cancelled write cleared the flag anyway")
+	}
+
+	// What botrun actually does.
+	off, offCancel := context.WithTimeout(context.WithoutCancel(stopping), presenceWriteTimeout)
+	defer offCancel()
+	setPresent(off, srv.store, actor, false, quiet)
+
+	if got := fleetRoster(t, srv)[actor]; got.Present || got.State != chat.FleetStopped {
+		t.Errorf("after shutdown the bot reads present=%v state=%q", got.Present, got.State)
 	}
 }

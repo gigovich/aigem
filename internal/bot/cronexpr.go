@@ -106,12 +106,18 @@ func (s Schedule) matchesMinute(t time.Time) bool {
 	return s.min&(1<<uint(t.Minute())) != 0 && s.hour&(1<<uint(t.Hour())) != 0
 }
 
-// nextHorizonDays bounds how far Next looks ahead. It has to outlast the rarest
-// expression that legitimately fires, which is February 29: the gap between two
-// of them spans a non-leap century year - 2096 to 2104 - so it is eight years
-// and not four. Past that, the bound is what stops an expression that can never
-// fire at all ("0 0 30 2 *") from becoming an unbounded loop.
-const nextHorizonDays = 366 * 9
+// nextHorizonYears bounds how far Next looks ahead. It has to outlast the
+// rarest expression that legitimately fires, which is February 29: the gap
+// between two of them spans a non-leap century year - 2096 to 2104 - so it is
+// eight years and not four. Past that, the bound is what stops an expression
+// that can never fire at all ("0 0 30 2 *") from becoming an unbounded loop.
+//
+// It is a span of time and not a count of iterations. Counted in iterations it
+// was not the bound it claimed: a day whose local midnight does not exist costs
+// a minute per step rather than a day, so every spring-forward transition ate
+// sixty of them, and in a DST zone the reach fell under eight years - failing
+// exactly the case the number was chosen for.
+const nextHorizonYears = 9
 
 // Next returns the first minute strictly after t at which the schedule fires,
 // and reports whether it found one inside the horizon.
@@ -122,7 +128,8 @@ const nextHorizonDays = 366 * 9
 // the operator lives, and stepping through UTC would move it twice a year.
 func (s Schedule) Next(after time.Time) (time.Time, bool) {
 	t := after.Truncate(time.Minute).Add(time.Minute)
-	for day := 0; day <= nextHorizonDays; day++ {
+	limit := after.AddDate(nextHorizonYears, 0, 0)
+	for t.Before(limit) {
 		end := dayAfter(t)
 		if s.matchesDay(t) {
 			for ; t.Before(end); t = t.Add(time.Minute) {

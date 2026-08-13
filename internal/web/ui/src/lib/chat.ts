@@ -358,17 +358,13 @@ export function useChat(
         if (cancelled || sock.current !== ws) return;
         dispatch({ t: "connected", on: false });
         // A handshake the daemon refused arrives here as an ordinary close, so
-        // this is the only place a revoked cookie can be noticed. It drops the
-        // cookie synchronously - the retry below therefore carries the token
-        // again, and authenticates - and re-runs the exchange in the
-        // background to get a new one. Not awaited: a daemon that is still
-        // down would otherwise hold the reconnect open behind a fetch that is
-        // failing for the same reason.
+        // this is the only place a revoked cookie can be noticed. Re-running the
+        // exchange replaces it; see socketClosed for why that neither clears the
+        // cookie nor is awaited.
         //
         // Only for a socket that never opened. A connection that ran and then
         // ended was authenticated by definition, and the commonest way one ends
-        // is this client closing it on a desync - putting the token back into
-        // the next URL for that would undo what the cookie is for.
+        // is this client closing it on a desync.
         if (!opened) void socketClosed();
         // Back off, but never so far that a phone waking up sits disconnected.
         const wait = Math.min(5000, 250 * 2 ** attempt++);

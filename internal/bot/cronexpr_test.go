@@ -192,3 +192,54 @@ func TestScheduleNextClearsACenturyBoundary(t *testing.T) {
 		t.Errorf("Next(%s) = %s, want %s", from, got, want)
 	}
 }
+
+// The two horizon tests split the hard case down the middle: one used only UTC,
+// the other only sub-day expressions. Their intersection is where the bound
+// actually failed - the reach is spent walking the minutes of every missing
+// midnight between here and 2104.
+func TestScheduleNextClearsACenturyBoundaryInEveryZone(t *testing.T) {
+	s, err := ParseSchedule("0 0 29 2 *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, zone := range []string{"UTC", "Atlantic/Azores", "America/Santiago", "America/Havana"} {
+		loc, err := time.LoadLocation(zone)
+		if err != nil {
+			t.Skipf("no zone data for %s: %v", zone, err)
+		}
+		from := time.Date(2096, 3, 1, 0, 0, 0, 0, loc)
+		got, ok := s.Next(from)
+		if !ok {
+			t.Errorf("%s: 29 February reported as never firing across 2100", zone)
+			continue
+		}
+		if want := time.Date(2104, 2, 29, 0, 0, 0, 0, loc); !got.Equal(want) {
+			t.Errorf("%s: Next(%s) = %s, want %s", zone, from, got, want)
+		}
+	}
+}
+
+// And the bound still has to stop, or an expression that can never fire hangs a
+// roster poll instead of answering it.
+func TestScheduleNextGivesUpOnAnImpossibleExpression(t *testing.T) {
+	s, err := ParseSchedule("0 0 30 2 *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc, err := time.LoadLocation("Atlantic/Azores")
+	if err != nil {
+		t.Skip("no zone data")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, ok := s.Next(time.Date(2026, 3, 1, 0, 0, 0, 0, loc)); ok {
+			t.Error("30 February reported a run")
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Next did not give up")
+	}
+}

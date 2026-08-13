@@ -492,6 +492,31 @@ describe("ChatApp roster", () => {
     expect(screen.queryByText("operator")).not.toBeInTheDocument();
   });
 
+  // The roster is polled every 30s. Opening it is the one moment someone is
+  // reading it, so arriving must not show an answer half a minute old.
+  it("re-reads the roster on arrival rather than waiting for the poll", async () => {
+    const fetched: string[] = [];
+    stubDaemon();
+    const inner = globalThis.fetch as unknown as (i: RequestInfo | URL) => Promise<Response>;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((i: RequestInfo | URL) => {
+        fetched.push(String(i));
+        return inner(i);
+      }),
+    );
+    renderChat();
+    await screen.findByText("Refresh-token rotation drops sessions");
+    const before = fetched.filter((u) => u.includes("/api/chat/fleet")).length;
+
+    act(() => screen.getByRole("button", { name: /1 bot/ }).click());
+    await screen.findByRole("heading", { name: "Fleet" });
+
+    await waitFor(() =>
+      expect(fetched.filter((u) => u.includes("/api/chat/fleet")).length).toBeGreaterThan(before),
+    );
+  });
+
   it("comes back to the inbox", async () => {
     window.history.replaceState({}, "", "/chat/fleet");
     stubDaemon();

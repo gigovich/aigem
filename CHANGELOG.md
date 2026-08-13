@@ -157,7 +157,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   way; it is `Secure` wherever TLS is involved, and lives in the daemon's memory,
   so restarting the fleet signs every browser out. The bearer token stays for
   `aigem chat` and `aigem attach`. Ten failed authentications a minute from one
-  address now buy a 429, and sixteen is the ceiling on concurrent websockets.
+  address now buy a 429, and thirty-two is the ceiling on concurrent websockets -
+  an open tab holds two, so that is sixteen tabs across every device.
 
 - A bot thread now records what the work in it cost. A model call made while a
   bot is working in a thread is billed to that turn - including the calls its
