@@ -67,6 +67,8 @@ export interface SessionView {
   seq: number;
 }
 
+const TOKEN_KEY = "aigem-token";
+
 /** The token arrives in the URL, in the style of jupyter, and is kept for the
  *  tab so a reload does not need it pasted again. It is deliberately not in
  *  localStorage: it authorises an agent with a shell, and it should not outlive
@@ -75,12 +77,28 @@ export function token(): string {
   const url = new URL(window.location.href);
   const fromURL = url.searchParams.get("token");
   if (fromURL) {
-    sessionStorage.setItem("aigem-token", fromURL);
+    sessionStorage.setItem(TOKEN_KEY, fromURL);
     url.searchParams.delete("token");
     window.history.replaceState({}, "", url.toString());
     return fromURL;
   }
-  return sessionStorage.getItem("aigem-token") ?? "";
+  return sessionStorage.getItem(TOKEN_KEY) ?? "";
+}
+
+/** Ends this browser's session for good: the cookie is revoked by the daemon,
+ *  and the token that would buy another one goes with it.
+ *
+ *  Dropping the token is the whole of it. Without this the reload after a
+ *  sign-out re-ran the exchange against the token still sitting in
+ *  sessionStorage - which survives a reload - and the page came back fully
+ *  signed in, on the handed-over phone the control exists for. */
+export async function signOut(): Promise<void> {
+  try {
+    await api("/api/auth/session", { method: "DELETE" });
+  } finally {
+    sessionStorage.removeItem(TOKEN_KEY);
+    resetAuth();
+  }
 }
 
 /** The page trades the token for a cookie, once, before it renders anything.
@@ -98,15 +116,25 @@ export function token(): string {
  *  every caller sees before the exchange has finished. */
 let session: Promise<boolean> | null = null;
 let cookie = false;
+// Which exchange is current. An in-flight fetch cannot be cancelled, so a stale
+// one that resolves late would otherwise overwrite a newer one's answer - and a
+// failure resolving after a success left the page permanently on the bearer
+// token while holding a perfectly good cookie.
+let generation = 0;
 
 export function authenticate(): Promise<boolean> {
-  session ??= fetch("/api/auth/session", {
+  if (session) return session;
+  const mine = ++generation;
+  session = fetch("/api/auth/session", {
     method: "POST",
     headers: { Authorization: `Bearer ${token()}` },
   })
     .then((res) => res.ok)
     .catch(() => false)
-    .then((ok) => (cookie = ok));
+    .then((ok) => {
+      if (mine === generation) cookie = ok;
+      return ok;
+    });
   return session;
 }
 
@@ -121,6 +149,7 @@ export function hasCookie(): boolean {
 export function resetAuth() {
   session = null;
   cookie = false;
+  generation++;
 }
 
 /** Called when the daemon refuses a request this page believed was
@@ -133,6 +162,7 @@ export function resetAuth() {
 function reauthenticate() {
   cookie = false;
   session = null;
+  generation++;
 }
 
 /** The credential to send with a request. Empty once the page has a cookie -
@@ -167,15 +197,20 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** Called when a websocket closes. The handshake's status is not visible to a
- *  browser - a 401 arrives as an ordinary close - so a socket that will not
- *  stay open re-runs the exchange before its next attempt rather than
- *  reconnecting forever with a credential the daemon has forgotten.
+/** Called when a websocket closes without ever having opened. The handshake's
+ *  status is not visible to a browser - a 401 arrives as an ordinary close - so
+ *  this re-runs the exchange rather than reconnecting forever with a credential
+ *  the daemon has forgotten.
  *
- *  It is cheap and idempotent: with a live cookie the daemon answers the
- *  exchange from the same cookie and issues nothing new. */
+ *  It deliberately does NOT clear `cookie`. The exchange carries the bearer
+ *  token in a header, so it repairs a revoked cookie by itself; clearing the
+ *  flag first only meant the next handshake - 250ms later, before the exchange
+ *  had resolved - carried the token in its URL instead. Most closes are not
+ *  credential problems at all (a proxy blip, a phone waking, the daemon's own
+ *  503 when its socket cap is full), and every one of them was putting the
+ *  token into a log the cookie exists to keep it out of. */
 export function socketClosed(): Promise<boolean> {
-  reauthenticate();
+  session = null;
   return authenticate();
 }
 

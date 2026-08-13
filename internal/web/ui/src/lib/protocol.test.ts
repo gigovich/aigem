@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, authenticate, hasCookie, resetAuth, socketURL } from "./protocol";
+import {
+  api,
+  authenticate,
+  hasCookie,
+  resetAuth,
+  signOut,
+  socketClosed,
+  socketURL,
+} from "./protocol";
 
 beforeEach(() => {
   window.history.replaceState({}, "", "/?token=t0p53cr3t");
@@ -81,4 +89,87 @@ describe("the token-for-cookie exchange", () => {
     );
     expect(await authenticate()).toBe(false);
   });
+});
+
+describe("signing out", () => {
+  // The reload after a sign-out re-ran the exchange against the token still in
+  // sessionStorage - which survives a reload - so the page came back fully
+  // signed in. On the handed-over phone this control exists for, that is the
+  // whole failure.
+  it("drops the token that would buy another session", async () => {
+    const calls = daemon(new Response(null, { status: 204 }));
+    await authenticate();
+
+    await signOut();
+
+    expect(calls.some((c) => c.url.includes("/api/auth/session") && c.init?.method === "DELETE"))
+      .toBe(true);
+    expect(sessionStorage.getItem("aigem-token")).toBeNull();
+    expect(hasCookie()).toBe(false);
+    // And with the URL token gone too, nothing is left to authenticate with.
+    window.history.replaceState({}, "", "/");
+    expect(await authenticate()).toBe(true); // the stub answers anything
+    expect(authOf(calls[calls.length - 1].init)).toBe("Bearer ");
+  });
+
+  it("drops the token even when the daemon refuses the revocation", async () => {
+    daemon(new Response("nope", { status: 500 }));
+    await authenticate().catch(() => {});
+    await signOut().catch(() => {});
+    expect(sessionStorage.getItem("aigem-token")).toBeNull();
+  });
+});
+
+describe("a socket that never opened", () => {
+  // Most closes are not credential problems - a proxy blip, a phone waking, the
+  // daemon's own 503 when its socket cap is full - and clearing the cookie for
+  // them put the token into the URL of the next handshake, 250ms later, before
+  // the exchange had resolved.
+  it("keeps the cookie, so the retry carries no token in its URL", async () => {
+    daemon(new Response(null, { status: 204 }));
+    await authenticate();
+    expect(hasCookie()).toBe(true);
+
+    void socketClosed();
+
+    expect(hasCookie()).toBe(true);
+    expect(socketURL("/api/chat/socket", { since: "0" })).not.toContain("token");
+  });
+
+  it("re-runs the exchange, so a revoked cookie is replaced", async () => {
+    const calls = daemon(new Response(null, { status: 204 }));
+    await authenticate();
+    const before = calls.filter((c) => c.url.includes("/api/auth/session")).length;
+
+    await socketClosed();
+
+    expect(calls.filter((c) => c.url.includes("/api/auth/session")).length).toBe(before + 1);
+  });
+});
+
+// An in-flight fetch cannot be cancelled. A failure resolving after a success
+// left the page permanently on the bearer token while holding a good cookie.
+it("ignores an exchange that resolves after a newer one", async () => {
+  let fail!: (e: Error) => void;
+  let ok!: (r: Response) => void;
+  const pending = [
+    new Promise<Response>((_, rej) => (fail = rej)),
+    new Promise<Response>((res) => (ok = res)),
+  ];
+  let n = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => pending[n++] ?? Promise.resolve(new Response(null, { status: 204 }))),
+  );
+
+  const first = authenticate();
+  resetAuth();
+  const second = authenticate();
+
+  ok(new Response(null, { status: 204 }));
+  expect(await second).toBe(true);
+  fail(new Error("the daemon was down"));
+  await first;
+
+  expect(hasCookie()).toBe(true);
 });

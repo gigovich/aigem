@@ -112,6 +112,12 @@ const (
 	// exchanges cannot grow it without end. The one expiring soonest goes
 	// first, which is the one issued longest ago.
 	maxCookieSessions = 64
+	// renewWithin is how close to expiry a cookie has to be before the exchange
+	// replaces it rather than keeping it. It is what makes the month a sliding
+	// window rather than a deadline: a phone in daily use is never signed out,
+	// and a page load still does not mint a session every time - which is what
+	// walked the cap and signed the phone out from a laptop.
+	renewWithin = 7 * 24 * time.Hour
 )
 
 // issueCookie mints a browser session and returns its value.
@@ -161,6 +167,19 @@ func (s *Server) cookieOK(r *http.Request) bool {
 	return true
 }
 
+// cookieFresh reports whether the request carries a live cookie that is not yet
+// close enough to expiry to be worth replacing.
+func (s *Server) cookieFresh(r *http.Request) bool {
+	c, err := r.Cookie(cookieName)
+	if err != nil || c.Value == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exp, ok := s.cookies[c.Value]
+	return ok && time.Until(exp) > renewWithin
+}
+
 // secureFor decides whether the cookie is marked Secure.
 //
 // It is set whenever the request reached us over TLS, or under an origin the
@@ -191,14 +210,20 @@ func (s *Server) secureFor(r *http.Request) bool {
 // accepted the request, by either credential, so a page whose cookie is about
 // to expire renews it the same way it got one.
 //
-// A request that already carries a live cookie keeps it. The page runs this
-// exchange on every load, and minting a session each time would walk the table
-// cap - sixty-four reloads on a laptop would have signed the phone out.
+// A request that already carries a cookie with time left on it keeps it. The
+// page runs this exchange on every load, and minting a session each time would
+// walk the table cap - sixty-four reloads on a laptop would have signed the
+// phone out. Inside renewWithin it is replaced, so a browser in regular use
+// never reaches the expiry at all.
 func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
-	if s.cookieOK(r) {
+	if s.cookieFresh(r) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	// The one being replaced goes now rather than lingering for the rest of its
+	// window: a renewal that left both live would grow the table by one per
+	// renewal, which is the accumulation the reuse above exists to stop.
+	s.revokeCookie(r)
 	id, err := s.issueCookie()
 	if err != nil {
 		http.Error(w, "could not open a session", http.StatusInternalServerError)
@@ -216,14 +241,21 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// revokeCookie forgets the browser session this request carries, if any.
+func (s *Server) revokeCookie(r *http.Request) {
+	c, err := r.Cookie(cookieName)
+	if err != nil || c.Value == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.cookies, c.Value)
+	s.mu.Unlock()
+}
+
 // handleAuthLogout revokes the cookie this request carried, and tells the
 // browser to drop it.
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
-		s.mu.Lock()
-		delete(s.cookies, c.Value)
-		s.mu.Unlock()
-	}
+	s.revokeCookie(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    "",
@@ -286,8 +318,10 @@ func (s *Server) guard(w http.ResponseWriter, r *http.Request) bool {
 	// the fleet revokes every cookie, the open tab's socket then retried every
 	// 5s against a bucket refilling every 6s, and the tab never recovered.
 	//
-	// What the limiter is worth is refusing a *repeat failure* without doing
-	// any further work for it. That is all it does now.
+	// What the limiter is worth is refusing a repeat failure before the request
+	// reaches anything behind this. It no longer saves the credential check
+	// itself, which is the one thing this ordering gives up - a constant-time
+	// compare against a header that net/http has already read.
 	addr := clientAddr(r)
 	if s.cookieOK(r) || tokenOK(s.token, requestToken(r)) {
 		s.failures.clear(addr)

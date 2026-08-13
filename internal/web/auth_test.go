@@ -611,3 +611,51 @@ func TestTheSocketCapIsHeldByTheGuard(t *testing.T) {
 		t.Errorf("a plain request was refused with %d while the sockets were full", ok.StatusCode)
 	}
 }
+
+// The cookie is a sliding window, not a deadline. Reusing a live one stopped
+// the exchange walking the table cap, but it also meant a browser in daily use
+// was signed out on the thirtieth day with no renewal path - and if that tab
+// had ever been closed, the token went with it.
+func TestACookieCloseToExpiryIsRenewed(t *testing.T) {
+	srv := testServer(t)
+	c := exchange(t, srv)
+
+	// Fresh: the exchange keeps it and issues nothing.
+	if got := reexchange(t, srv, c); got != "" {
+		t.Errorf("a fresh cookie was replaced by %q", got)
+	}
+
+	// Inside the renewal window: it is replaced, and the old one stops working.
+	srv.mu.Lock()
+	srv.cookies[c.Value] = time.Now().Add(renewWithin / 2)
+	srv.mu.Unlock()
+	next := reexchange(t, srv, c)
+	if next == "" {
+		t.Fatal("a cookie close to expiry was not renewed")
+	}
+	if srv.cookieOK(withCookie(t, c)) {
+		t.Error("the replaced cookie is still a credential")
+	}
+	if !srv.cookieOK(withCookie(t, &http.Cookie{Name: cookieName, Value: next})) {
+		t.Error("the renewed cookie does not work")
+	}
+}
+
+// reexchange runs the exchange carrying c, and returns the value of any cookie
+// it was given back - empty when the daemon kept the one it had.
+func reexchange(t *testing.T, srv *Server, c *http.Cookie) string {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, "http://"+srv.Addr().String()+"/api/auth/session", nil)
+	req.AddCookie(c)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	for _, got := range res.Cookies() {
+		if got.Name == cookieName {
+			return got.Value
+		}
+	}
+	return ""
+}

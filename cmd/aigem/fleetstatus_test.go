@@ -250,3 +250,46 @@ func TestAnOriginMustNotBeEmpty(t *testing.T) {
 		t.Errorf("Set trimmed to %v (%v)", o, err)
 	}
 }
+
+// The roster reads `present` for a bot no daemon in this process runs, which is
+// only safe because a start clears every bot's flag first. A process that was
+// killed had no chance to clear its own, so without that reset the roster would
+// report a bot nothing is running as idle - the confident wrong answer the
+// state column exists to avoid.
+func TestAKilledFleetLeavesNobodyLookingPresent(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	writeBot(t, "amiran", "developer")
+	writeBot(t, "demetre", "tester")
+
+	// A previous run that came up and was then killed: both flags left set.
+	first, err := startChatServer(t.Context(), chatServerOpts{
+		addr: "127.0.0.1:0", names: []string{"amiran", "demetre"},
+	}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"amiran", "demetre"} {
+		setPresent(t.Context(), first.store, chat.BotActor(name), true, slog.New(slog.DiscardHandler))
+	}
+	first.Close()
+
+	// The next run brings up only amiran. demetre's stale flag must not survive.
+	second, err := startChatServer(t.Context(), chatServerOpts{
+		addr: "127.0.0.1:0", names: []string{"amiran"},
+		live: newLiveFleet([]string{"amiran"}),
+	}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	roster := fleetRoster(t, second)
+	if got := roster[chat.BotActor("demetre")]; got.Present || got.State != chat.FleetStopped {
+		t.Errorf("a bot left over from a killed run reads present=%v state=%q, want stopped",
+			got.Present, got.State)
+	}
+	if got := roster[chat.BotActor("amiran")]; got.Present {
+		t.Errorf("amiran reads present before startBot has run: %+v", got)
+	}
+}

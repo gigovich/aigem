@@ -150,8 +150,13 @@ func (s Schedule) Next(after time.Time) (time.Time, bool) {
 func dayAfter(t time.Time) time.Time {
 	y, m, d := t.Date()
 	next := time.Date(y, m, d+1, 0, 0, 0, 0, t.Location())
+	// By the minute, which is the resolution the walk itself works at. Stepping
+	// by the hour would clear the gap just as well but overshoot a zone whose
+	// offset moves by less than one - a handful of pre-1998 zones changed by 15
+	// or 30 minutes - and the minutes it skipped would then be walked under the
+	// previous day's date test.
 	for !next.After(t) {
-		next = next.Add(time.Hour)
+		next = next.Add(time.Minute)
 	}
 	return next
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { KeyRound, X } from "lucide-react";
-import { api } from "@/lib/protocol";
+import { api, signOut } from "@/lib/protocol";
 import { Badge, Button, RunDot } from "./ui";
 
 interface ModelView {
@@ -28,11 +28,10 @@ const INTERACTIVE = new Set(["openai", "xai"]);
 
 /** Ends this browser's session and sends it back for a new one.
  *
- *  The daemon has revoked the cookie by the time this returns, so the reload is
- *  what gets the page a fresh one - it still holds the URL token in
- *  sessionStorage, and the exchange runs before the first render. On a phone
- *  handed to someone else, closing the tab is not a sign-out: the cookie lasts
- *  a month.
+ *  signOut revokes the cookie AND drops the token that would buy another, so
+ *  the reload lands on a page that cannot authenticate - which is the point.
+ *  On a phone handed to someone else, closing the tab is not a sign-out: the
+ *  cookie lasts a month.
  *
  *  It sits under the providers rather than in the header. Signing out is rare,
  *  and a header button next to the ones used constantly is a mis-tap that
@@ -45,7 +44,7 @@ function SignOut() {
         size="sm"
         variant="outline"
         onClick={() => {
-          void api("/api/auth/session", { method: "DELETE" })
+          void signOut()
             .then(() => window.location.reload())
             .catch((e: unknown) => setFailed(e instanceof Error ? e.message : String(e)));
         }}
