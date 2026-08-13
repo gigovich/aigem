@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gigovich/aigem/internal/bot"
@@ -39,12 +41,24 @@ const pruneAfter = 30 * 24 * time.Hour
 // restarts at a fixed time would otherwise never reach it.
 const pruneEvery = 6 * time.Hour
 
+// chatServerOpts is what the fleet's daemon is started with.
+type chatServerOpts struct {
+	// addr is the listen address; empty means loopback on a port the OS picks.
+	addr string
+	// origins are the public URLs the daemon is reached at. Serving on anything
+	// but loopback without one is refused; see internal/web.
+	origins []string
+	// names are the bots of this run, whose identities are registered before
+	// any of them starts.
+	names []string
+	// live may be nil, for a daemon that serves the store without running any
+	// bots - the roster then reports only what the store can count.
+	live *liveFleet
+}
+
 // startChatServer opens the store, registers the fleet's identities, and serves
-// the API. addr is the listen address; an empty one means loopback on a port
-// the OS picks. live may be nil, for a daemon that serves the store without
-// running any bots - the roster then reports only what the store can count.
-func startChatServer(ctx context.Context, addr string, names []string, live *liveFleet,
-	log *slog.Logger) (*chatServer, error) {
+// the API.
+func startChatServer(ctx context.Context, o chatServerOpts, log *slog.Logger) (*chatServer, error) {
 	dir, err := config.StateDir()
 	if err != nil {
 		return nil, err
@@ -56,7 +70,7 @@ func startChatServer(ctx context.Context, addr string, names []string, live *liv
 	hub := chat.NewHub()
 	_ = store.AddPublisher("hub", hub.Publish)
 
-	if err := registerActors(ctx, store, names); err != nil {
+	if err := registerActors(ctx, store, o.names); err != nil {
 		_ = store.Close()
 		return nil, err
 	}
@@ -70,13 +84,14 @@ func startChatServer(ctx context.Context, addr string, names []string, live *liv
 	}
 
 	api := chat.NewAPI(store, hub)
-	if live != nil {
-		api.SetFleetStatus(live.status)
+	if o.live != nil {
+		api.SetFleetStatus(o.live.status)
 	}
 	srv, err := web.New(web.Config{
-		Addr:   addr,
-		Assets: webAssets(),
-		Mount:  api.Mount,
+		Addr:    o.addr,
+		Origins: o.origins,
+		Assets:  webAssets(),
+		Mount:   api.Mount,
 	})
 	if err != nil {
 		_ = store.Close()
@@ -183,12 +198,34 @@ func webAssets() http.Handler { return web.Assets() }
 // chatAddrFlag parses the fleet's serving address out of the command's
 // arguments, so `aigem bot start` can be pointed somewhere other than a random
 // loopback port without every other flag having to move to the flag package.
-func chatAddrFlag(args []string) (addr string, rest []string, err error) {
+func chatAddrFlag(args []string) (addr string, origins []string, rest []string, err error) {
 	fs := flag.NewFlagSet("bot start", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&addr, "addr", "", "address to serve the chat UI on (default: a loopback port)")
+	fs.Var((*originList)(&origins), "origin",
+		"public URL this daemon is reached at, e.g. https://aigem.example.ts.net "+
+			"(required for a non-loopback --addr; repeat for more than one)")
 	if err := fs.Parse(args); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return addr, fs.Args(), nil
+	return addr, origins, fs.Args(), nil
+}
+
+// originList collects a repeated --origin.
+//
+// Repeated rather than comma-separated: an origin is a URL, a URL may contain a
+// comma, and a flag that silently splits one in half would produce two entries
+// that match nothing - which is the failure this whole flag exists to prevent
+// being mysterious.
+type originList []string
+
+func (o *originList) String() string { return strings.Join(*o, ",") }
+
+func (o *originList) Set(v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return errors.New("an origin cannot be empty")
+	}
+	*o = append(*o, v)
+	return nil
 }

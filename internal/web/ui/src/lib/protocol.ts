@@ -83,12 +83,65 @@ export function token(): string {
   return sessionStorage.getItem("aigem-token") ?? "";
 }
 
+/** The page trades the token for a cookie, once, before it renders anything.
+ *
+ *  A token in the URL is fine on loopback and wrong everywhere else: behind a
+ *  reverse proxy it is in every access log on the way, and it is in the URL of
+ *  every websocket this page opens. The cookie the daemon gives back is
+ *  HttpOnly and SameSite=Strict, and the browser attaches it to a websocket
+ *  handshake by itself - which is the whole reason the token was ever in a
+ *  query string.
+ *
+ *  The exchange happens once per page and never rejects. A daemon that refuses
+ *  it is one this page must still be able to talk to, so the failure becomes
+ *  "no cookie" and the bearer token carries on being sent - which is also what
+ *  every caller sees before the exchange has finished. */
+let session: Promise<boolean> | null = null;
+let cookie = false;
+
+export function authenticate(): Promise<boolean> {
+  session ??= fetch("/api/auth/session", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token()}` },
+  })
+    .then((res) => res.ok)
+    .catch(() => false)
+    .then((ok) => (cookie = ok));
+  return session;
+}
+
+/** Whether this page has a cookie yet. Synchronous on purpose: it is read while
+ *  a websocket is being opened, and main.tsx settles the exchange before the
+ *  first render, so by then it is the answer rather than a default. */
+export function hasCookie(): boolean {
+  return cookie;
+}
+
+/** Forgets the exchange. For tests, which stand a fresh daemon up per case. */
+export function resetAuth() {
+  session = null;
+  cookie = false;
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${token()}` },
-  });
+  // The bearer header goes only while there is no cookie. Sending both would
+  // leave the cookie path unexercised by anything but the socket, which is how
+  // a credential that does not work ships.
+  const headers = hasCookie()
+    ? (init?.headers ?? {})
+    : { ...(init?.headers ?? {}), Authorization: `Bearer ${token()}` };
+  const res = await fetch(path, { ...init, headers });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** socketURL builds a websocket URL for a daemon path. The token goes in the
+ *  query string only without a cookie, which is the one case where the
+ *  handshake would otherwise carry no credential at all. */
+export function socketURL(path: string, params: Record<string, string>): string {
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  const q = new URLSearchParams(params);
+  if (!hasCookie()) q.set("token", token());
+  return `${proto}://${window.location.host}${path}?${q.toString()}`;
 }

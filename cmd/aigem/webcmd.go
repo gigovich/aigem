@@ -46,6 +46,7 @@ type webRun struct {
 	maxTokens   int
 	ctxSize     int
 	addr        string
+	origins     []string
 	cwd         string
 }
 
@@ -59,6 +60,7 @@ func runWeb(o webRun) {
 	}
 	srv, err := web.New(web.Config{
 		Addr:    o.addr,
+		Origins: o.origins,
 		Factory: o.factory(),
 		Assets:  web.Assets(),
 		Models:  o.modelReg,

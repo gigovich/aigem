@@ -5,8 +5,10 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"net/http"
-	"net/url"
+	"slices"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Loopback keeps the network out. It does not keep browsers out: any page in
@@ -33,10 +35,13 @@ func tokenOK(want, got string) bool {
 }
 
 // requestToken reads the token from the Authorization header, or from the query
-// string. Browsers cannot set headers on a websocket handshake, which is the
-// only reason the query form exists; on loopback that is acceptable, and it is
-// worth revisiting before the daemon listens anywhere else, since query strings
-// leak into logs and referrers.
+// string.
+//
+// The query form exists because a browser cannot set headers on a websocket
+// handshake. It is no longer how a browser authenticates one - the cookie is,
+// and a browser sends that on a handshake by itself - but it stays for the
+// first request a page makes, which is the exchange that gets it the cookie,
+// and for a client that cannot hold one.
 func requestToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); h != "" {
 		if after, ok := strings.CutPrefix(h, "Bearer "); ok {
@@ -51,35 +56,180 @@ func requestToken(r *http.Request) string {
 // matched exactly: a prefix or suffix test is how "127.0.0.1.example.com" gets
 // in. A request with no Origin is not from a browser page - curl, the attach
 // client, a test - and is allowed on the strength of the token alone.
+//
+// The Origin is matched whole, scheme included. Comparing only the host would
+// let a page served over plain HTTP from a name that also has an HTTPS
+// deployment pass as that deployment, which is the entire value of the scheme
+// being in the header.
+//
+// X-Forwarded-Proto and X-Forwarded-Host are deliberately not read. They are
+// written by whoever is talking to us, and deriving the allowlist from the
+// request it is meant to check is not a check.
 func (s *Server) originOK(r *http.Request) bool {
-	if !s.hostAllowed(r.Host) {
+	if !slices.Contains(s.allowed.hosts, r.Host) {
 		return false
 	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
 	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
+	// Normalised the same way the allowlist was, so a browser that spells the
+	// default port out is compared against the same string as one that omits it.
+	norm, err := normalizeOrigin(origin)
+	if err != nil {
 		return false
 	}
-	return s.hostAllowed(u.Host)
+	return slices.Contains(s.allowed.origins, norm)
 }
 
-func (s *Server) hostAllowed(host string) bool {
-	if host == "" {
+// ---- the browser's credential ----
+
+// A browser authenticates with a cookie, not with the token in its URL.
+//
+// ?token= is the jupyter pattern, and on loopback it is fine. Behind a reverse
+// proxy it is in the access log of every hop, in the Referer of anything the
+// page links to, and in the URL of every websocket the page opens. So the page
+// trades it once for an opaque cookie: HttpOnly, so a script that got onto the
+// page cannot read it back out; SameSite=Strict, so no other site can cause it
+// to be sent at all; and held in memory, so a restart of the daemon revokes
+// every one of them.
+//
+// SameSite=Strict and the exact Origin check are both needed and neither is
+// enough. Strict covers the cross-site GET that carries no Origin header at
+// all; the Origin check covers the browser whose SameSite support is not what
+// this daemon assumed.
+//
+// The bearer token stays for the CLI - `aigem chat`, `aigem attach`. Those are
+// not browsers and nothing forges a request from them.
+const (
+	cookieName = "aigem"
+	// cookieTTL is how long a browser stays signed in. A month, because the
+	// phone this exists for is the device that leaves the tab in the background
+	// for weeks; reissuing is one request with a token the page still holds.
+	cookieTTL = 30 * 24 * time.Hour
+	// maxCookieSessions bounds the table. One operator holds a handful - a
+	// laptop, a phone, a tablet - and the cap is only here so that repeated
+	// exchanges cannot grow it without end. The one expiring soonest goes
+	// first, which is the one issued longest ago.
+	maxCookieSessions = 64
+)
+
+// issueCookie mints a browser session and returns its value.
+func (s *Server) issueCookie() (string, error) {
+	id, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, exp := range s.cookies {
+		if now.After(exp) {
+			delete(s.cookies, k)
+		}
+	}
+	for len(s.cookies) >= maxCookieSessions {
+		var oldest string
+		var at time.Time
+		for k, exp := range s.cookies {
+			if oldest == "" || exp.Before(at) {
+				oldest, at = k, exp
+			}
+		}
+		delete(s.cookies, oldest)
+	}
+	s.cookies[id] = now.Add(cookieTTL)
+	return id, nil
+}
+
+// cookieOK reports whether the request carries a live browser session.
+func (s *Server) cookieOK(r *http.Request) bool {
+	c, err := r.Cookie(cookieName)
+	if err != nil || c.Value == "" {
 		return false
 	}
-	for _, a := range s.allowedHosts {
-		if host == a {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exp, ok := s.cookies[c.Value]
+	if !ok {
+		return false
+	}
+	if time.Now().After(exp) {
+		delete(s.cookies, c.Value)
+		return false
+	}
+	return true
+}
+
+// secureFor decides whether the cookie is marked Secure.
+//
+// It is set whenever the request reached us over TLS, or under an origin the
+// operator configured as https - which is how it is set behind a proxy that
+// terminates TLS, since the hop to us is plain HTTP. It is not set otherwise: a
+// Secure cookie on a plain-HTTP deployment is one the browser accepts and never
+// sends back, which is a sign-in that fails with nothing to see.
+//
+// The Origin here has already been matched against the allowlist by the caller,
+// so reading it is not trusting the request.
+func (s *Server) secureFor(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if o := r.Header.Get("Origin"); o != "" {
+		norm, err := normalizeOrigin(o)
+		return err == nil && strings.HasPrefix(norm, "https://")
+	}
+	for _, o := range s.allowed.public {
+		if after, ok := strings.CutPrefix(o, "https://"); ok && after == r.Host {
 			return true
 		}
 	}
 	return false
 }
 
-// Guard wraps a handler so it answers only for a request that passed both
-// checks, and so its response carries the daemon's security headers. It is what
+// handleAuthSession trades a valid token for a cookie. The guard has already
+// accepted the request, by either credential, so a page whose cookie is about
+// to expire renews it the same way it got one.
+func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
+	id, err := s.issueCookie()
+	if err != nil {
+		http.Error(w, "could not open a session", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    id,
+		Path:     "/",
+		MaxAge:   int(cookieTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   s.secureFor(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAuthLogout revokes the cookie this request carried, and tells the
+// browser to drop it.
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
+		s.mu.Lock()
+		delete(s.cookies, c.Value)
+		s.mu.Unlock()
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.secureFor(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Guard wraps a handler so it answers only for a request that passed every
+// check, and so its response carries the daemon's security headers. It is what
 // Config.Mount is handed: a package adding routes here must not be able to
 // answer under weaker rules than the ones this file sets.
 //
@@ -90,20 +240,41 @@ func (s *Server) Guard(h http.HandlerFunc) http.HandlerFunc {
 		if !s.guard(w, r) {
 			return
 		}
+		// Held for as long as the handler runs, which for a websocket is as long
+		// as the connection lives - both socket handlers block until their
+		// client goes away.
+		if isUpgrade(r) {
+			if !s.sockets.acquire() {
+				w.Header().Set("Retry-After", "5")
+				http.Error(w, "too many open connections", http.StatusServiceUnavailable)
+				return
+			}
+			defer s.sockets.release()
+		}
 		h(w, r)
 	}
 }
 
-// guard applies both checks to an ordinary request. It writes the response and
-// reports false when the request is refused.
+// guard applies every check to a request. It writes the response and reports
+// false when the request is refused.
 func (s *Server) guard(w http.ResponseWriter, r *http.Request) bool {
 	if !s.originOK(r) {
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return false
 	}
-	if !tokenOK(s.token, requestToken(r)) {
+	// Before the credential is looked at, so an address that has been guessing
+	// pays the wait rather than getting another guess.
+	addr := clientAddr(r)
+	if wait, blocked := s.failures.blocked(addr); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(wait.Seconds()+0.5))))
+		http.Error(w, "too many failed attempts", http.StatusTooManyRequests)
+		return false
+	}
+	if !s.cookieOK(r) && !tokenOK(s.token, requestToken(r)) {
+		s.failures.fail(addr)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
 	}
+	s.failures.clear(addr)
 	return true
 }

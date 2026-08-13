@@ -7,10 +7,14 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +40,13 @@ type Config struct {
 	// Addr is the listen address. It defaults to loopback; see auth.go for why
 	// anything else is a separate decision.
 	Addr string
+	// Origins are the public origins this daemon is reached at, scheme and all
+	// ("https://aigem.example.ts.net"). Behind a reverse proxy the bind address
+	// is not the name requests arrive under, and nothing in a request can be
+	// trusted to supply it - X-Forwarded-Host is written by whoever is talking
+	// to us. So the operator states it, and a non-loopback bind without one is
+	// refused rather than served behind a check nobody can pass.
+	Origins []string
 	// Token authenticates every request. One is generated when empty.
 	Token   string
 	Factory Factory
@@ -64,13 +75,13 @@ type Config struct {
 
 // Server is the daemon.
 type Server struct {
-	token        string
-	allowedHosts []string
-	factory      Factory
-	assets       http.Handler
-	maxSessions  int
-	mount        func(*http.ServeMux, func(http.HandlerFunc) http.HandlerFunc)
-	mux          *http.ServeMux
+	token       string
+	allowed     allowlist
+	factory     Factory
+	assets      http.Handler
+	maxSessions int
+	mount       func(*http.ServeMux, func(http.HandlerFunc) http.HandlerFunc)
+	mux         *http.ServeMux
 
 	ln   net.Listener
 	http *http.Server
@@ -78,12 +89,18 @@ type Server struct {
 	models  *llm.Registry
 	backend *llm.Ref
 
+	failures *limiter
+	sockets  sockets
+
 	mu       sync.Mutex
 	sessions map[string]*entry
-	seq      int
-	flows    map[string]*loginFlow
-	flowSeq  int
-	closed   bool
+	// cookies are the live browser sessions and when each expires. In memory
+	// on purpose: a restart revokes every one, and reissuing is one request.
+	cookies map[string]time.Time
+	seq     int
+	flows   map[string]*loginFlow
+	flowSeq int
+	closed  bool
 }
 
 type entry struct {
@@ -114,8 +131,17 @@ func New(cfg Config) (*Server, error) {
 		}
 		token = t
 	}
+	// Before the listener, so a refusal to serve does not leave a port bound.
+	if err := checkBind(addr, cfg.Origins); err != nil {
+		return nil, err
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		return nil, err
+	}
+	allowed, err := hostsFor(ln.Addr(), cfg.Origins)
+	if err != nil {
+		_ = ln.Close()
 		return nil, err
 	}
 	s := &Server{
@@ -128,31 +154,146 @@ func New(cfg Config) (*Server, error) {
 		ln:          ln,
 		sessions:    map[string]*entry{},
 		flows:       map[string]*loginFlow{},
+		cookies:     map[string]time.Time{},
+		failures:    newLimiter(),
 		models:      cfg.Models,
 		backend:     cfg.Backend,
 	}
-	s.allowedHosts = hostsFor(ln.Addr())
+	s.allowed = allowed
 	s.routes()
 	s.http = &http.Server{Handler: s.mux, ReadHeaderTimeout: 10 * time.Second}
 	return s, nil
 }
 
-// hostsFor lists the Host values this daemon answers to: the address it is
-// bound to, and the loopback names that resolve to it. Anything else is a
-// request that reached us under a name we did not claim, which is what a DNS
-// rebinding attack looks like.
-func hostsFor(addr net.Addr) []string {
-	host, port, err := net.SplitHostPort(addr.String())
-	if err != nil {
+// allowlist is what this daemon answers to. The two lists are checked against
+// two different headers and are not interchangeable: Host says which name the
+// request arrived under, and Origin says which page sent it. A rebinding attack
+// supplies an attacker's name in both, so both are matched exactly.
+type allowlist struct {
+	// hosts are accepted Host values, "host:port" as Go writes them.
+	hosts []string
+	// origins are accepted Origin values, scheme and all. A default port is
+	// absent, because that is how a browser writes one.
+	origins []string
+	// public are the configured origins alone, in the order given, without the
+	// loopback entries. The first is the address worth printing.
+	public []string
+}
+
+// checkBind refuses to serve on an address the network can reach without being
+// told the name it will be reached under.
+//
+// Serving anyway is worse than not serving: every allowlist the daemon could
+// derive on its own names the bind address, a request from a phone arrives with
+// the proxy's name, and the 403 that follows reads as a broken server rather
+// than as a missing flag.
+func checkBind(addr string, origins []string) error {
+	if len(origins) > 0 {
 		return nil
 	}
-	out := []string{net.JoinHostPort(host, port)}
-	if host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" || host == "::" {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("web: listen address %q: %w", addr, err)
+	}
+	if isLoopbackHost(host) {
+		return nil
+	}
+	return fmt.Errorf("web: refusing to serve on %s without --origin: "+
+		"an address the network can reach needs the public URL it is reached at "+
+		"(for example --origin https://aigem.example.ts.net), because that is the "+
+		"only thing an origin check can be made of", addr)
+}
+
+// isLoopbackHost reports whether a bind host keeps the daemon off the network.
+// The wildcard addresses are deliberately not loopback: binding one is how the
+// daemon becomes reachable from the LAN in the first place.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// hostsFor builds the allowlist. Configured origins REPLACE the derived list
+// rather than extending it: behind a proxy the bind address is not the name we
+// are reached under, and leaving it allowed only widens what a rebinding attack
+// may claim to be.
+//
+// The loopback names survive that replacement, and so do their origins. The
+// hosts are what lets curl and `aigem chat` keep working against a proxied
+// daemon; the origins are what lets the operator open the same daemon in a
+// browser on the machine itself. Neither weakens anything - a page on an
+// attacker's host can send its own Origin, and it will never be one of these.
+func hostsFor(addr net.Addr, origins []string) (allowlist, error) {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return allowlist{}, fmt.Errorf("web: bound address %q: %w", addr, err)
+	}
+	var out allowlist
+	for _, o := range origins {
+		norm, err := normalizeOrigin(o)
+		if err != nil {
+			return allowlist{}, err
+		}
+		out.origins = append(out.origins, norm)
+		out.public = append(out.public, norm)
+		u, _ := url.Parse(norm)
+		out.hosts = append(out.hosts, u.Host)
+	}
+
+	local := []string{net.JoinHostPort(host, port)}
+	if isLoopbackHost(host) || host == "0.0.0.0" || host == "::" {
 		for _, h := range []string{"127.0.0.1", "[::1]", "localhost"} {
-			out = append(out, h+":"+port)
+			local = append(local, h+":"+port)
 		}
 	}
-	return out
+	for _, h := range local {
+		if !slices.Contains(out.hosts, h) {
+			out.hosts = append(out.hosts, h)
+		}
+		// Only http: nothing terminates TLS on the loopback interface here, and
+		// an https origin for it would be one this daemon can never serve.
+		if o := "http://" + h; !slices.Contains(out.origins, o) {
+			out.origins = append(out.origins, o)
+		}
+	}
+	return out, nil
+}
+
+// normalizeOrigin turns what the operator typed into the exact string a browser
+// puts in the Origin header, and refuses anything that is not one.
+//
+// A URL with a path is the common mistake, and accepting it would mean an
+// operator who pasted the address bar gets an allowlist entry that never
+// matches - the failure this whole change exists to stop being mysterious.
+func normalizeOrigin(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("web: origin %q: %w", raw, err)
+	}
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
+		return "", fmt.Errorf("web: origin %q needs an http:// or https:// scheme", raw)
+	case u.Host == "":
+		return "", fmt.Errorf("web: origin %q names no host", raw)
+	case u.User != nil:
+		return "", fmt.Errorf("web: origin %q must not carry credentials", raw)
+	case u.Path != "" && u.Path != "/", u.RawQuery != "", u.Fragment != "":
+		return "", fmt.Errorf("web: origin %q must be a scheme and a host and nothing else "+
+			"(for example https://aigem.example.ts.net)", raw)
+	}
+	// A browser omits the default port, so an allowlist that kept it would never
+	// match the header it is compared against.
+	host := u.Host
+	if p := u.Port(); (u.Scheme == "http" && p == "80") || (u.Scheme == "https" && p == "443") {
+		host = u.Hostname()
+		if strings.Contains(host, ":") {
+			host = "[" + host + "]"
+		}
+	}
+	return u.Scheme + "://" + host, nil
 }
 
 // Addr is the bound address.
@@ -163,8 +304,16 @@ func (s *Server) Token() string { return s.token }
 
 // URL is what a person opens: the address with the token already in it, in the
 // style of jupyter, so there is no separate step of pasting a secret.
+//
+// A configured origin wins over the bind address. Behind a proxy the daemon is
+// bound to a loopback port nobody outside the machine can reach, and printing
+// that is printing a link that does not work.
 func (s *Server) URL() string {
-	return "http://" + s.ln.Addr().String() + "/?token=" + s.token
+	base := "http://" + s.ln.Addr().String()
+	if len(s.allowed.public) > 0 {
+		base = s.allowed.public[0]
+	}
+	return base + "/?token=" + s.token
 }
 
 // Serve runs until Close.
@@ -192,6 +341,9 @@ func (s *Server) Close() error {
 	s.sessions = map[string]*entry{}
 	flows := s.flows
 	s.flows = map[string]*loginFlow{}
+	// Every browser session goes with the process that issued it. They are in
+	// memory precisely so that a restart is a revocation.
+	s.cookies = map[string]time.Time{}
 	s.mu.Unlock()
 
 	for _, f := range flows {
@@ -212,6 +364,11 @@ func (s *Server) routes() {
 	// Through Guard rather than the bare check, so a refusal carries the
 	// security headers too - which is the whole reason Guard sets them first.
 	s.mux.HandleFunc("GET /api/modes", s.Guard(s.handleModes))
+	// The exchange is guarded like everything else, so it accepts either
+	// credential: a page with a cookie about to lapse renews it the same way it
+	// got one, and a page with only the URL token gets its first.
+	s.mux.HandleFunc("POST /api/auth/session", s.Guard(s.handleAuthSession))
+	s.mux.HandleFunc("DELETE /api/auth/session", s.Guard(s.handleAuthLogout))
 	// Without a factory there are no conversations to list, create or attach to,
 	// and handleCreate would have nothing to call. Leaving the routes off is
 	// what makes a mount-only daemon answer 404 there instead of panicking.
@@ -221,7 +378,7 @@ func (s *Server) routes() {
 		s.mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDelete)
 		s.mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
 		s.mux.HandleFunc("GET /api/sessions/{id}/blobs/{seq}", s.handleBlob)
-		s.mux.HandleFunc("GET /api/sessions/{id}/socket", s.handleSocket)
+		s.mux.HandleFunc("GET /api/sessions/{id}/socket", s.Guard(s.handleSocket))
 		s.artifactRoutes()
 	}
 	s.loginRoutes()

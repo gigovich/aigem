@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { Approval, Client, Decision, Event, Todo } from "./protocol";
-import { token } from "./protocol";
+import { socketURL } from "./protocol";
 
 /** A rendered entry. The event stream is a log; this is what a reader sees. */
 export type Item =
@@ -245,9 +245,10 @@ export function useSession(id: string | null) {
 
     const connect = () => {
       if (cancelled) return;
-      const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${proto}://${window.location.host}/api/sessions/${id}/socket` +
-        `?token=${encodeURIComponent(token())}&since=${seq.current}&kind=web`;
+      const url = socketURL(`/api/sessions/${encodeURIComponent(id)}/socket`, {
+        since: String(seq.current),
+        kind: "web",
+      });
       const ws = new WebSocket(url);
       sock.current = ws;
 

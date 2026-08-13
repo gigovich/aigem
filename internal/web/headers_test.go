@@ -40,3 +40,43 @@ func TestBlobsCarryThePolicyToo(t *testing.T) {
 		t.Fatal("a served blob carries no policy")
 	}
 }
+
+// The headers go on before the checks, so a refusal carries them too. A 401
+// page is still a page a browser renders, and the one that arrives when
+// something is already wrong is the last one that should be unbounded.
+func TestRefusalsCarryThePolicy(t *testing.T) {
+	srv := testServer(t)
+	base := "http://" + srv.Addr().String()
+	for _, c := range []struct {
+		what   string
+		req    func() *http.Request
+		status int
+	}{
+		{"a wrong token", func() *http.Request {
+			r, _ := http.NewRequest(http.MethodGet, base+"/api/modes", nil)
+			r.Header.Set("Authorization", "Bearer wrong")
+			return r
+		}, http.StatusUnauthorized},
+		{"a forged origin", func() *http.Request {
+			r, _ := http.NewRequest(http.MethodGet, base+"/api/modes", nil)
+			r.Header.Set("Authorization", "Bearer "+srv.token)
+			r.Header.Set("Origin", "https://evil.test")
+			return r
+		}, http.StatusForbidden},
+	} {
+		res, err := http.DefaultClient.Do(c.req())
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != c.status {
+			t.Errorf("%s answered %d, want %d", c.what, res.StatusCode, c.status)
+		}
+		if res.Header.Get("Content-Security-Policy") == "" {
+			t.Errorf("the refusal for %s carries no Content-Security-Policy", c.what)
+		}
+		if res.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("the refusal for %s does not refuse content sniffing", c.what)
+		}
+	}
+}

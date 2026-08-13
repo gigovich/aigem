@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
-import { api, token } from "./protocol";
+import { api, socketURL } from "./protocol";
 import type { Event } from "./protocol";
 import {
   isClientError,
@@ -299,10 +299,7 @@ export function useChat(
 
     const connect = () => {
       if (cancelled) return;
-      const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const url =
-        `${proto}://${window.location.host}/api/chat/socket` +
-        `?token=${encodeURIComponent(token())}&since=${seq.current}`;
+      const url = socketURL("/api/chat/socket", { since: String(seq.current) });
       const ws = new WebSocket(url);
       sock.current = ws;
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -381,12 +382,12 @@ func TestHostMatchIsExact(t *testing.T) {
 		"evil.example:" + port,
 		"localhost:1",
 	} {
-		if srv.hostAllowed(host) {
+		if slices.Contains(srv.allowed.hosts, host) {
 			t.Errorf("host %q was allowed", host)
 		}
 	}
 	for _, host := range []string{"127.0.0.1:" + port, "localhost:" + port} {
-		if !srv.hostAllowed(host) {
+		if !slices.Contains(srv.allowed.hosts, host) {
 			t.Errorf("host %q was refused", host)
 		}
 	}

@@ -51,15 +51,11 @@ const kindClientError = "client_error"
 // connected. Everything it is sent comes from the session's own stream, which
 // is what keeps a terminal and a browser looking at the same conversation
 // rather than at two renderings that drifted.
+// It is mounted through Guard like every other route, so it authenticates by
+// cookie as well as by token - which is what lets a browser open one without
+// the token in the URL - and so a client that reconnects forever cannot hold
+// more of them than the daemon has agreed to.
 func (s *Server) handleSocket(w http.ResponseWriter, r *http.Request) {
-	if !s.originOK(r) {
-		http.Error(w, "forbidden origin", http.StatusForbidden)
-		return
-	}
-	if !tokenOK(s.token, requestToken(r)) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	e, ok := s.lookup(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)

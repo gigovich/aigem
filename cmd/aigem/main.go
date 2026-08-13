@@ -233,6 +233,10 @@ func main() {
 	repl := flag.Bool("repl", false, "run the plain CLI REPL instead of the TUI")
 	webAddr := flag.String("listen", "127.0.0.1:0",
 		"address for `aigem web run` (loopback by default; see docs/web-ui.md before changing it)")
+	var webOrigins originList
+	flag.Var(&webOrigins, "origin",
+		"public URL `aigem web run` is reached at, e.g. https://aigem.example.ts.net "+
+			"(required for a non-loopback --listen; repeat for more than one)")
 	prompt := flag.String("p", "", "run a single prompt non-interactively and exit")
 	yes := flag.Bool("y", false, "auto-approve confirm-gated tools in -p mode (bash requires --capability-profile shell or dangerous-shell)")
 	traceJSON := flag.String("trace-json", "",
@@ -515,7 +519,7 @@ func main() {
 			temp: *temp, sysPrompt: sysPrompt, buildSys: buildSystem,
 			agents: agents, project: project, skills: skills, hooks: runner, mcpMgr: mcpMgr,
 			compactCfg: compactCfg, modelReg: modelReg, maxTokens: *maxTokens,
-			ctxSize: *ctxSize, addr: *webAddr, cwd: *cwd,
+			ctxSize: *ctxSize, addr: *webAddr, origins: webOrigins, cwd: *cwd,
 		})
 		return
 	}

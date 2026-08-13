@@ -77,9 +77,9 @@ type fleetResources struct {
 // given. Every bot gets its own goroutine, transport, scheduler and agent; they
 // share this process, its provider connections and its caps.
 func botStart(args []string) error {
-	addr, names, err := chatAddrFlag(args)
+	addr, origins, names, err := chatAddrFlag(args)
 	if err != nil {
-		return fmt.Errorf("%w\n\nusage: aigem bot start [--addr host:port] [<name>...]", err)
+		return fmt.Errorf("%w\n\nusage: aigem bot start [--addr host:port] [--origin url] [<name>...]", err)
 	}
 	names, err = resolveBotNames(names)
 	if err != nil {
@@ -112,7 +112,8 @@ func botStart(args []string) error {
 	// so a bot that fails to start is still visible in a UI that is already
 	// running - and so the operator can reach the fleet even when none of it
 	// came up.
-	chatSrv, err := startChatServer(ctx, addr, names, shared.live, slog.Default())
+	chatSrv, err := startChatServer(ctx,
+		chatServerOpts{addr: addr, origins: origins, names: names, live: shared.live}, slog.Default())
 	if err != nil {
 		return err
 	}
