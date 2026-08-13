@@ -38,8 +38,8 @@ function member(name: string, over: Partial<FleetMember> = {}): FleetMember {
 
 function rowFor(name: string): HTMLElement {
   const cell = screen.getByText(name);
-  const row = cell.closest("li");
-  if (!row) throw new Error(`no row for ${name}`);
+  const row = cell.closest('[role="row"]');
+  if (!(row instanceof HTMLElement)) throw new Error(`no row for ${name}`);
   return row;
 }
 
@@ -52,6 +52,7 @@ it("draws every operational column for a running bot", () => {
       members={[
         member("amiran", {
           threads: 3,
+          state: "idle",
           live: {
             running: true,
             model: "xai/grok-4.3",
@@ -75,7 +76,9 @@ it("draws every operational column for a running bot", () => {
 // The state an operator would otherwise read journalctl for, which is the whole
 // point of the column.
 it("says a bot the daemon could not start is stopped", () => {
-  render(<Fleet loaded members={[member("lisa", { live: { running: false, tier: 0 } })]} />);
+  render(
+    <Fleet loaded members={[member("lisa", { state: "stopped", live: { running: false, tier: 0 } })]} />,
+  );
   expect(within(rowFor("lisa")).getByText("stopped")).toBeInTheDocument();
 });
 
@@ -97,7 +100,13 @@ it("shows a bot mid-run as working", () => {
   render(
     <Fleet
       loaded
-      members={[member("demetre", { working: true, live: { running: true, heartbeat: "1h", tier: 1 } })]}
+      members={[
+        member("demetre", {
+          working: true,
+          state: "working",
+          live: { running: true, heartbeat: "1h", tier: 1 },
+        }),
+      ]}
     />,
   );
   expect(within(rowFor("demetre")).getByText("working")).toBeInTheDocument();
@@ -125,9 +134,13 @@ it("leaves the operator out of the roster", () => {
   expect(screen.getByText("amiran")).toBeInTheDocument();
 });
 
-it("draws a skeleton the size of the rows while the roster is loading", () => {
+// A skeleton whose shape differs from what replaces it moves the layout at the
+// moment the reader starts reading, so the header is drawn during the load too.
+it("draws a skeleton, and the header it will keep, while the roster is loading", () => {
   const { container } = render(<Fleet loaded={false} members={[]} />);
-  expect(container.querySelectorAll("li")).toHaveLength(0);
+  expect(container.querySelectorAll('[role="row"]')).toHaveLength(1);
+  expect(screen.getByText("heartbeat")).toBeInTheDocument();
+  expect(container.querySelectorAll(".animate-shimmer").length).toBeGreaterThan(0);
   expect(screen.queryByText(/No bots are configured/)).not.toBeInTheDocument();
 });
 

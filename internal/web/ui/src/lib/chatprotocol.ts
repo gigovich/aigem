@@ -35,9 +35,16 @@ export interface LiveBot {
   next_run?: string;
 }
 
+/** What a bot is doing, in one word. Decided by the daemon, never derived here:
+ *  two clients draw this roster, and a state added there must not be invisible
+ *  in one of them until its bundle is rebuilt. Empty for anyone who is not a
+ *  bot. */
+export type FleetState = "working" | "idle" | "stopped";
+
 /** A roster row: the actor, what the store can count about it, and what the
  *  daemon adds. */
 export interface FleetMember extends Actor {
+  state?: FleetState;
   threads: number;
   working: boolean;
   live?: LiveBot;

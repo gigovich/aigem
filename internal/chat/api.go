@@ -326,15 +326,42 @@ func (a *API) fleet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	var live map[string]LiveBot
 	if a.live != nil {
-		live := a.live()
-		for i := range members {
-			if l, ok := live[members[i].ID]; ok {
-				members[i].Live = &l
-			}
+		live = a.live()
+	}
+	for i := range members {
+		if l, ok := live[members[i].ID]; ok {
+			members[i].Live = &l
 		}
+		members[i].State = fleetState(members[i])
 	}
 	writeJSON(w, http.StatusOK, members)
+}
+
+// fleetState decides the one word a roster row shows.
+//
+// Working comes from the turns table, so it is the same answer the inbox gives
+// and it survives the restart of whatever process was working. Otherwise the
+// daemon running the bot answers, and when none does - a second aigem reading
+// this store - the store's own presence flag does, which the daemon that owns
+// the fleet writes in the same place it registers the bot.
+func fleetState(m FleetMember) string {
+	switch {
+	case m.Kind != KindBot:
+		return ""
+	case m.Working:
+		return FleetWorking
+	case m.Live != nil:
+		if m.Live.Running {
+			return FleetIdle
+		}
+		return FleetStopped
+	case m.Present:
+		return FleetIdle
+	default:
+		return FleetStopped
+	}
 }
 
 // Meta is what a client needs to know about this store before it draws

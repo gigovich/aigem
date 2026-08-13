@@ -123,17 +123,60 @@ export function resetAuth() {
   cookie = false;
 }
 
+/** Called when the daemon refuses a request this page believed was
+ *  authenticated. Cookies live in the daemon's memory, so restarting the fleet
+ *  revokes every one of them - and a page that latched "I have a cookie" would
+ *  then never send its token again, never be issued a new cookie, and never
+ *  recover short of a reload nobody knows to do.
+ *
+ *  Deploying is a restart, so this is the ordinary case, not the exotic one. */
+function reauthenticate() {
+  cookie = false;
+  session = null;
+}
+
+/** The credential to send with a request. Empty once the page has a cookie -
+ *  the browser attaches that itself - and the bearer token before then, or when
+ *  the exchange did not take. Every request in the app goes through this or
+ *  through api(), so there is one answer to "how is this authenticated". */
+export function authHeaders(): Record<string, string> {
+  return hasCookie() ? {} : { Authorization: `Bearer ${token()}` };
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   // The bearer header goes only while there is no cookie. Sending both would
   // leave the cookie path unexercised by anything but the socket, which is how
   // a credential that does not work ships.
-  const headers = hasCookie()
-    ? (init?.headers ?? {})
-    : { ...(init?.headers ?? {}), Authorization: `Bearer ${token()}` };
-  const res = await fetch(path, { ...init, headers });
+  const send = () =>
+    fetch(path, {
+      ...init,
+      headers: { ...(init?.headers ?? {}), ...authHeaders() },
+    });
+
+  let res = await send();
+  if (res.status === 401 && hasCookie()) {
+    // The cookie was revoked. Trade the token for a new one and retry once -
+    // once, so a token that is genuinely wrong fails as an error rather than
+    // looping.
+    reauthenticate();
+    await authenticate();
+    res = await send();
+  }
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** Called when a websocket closes. The handshake's status is not visible to a
+ *  browser - a 401 arrives as an ordinary close - so a socket that will not
+ *  stay open re-runs the exchange before its next attempt rather than
+ *  reconnecting forever with a credential the daemon has forgotten.
+ *
+ *  It is cheap and idempotent: with a live cookie the daemon answers the
+ *  exchange from the same cookie and issues nothing new. */
+export function socketClosed(): Promise<boolean> {
+  reauthenticate();
+  return authenticate();
 }
 
 /** socketURL builds a websocket URL for a daemon path. The token goes in the

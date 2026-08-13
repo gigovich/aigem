@@ -190,7 +190,15 @@ func (s *Server) secureFor(r *http.Request) bool {
 // handleAuthSession trades a valid token for a cookie. The guard has already
 // accepted the request, by either credential, so a page whose cookie is about
 // to expire renews it the same way it got one.
+//
+// A request that already carries a live cookie keeps it. The page runs this
+// exchange on every load, and minting a session each time would walk the table
+// cap - sixty-four reloads on a laptop would have signed the phone out.
 func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
+	if s.cookieOK(r) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	id, err := s.issueCookie()
 	if err != nil {
 		http.Error(w, "could not open a session", http.StatusInternalServerError)
@@ -236,7 +244,6 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 // The headers go on before the checks so a refusal carries them too.
 func (s *Server) Guard(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		securityHeaders(w.Header())
 		if !s.guard(w, r) {
 			return
 		}
@@ -257,24 +264,44 @@ func (s *Server) Guard(h http.HandlerFunc) http.HandlerFunc {
 
 // guard applies every check to a request. It writes the response and reports
 // false when the request is refused.
+//
+// The headers go on here rather than in Guard, because half the daemon's own
+// routes call this directly: a refusal from one of those was carrying no CSP
+// and no nosniff, which made Config.Mount's promise that nothing can answer
+// under weaker rules untrue of the daemon itself.
 func (s *Server) guard(w http.ResponseWriter, r *http.Request) bool {
+	securityHeaders(w.Header())
 	if !s.originOK(r) {
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return false
 	}
-	// Before the credential is looked at, so an address that has been guessing
-	// pays the wait rather than getting another guess.
+	// The credential is checked first, and a good one is never refused.
+	//
+	// The other order - refuse a blocked address before looking - is the usual
+	// one, and it is wrong here. It cost nothing against guessing, because the
+	// secret is 32 random bytes compared in constant time and no rate bounds
+	// 2^256; and it denied the operator, because `clientAddr` behind a proxy is
+	// the proxy, so ten wrong tokens a minute from anywhere locked out every
+	// real client indefinitely. It did not even need an attacker: restarting
+	// the fleet revokes every cookie, the open tab's socket then retried every
+	// 5s against a bucket refilling every 6s, and the tab never recovered.
+	//
+	// What the limiter is worth is refusing a *repeat failure* without doing
+	// any further work for it. That is all it does now.
 	addr := clientAddr(r)
+	if s.cookieOK(r) || tokenOK(s.token, requestToken(r)) {
+		s.failures.clear(addr)
+		return true
+	}
 	if wait, blocked := s.failures.blocked(addr); blocked {
+		// Deliberately without spending a token: an address that is already
+		// blocked must be able to come back, and charging it for being told so
+		// is how a lockout becomes permanent.
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(wait.Seconds()+0.5))))
 		http.Error(w, "too many failed attempts", http.StatusTooManyRequests)
 		return false
 	}
-	if !s.cookieOK(r) && !tokenOK(s.token, requestToken(r)) {
-		s.failures.fail(addr)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return false
-	}
-	s.failures.clear(addr)
-	return true
+	s.failures.fail(addr)
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	return false
 }

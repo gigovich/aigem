@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { Approval, Client, Decision, Event, Todo } from "./protocol";
-import { socketURL } from "./protocol";
+import { socketClosed, socketURL } from "./protocol";
 
 /** A rendered entry. The event stream is a log; this is what a reader sees. */
 export type Item =
@@ -251,9 +251,13 @@ export function useSession(id: string | null) {
       });
       const ws = new WebSocket(url);
       sock.current = ws;
+      // Whether this socket ever completed its handshake, which is what tells a
+      // refused connection apart from one that ran and ended.
+      let opened = false;
 
       ws.onopen = () => {
         if (cancelled || sock.current !== ws) return;
+        opened = true;
         attempt = 0;
         dispatch({ t: "connected", on: true });
       };
@@ -274,6 +278,19 @@ export function useSession(id: string | null) {
       ws.onclose = () => {
         if (cancelled || sock.current !== ws) return;
         dispatch({ t: "connected", on: false });
+        // A handshake the daemon refused arrives here as an ordinary close, so
+        // this is the only place a revoked cookie can be noticed. It drops the
+        // cookie synchronously - the retry below therefore carries the token
+        // again, and authenticates - and re-runs the exchange in the
+        // background to get a new one. Not awaited: a daemon that is still
+        // down would otherwise hold the reconnect open behind a fetch that is
+        // failing for the same reason.
+        //
+        // Only for a socket that never opened. A connection that ran and then
+        // ended was authenticated by definition, and the commonest way one ends
+        // is this client closing it on a desync - putting the token back into
+        // the next URL for that would undo what the cookie is for.
+        if (!opened) void socketClosed();
         // Back off, but never so far that a phone waking up sits disconnected.
         const wait = Math.min(5000, 250 * 2 ** attempt++);
         timer = window.setTimeout(connect, wait);

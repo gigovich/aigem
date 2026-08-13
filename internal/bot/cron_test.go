@@ -568,3 +568,35 @@ func TestNextRunOnAnEmptyScheduler(t *testing.T) {
 		t.Error("an empty scheduler reported a next run")
 	}
 }
+
+// A job held back because a turn was running fires on the first free tick, so
+// the roster has to say "now" rather than name its next ordinary occurrence.
+// Saying "tomorrow 09:00" about a job that runs within the minute is the
+// disagreement between screen and scheduler this column must not have.
+func TestNextRunReportsAHeldBackJobAsDue(t *testing.T) {
+	s, warns := NewScheduler([]CronJob{{ID: "daily", Expr: "0 9 * * *", Prompt: "p"}}, nil)
+	if len(warns) != 0 {
+		t.Fatalf("warnings: %v", warns)
+	}
+	s.SetRunner(func(context.Context, CronJob) {})
+	s.SetBusy(func() bool { return true })
+
+	due := at(t, "2026-06-20 09:00")
+	s.tick(t.Context(), due)
+	s.mu.Lock()
+	held := s.pending["daily"]
+	s.mu.Unlock()
+	if !held {
+		t.Fatal("a job due while the bot was busy was not held back")
+	}
+
+	later := at(t, "2026-06-20 09:05")
+	id, when, ok := s.NextRun(later)
+	if !ok || id != "daily" {
+		t.Fatalf("NextRun = %q, %v; want the held job", id, ok)
+	}
+	if !when.Equal(later) {
+		t.Errorf("a held-back job is due at %s, want now (%s) - it fires on the next free tick",
+			when, later)
+	}
+}

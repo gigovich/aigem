@@ -379,6 +379,37 @@ func TestHeartbeatCadencesAreAllLabelled(t *testing.T) {
 	}
 }
 
+// And each label has to be the interval it names. Length alone would let the two
+// lists be reordered against each other, which puts a wrong number on the fleet
+// screen with nothing failing - so the label is checked against when the
+// expression actually fires.
+func TestHeartbeatLabelsAreTheIntervalTheyName(t *testing.T) {
+	midnight := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	for tier, cadence := range heartbeatCadences {
+		expr := cadence(0)
+		sched, err := ParseSchedule(expr)
+		if err != nil {
+			t.Fatalf("tier %d cadence %q does not parse: %v", tier, expr, err)
+		}
+		want, err := time.ParseDuration(heartbeatIntervals[tier])
+		if err != nil {
+			t.Fatalf("tier %d label %q is not a duration: %v", tier, heartbeatIntervals[tier], err)
+		}
+		first, ok := sched.Next(midnight)
+		if !ok {
+			t.Fatalf("tier %d cadence %q never fires", tier, expr)
+		}
+		second, ok := sched.Next(first)
+		if !ok {
+			t.Fatalf("tier %d cadence %q fires only once", tier, expr)
+		}
+		if got := second.Sub(first); got != want {
+			t.Errorf("tier %d is labelled %s but %q fires every %s",
+				tier, heartbeatIntervals[tier], expr, got)
+		}
+	}
+}
+
 func TestHeartbeatCadenceFollowsTheTier(t *testing.T) {
 	h, _ := newArmedHeartbeat(t, "amiran")
 	if got := h.Cadence(); got != "30m" {

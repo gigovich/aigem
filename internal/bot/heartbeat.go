@@ -193,9 +193,18 @@ func (h *Heartbeat) Tier() int {
 // Cadence is the current interval as a label. The roster shows it beside the tier, because "t3"
 // on its own says a bot has been idle a while without saying when it next looks.
 func (h *Heartbeat) Cadence() string {
+	cadence, _ := h.State()
+	return cadence
+}
+
+// State reports the cadence and the tier together. They are one fact and are read under one lock:
+// taken separately, a backoff landing between the two calls pairs a tier with its neighbour's
+// label, which is a wrong number on screen with nothing to explain it.
+func (h *Heartbeat) State() (cadence string, tier int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return heartbeatIntervals[h.tierLocked()]
+	t := h.tierLocked()
+	return heartbeatIntervals[t], t
 }
 
 // Armed is the cron expression currently installed.

@@ -34,7 +34,7 @@ const chatUsage = `usage:
   aigem chat fleet                                     roster and who is running
 
 States: needs_you, working, waiting, idle.
-Listing commands take --json for scripting.
+threads, read and fleet take --json for scripting.
 Threads are the fleet's conversations; the daemon is whichever "aigem bot start"
 is running.`
 
@@ -436,28 +436,16 @@ func (c *chatClient) fleet(ctx context.Context, args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "bot\trole\tstate\tthreads\theartbeat\tnext job\tmodel")
 	for _, m := range members {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", m.Name, m.Role, fleetState(m), m.Threads,
+		// The roster is the fleet. The operator is in the response because the
+		// browser needs the whole actor list from one request, and a human under
+		// a column headed "bot" is a row nobody asked for.
+		if m.Kind != chat.KindBot {
+			continue
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", m.Name, m.Role, m.State, m.Threads,
 			heartbeatOf(m.Live), nextJobOf(m.Live), dash(modelOf(m.Live)))
 	}
 	return w.Flush()
-}
-
-// fleetState is the one word for what a bot is doing. Working comes from the
-// store, so it is the same answer the inbox gives; the rest comes from the
-// daemon, and a bot no daemon reported gets "-" rather than a guess.
-func fleetState(m chat.FleetMember) string {
-	switch {
-	case m.Kind == chat.KindHuman:
-		return "you"
-	case m.Working:
-		return "working"
-	case m.Live == nil:
-		return "-"
-	case !m.Live.Running:
-		return "stopped"
-	default:
-		return "idle"
-	}
 }
 
 func heartbeatOf(l *chat.LiveBot) string {

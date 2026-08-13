@@ -30,8 +30,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 # No bot name: run every bot in ~/.config/aigem/bots. Name them to run a subset,
-# e.g. "%h/go/bin/aigem bot start jane kate". Add --addr and --origin here to
-# reach the UI from another device; see the note above.
+# e.g. "... bot start --addr 127.0.0.1:7777 jane kate" - flags first, because the
+# first name ends the flags. Add --origin here to reach the UI from another
+# device; see the note above.
 ExecStart=%h/go/bin/aigem bot start --addr 127.0.0.1:7777
 WorkingDirectory=%h/work
 

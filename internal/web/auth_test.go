@@ -207,6 +207,32 @@ func TestARestartRevokesEveryCookie(t *testing.T) {
 	}
 }
 
+// The page runs the exchange on every load. Minting a session each time walked
+// the table cap, so sixty-four reloads on a laptop signed the phone out.
+func TestExchangingWithALiveCookieKeepsIt(t *testing.T) {
+	srv := testServer(t)
+	c := exchange(t, srv)
+
+	req, _ := http.NewRequest(http.MethodPost, "http://"+srv.Addr().String()+"/api/auth/session", nil)
+	req.AddCookie(c)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	for _, got := range res.Cookies() {
+		if got.Name == cookieName && got.Value != c.Value {
+			t.Fatalf("the exchange replaced a live cookie with %q", got.Value)
+		}
+	}
+	srv.mu.Lock()
+	held := len(srv.cookies)
+	srv.mu.Unlock()
+	if held != 1 {
+		t.Errorf("the daemon holds %d sessions after two exchanges from one browser, want 1", held)
+	}
+}
+
 func TestTheCookieTableIsBounded(t *testing.T) {
 	srv := testServer(t)
 	for range maxCookieSessions + 10 {
@@ -286,6 +312,65 @@ func TestGuessingTheTokenBuysAWait(t *testing.T) {
 	}
 }
 
+// The outage this ordering exists to prevent, and the reason the limiter runs
+// after the credential rather than before it.
+//
+// Restarting the fleet revokes every cookie. An open tab's socket then fails,
+// retries every 5s against a bucket that refills every 6s, and pins it at zero
+// - so with the checks the other way round the operator's own browser, CLI and
+// every new tab were answered 429 for as long as the old tab kept trying. On a
+// proxied daemon every client shares one address, so a stranger could hold that
+// state open forever for ten requests a minute.
+func TestAValidCredentialIsNeverRefused(t *testing.T) {
+	srv := testServer(t)
+	base := "http://" + srv.Addr().String()
+	ask := func(auth string) int {
+		req, _ := http.NewRequest(http.MethodGet, base+"/api/sessions", nil)
+		req.Header.Set("Authorization", "Bearer "+auth)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	// Spend the whole burst, and then some.
+	for range authFailureBurst + 5 {
+		ask("wrong")
+	}
+	if got := ask("wrong"); got != http.StatusTooManyRequests {
+		t.Fatalf("a guess from a blocked address answered %d, want 429", got)
+	}
+	if got := ask(srv.token); got != http.StatusOK {
+		t.Fatalf("the right token from a blocked address answered %d, want 200", got)
+	}
+	// And that success forgave the address, so the next guess starts over.
+	if got := ask("wrong"); got != http.StatusUnauthorized {
+		t.Errorf("after a success the address answered %d, want a fresh 401", got)
+	}
+}
+
+// Being told to wait must not itself cost a token, or the block never lifts.
+func TestBeingBlockedDoesNotExtendTheBlock(t *testing.T) {
+	now := time.Now()
+	l := newLimiter()
+	l.now = func() time.Time { return now }
+	for range authFailureBurst {
+		l.fail("10.0.0.1")
+	}
+	first, blocked := l.blocked("10.0.0.1")
+	if !blocked {
+		t.Fatal("a full burst did not block")
+	}
+	for range 100 {
+		l.blocked("10.0.0.1")
+	}
+	again, _ := l.blocked("10.0.0.1")
+	if again > first {
+		t.Errorf("asking whether it is blocked pushed the wait out from %s to %s", first, again)
+	}
+}
+
 // A limiter that locked the operator out over their own reload would be
 // defending the daemon against its user. One good credential clears the debt.
 func TestASuccessfulRequestClearsTheDebt(t *testing.T) {
@@ -335,6 +420,34 @@ func TestTheFailureTableIsSwept(t *testing.T) {
 	l.mu.Unlock()
 	if held > maxTrackedAddresses {
 		t.Errorf("the limiter tracks %d addresses, cap is %d", held, maxTrackedAddresses)
+	}
+}
+
+// The case the test above cannot reach: a flood from many addresses at once,
+// where nothing has paid anything off and there is nothing to collect. A sweep
+// that only drops idle entries is not a cap, and the caller chooses the size.
+func TestTheFailureTableIsCappedUnderAFlood(t *testing.T) {
+	now := time.Now()
+	l := newLimiter()
+	l.now = func() time.Time { return now }
+	// No clock movement at all, so every entry stays mid-burst.
+	for i := range maxTrackedAddresses * 3 {
+		l.fail(net.IPv4(10, byte(i/65536), byte(i/256), byte(i%256)).String())
+	}
+	l.mu.Lock()
+	held := len(l.spent)
+	l.mu.Unlock()
+	if held > maxTrackedAddresses {
+		t.Fatalf("the limiter tracks %d addresses under a flood, cap is %d", held, maxTrackedAddresses)
+	}
+	// And it still limits: the address that just failed is still counted.
+	last := net.IPv4(10, byte((maxTrackedAddresses*3-1)/65536), byte((maxTrackedAddresses*3-1)/256),
+		byte((maxTrackedAddresses*3-1)%256)).String()
+	l.mu.Lock()
+	_, tracked := l.spent[last]
+	l.mu.Unlock()
+	if !tracked {
+		t.Error("the newest failure was evicted, so a flood is a way to never be limited")
 	}
 }
 
@@ -415,4 +528,86 @@ func withCookie(t *testing.T, c *http.Cookie) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.AddCookie(c)
 	return r
+}
+
+// The cap has to be held by Guard, not merely by the counter. Deleting the
+// acquire/release from the wrapper left every unit test green while the daemon
+// accepted unlimited sockets.
+//
+// It is driven with real handshake headers against a mounted handler that
+// blocks, which is what a websocket handler does - both of this daemon's block
+// for the life of the connection.
+func TestTheSocketCapIsHeldByTheGuard(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	hold := make(chan struct{})
+	inside := make(chan struct{}, maxSockets+1)
+	srv, err := New(Config{
+		Mount: func(mux *http.ServeMux, guard func(http.HandlerFunc) http.HandlerFunc) {
+			mux.HandleFunc("GET /api/fake/socket", guard(func(w http.ResponseWriter, _ *http.Request) {
+				inside <- struct{}{}
+				<-hold
+			}))
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve() }()
+	defer func() { close(hold); _ = srv.Close() }()
+
+	dial := func() (*http.Response, error) {
+		req, _ := http.NewRequest(http.MethodGet, "http://"+srv.Addr().String()+"/api/fake/socket", nil)
+		req.Header.Set("Authorization", "Bearer "+srv.token)
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "websocket")
+		return http.DefaultClient.Do(req)
+	}
+
+	for i := range maxSockets {
+		go func() {
+			if res, derr := dial(); derr == nil {
+				_ = res.Body.Close()
+			}
+		}()
+		select {
+		case <-inside:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("handshake %d never reached the handler", i)
+		}
+	}
+
+	// On a deadline: a daemon that has lost the cap accepts this one and blocks
+	// it in the handler forever, and a test that hung would report the defect as
+	// a timeout ten minutes later instead of as a failure here.
+	past := make(chan *http.Response, 1)
+	go func() {
+		if res, derr := dial(); derr == nil {
+			past <- res
+		}
+	}()
+	var res *http.Response
+	select {
+	case res = <-past:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the socket past the cap was accepted rather than refused")
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("the socket past the cap answered %d, want 503", res.StatusCode)
+	}
+	if res.Header.Get("Retry-After") == "" {
+		t.Error("the refusal does not say when to come back")
+	}
+
+	// An ordinary request is not a socket and must not be counted against them.
+	plain, _ := http.NewRequest(http.MethodGet, "http://"+srv.Addr().String()+"/api/modes", nil)
+	plain.Header.Set("Authorization", "Bearer "+srv.token)
+	ok, err := http.DefaultClient.Do(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ok.Body.Close() }()
+	if ok.StatusCode != http.StatusOK {
+		t.Errorf("a plain request was refused with %d while the sockets were full", ok.StatusCode)
+	}
 }

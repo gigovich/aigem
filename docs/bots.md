@@ -220,6 +220,11 @@ is still running is behind by up to 16 calls: the spend is
 written in batches, so that recording it never blocks the model call that is
 still streaming. Read the thread again once the bot is idle for the final figure.
 
+The roster behind that screen is `GET /api/chat/fleet`. It answers one row per
+actor, carrying the store's half - `state`, `threads`, `working`, `present` -
+and, for a bot this daemon runs, a `live` block with the model, the heartbeat
+and the next scheduled job. A row without `live` is one no daemon reported on.
+
 The per-turn breakdown is at `GET /api/chat/threads/{id}/turns` and the total at
 `/spend`, on the daemon `aigem bot start` runs - `$XDG_STATE_HOME/aigem/chat.json`
 holds its address and bearer token. The two counts of `calls` differ on purpose:
@@ -262,19 +267,21 @@ at `/chat/fleet` directly. One row per bot:
 
 | column | where it comes from |
 | --- | --- |
-| state | `working` is a turn with no end, read from the store - so it agrees with the inbox |
+| state | `working`, `idle` or `stopped`, decided by the daemon so both clients agree |
 | threads | unarchived threads the bot takes part in |
 | heartbeat | the interval in force, and how far the idle backoff has walked (`30m (t0)`) |
 | next job | the scheduled job due soonest, built-in ones included |
 | model | the model that bot actually opened, which may not be the configured one |
 
-`stopped` is a bot the daemon could not start and is still retrying - the state
-that previously meant reading `journalctl`.
+`working` is a turn with no end, read from the store, so it is the same answer
+the inbox gives and it survives the restart of whatever process was working.
+`stopped` is a bot that is not running - either this daemon could not start it
+and is retrying, which is the state that previously meant reading `journalctl`,
+or no daemon is running it at all.
 
-A column the daemon cannot answer shows `-` rather than a guess: a daemon
-serving the store without running the bots - a second `aigem` reading the same
-database - knows none of the last three. `aigem chat fleet` prints the same
-columns in a terminal.
+The last three columns are the ones only a running process can answer, so a
+daemon serving the store without running the bots shows `-` for them rather
+than a guess. `aigem chat fleet` prints the same columns in a terminal.
 
 Both are one build with the session workspace of [the web UI](web-ui.md); the
 daemon says which halves it serves, and offers no switch to one that would
@@ -340,7 +347,15 @@ systemctl --user status aigem-bots
 journalctl --user -u aigem-bots -f                      # all bots
 journalctl --user -u aigem-bots -f | grep 'bot=jane'    # one bot
 systemctl --user restart aigem-bots
+journalctl --user -u aigem-bots | grep 'chat UI'        # the URL, with its token
 ```
+
+The token is minted at startup, so the URL changes on every restart and a
+bookmark to the old one will not authenticate. The last line above is how to get
+the current one. `aigem chat` does not need it - it reads the daemon's own state
+record - so this is only for opening a browser. The unit pins `--addr` so at
+least the port stays put; a port already in use fails the unit outright, which
+is the intended trade against a URL that moves on every restart.
 
 Three things the unit has to say out loud, because a service does not inherit your
 login shell:

@@ -186,9 +186,13 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
     const poll = () => {
       api<FleetMember[]>("/api/chat/fleet").then(setFleet).catch(() => {});
     };
+    // Once on arrival as well as on the interval: opening the roster is the one
+    // moment someone is reading it, and a screen entered a tick after the last
+    // poll would otherwise open half a minute out of date.
+    if (onFleet) poll();
     const timer = window.setInterval(poll, FLEET_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [loaded]);
+  }, [loaded, onFleet]);
 
   const titleOf = useCallback(
     (id: string) => state.threads[id]?.view.title || "a thread",
@@ -595,26 +599,25 @@ function ChatHeader({
         {thread && <span className="truncate text-[13px] text-muted">{thread.title}</span>}
       </div>
 
+      {/* Outside the md-only cluster below, deliberately. The count was already
+          here and already meant "the fleet", so it is the way in - but that
+          cluster is display:none on a phone, and the phone is the device the
+          roster was built for. A control that exists only where it is least
+          needed is the same as no control.
+
+          It stays a plain badge on the roster itself, where it would only lead
+          back to the screen the reader is on. */}
+      {onOpenFleet ? (
+        <Button variant="ghost" size="sm" className="shrink-0 font-mono" onClick={onOpenFleet}>
+          {botCount} {botCount === 1 ? "bot" : "bots"}
+        </Button>
+      ) : (
+        <Badge className="shrink-0 font-mono">
+          {botCount} {botCount === 1 ? "bot" : "bots"}
+        </Badge>
+      )}
+
       <div className="hidden shrink-0 items-center gap-2 md:flex">
-        {/* The count was already here and already meant "the fleet"; making it
-            the way in costs no room in a header that has none. It stays a plain
-            badge on the roster itself, where it would only lead back to the
-            screen the reader is on. */}
-        {onOpenFleet ? (
-          <button
-            type="button"
-            onClick={onOpenFleet}
-            className="rounded-sm focus-visible:ring-1 focus-visible:ring-accent focus-visible:outline-none"
-          >
-            <Badge className="font-mono hover:border-line hover:text-fg">
-              {botCount} {botCount === 1 ? "bot" : "bots"}
-            </Badge>
-          </button>
-        ) : (
-          <Badge className="font-mono">
-            {botCount} {botCount === 1 ? "bot" : "bots"}
-          </Badge>
-        )}
         {needsYou > 0 && (
           <Badge className="border-accent/40 font-mono text-accent">{needsYou} need you</Badge>
         )}

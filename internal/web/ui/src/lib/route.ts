@@ -148,22 +148,26 @@ export function useFleetScreen(): { fleet: boolean; open: () => void; close: () 
   return { fleet, open, close };
 }
 
-/** leave goes back to the inbox from a screen pushed over it.
+/** leave closes a screen this app pushed, returning to whatever it was pushed
+ *  over - which is usually the inbox, and is the thread itself when the roster
+ *  was opened from one.
  *
  *  It pops rather than pushes. A push leaves the screen just closed one
  *  hardware-back away, so the phone's back button walks straight back into it -
  *  the opposite of what a back arrow means. Arriving on a shared link is the
  *  case with no entry of ours to pop, and popping someone else's would leave
- *  the application entirely. */
+ *  the application entirely; that one falls back to the inbox. */
 function leave() {
-  if ((window.history.state as typeof OURS | null)?.aigemThread) {
+  if ((window.history.state as typeof OURS | null)?.aigemPushed) {
     window.history.back();
     return;
   }
   replace(CHAT_PATH + window.location.search);
 }
 
-const OURS = { aigemThread: true };
+/** Stamped on every entry this app pushes, so leave() can tell one from an
+ *  entry the operator arrived on directly. */
+const OURS = { aigemPushed: true };
 
 /** replaceMode rewrites the URL without adding a history entry. It is for the
  *  correction a daemon serving one mode has to make when a link points at the

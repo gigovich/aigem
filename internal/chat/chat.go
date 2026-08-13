@@ -116,10 +116,29 @@ type Actor struct {
 	Created time.Time `json:"created"`
 }
 
+// Fleet states, as the roster reports them. They are decided here rather than
+// by each renderer, for the same reason thread states are: two clients drawing
+// one screen from the same response must not each derive the word, and a state
+// added here would otherwise be invisible in one of them until its bundle was
+// rebuilt.
+const (
+	// FleetWorking is a turn with no end - the same fact the inbox reads.
+	FleetWorking = "working"
+	// FleetIdle is up with nothing open.
+	FleetIdle = "idle"
+	// FleetStopped is configured and not running: either the daemon says so, or
+	// no daemon claims it and the store's own presence flag agrees.
+	FleetStopped = "stopped"
+)
+
 // FleetMember is one identity on the fleet screen: what the store knows about
 // it, plus what only the process running the bots can say.
 type FleetMember struct {
 	Actor
+	// State is what this bot is doing, in one word: see the constants above. It
+	// is empty for an actor that is not a bot, because "what is the operator
+	// doing" is not a question this roster answers.
+	State string `json:"state,omitempty"`
 	// Threads is how many unarchived threads this actor takes part in.
 	Threads int `json:"threads"`
 	// Working is true while this actor has a turn open anywhere. It is read

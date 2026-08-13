@@ -61,4 +61,3 @@ export function installFakeSocket() {
   vi.stubGlobal("WebSocket", FakeSocket);
   return FakeSocket;
 }
-

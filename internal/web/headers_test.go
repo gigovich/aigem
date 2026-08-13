@@ -63,6 +63,13 @@ func TestRefusalsCarryThePolicy(t *testing.T) {
 			r.Header.Set("Origin", "https://evil.test")
 			return r
 		}, http.StatusForbidden},
+		// Not through Guard: half the daemon's own routes call the bare check,
+		// and their refusals were going out bare with it.
+		{"a wrong token on a route that guards itself", func() *http.Request {
+			r, _ := http.NewRequest(http.MethodGet, base+"/api/sessions", nil)
+			r.Header.Set("Authorization", "Bearer wrong")
+			return r
+		}, http.StatusUnauthorized},
 	} {
 		res, err := http.DefaultClient.Do(c.req())
 		if err != nil {

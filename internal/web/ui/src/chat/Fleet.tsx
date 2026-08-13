@@ -13,7 +13,7 @@ const COLS = "grid grid-cols-[10rem_9rem_6rem_5rem_7rem_minmax(11rem,1fr)_minmax
  *  is carrying are counted in the store, so they are the same answers the inbox
  *  gives; the model, the heartbeat and the next scheduled job live in the
  *  memory of the process running the bots, and a daemon that runs none reports
- *  "-" rather than a row of confident zeroes.
+ *  "-" for those three rather than a row of confident zeroes.
  *
  *  Seven columns do not fit a phone, and dropping some of them would lose the
  *  operational half of the screen without saying so. The table scrolls inside
@@ -26,14 +26,18 @@ export function Fleet({ members, loaded }: { members: FleetMember[]; loaded: boo
       <div className="px-4 py-3">
         <h2 className="text-[15px] font-medium">Fleet</h2>
         <p className="mt-1 max-w-[68ch] text-[13px] text-muted">
-          Every bot this daemon was asked to run. Stopped means the daemon could not start it and
-          is still retrying.
+          Every bot this store knows. Stopped means it is not running - either this daemon could
+          not start it and is retrying, or no daemon is running it at all.
         </p>
       </div>
 
       {!loaded ? (
-        <div className="px-4">
-          <SkeletonRows rows={4} rowClass="h-8" />
+        // The header bar is drawn now too, and the rows are flush like the real
+        // ones: a skeleton whose shape differs from what replaces it moves the
+        // layout at exactly the moment the reader starts reading.
+        <div>
+          <Header />
+          <SkeletonRows rows={4} rowClass="h-[29px]" className="gap-0" />
         </div>
       ) : bots.length === 0 ? (
         <p className="px-4 text-[14px] text-muted">
@@ -41,23 +45,16 @@ export function Fleet({ members, loaded }: { members: FleetMember[]; loaded: boo
         </p>
       ) : (
         <div className="min-w-0 overflow-x-auto">
-          <div className="min-w-[57rem]">
-            <div
-              className={`${COLS} items-center gap-3 border-y border-line bg-raised px-4 py-1.5 text-[11px] text-muted`}
-            >
-              <span>bot</span>
-              <span>role</span>
-              <span>state</span>
-              <span className="text-right">threads</span>
-              <span>heartbeat</span>
-              <span>next job</span>
-              <span>model</span>
-            </div>
-            <ul>
+          {/* No explicit min-width: the fixed tracks in COLS are the floor, and
+              restating their sum here was a second number to keep in step - one
+              that had already drifted, painting the header short of the rows. */}
+          <div className="w-max min-w-full" role="table" aria-label="Fleet">
+            <Header />
+            <div role="rowgroup">
               {bots.map((m) => (
                 <FleetRow key={m.id} member={m} />
               ))}
-            </ul>
+            </div>
           </div>
         </div>
       )}
@@ -72,40 +69,77 @@ export function Fleet({ members, loaded }: { members: FleetMember[]; loaded: boo
   );
 }
 
-function FleetRow({ member }: { member: FleetMember }) {
-  const live = member.live;
+/** The column labels. Seven unlabelled strings per row is what a screen reader
+ *  gets from a grid of spans, so the roster says out loud that it is a table -
+ *  the layout stays CSS Grid either way. */
+function Header() {
   return (
-    <li className={`${COLS} items-center gap-3 border-b border-line-faint px-4 py-1.5`}>
-      <span className="truncate text-[14px]">{member.name}</span>
-      <span className="truncate text-[13px] text-muted">{member.role || "-"}</span>
-      <State member={member} />
-      <span className="text-right font-mono text-[12px] text-muted">{member.threads}</span>
-      <span className="font-mono text-[12px] text-muted">{heartbeatOf(live)}</span>
-      <span className="truncate font-mono text-[12px] text-muted">{nextJobOf(live)}</span>
-      <span className="truncate font-mono text-[12px] text-muted">{live?.model || "-"}</span>
-    </li>
+    <div role="rowgroup">
+      <div
+        role="row"
+        className={`${COLS} items-center gap-3 border-y border-line bg-raised px-4 py-1.5 text-[11px] text-muted`}
+      >
+        {["bot", "role", "state", "threads", "heartbeat", "next job", "model"].map((c) => (
+          <span key={c} role="columnheader" className={c === "threads" ? "text-right" : undefined}>
+            {c}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
-/** What the bot is doing, in one word.
- *
- *  `working` is a turn row with no end, exactly as the inbox reads it, so the
- *  two screens cannot disagree. `stopped` is the only state drawn in a signal
- *  colour, because it is the only one that means something is wrong. A bot no
- *  daemon reported on is "-", never "stopped". */
-function State({ member }: { member: FleetMember }) {
-  if (member.working) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[12px]">
-        <RunDot /> working
+function FleetRow({ member }: { member: FleetMember }) {
+  const live = member.live;
+  return (
+    <div role="row" className={`${COLS} items-center gap-3 border-b border-line-faint px-4 py-1.5`}>
+      <span role="cell" className="truncate text-[14px]">
+        {member.name}
       </span>
-    );
+      <span role="cell" className="truncate text-[13px] text-muted">
+        {member.role || "-"}
+      </span>
+      <span role="cell">
+        <State member={member} />
+      </span>
+      <span role="cell" className="text-right font-mono text-[12px] text-muted">
+        {member.threads}
+      </span>
+      <span role="cell" className="font-mono text-[12px] text-muted">
+        {heartbeatOf(live)}
+      </span>
+      <span role="cell" className="truncate font-mono text-[12px] text-muted">
+        {nextJobOf(live)}
+      </span>
+      <span role="cell" className="truncate font-mono text-[12px] text-muted">
+        {live?.model || "-"}
+      </span>
+    </div>
+  );
+}
+
+/** What the bot is doing, in the word the daemon chose. Deriving it here would
+ *  be the second implementation of one decision, and `aigem chat fleet` draws
+ *  the same roster.
+ *
+ *  `stopped` is the only state drawn in a signal colour, because it is the only
+ *  one that means something is wrong. */
+function State({ member }: { member: FleetMember }) {
+  switch (member.state) {
+    case "working":
+      return (
+        <span className="inline-flex items-center gap-1 text-[12px]">
+          <RunDot /> working
+        </span>
+      );
+    case "stopped":
+      return <Badge className="justify-self-start border-bad/40 text-bad">stopped</Badge>;
+    case "idle":
+      return <span className="text-[12px] text-muted">idle</span>;
+    default:
+      // A daemon too old to send one. The row still carries what it can count.
+      return <span className="text-[12px] text-muted">-</span>;
   }
-  if (!member.live) return <span className="text-[12px] text-muted">-</span>;
-  if (!member.live.running) {
-    return <Badge className="justify-self-start border-bad/40 text-bad">stopped</Badge>;
-  }
-  return <span className="text-[12px] text-muted">idle</span>;
 }
 
 function heartbeatOf(live?: LiveBot): string {
@@ -113,19 +147,33 @@ function heartbeatOf(live?: LiveBot): string {
   return `${live.heartbeat} (t${live.tier})`;
 }
 
-/** The next scheduled run, as a clock time - with the weekday when it is not
- *  today, because "09:00" read on a Friday evening otherwise looks like tonight.
- *  A job already overdue is shown at the time it was due rather than hidden:
- *  that is what the scheduler does with it on its next tick. */
+/** The next scheduled run, as a clock time - with the weekday when it is later
+ *  this week, because "09:00" read on a Friday evening otherwise looks like
+ *  tonight, and with a date when it is further out than that.
+ *
+ *  A run already past is "overdue", not a time. The scheduler will fire it on
+ *  its next free tick, so a time is the wrong thing to print: rendered as a
+ *  weekday it was indistinguishable from the same weekday next week, and a
+ *  one-shot a month stale read as an appointment. */
 function nextJobOf(live?: LiveBot): string {
   if (!live?.next_job || !live.next_run) return "-";
   const at = new Date(live.next_run);
   if (Number.isNaN(at.getTime())) return live.next_job;
-  const now = new Date();
+  return `${live.next_job} ${when(at, new Date())}`;
+}
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function when(at: Date, now: Date): string {
+  if (at.getTime() <= now.getTime()) return "overdue";
+  const clock = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   const sameDay =
     at.getFullYear() === now.getFullYear() &&
     at.getMonth() === now.getMonth() &&
     at.getDate() === now.getDate();
-  const clock = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-  return `${live.next_job} ${sameDay ? clock : `${at.toLocaleDateString([], { weekday: "short" })} ${clock}`}`;
+  if (sameDay) return clock;
+  if (at.getTime() - now.getTime() < WEEK_MS) {
+    return `${at.toLocaleDateString([], { weekday: "short" })} ${clock}`;
+  }
+  return `${at.toLocaleDateString([], { month: "short", day: "numeric" })} ${clock}`;
 }

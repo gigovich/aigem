@@ -1,18 +1,23 @@
 package web
 
 import (
+	"cmp"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 )
 
-// What stands between this daemon and an offline guess at its token is the
-// token's own 256 bits. What stands between it and an *online* guess is this
-// file: a token bucket per client address, spent only by failures, so a
-// reconnect loop or a page full of parallel requests costs nothing and a
-// password-guesser costs itself a minute per ten tries.
+// A token bucket per client address, spent only by failures, so that a caller
+// which keeps failing stops getting work done on its behalf.
+//
+// It is deliberately not the thing that protects the token: that is the token's
+// own 256 bits, compared in constant time, which no rate limit improves and no
+// rate limit is needed for. So this runs *after* the credential is checked and
+// never refuses a good one - see the note in guard() for the outage that
+// ordering it the other way round caused.
 //
 // And a second, unrelated limit: how many websockets may be open at once. A
 // client whose socket keeps failing reconnects with backoff, but a client whose
@@ -32,13 +37,19 @@ const (
 	authFailureWindow = time.Minute
 
 	// maxSockets is how many websockets this daemon holds at once. It is a
-	// backstop, not a capacity plan: one browser holds one, plus one per open
-	// agent timeline, and a number in the tens means something is looping.
-	maxSockets = 16
+	// backstop, not a capacity plan.
+	//
+	// Counted per connection, and an open tab holds two - the inbox stream and
+	// the timeline of the thread being read - so this is sixteen tabs across
+	// every device, plus whatever `aigem attach` is holding. Refusing one costs
+	// the client a retry, which is cheap now that a refusal cannot also spend
+	// its way into a rate limit.
+	maxSockets = 32
 
-	// maxTrackedAddresses bounds the failure table. Every entry is an address
-	// that has failed recently; the table is swept when it grows past this,
-	// dropping the ones that have paid off their failures.
+	// maxTrackedAddresses is the hard ceiling on the failure table. Every entry
+	// is an address that has failed recently, and an unauthenticated caller
+	// decides how many there are, so it is a cap rather than a target: see
+	// makeRoom.
 	maxTrackedAddresses = 1024
 )
 
@@ -95,7 +106,7 @@ func (l *limiter) fail(key string) {
 	d, ok := l.spent[key]
 	if !ok {
 		if len(l.spent) >= maxTrackedAddresses {
-			l.sweep(now)
+			l.makeRoom(now)
 		}
 		d = &debt{tokens: l.burst, at: now}
 		l.spent[key] = d
@@ -133,14 +144,40 @@ func (l *limiter) perToken() time.Duration {
 	return time.Duration(float64(l.window) / l.burst)
 }
 
-// sweep drops every address whose burst has come all the way back: it is
-// indistinguishable from one the limiter has never seen. Caller holds l.mu.
-func (l *limiter) sweep(now time.Time) {
+// makeRoom guarantees space for one more address. Caller holds l.mu.
+//
+// It first drops every address whose burst has come all the way back, since one
+// of those is indistinguishable from an address the limiter has never seen.
+// When a flood from many addresses at once leaves nothing to collect, it evicts
+// anyway: an entry that is merely not inserted is an address with a full burst,
+// so declining to track new ones would hand a caller with addresses to spare a
+// way never to be limited at all.
+//
+// It frees a quarter of the table rather than one slot, because this walk is
+// O(table) under the lock every request takes - freeing one slot would mean
+// walking the whole table per new address for as long as the flood lasts, which
+// trades a memory bound for a worse CPU one.
+func (l *limiter) makeRoom(now time.Time) {
+	keep := make([]string, 0, len(l.spent))
 	for key, d := range l.spent {
 		l.settle(d, now)
 		if d.tokens >= l.burst {
 			delete(l.spent, key)
+			continue
 		}
+		keep = append(keep, key)
+	}
+	room := maxTrackedAddresses - maxTrackedAddresses/4
+	if len(l.spent) <= room {
+		return
+	}
+	// The fullest go: they are the closest to being forgotten anyway, and the
+	// emptiest are the ones actively failing, which is what this is for.
+	slices.SortFunc(keep, func(a, b string) int {
+		return cmp.Compare(l.spent[b].tokens, l.spent[a].tokens)
+	})
+	for _, key := range keep[:len(l.spent)-room] {
+		delete(l.spent, key)
 	}
 }
 
@@ -148,10 +185,12 @@ func (l *limiter) sweep(now time.Time) {
 //
 // It is the peer address and nothing else. X-Forwarded-For is written by
 // whoever is talking to us, so honouring it would let one client claim a fresh
-// bucket per request - the exact opposite of a limit. Behind a reverse proxy
-// that means the whole world shares one bucket, and ten wrong tokens a minute
-// from anywhere pauses everyone; with one operator and a proxy that is already
-// authenticating, that trade is the right way round.
+// bucket per request - the exact opposite of a limit.
+//
+// Behind a reverse proxy every client is therefore one bucket. That is only
+// survivable because a valid credential is checked first and never refused: an
+// address at zero tokens still gets in with the right token, so a stranger
+// filling the shared bucket costs the operator nothing.
 func clientAddr(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

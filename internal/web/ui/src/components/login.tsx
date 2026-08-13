@@ -26,6 +26,37 @@ interface Flow {
  *  field. */
 const INTERACTIVE = new Set(["openai", "xai"]);
 
+/** Ends this browser's session and sends it back for a new one.
+ *
+ *  The daemon has revoked the cookie by the time this returns, so the reload is
+ *  what gets the page a fresh one - it still holds the URL token in
+ *  sessionStorage, and the exchange runs before the first render. On a phone
+ *  handed to someone else, closing the tab is not a sign-out: the cookie lasts
+ *  a month.
+ *
+ *  It sits under the providers rather than in the header. Signing out is rare,
+ *  and a header button next to the ones used constantly is a mis-tap that
+ *  disconnects the operator from a working fleet. */
+function SignOut() {
+  const [failed, setFailed] = useState<string | null>(null);
+  return (
+    <div className="mt-3 border-t border-line pt-3">
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          void api("/api/auth/session", { method: "DELETE" })
+            .then(() => window.location.reload())
+            .catch((e: unknown) => setFailed(e instanceof Error ? e.message : String(e)));
+        }}
+      >
+        Sign this browser out
+      </Button>
+      {failed && <p className="mt-1 text-[13px] text-bad">{failed}</p>}
+    </div>
+  );
+}
+
 export function Login({ onClose }: { onClose: () => void }) {
   const [models, setModels] = useState<ModelView[]>([]);
   const [flow, setFlow] = useState<Flow | null>(null);
@@ -175,6 +206,8 @@ export function Login({ onClose }: { onClose: () => void }) {
             )}
           </div>
         )}
+
+        <SignOut />
       </div>
     </div>
   );

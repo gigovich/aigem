@@ -310,10 +310,11 @@ with a `desync` event carrying the last seq it definitely delivered, and closes.
 The client reconnects with `since` and catches up from the journal. Blocking the
 event fan-out on the slowest reader would let one stuck tab hang a turn.
 
-The token travels in the query string because browsers cannot set headers on a
-websocket handshake. On loopback that is acceptable; it is worth revisiting
-before any `--listen` beyond `127.0.0.1`, since query strings leak into logs and
-referrers.
+The token travelled in the query string because browsers cannot set headers on a
+websocket handshake. That was acceptable on loopback and not beyond it - query
+strings leak into logs and referrers - so the browser now trades it for a cookie
+before it opens anything, and the handshake carries that instead. The query form
+remains for a client that cannot hold a cookie.
 
 ## HTTP API
 
@@ -329,11 +330,15 @@ GET    /api/models                      registry + which are authenticated
 POST   /api/auth/login/{provider}       begin a login, returns a flow id
 GET    /api/auth/login/{flow}           poll: pending / done / error
 POST   /api/auth/login/{flow}/paste     redirect-URL fallback (see below)
+POST   /api/auth/session                trade the token for a browser cookie
+DELETE /api/auth/session                revoke the cookie this request carries
 GET    /api/modes                       which screens this daemon serves
 GET    /healthz
 ```
 
-HTTP uses `Authorization: Bearer <token>`.
+HTTP accepts either `Authorization: Bearer <token>` or the browser cookie. The
+CLI sends the header; the page trades it for the cookie on load and then sends
+neither, which is what keeps the token out of websocket URLs and access logs.
 
 `GET /api/modes` answers `{"sessions": bool, "chat": bool}`. One bundle serves
 both screens and only the daemon knows which it is: `aigem web run` has no fleet
@@ -382,6 +387,12 @@ Therefore, from the first commit:
   existing `tools.ResolveCapabilityProfile`. The daemon does not get a way to
   escalate a session mid-flight, in line with the existing rule that unattended
   paths never escalate.
+
+Since then the daemon has gained two more routes, `POST /api/auth/session` and
+`DELETE /api/auth/session`: the first trades the bearer token for a cookie, the
+second revokes it. HTTP therefore accepts either an `Authorization: Bearer`
+header - which is what the CLI sends - or that cookie, which is what the browser
+sends after its first request, including on the websocket handshake.
 
 Exposing the daemon beyond loopback was deliberately a separate, later decision,
 and it has since been made: `--origin` names the public URL, the daemon refuses
@@ -690,6 +701,7 @@ Neither is blocked; both are their own piece of work.
   exists for exactly that. Which of the two applies should be decided before the
   UI implies an answer.
 - **Notifications.** Web Push needs HTTPS, which loopback does not provide. An
-  approval waiting on a phone is the most valuable notification in the system,
-  and it is blocked behind the `--listen` decision.
+  approval waiting on a phone is the most valuable notification in the system.
+  The `--listen` decision that blocked it has been made - a reverse proxy in
+  front, named with `--origin` - so this is now only unbuilt, not blocked.
 - **Upload limits** for pasted images, and where they are stored.

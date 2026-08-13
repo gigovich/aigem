@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Check, ChevronRight, CornerDownRight, TriangleAlert, Wrench } from "lucide-react";
 import type { Item, RunStep } from "@/lib/session";
+import { authHeaders } from "@/lib/protocol";
 import { Badge, RunDot } from "./ui";
 import { Markdown } from "./md";
 import { argSummary, cn } from "@/lib/utils";
@@ -54,9 +55,11 @@ function ToolCard({ item, blobURL }: { item: Extract<Item, { kind: "tool" }>; bl
     // when someone actually looks at it.
     if (next && item.blob && item.blobSeq && full === null) {
       try {
-        const res = await fetch(blobURL(item.blobSeq), {
-          headers: { Authorization: `Bearer ${sessionStorage.getItem("aigem-token") ?? ""}` },
-        });
+        // Through the shared credential rule, not a hand-rolled header: this
+        // route is text rather than JSON, which is the only reason it does not
+        // go through api(). Sending the bearer token once a cookie exists would
+        // put it back into a log the cookie exists to keep it out of.
+        const res = await fetch(blobURL(item.blobSeq), { headers: authHeaders() });
         if (res.ok) setFull(await res.text());
         else setFailed(true);
       } catch {

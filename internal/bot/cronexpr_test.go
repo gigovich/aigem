@@ -128,3 +128,67 @@ func TestScheduleNextIsAMinuteMatches(t *testing.T) {
 		}
 	}
 }
+
+// A zone that jumps forward across its own midnight has no 00:00 that day, and
+// time.Date resolves the missing hour BACKWARDS - onto the previous date. The
+// walk then computed an "end of day" at or before where it already was, made no
+// progress for its whole horizon, and reported that nothing was ever scheduled.
+//
+// Atlantic/Azores is a live EU zone, so this is not academic: a bot with an
+// armed heartbeat showed "-" in the next-job column for the whole evening.
+func TestScheduleNextSurvivesAZoneWithNoLocalMidnight(t *testing.T) {
+	for _, zone := range []string{
+		"Atlantic/Azores",   // 2026-03-28 23:00 -> 2026-03-29 01:00
+		"America/Santiago",  // September
+		"America/Havana",    // March
+		"America/Sao_Paulo", // historical
+	} {
+		loc, err := time.LoadLocation(zone)
+		if err != nil {
+			t.Skipf("no zone data for %s: %v", zone, err)
+		}
+		// A day either side of every transition in a decade, at minute
+		// resolution around the jump itself.
+		for year := 2020; year <= 2030; year++ {
+			for _, expr := range []string{"0 4 * * *", "7,37 * * * *"} {
+				s, err := ParseSchedule(expr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, month := range []time.Month{time.March, time.April, time.September, time.October, time.November} {
+					for day := 1; day <= 28; day++ {
+						from := time.Date(year, month, day, 22, 30, 0, 0, loc)
+						next, ok := s.Next(from)
+						if !ok {
+							t.Fatalf("%s %q from %s: reported nothing scheduled", zone, expr, from)
+						}
+						if !s.Matches(next) {
+							t.Fatalf("%s %q from %s: Next said %s, which Matches rejects", zone, expr, from, next)
+						}
+						if !next.After(from) {
+							t.Fatalf("%s %q from %s: Next said %s, which is not later", zone, expr, from, next)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// The horizon has to outlast the rarest expression that legitimately fires. The
+// gap between 29 Februaries spans a non-leap century year - 2096 to 2104 is
+// eight years, not four.
+func TestScheduleNextClearsACenturyBoundary(t *testing.T) {
+	s, err := ParseSchedule("0 0 29 2 *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2096, 3, 1, 0, 0, 0, 0, time.UTC)
+	got, ok := s.Next(from)
+	if !ok {
+		t.Fatal("29 February reported as never firing across 2100")
+	}
+	if want := time.Date(2104, 2, 29, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("Next(%s) = %s, want %s", from, got, want)
+	}
+}

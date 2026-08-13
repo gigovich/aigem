@@ -18,10 +18,17 @@ import (
 )
 
 const webUsage = `usage:
-  aigem web run [flags]      serve the web UI and the session protocol
+  aigem web run                       serve the web UI and the session protocol
+  aigem -listen host:port web run     bind somewhere other than a random loopback port
+  aigem -listen 0.0.0.0:7777 -origin https://aigem.example.ts.net web run
 
-Runs on 127.0.0.1 by default. The URL printed at startup carries the token
-every request needs; anything reaching the daemon without it is refused.
+Flags come before "web run": they are the global set, and the command is what
+follows them.
+
+Runs on 127.0.0.1 by default. The URL printed at startup carries a token; the
+browser trades it once for a cookie, and the CLI keeps using it. Serving on
+anything but loopback needs -origin, the public URL a reverse proxy reaches this
+daemon at - see docs/bots.md.
 `
 
 // webRun is everything the daemon needs to build sessions, assembled by the

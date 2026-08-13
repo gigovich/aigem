@@ -106,10 +106,12 @@ func (s Schedule) matchesMinute(t time.Time) bool {
 	return s.min&(1<<uint(t.Minute())) != 0 && s.hour&(1<<uint(t.Hour())) != 0
 }
 
-// nextHorizonDays bounds how far Next looks ahead. Four years covers the rarest
-// expression that legitimately fires - February 29 in a named month - and stops
-// one that can never fire at all ("0 0 30 2 *") from becoming an unbounded loop.
-const nextHorizonDays = 366 * 4
+// nextHorizonDays bounds how far Next looks ahead. It has to outlast the rarest
+// expression that legitimately fires, which is February 29: the gap between two
+// of them spans a non-leap century year - 2096 to 2104 - so it is eight years
+// and not four. Past that, the bound is what stops an expression that can never
+// fire at all ("0 0 30 2 *") from becoming an unbounded loop.
+const nextHorizonDays = 366 * 9
 
 // Next returns the first minute strictly after t at which the schedule fires,
 // and reports whether it found one inside the horizon.
@@ -121,7 +123,7 @@ const nextHorizonDays = 366 * 4
 func (s Schedule) Next(after time.Time) (time.Time, bool) {
 	t := after.Truncate(time.Minute).Add(time.Minute)
 	for day := 0; day <= nextHorizonDays; day++ {
-		end := midnightAfter(t)
+		end := dayAfter(t)
 		if s.matchesDay(t) {
 			for ; t.Before(end); t = t.Add(time.Minute) {
 				if s.matchesMinute(t) {
@@ -129,17 +131,27 @@ func (s Schedule) Next(after time.Time) (time.Time, bool) {
 				}
 			}
 		}
-		if end.After(t) {
-			t = end
-		}
+		t = end
 	}
 	return time.Time{}, false
 }
 
-// midnightAfter is the start of the calendar day following t's, which is always
-// later than t - so the loop above always advances even where a zone has no
-// midnight on the day in question and time.Date normalises past it.
-func midnightAfter(t time.Time) time.Time {
+// dayAfter is the first instant past t's calendar day, and is always later than
+// t - which is what makes the loop above terminate.
+//
+// The obvious spelling of it does not have that property. A zone that jumps
+// forward across its own midnight has no 00:00 on the day after the jump, and
+// time.Date resolves a missing local time BACKWARDS, onto the previous date: in
+// Atlantic/Azores, time.Date(2026-03-29 00:00) is 2026-03-28 23:00. Used as an
+// end-of-day that is a boundary at or before where the walk already stood, so
+// it advanced by nothing for its whole horizon and then reported that the job
+// was never scheduled at all - for a heartbeat that was armed and due within
+// the hour.
+func dayAfter(t time.Time) time.Time {
 	y, m, d := t.Date()
-	return time.Date(y, m, d+1, 0, 0, 0, 0, t.Location())
+	next := time.Date(y, m, d+1, 0, 0, 0, 0, t.Location())
+	for !next.After(t) {
+		next = next.Add(time.Hour)
+	}
+	return next
 }

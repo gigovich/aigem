@@ -284,11 +284,13 @@ func normalizeOrigin(raw string) (string, error) {
 		return "", fmt.Errorf("web: origin %q must be a scheme and a host and nothing else "+
 			"(for example https://aigem.example.ts.net)", raw)
 	}
-	// A browser omits the default port, so an allowlist that kept it would never
-	// match the header it is compared against.
-	host := u.Host
+	// Lowercased, and without the default port: that is how a browser writes an
+	// Origin, and an allowlist entry spelled any other way is one no request can
+	// ever match - a 403 that reads as a broken server, which is the whole
+	// failure this flag exists to prevent.
+	host := strings.ToLower(u.Host)
 	if p := u.Port(); (u.Scheme == "http" && p == "80") || (u.Scheme == "https" && p == "443") {
-		host = u.Hostname()
+		host = strings.ToLower(u.Hostname())
 		if strings.Contains(host, ":") {
 			host = "[" + host + "]"
 		}

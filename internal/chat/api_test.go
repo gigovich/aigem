@@ -675,11 +675,10 @@ func attachClient(t *testing.T, hub *Hub, actor string) *Client {
 
 func itoa(n uint64) string { return strconv.FormatUint(n, 10) }
 
-// The fleet screen's columns come from two places: what the store can count,
-// and what only the process running the bots can say. A daemon serving the
-// store without running any bots must say the second part is missing rather
-// than report a stopped fleet with no heartbeat.
-func TestFleetFoldsTheDaemonsAnswerOntoTheStores(t *testing.T) {
+// A daemon serving the store without running any bots knows none of the
+// operational columns, and must leave them out rather than report a fleet with
+// no model and no heartbeat. The folding itself is asserted below.
+func TestFleetOmitsWhatNobodyReported(t *testing.T) {
 	s, srv := testAPI(t)
 	if _, err := s.NewThread(t.Context(), "t", Operator, []string{amiran}); err != nil {
 		t.Fatal(err)

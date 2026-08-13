@@ -79,12 +79,10 @@ func (f *liveFleet) status() map[string]chat.LiveBot {
 			out[chat.BotActor(name)] = chat.LiveBot{}
 			continue
 		}
-		l := chat.LiveBot{
-			Running:   true,
-			Model:     rb.model,
-			Heartbeat: rb.hb.Cadence(),
-			Tier:      rb.hb.Tier(),
-		}
+		// Both from one call: the cadence and the tier are one fact, and reading
+		// them separately can pair a tier with the neighbouring tier's label.
+		cadence, tier := rb.hb.State()
+		l := chat.LiveBot{Running: true, Model: rb.model, Heartbeat: cadence, Tier: tier}
 		if job, at, found := rb.sched.NextRun(now); found {
 			l.NextJob, l.NextRun = job, &at
 		}

@@ -203,7 +203,7 @@ func chatAddrFlag(args []string) (addr string, origins []string, rest []string, 
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&addr, "addr", "", "address to serve the chat UI on (default: a loopback port)")
 	fs.Var((*originList)(&origins), "origin",
-		"public URL this daemon is reached at, e.g. https://aigem.example.ts.net "+
+		"public `url` this daemon is reached at, e.g. https://aigem.example.ts.net "+
 			"(required for a non-loopback --addr; repeat for more than one)")
 	if err := fs.Parse(args); err != nil {
 		return "", nil, nil, err

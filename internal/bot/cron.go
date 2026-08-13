@@ -278,12 +278,21 @@ func (s *Scheduler) NextRun(now time.Time) (id string, at time.Time, ok bool) {
 	for _, jobID := range s.order {
 		sj := s.jobs[jobID]
 		var when time.Time
-		if !sj.at.IsZero() {
+		switch {
+		case s.pending[jobID]:
+			// Held back because a turn was running when its minute came, and
+			// waiting for the first free tick. Reporting its next ordinary
+			// occurrence would say "in 24 hours" about a job that fires as soon
+			// as the bot is free.
+			when = now
+		case !sj.at.IsZero():
 			when = sj.at
-		} else if next, found := sj.sched.Next(now); found {
+		default:
+			next, found := sj.sched.Next(now)
+			if !found {
+				continue
+			}
 			when = next
-		} else {
-			continue
 		}
 		if ok && !when.Before(at) {
 			continue

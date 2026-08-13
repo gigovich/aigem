@@ -29,7 +29,9 @@ const botUsage = `usage:
   aigem bot create <name>   define a bot interactively
   aigem bot list            list configured bots
   aigem bot rm <name>       delete a bot
-  aigem bot start [<name>...]  run one bot, several, or the whole fleet
+  aigem bot start [--addr host:port] [--origin url] [<name>...]
+                            run one bot, several, or the whole fleet
+                            (flags first: the names end the flags)
   aigem bot model [<name>] [<ref>]   show or switch the model a bot runs on
   aigem bot prompt <name>   print the bot's full assembled system prompt`
 
