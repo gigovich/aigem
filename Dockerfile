@@ -42,9 +42,15 @@ RUN apk add --no-cache ca-certificates bash git tzdata tini
 #   host ~/.config/aigem (or macOS ~/Library/Application Support/aigem) -> /config/aigem
 #        bots/<name>/bot.yaml + memory/
 #   host ~/.local/state/aigem                                          -> /state/aigem
-#        auth.json (tokens), sessions/
+#        auth.json (tokens), sessions/, chat/ (the fleet's conversation store)
 ENV XDG_CONFIG_HOME=/config \
     XDG_STATE_HOME=/state
+
+# The fleet's web UI. It binds a port the OS picks unless told otherwise, so a
+# container that publishes this one runs `bot start --addr 0.0.0.0:7777
+# --origin <public url>`; the daemon refuses a non-loopback bind without the
+# origin. See docs/bots.md.
+EXPOSE 7777
 
 COPY --from=build /out/aigem /usr/local/bin/aigem
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

@@ -38,7 +38,9 @@ and **`/state/aigem`** - bind-mount the host dirs onto those paths (mind the `ai
 
 - config -> `/config/aigem`: host `~/.config/aigem` (macOS:
   `~/Library/Application Support/aigem`). Holds `bots/<name>/bot.yaml` and each bot's memory.
-- state -> `/state/aigem`: host `~/.local/state/aigem`. Holds `auth.json` (tokens) and sessions.
+- state -> `/state/aigem`: host `~/.local/state/aigem`. Holds `auth.json` (tokens), sessions, and
+  `chat/` - the fleet's SQLite conversation store, which is every thread the bots have ever had.
+  It is the one volume whose loss is not recoverable from config.
 
 A `developer`/`tester` bot's workdir (`.`) is the container's `WORKDIR /workspace`; bind-mount
 the repo it edits there.
@@ -60,6 +62,20 @@ docker run -d --name aigem-jane \
   -v /path/to/repo:/workspace \
   aigem-bot
 ```
+
+To reach the fleet's web UI from outside the container, publish the port and name the URL it
+will be reached at - the daemon refuses a non-loopback bind without one:
+
+```
+docker run -d --name aigem-fleet -p 7777:7777 \
+  -v ~/.config/aigem:/config/aigem \
+  -v ~/.local/state/aigem:/state/aigem \
+  -v /path/to/repo:/workspace \
+  aigem-bot bot start --addr 0.0.0.0:7777 --origin https://aigem.example.ts.net
+```
+
+Put a reverse proxy in front of that port for TLS; see
+[Chat bots](bots.md#reaching-it-from-another-device).
 
 An explicit command is passed straight to `aigem` and takes precedence over
 `BOT_NAME`, so the image doubles as the CLI:

@@ -25,6 +25,7 @@ aigem bot prompt <name>   # print the bot's full assembled system prompt
 aigem chat threads        # the fleet's inbox
 aigem chat tail <thread>  # follow a thread live, including the agent's steps
 aigem chat read <thread>  # print a thread, and what the work in it cost
+aigem chat fleet          # the roster: who is up, on what, and what is due next
 ```
 
 ## Running the whole team in one process
@@ -241,6 +242,81 @@ GET /api/chat/threads/{id}/artifacts?turn=<seq>  the files it changed
 after. `truncated` on a row means the file was too large to keep either side of,
 so the path is all there is. A run records at most 200 files and 128 KiB of each
 side, and stored diffs age out with the timeline they belong to.
+
+## The bot UI
+
+`aigem bot start` prints a URL. Open it and you get the fleet's own browser
+interface, served by the same process that runs the bots - one listener, one
+credential, one SQLite writer.
+
+The **inbox** is the list of threads, ordered by what changed last and filtered
+by state: `needs you`, `working`, `waiting`, `idle`. A thread opens into its
+transcript. Under each bot's answer is a one-line summary of the run that
+produced it - `14 steps · 6 tools · 2 files` - which expands into the whole
+timeline of that run: every model round, every tool call, every file written.
+Beside the thread is the bot's working plan, the files the run changed with
+their diffs, and what the thread has cost.
+
+The **fleet screen** is the roster, reached from the bot count in the header or
+at `/chat/fleet` directly. One row per bot:
+
+| column | where it comes from |
+| --- | --- |
+| state | `working` is a turn with no end, read from the store - so it agrees with the inbox |
+| threads | unarchived threads the bot takes part in |
+| heartbeat | the interval in force, and how far the idle backoff has walked (`30m (t0)`) |
+| next job | the scheduled job due soonest, built-in ones included |
+| model | the model that bot actually opened, which may not be the configured one |
+
+`stopped` is a bot the daemon could not start and is still retrying - the state
+that previously meant reading `journalctl`.
+
+A column the daemon cannot answer shows `-` rather than a guess: a daemon
+serving the store without running the bots - a second `aigem` reading the same
+database - knows none of the last three. `aigem chat fleet` prints the same
+columns in a terminal.
+
+Both are one build with the session workspace of [the web UI](web-ui.md); the
+daemon says which halves it serves, and offers no switch to one that would
+answer 404.
+
+### Reaching it from another device
+
+The daemon binds loopback on a port the OS picks. Pin the port with `--addr`,
+and to reach it from a phone put a reverse proxy in front and tell the daemon
+the public URL:
+
+```sh
+aigem bot start --addr 127.0.0.1:7777 --origin https://aigem.example.ts.net
+```
+
+`--origin` is not optional for anything but loopback: the daemon **refuses to
+start** on an address the network can reach without one. Behind a proxy the
+bind address is not the name requests arrive under, so every allowlist the
+daemon could derive on its own would reject the traffic it is meant to serve -
+and a 403 that reads as a broken server is worse than a refusal that names the
+flag. Configured origins replace the derived list rather than extend it; the
+loopback names stay allowed so `aigem chat` and `curl` keep working on the
+machine itself. Repeat `--origin` for more than one.
+
+`X-Forwarded-Host` and `X-Forwarded-Proto` are not read. They are written by
+whoever is talking to the daemon, and deriving the allowlist from the request it
+is meant to check is not a check.
+
+The URL carries the token, in the style of `jupyter`. The page trades it once
+for a cookie - `HttpOnly`, `SameSite=Strict`, `Secure` wherever TLS is involved
+- and then stops sending it, so the token is not in the URL of the websockets
+the page opens or in the access log of every hop on the way. Cookies live in the
+daemon's memory: restarting the fleet signs every browser out. The bearer token
+stays for `aigem chat` and `aigem attach`, which are not browsers.
+
+Ten failed authentications a minute from one address buys a `429` with
+`Retry-After`; one success clears it. Behind a proxy every request appears to
+come from the proxy, so that limit is shared - deliberately, since the
+alternative is honouring a header an attacker writes.
+
+The proxy still has to terminate TLS and, ideally, authenticate. `tailscale
+serve` in front of the loopback port is the smallest thing that does both.
 
 ## Running as a service
 

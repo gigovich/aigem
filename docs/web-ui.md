@@ -383,10 +383,15 @@ Therefore, from the first commit:
   escalate a session mid-flight, in line with the existing rule that unattended
   paths never escalate.
 
-Exposing the daemon beyond loopback is deliberately a separate, later decision.
-The two candidates are `tailscale serve` in front of it, or `tsnet` inside it
-for tailnet identity and TLS without configuration; the second costs a large
-dependency and is not worth it until the rest works.
+Exposing the daemon beyond loopback was deliberately a separate, later decision,
+and it has since been made: `--origin` names the public URL, the daemon refuses
+to bind anything but loopback without one, the page trades its token for an
+`HttpOnly; SameSite=Strict` cookie, and failed authentications are rate limited
+per address. TLS and any further authentication belong to a reverse proxy in
+front - `tailscale serve` is the smallest thing that does both. `tsnet` inside
+the daemon was the other candidate and is still not worth its dependency.
+[Chat bots](bots.md#reaching-it-from-another-device) has the operator's version
+of all of it.
 
 ## Build and distribution
 

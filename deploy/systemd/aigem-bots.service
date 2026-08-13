@@ -11,8 +11,17 @@
 # conversation store, and only one of them writes the state file the CLI and the
 # browser use to find a daemon.
 #
-# The fleet serves its web UI on a loopback port by default. Pass --addr to bind
-# it somewhere reachable; see docs/bots.md before you do.
+# The fleet serves its web UI on a port the OS picks on loopback. Pin it with
+# --addr so the URL does not move on every restart, and reach it from another
+# device by putting a reverse proxy in front and naming the public URL with
+# --origin:
+#
+#   ExecStart=%h/go/bin/aigem bot start --addr 127.0.0.1:7777 \
+#             --origin https://aigem.example.ts.net
+#
+# The daemon refuses to bind anything but loopback without --origin: behind a
+# proxy the bind address is not the name requests arrive under, and it will not
+# serve behind an origin check that nothing can pass. See docs/bots.md.
 Description=aigem chat bot fleet
 Documentation=https://gigovich.github.io/aigem/bots/
 After=network-online.target
@@ -21,8 +30,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 # No bot name: run every bot in ~/.config/aigem/bots. Name them to run a subset,
-# e.g. "%h/go/bin/aigem bot start jane kate".
-ExecStart=%h/go/bin/aigem bot start
+# e.g. "%h/go/bin/aigem bot start jane kate". Add --addr and --origin here to
+# reach the UI from another device; see the note above.
+ExecStart=%h/go/bin/aigem bot start --addr 127.0.0.1:7777
 WorkingDirectory=%h/work
 
 # A unit gets a minimal environment, not your login shell's. The bash tool runs

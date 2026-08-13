@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A bot that failed to start no longer shows as running. `present` was set for
+  every configured bot before any of them had started and never cleared, so a bot
+  whose model could not be opened still drew a running dot in the inbox, the
+  composer and every participant list. It is written when a bot comes up and
+  cleared when it goes down.
+
 - An "@name" is a mention only at a word boundary. The pattern had no leading
   boundary, so "mail me at someone@demetre" named demetre and woke them. The
   composer's autocomplete decides whom to add to a thread and the daemon decides
@@ -128,6 +134,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bot conversation history was never persisted, so there is nothing to migrate:
   a restart already cost the fleet its in-memory context, and switching backends
   costs it exactly that much.
+
+  A fleet screen goes with it, in the browser and as `aigem chat fleet`: which
+  bots are up, what each is working on, how many threads it carries, the model it
+  actually opened, how far its heartbeat has backed off, and what it is next due
+  to do. Half of that comes from the store, so it agrees with the inbox and
+  survives a restart; the other half only the running process knows, and a daemon
+  that is not running the bots says so rather than reporting a stopped fleet. It
+  includes the state that previously meant reading `journalctl`: a bot the daemon
+  could not start and is still retrying.
+
+- The daemon can be reached from another device. `--origin` names the public URL
+  a reverse proxy serves it at, and the daemon refuses to bind anything but
+  loopback without one - the allowlist it used to derive from its own bind
+  address could never match a request arriving through a proxy, so the only
+  possible answer was a 403 that read as a broken server. Configured origins
+  replace that derived list rather than extend it, and are matched whole,
+  scheme included; forwarded headers are not read at all.
+
+  The token in the URL is now traded once for an `HttpOnly; SameSite=Strict`
+  cookie, so it stops appearing in websocket URLs and in every access log on the
+  way; it is `Secure` wherever TLS is involved, and lives in the daemon's memory,
+  so restarting the fleet signs every browser out. The bearer token stays for
+  `aigem chat` and `aigem attach`. Ten failed authentications a minute from one
+  address now buy a 429, and sixteen is the ceiling on concurrent websockets.
 
 - A bot thread now records what the work in it cost. A model call made while a
   bot is working in a thread is billed to that turn - including the calls its
