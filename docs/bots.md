@@ -323,7 +323,37 @@ come from the proxy, so that limit is shared - deliberately, since the
 alternative is honouring a header an attacker writes.
 
 The proxy still has to terminate TLS and, ideally, authenticate. `tailscale
-serve` in front of the loopback port is the smallest thing that does both.
+serve` in front of the loopback port is the smallest thing that does both, and
+it is what `deploy/systemd/` is written for.
+
+#### With Tailscale
+
+`tailscale serve` gives the machine an HTTPS name on your tailnet
+(`https://<machine>.<tailnet>.ts.net`) with a certificate it manages, reachable
+from your phone and from nowhere else. Nothing is exposed to the internet -
+that would be `tailscale funnel`, which this does not use.
+
+```sh
+sudo tailscale set --operator="$USER"     # once: lets the unit configure serve
+tailscale serve --bg --https=443 http://127.0.0.1:7777
+aigem bot start --addr 127.0.0.1:7777 --origin "https://$(tailscale status --json |
+  jq -r .CertDomains[0])"
+```
+
+It also needs HTTPS switched on once for the tailnet, in the admin console under
+**DNS -> HTTPS Certificates**. Without it there is no name to issue a
+certificate for, and `tailscale serve` has nothing to present.
+
+The systemd unit does all of this; see [Running as a service](#running-as-a-service).
+Serve config lives in tailscaled and persists across reboots, so it is set once
+and not torn down when the fleet stops - `sudo tailscale serve reset` removes
+it, and takes every other service on the node with it.
+
+Two things worth knowing. The tailnet is the authentication that matters here,
+but the daemon's token is still checked underneath, so a device on your tailnet
+that has never opened the URL still cannot read a thread. And every request
+arrives from the proxy's address, so the failed-authentication limit is shared -
+which is only survivable because a valid credential is never refused.
 
 ## Running as a service
 
@@ -332,12 +362,23 @@ unit - the config and credentials it needs live under your home directory, so it
 does not want to be a system unit running as root:
 
 ```sh
-mkdir -p ~/.config/systemd/user
+sudo tailscale set --operator="$USER"      # once: lets the unit configure serve
+mkdir -p ~/.config/systemd/user ~/.local/bin
+cp deploy/systemd/aigem-bots-tailscale.sh ~/.local/bin/
+chmod +x ~/.local/bin/aigem-bots-tailscale.sh
 cp deploy/systemd/aigem-bots.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now aigem-bots
 loginctl enable-linger "$USER"     # keep running when you are not logged in
 ```
+
+The unit runs the fleet behind `tailscale serve`, so the UI is at
+`https://<machine>.<tailnet>.ts.net` with no URL to look up and no token to
+paste after the first time. `aigem-bots-tailscale.sh` is what derives that name:
+it cannot live in the unit, because the name is per machine and per tailnet and
+systemd does not substitute command output into `ExecStart`. To run without
+Tailscale, point `ExecStart` at the binary and drop the `ExecStartPost` line -
+the unit says how.
 
 Without `enable-linger` the fleet stops when your last session ends and does not
 come back at boot.

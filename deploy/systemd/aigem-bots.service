@@ -1,27 +1,41 @@
 [Unit]
-# The whole bot fleet in one process. Install as a user unit:
+# The whole bot fleet in one process, served over HTTPS on your tailnet.
 #
-#   mkdir -p ~/.config/systemd/user
+# The fleet binds loopback and `tailscale serve` terminates TLS in front of it,
+# so the UI is reachable from a phone at https://<machine>.<tailnet>.ts.net with
+# no certificate to manage, no port open to the internet, and no second password:
+# whoever is on the tailnet is who gets in, and the daemon's own token is still
+# checked underneath.
+#
+# Install:
+#
+#   sudo tailscale set --operator="$USER"      # once per machine: lets this unit
+#                                              # configure serve without root
+#   mkdir -p ~/.config/systemd/user ~/.local/bin
+#   cp deploy/systemd/aigem-bots-tailscale.sh ~/.local/bin/
+#   chmod +x ~/.local/bin/aigem-bots-tailscale.sh
 #   cp deploy/systemd/aigem-bots.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now aigem-bots
 #   loginctl enable-linger "$USER"     # keep it running when you are not logged in
 #
-# Do not run a second copy elsewhere: both would open the same SQLite
-# conversation store, and only one of them writes the state file the CLI and the
-# browser use to find a daemon.
+# It also needs HTTPS enabled once for the tailnet, in the admin console under
+# DNS -> HTTPS Certificates. The unit fails loudly if it is not, because the
+# alternative is a fleet running behind a URL that never loads.
 #
-# The fleet serves its web UI on a port the OS picks on loopback. Pin it with
-# --addr so the URL does not move on every restart, and reach it from another
-# device by putting a reverse proxy in front and naming the public URL with
-# --origin:
+# Without tailscale: point ExecStart straight at the binary and name whatever
+# public URL your own proxy serves, dropping the ExecStartPost line.
 #
 #   ExecStart=%h/go/bin/aigem bot start --addr 127.0.0.1:7777 \
-#             --origin https://aigem.example.ts.net
+#             --origin https://aigem.example.com
 #
 # The daemon refuses to bind anything but loopback without --origin: behind a
 # proxy the bind address is not the name requests arrive under, and it will not
 # serve behind an origin check that nothing can pass. See docs/bots.md.
+#
+# Do not run a second copy elsewhere: both would open the same SQLite
+# conversation store, and only one of them writes the state file the CLI and the
+# browser use to find a daemon.
 Description=aigem chat bot fleet
 Documentation=https://gigovich.github.io/aigem/bots/
 After=network-online.target
@@ -29,11 +43,20 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# No bot name: run every bot in ~/.config/aigem/bots. Name them to run a subset,
-# e.g. "... bot start --addr 127.0.0.1:7777 jane kate" - flags first, because the
-# first name ends the flags. Add --origin here to reach the UI from another
-# device; see the note above.
-ExecStart=%h/go/bin/aigem bot start --addr 127.0.0.1:7777
+# The address the fleet listens on, read by both lines below so the port is
+# stated once. Loopback: tailscale is what carries traffic in from the tailnet.
+Environment=AIGEM_ADDR=127.0.0.1:7777
+# Empty runs every bot in ~/.config/aigem/bots; set names to run a subset.
+Environment=AIGEM_BOTS=
+
+# The wrapper derives this node's MagicDNS name and passes it as --origin. It
+# cannot be written here: the name is per machine and per tailnet, and systemd
+# does not substitute command output into ExecStart.
+ExecStart=%h/.local/bin/aigem-bots-tailscale.sh run
+# The TLS front door. Idempotent, and deliberately never torn down - see the
+# script. If this fails the unit fails, because a fleet nobody can reach is
+# worse than one that says why; Restart= below then retries it.
+ExecStartPost=%h/.local/bin/aigem-bots-tailscale.sh serve
 WorkingDirectory=%h/work
 
 # A unit gets a minimal environment, not your login shell's. The bash tool runs
