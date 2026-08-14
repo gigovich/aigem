@@ -14,7 +14,9 @@ import (
 
 	"github.com/gigovich/aigem/internal/bot"
 	"github.com/gigovich/aigem/internal/chat"
+	"github.com/gigovich/aigem/internal/chat/chatpush"
 	"github.com/gigovich/aigem/internal/config"
+	"github.com/gigovich/aigem/internal/push"
 	"github.com/gigovich/aigem/internal/web"
 )
 
@@ -29,6 +31,9 @@ type chatServer struct {
 	store *chat.Store
 	hub   *chat.Hub
 	srv   *web.Server
+	// push is nil on a daemon whose notification keys could not be loaded,
+	// which is a fleet that works and cannot ring a phone.
+	push *chatpush.Notifier
 }
 
 // pruneAfter is how long a thread's agent timeline is kept. What was said is
@@ -87,6 +92,7 @@ func startChatServer(ctx context.Context, o chatServerOpts, log *slog.Logger) (*
 	if o.live != nil {
 		api.SetFleetStatus(o.live.status)
 	}
+	notifier := startPush(ctx, store, api, log)
 	srv, err := web.New(web.Config{
 		Addr:    o.addr,
 		Origins: o.origins,
@@ -94,12 +100,14 @@ func startChatServer(ctx context.Context, o chatServerOpts, log *slog.Logger) (*
 		Mount:   api.Mount,
 	})
 	if err != nil {
+		notifier.Close()
 		_ = store.Close()
 		return nil, err
 	}
 	if err := chat.SaveState(chat.State{
 		PID: os.Getpid(), Addr: srv.Addr().String(), Token: srv.Token(),
 	}); err != nil {
+		notifier.Close()
 		_ = srv.Close()
 		_ = store.Close()
 		return nil, err
@@ -113,7 +121,29 @@ func startChatServer(ctx context.Context, o chatServerOpts, log *slog.Logger) (*
 	go prune(ctx, store, log)
 
 	fmt.Println("chat UI: " + srv.URL())
-	return &chatServer{store: store, hub: hub, srv: srv}, nil
+	return &chatServer{store: store, hub: hub, srv: srv, push: notifier}, nil
+}
+
+// startPush arms Web Push, and returns nil when it cannot.
+//
+// A daemon that cannot load or write its keys still serves the fleet. Refusing
+// to start would trade every conversation for the notifications about them,
+// and the page is told there is no key rather than being handed one that
+// nothing can push with.
+func startPush(ctx context.Context, store *chat.Store, api *chat.API,
+	log *slog.Logger) *chatpush.Notifier {
+	keys, err := push.LoadKeys(filepath.Join(store.Dir(), "vapid.json"))
+	if err != nil {
+		log.Error("web push is off: its keys could not be loaded", "err", err)
+		return nil
+	}
+	n := chatpush.New(store, push.NewClient(keys), log)
+	if err := n.Start(ctx); err != nil {
+		log.Error("web push is off: the notifier could not start", "err", err)
+		return nil
+	}
+	api.SetPushKey(keys.Public)
+	return n
 }
 
 // registerActors records the operator and every bot in the run, so a renamed
@@ -182,7 +212,10 @@ func (c *chatServer) Close() {
 	if c == nil {
 		return
 	}
-	// The hub first: http.Server.Close does not touch a hijacked connection, so
+	// The notifier first: it writes to the store when a push service reports a
+	// dead subscription, and it must stop doing that before the store closes.
+	c.push.Close()
+	// The hub next: http.Server.Close does not touch a hijacked connection, so
 	// an attached socket would otherwise outlive the daemon and then answer
 	// every op with "database is closed".
 	c.hub.Close()

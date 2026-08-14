@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Web Push: the fleet can now reach a phone with nothing open. The daemon
+  generates a VAPID key pair once into `$XDG_STATE_HOME/aigem/chat/vapid.json`,
+  a page that has been granted the notification permission subscribes to it, and
+  one event is pushed - a thread turning to `needs you`. RFC 8291 encryption is
+  written against the RFC's own test vector and RFC 8292 signing against a token
+  the tests verify, rather than either being taken as a dependency. It needs
+  HTTPS, so it follows the reverse proxy; on iOS it needs the page installed to
+  the home screen. A daemon whose keys cannot be loaded serves the fleet as
+  before and says so in the log.
+
 ### Fixed
+
+- Notifications from an open page no longer depend on a constructor Chrome for
+  Android refuses. They go through the service worker's registration when there
+  is one, which is every page that has subscribed to push.
 
 - A bot that failed to start no longer shows as running. `present` was set for
   every configured bot before any of them had started and never cleared, so a bot

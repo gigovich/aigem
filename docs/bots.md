@@ -356,6 +356,46 @@ that has never opened the URL still cannot read a thread. And every request
 arrives from the proxy's address, so the failed-authentication limit is shared -
 which is only survivable because a valid credential is never refused.
 
+### Notifications
+
+A tab that is open carries the count in its title (`(2) aigem`) and raises a
+system notification when a thread starts asking for you. The bell in the header
+asks for the permission; declining costs you nothing but the pop-up.
+
+With the permission granted the page also subscribes to **Web Push**, which is
+what reaches a phone with nothing open. The daemon pushes on one event only: a
+thread you are in turning to `needs you`. A bot finishing a turn, posting an
+update or starting work is not a reason to interrupt anyone, an archived thread
+never interrupts anyone, and a thread that is already asking does not ask twice.
+
+What that needs, in order:
+
+- **HTTPS.** Browsers refuse service workers and push on plain HTTP except on
+  loopback, so this follows the reverse proxy above.
+- **Keys.** The daemon generates a VAPID key pair once into
+  `$XDG_STATE_HOME/aigem/chat/vapid.json` (0600) and signs every push with it.
+  Every subscription is bound to that key: delete the file and every device has
+  to be re-subscribed, which happens by itself the next time each page loads.
+  A daemon that cannot load its keys still serves the fleet and logs
+  `web push is off`.
+- **An installed app, on iOS.** Safari has no push in an ordinary tab. Add the
+  page to the home screen and open it from there; the manifest is already
+  served.
+
+The notification says which thread and which bot is waiting, and nothing about
+what was said - it is read off a locked screen. Tapping it opens that thread in
+the window you already had open, or a new one.
+
+To stop them, revoke the site's notification permission in the browser. The
+next load of the page notices, unsubscribes, and the daemon forgets the
+endpoint - a page that is already open does not, because nothing tells it the
+permission changed. Deleting `vapid.json` is not an off switch - the next start
+generates a new key - and it costs every device its subscription until each one
+loads the page again.
+
+Subscriptions live in the store, capped at 20, and are dropped when a push
+service reports one gone. `aigem chat` and the CLI are unaffected either way.
+
 ## Running as a service
 
 `deploy/systemd/aigem-bots.service` runs the whole fleet as a systemd **user**

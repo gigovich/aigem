@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chatReducer, countsOf, emptyChat, inboxOf, type ChatState } from "./chat";
+import { OPERATOR } from "./chatprotocol";
 import type { Frame, Message, ThreadState, ThreadView } from "./chatprotocol";
 
 function view(id: string, over: Partial<ThreadView> = {}): ThreadView {
@@ -242,5 +243,79 @@ describe("needs_you alerts", () => {
     s = apply(s, asking("t_1", 20), asking("t_1", 21));
 
     expect(s.alerts).toEqual([]);
+  });
+
+  const answered = (id: string, seq: number): Frame => ({
+    seq,
+    stream: "message",
+    thread: id,
+    msg: {
+      seq,
+      thread: id,
+      author: OPERATOR,
+      body: "eu-west",
+      kind: "message",
+      created: new Date().toISOString(),
+    },
+  });
+
+  const at = (id: string, state: ThreadState, seq: number): Frame => ({
+    seq,
+    stream: "thread",
+    thread: id,
+    thr: view(id, { state, last_seq: seq }),
+  });
+
+  // A later turn over an unanswered question republishes needs_you with a
+  // working frame in between. That is one question, not two, and the phone is
+  // deliberately not pushed for it either.
+  it("does not alert again when a turn runs over a thread already asking", () => {
+    let s = chatReducer(emptyChat, { t: "inbox", views: [view("t_1", { state: "idle" })] });
+    s = apply(s, asking("t_1", 20));
+    expect(s.alerts).toEqual(["t_1"]);
+    s = chatReducer(s, { t: "alerted" });
+
+    s = apply(s, at("t_1", "working", 21), asking("t_1", 22));
+    expect(s.alerts).toEqual([]);
+  });
+
+  // The operator's answer arrives as a message. The thread frame beside it
+  // reads "working" whenever any turn is open - a second bot, a heartbeat - so
+  // an answer read off the state is an answer missed, and the next genuine
+  // question is then silently swallowed.
+  it("alerts again after the operator answered during someone else's turn", () => {
+    let s = chatReducer(emptyChat, { t: "inbox", views: [view("t_1", { state: "idle" })] });
+    s = apply(s, asking("t_1", 20));
+    expect(s.alerts).toEqual(["t_1"]);
+    s = chatReducer(s, { t: "alerted" });
+
+    // A turn is open for all of this, so every thread frame reads working.
+    s = apply(s, at("t_1", "working", 21), answered("t_1", 22), at("t_1", "working", 23));
+    s = apply(s, asking("t_1", 24));
+    expect(s.alerts).toEqual(["t_1"]);
+  });
+
+  // An archived thread is one the operator has put away. The daemon does not
+  // push those, and a screen that alerted for one would be the two halves of
+  // the same feature disagreeing.
+  it("stays quiet for a thread the operator has archived", () => {
+    let s = chatReducer(emptyChat, { t: "inbox", views: [view("t_1", { state: "idle" })] });
+    s = apply(s, {
+      seq: 20,
+      stream: "thread",
+      thread: "t_1",
+      thr: view("t_1", { state: "needs_you", archived: true, last_seq: 20 }),
+    });
+
+    expect(s.alerts).toEqual([]);
+  });
+
+  // The ordinary way a bot asks: it works, and the question arrives when the
+  // turn ends. That one must still alert.
+  it("alerts when a thread asks at the end of a turn", () => {
+    let s = chatReducer(emptyChat, { t: "inbox", views: [view("t_1", { state: "idle" })] });
+    s = apply(s, at("t_1", "working", 20), asking("t_1", 21));
+
+    expect(s.alerts).toEqual(["t_1"]);
   });
 });

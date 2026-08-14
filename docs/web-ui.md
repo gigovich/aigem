@@ -626,10 +626,11 @@ What is still per-root rather than per-session: skills, project instructions and
 trust, all resolved once at startup. That is why a session asked for another
 directory is refused rather than sandboxed to the wrong one.
 
-No service worker. The page is useless without the daemon, and an offline cache
-would only ever show a conversation that has moved on; the manifest is there so
-a phone can keep it on the home screen, which is the part that was actually
-wanted.
+There is a service worker, and it caches nothing. An offline copy of a
+conversation five bots are writing to would only ever show something that has
+moved on. It exists for notifications alone - it shows what a push carries and
+opens the thread that was tapped - and the manifest is there so a phone can keep
+the page on its home screen, which on iOS is also what makes push work at all.
 
 ### 9. Login in the browser
 
@@ -700,8 +701,9 @@ Neither is blocked; both are their own piece of work.
   the protocol prevents a second `submit` arriving mid-turn; today `Inject`
   exists for exactly that. Which of the two applies should be decided before the
   UI implies an answer.
-- **Notifications.** Web Push needs HTTPS, which loopback does not provide. An
-  approval waiting on a phone is the most valuable notification in the system.
-  The `--listen` decision that blocked it has been made - a reverse proxy in
-  front, named with `--origin` - so this is now only unbuilt, not blocked.
+- **Notifications.** Built for the fleet's conversations: a thread turning to
+  `needs you` is pushed, and nothing else is. What is still unbuilt is the same
+  thing for a session: an approval waiting on a phone is the most valuable
+  notification in the system, and `internal/web`'s session daemon neither mounts
+  the push routes nor has anything watching for a turn that is blocked.
 - **Upload limits** for pasted images, and where they are stored.
