@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/gigovich/aigem/internal/agent"
+	"github.com/gigovich/aigem/internal/config"
 	"github.com/gigovich/aigem/internal/hooks"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/mcp"
@@ -65,13 +67,22 @@ func runWeb(o webRun) {
 		fatal(fmt.Errorf("a daemon is already running on %s (pid %d); stop it first",
 			prior.Addr, prior.PID))
 	}
+	// A state directory this daemon cannot have is not worth refusing to serve
+	// over: it costs the browser sessions across a restart, and nothing else.
+	var cookieFile string
+	if dir, err := config.StateDir(); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not find the state directory:", err)
+	} else {
+		cookieFile = filepath.Join(dir, "web-cookies.json")
+	}
 	srv, err := web.New(web.Config{
-		Addr:    o.addr,
-		Origins: o.origins,
-		Factory: o.factory(),
-		Assets:  web.Assets(),
-		Models:  o.modelReg,
-		Backend: o.client,
+		Addr:       o.addr,
+		Origins:    o.origins,
+		Factory:    o.factory(),
+		Assets:     web.Assets(),
+		Models:     o.modelReg,
+		Backend:    o.client,
+		CookieFile: cookieFile,
 	})
 	if err != nil {
 		fatal(err)

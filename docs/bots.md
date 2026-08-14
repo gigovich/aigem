@@ -313,9 +313,12 @@ is meant to check is not a check.
 The URL carries the token, in the style of `jupyter`. The page trades it once
 for a cookie - `HttpOnly`, `SameSite=Strict`, `Secure` wherever TLS is involved
 - and then stops sending it, so the token is not in the URL of the websockets
-the page opens or in the access log of every hop on the way. Cookies live in the
-daemon's memory: restarting the fleet signs every browser out. The bearer token
-stays for `aigem chat` and `aigem attach`, which are not browsers.
+the page opens or in the access log of every hop on the way. Cookies are kept in
+`$XDG_STATE_HOME/aigem/chat-cookies.json` - and in `web-cookies.json` for
+`aigem web run` - so restarting the fleet no longer signs a phone out. Logging
+out of the page revokes one; deleting that file while the daemon is stopped
+revokes all of them. The bearer token stays for `aigem chat` and `aigem attach`,
+which are not browsers.
 
 Ten failed authentications a minute from one address buys a `429` with
 `Retry-After`; one success clears it. Behind a proxy every request appears to

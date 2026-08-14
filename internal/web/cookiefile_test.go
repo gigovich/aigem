@@ -1,0 +1,266 @@
+package web
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+)
+
+// The bug this whole file exists for: a browser signed in on a phone was signed
+// out by every restart of the daemon, including the ones the operator makes to
+// deploy a new binary - and the token that would sign it back in lives in a
+// terminal on another machine.
+func TestACookieOutlivesTheDaemonThatIssuedIt(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	first := testServerWith(t, Config{CookieFile: file})
+	c := exchange(t, first)
+
+	second := testServerWith(t, Config{CookieFile: file})
+	req, _ := http.NewRequest(http.MethodGet, "http://"+second.Addr().String()+"/api/sessions", nil)
+	req.AddCookie(c)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a cookie from the previous daemon answered %d, want 200", res.StatusCode)
+	}
+}
+
+func TestAnExpiredEntryIsDroppedOnLoad(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	writeCookieFile(t, file, map[string]time.Time{
+		"stale": time.Now().Add(-time.Minute),
+		"live":  time.Now().Add(cookieTTL),
+	})
+	srv := testServerWith(t, Config{CookieFile: file})
+
+	// Read before anything touches the table: cookieOK drops an expired entry on
+	// its own, so asking it first would pass whether or not the load filtered.
+	srv.mu.Lock()
+	_, stale := srv.cookies["stale"]
+	held := len(srv.cookies)
+	srv.mu.Unlock()
+	if stale {
+		t.Error("an entry that expired before the restart was loaded after it")
+	}
+	if held != 1 {
+		t.Errorf("the daemon loaded %d sessions from a file holding one live one", held)
+	}
+	if !srv.cookieOK(withCookie(t, &http.Cookie{Name: cookieName, Value: "live"})) {
+		t.Error("an entry with time left on it was not loaded")
+	}
+}
+
+// Stopping the daemon is not a revocation, and the shutdown must not become
+// one; saveCookies carries the full argument.
+func TestStoppingTheDaemonLeavesTheFileAlone(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	srv := testServerWith(t, Config{CookieFile: file})
+	first := exchange(t, srv)
+	second := exchange(t, srv)
+
+	_ = srv.Close()
+	if _, err := srv.issueCookie(); err != nil {
+		t.Fatal(err)
+	}
+
+	stored := readCookieFile(t, file)
+	for _, c := range []*http.Cookie{first, second} {
+		if _, ok := stored[c.Value]; !ok {
+			t.Errorf("a session issued before the shutdown is gone from the file: %v", stored)
+		}
+	}
+}
+
+// An expired session is dropped the first time it is presented, and that drop
+// is written through: a file that kept it would be a table the daemon has to
+// clean out again on every start.
+func TestAnExpiredSessionIsDroppedFromTheFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	srv := testServerWith(t, Config{CookieFile: file})
+	c := exchange(t, srv)
+
+	srv.mu.Lock()
+	srv.cookies[c.Value] = time.Now().Add(-time.Second)
+	srv.mu.Unlock()
+	if srv.cookieOK(withCookie(t, c)) {
+		t.Fatal("an expired cookie was accepted")
+	}
+
+	if _, ok := readCookieFile(t, file)[c.Value]; ok {
+		t.Error("an expired session is still in the file")
+	}
+}
+
+// The cap bounds the file as well as the table, and the eviction it makes is
+// written through - otherwise a restart would restore the sessions it dropped.
+func TestTheFileIsCappedWithTheTable(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	srv := testServerWith(t, Config{CookieFile: file})
+	for range maxCookieSessions + 5 {
+		if _, err := srv.issueCookie(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stored := readCookieFile(t, file)
+	if len(stored) > maxCookieSessions {
+		t.Errorf("the file holds %d sessions, cap is %d", len(stored), maxCookieSessions)
+	}
+	srv.mu.Lock()
+	held := len(srv.cookies)
+	srv.mu.Unlock()
+	if len(stored) != held {
+		t.Errorf("the file holds %d sessions and the daemon %d", len(stored), held)
+	}
+}
+
+// A renewal is two mutations - the old one goes, a new one arrives - and both
+// have to reach the file, or the restart would honour the cookie the browser
+// no longer has.
+func TestARenewalIsWrittenThrough(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	srv := testServerWith(t, Config{CookieFile: file})
+	c := exchange(t, srv)
+
+	srv.mu.Lock()
+	srv.cookies[c.Value] = time.Now().Add(renewWithin / 2)
+	srv.mu.Unlock()
+	next := reexchange(t, srv, c)
+	if next == "" {
+		t.Fatal("a cookie close to expiry was not renewed")
+	}
+
+	stored := readCookieFile(t, file)
+	if _, ok := stored[c.Value]; ok {
+		t.Error("the replaced cookie is still in the file")
+	}
+	if _, ok := stored[next]; !ok {
+		t.Error("the renewed cookie was not recorded")
+	}
+}
+
+// Logging out has to reach the file. A revocation that only cleared the table
+// would be undone by the next restart, which is the one thing an operator who
+// lost a phone cannot wait out.
+func TestLogoutIsWrittenThrough(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	srv := testServerWith(t, Config{CookieFile: file})
+	c := exchange(t, srv)
+	if _, ok := readCookieFile(t, file)[c.Value]; !ok {
+		t.Fatal("the issued cookie was not recorded")
+	}
+
+	req, _ := http.NewRequest(http.MethodDelete, "http://"+srv.Addr().String()+"/api/auth/session", nil)
+	req.AddCookie(c)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout answered %d", res.StatusCode)
+	}
+
+	if _, ok := readCookieFile(t, file)[c.Value]; ok {
+		t.Error("a logged-out session is still in the file, so a restart would honour it again")
+	}
+}
+
+// A file this daemon cannot parse is not a reason to refuse to serve: the
+// operator would be locked out of the UI by the one thing the UI is for.
+func TestACorruptFileCostsTheSessionsAndNothingElse(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	if err := os.WriteFile(file, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServerWith(t, Config{CookieFile: file})
+
+	srv.mu.Lock()
+	held := len(srv.cookies)
+	srv.mu.Unlock()
+	if held != 0 {
+		t.Errorf("a corrupt file yielded %d sessions", held)
+	}
+	c := exchange(t, srv)
+	if !srv.cookieOK(withCookie(t, c)) {
+		t.Error("the daemon cannot sign a browser in after reading a corrupt file")
+	}
+}
+
+// The file holds live credentials, which is the same class of secret as the
+// token in web.json.
+func TestTheCookieFileIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permissions")
+	}
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	srv := testServerWith(t, Config{CookieFile: file})
+	exchange(t, srv)
+
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("the cookie file is %o, want 600", perm)
+	}
+}
+
+// Without a file the daemon is exactly what it was: nothing on disk.
+// TestARestartRevokesEveryCookie holds the other half of the old behaviour.
+func TestWithoutAFileNothingIsWritten(t *testing.T) {
+	srv := testServerWith(t, Config{})
+	c := exchange(t, srv)
+	if !srv.cookieOK(withCookie(t, c)) {
+		t.Fatal("the cookie does not work at all")
+	}
+
+	// testServerWith points the state directory at a directory of its own, so
+	// anything under it is something this daemon put there.
+	var wrote []string
+	err := filepath.WalkDir(os.Getenv("XDG_STATE_HOME"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			wrote = append(wrote, p)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wrote) != 0 {
+		t.Errorf("a daemon with no cookie file wrote %v", wrote)
+	}
+}
+
+// ---- helpers ----
+
+func writeCookieFile(t *testing.T, path string, sessions map[string]time.Time) {
+	t.Helper()
+	b, err := json.Marshal(cookieStore{Sessions: sessions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readCookieFile(t *testing.T, path string) map[string]time.Time {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored cookieStore
+	if err := json.Unmarshal(b, &stored); err != nil {
+		t.Fatalf("the daemon wrote a file it cannot read back: %v", err)
+	}
+	return stored.Sessions
+}

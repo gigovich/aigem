@@ -57,6 +57,12 @@ type Config struct {
 	// reachable, and say which one is in use.
 	Models  *llm.Registry
 	Backend *llm.Ref
+	// CookieFile is where the browser sessions are kept across restarts. Empty
+	// holds them in memory only, and a restart then signs every browser out.
+	// The command that starts a daemon names a file of its own: the fleet and
+	// the session daemon are separate processes with separate tokens, and one
+	// must not honour the other's sessions.
+	CookieFile string
 	// MaxSessions bounds how many conversations this daemon holds at once; zero
 	// is unlimited. It exists because sessions sharing one tool registry are not
 	// safely independent - see the comment on handleCreate.
@@ -94,13 +100,15 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*entry
-	// cookies are the live browser sessions and when each expires. In memory
-	// on purpose: a restart revokes every one, and reissuing is one request.
-	cookies map[string]time.Time
-	seq     int
-	flows   map[string]*loginFlow
-	flowSeq int
-	closed  bool
+	// cookies are the live browser sessions and when each expires. They are
+	// written to cookieFile on every change when there is one, and held in
+	// memory alone when there is not.
+	cookies    map[string]time.Time
+	cookieFile string
+	seq        int
+	flows      map[string]*loginFlow
+	flowSeq    int
+	closed     bool
 }
 
 type entry struct {
@@ -154,7 +162,8 @@ func New(cfg Config) (*Server, error) {
 		ln:          ln,
 		sessions:    map[string]*entry{},
 		flows:       map[string]*loginFlow{},
-		cookies:     map[string]time.Time{},
+		cookies:     loadCookies(cfg.CookieFile),
+		cookieFile:  cfg.CookieFile,
 		failures:    newLimiter(),
 		models:      cfg.Models,
 		backend:     cfg.Backend,
@@ -343,8 +352,9 @@ func (s *Server) Close() error {
 	s.sessions = map[string]*entry{}
 	flows := s.flows
 	s.flows = map[string]*loginFlow{}
-	// Every browser session goes with the process that issued it. They are in
-	// memory precisely so that a restart is a revocation.
+	// The table goes with the process. The file is deliberately left alone:
+	// stopping the daemon is not a revocation when it has one, which is the
+	// whole point of it having one.
 	s.cookies = map[string]time.Time{}
 	s.mu.Unlock()
 

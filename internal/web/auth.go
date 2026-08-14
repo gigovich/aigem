@@ -91,8 +91,11 @@ func (s *Server) originOK(r *http.Request) bool {
 // page links to, and in the URL of every websocket the page opens. So the page
 // trades it once for an opaque cookie: HttpOnly, so a script that got onto the
 // page cannot read it back out; SameSite=Strict, so no other site can cause it
-// to be sent at all; and held in memory, so a restart of the daemon revokes
-// every one of them.
+// to be sent at all; and kept in a file of its own when the daemon is given
+// one, so a restart no longer signs every browser out. It used to: the phone
+// this exists for is signed back in only by a token that lives in a terminal on
+// another machine, so deploying a new binary logged it out. Revoking a session
+// is logging out, or deleting the file while the daemon is stopped.
 //
 // SameSite=Strict and the exact Origin check are both needed and neither is
 // enough. Strict covers the cross-site GET that carries no Origin header at
@@ -145,6 +148,7 @@ func (s *Server) issueCookie() (string, error) {
 		delete(s.cookies, oldest)
 	}
 	s.cookies[id] = now.Add(cookieTTL)
+	s.saveCookies()
 	return id, nil
 }
 
@@ -162,6 +166,7 @@ func (s *Server) cookieOK(r *http.Request) bool {
 	}
 	if time.Now().After(exp) {
 		delete(s.cookies, c.Value)
+		s.saveCookies()
 		return false
 	}
 	return true
@@ -248,8 +253,14 @@ func (s *Server) revokeCookie(r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	delete(s.cookies, c.Value)
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	// Only a held session is worth a disk write: the cookie exchange runs this
+	// on every page load, and a request carrying a value the table never issued
+	// must not be able to make the daemon write at all.
+	if _, held := s.cookies[c.Value]; held {
+		delete(s.cookies, c.Value)
+		s.saveCookies()
+	}
 }
 
 // handleAuthLogout revokes the cookie this request carried, and tells the

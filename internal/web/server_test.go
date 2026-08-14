@@ -39,8 +39,16 @@ func (s *scriptedClient) Stream(_ context.Context, _ []llm.Message, toolDefs []l
 
 func testServer(t *testing.T) *Server {
 	t.Helper()
+	return testServerWith(t, Config{})
+}
+
+// testServerWith builds the same daemon around a caller's config, so a test
+// about one field does not carry a copy of the session factory with it. The
+// factory is always this one; a config that brought its own has it replaced.
+func testServerWith(t *testing.T, cfg Config) *Server {
+	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	srv, err := New(Config{Factory: func(Spec) (*uisession.Local, error) {
+	cfg.Factory = func(Spec) (*uisession.Local, error) {
 		reg, err := tools.NewRegistry(t.TempDir())
 		if err != nil {
 			return nil, err
@@ -52,7 +60,8 @@ func testServer(t *testing.T) *Server {
 			},
 			Ring: 256,
 		}), nil
-	}})
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

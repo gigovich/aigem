@@ -94,10 +94,11 @@ func startChatServer(ctx context.Context, o chatServerOpts, log *slog.Logger) (*
 	}
 	notifier := startPush(ctx, store, api, log)
 	srv, err := web.New(web.Config{
-		Addr:    o.addr,
-		Origins: o.origins,
-		Assets:  webAssets(),
-		Mount:   api.Mount,
+		Addr:       o.addr,
+		Origins:    o.origins,
+		Assets:     webAssets(),
+		Mount:      api.Mount,
+		CookieFile: filepath.Join(dir, "chat-cookies.json"),
 	})
 	if err != nil {
 		notifier.Close()

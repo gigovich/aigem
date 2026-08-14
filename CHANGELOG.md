@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Browser sessions survive a restart. Each daemon keeps its cookie table in a
+  file of its own - `chat-cookies.json` for the fleet, `web-cookies.json` for
+  `aigem web run`, both 0600 in `$XDG_STATE_HOME/aigem` - so deploying a new
+  binary no longer signs out a phone whose only way back in is a token on
+  another machine. Expired entries are dropped on load, an unreadable file
+  costs the sessions and nothing else, and revoking is logging out or deleting
+  the file while the daemon is stopped.
+
 - Web Push: the fleet can now reach a phone with nothing open. The daemon
   generates a VAPID key pair once into `$XDG_STATE_HOME/aigem/chat/vapid.json`,
   a page that has been granted the notification permission subscribes to it, and
