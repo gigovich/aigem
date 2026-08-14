@@ -16,6 +16,7 @@ import { useTraces } from "@/lib/trace";
 import { cn } from "@/lib/utils";
 import { useFleetScreen, useThread } from "@/lib/route";
 import { useNotifications, useTitleBadge } from "@/lib/notify";
+import { useWebPush } from "@/lib/push";
 import { Fatal } from "@/components/fatal";
 import { Login } from "@/components/login";
 import { Spend } from "@/components/usage";
@@ -200,6 +201,9 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
   );
   useTitleBadge(counts.needs_you);
   const { permission, ask } = useNotifications(state.alerts, titleOf, alerted);
+  // Subscribing follows the permission the button above earns, and draws
+  // nothing: push either reaches the phone or the tab title carries the count.
+  useWebPush(permission);
 
   const select = useCallback(
     (id: string) => {

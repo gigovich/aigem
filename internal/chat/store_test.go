@@ -561,6 +561,20 @@ func TestASystemNoteDoesNotChangeTheState(t *testing.T) {
 	if v.State != StateNeedsYou {
 		t.Fatalf("state after a join note = %q, want %q", v.State, StateNeedsYou)
 	}
+
+	// And the same note written by the operator. A system message is not
+	// somebody speaking, so it must not read as the operator answering - which
+	// would clear the accent, and tell the notifier the question was answered,
+	// for adding a participant.
+	if err := s.AddParticipant(ctx, Operator, th.ID, jane); err != nil {
+		t.Fatal(err)
+	}
+	if v, err = s.ThreadFor(ctx, Operator, th.ID); err != nil {
+		t.Fatal(err)
+	}
+	if v.State != StateNeedsYou {
+		t.Fatalf("state after the operator added someone = %q, want %q", v.State, StateNeedsYou)
+	}
 }
 
 func TestDeletingAThreadTakesItsRowsWithIt(t *testing.T) {

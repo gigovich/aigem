@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -224,4 +226,46 @@ func TestTheSpendFooterReadsAtEveryScale(t *testing.T) {
 func stateRecord(t *testing.T) string {
 	t.Helper()
 	return os.Getenv("XDG_STATE_HOME") + "/aigem/chat.json"
+}
+
+// Push is wired by the daemon, not by the packages it wires together: nothing
+// else proves that the keys are generated where the store lives, that the API
+// is told about them, or that the notifier is running at all.
+func TestTheDaemonArmsPush(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	srv, err := startChatServer(t.Context(), chatServerOpts{addr: "127.0.0.1:0"},
+		slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	if srv.push == nil {
+		t.Fatal("the daemon came up with no notifier, so nothing will ever be pushed")
+	}
+	raw, err := os.ReadFile(filepath.Join(state, "aigem", "chat", "vapid.json"))
+	if err != nil {
+		t.Fatalf("the keys are not beside the store: %v", err)
+	}
+	var file struct {
+		Public string `json:"public"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := dialChat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var key chat.PushAvailability
+	if err := c.do(t.Context(), "GET", "/api/chat/push", nil, &key); err != nil {
+		t.Fatal(err)
+	}
+	if !key.Available || key.Key != file.Public {
+		t.Fatalf("the API offers %+v, want the key in the file (%s)", key, file.Public)
+	}
 }

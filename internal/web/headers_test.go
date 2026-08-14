@@ -19,7 +19,10 @@ func TestPagesCarryAContentSecurityPolicy(t *testing.T) {
 		if csp == "" {
 			t.Fatalf("%s carries no Content-Security-Policy", path)
 		}
-		for _, want := range []string{"img-src 'self' data:", "connect-src 'self'", "frame-ancestors 'none'"} {
+		// worker-src is named, not inherited: notifications need a service
+		// worker, and the directive it would otherwise fall back to is script-src.
+		for _, want := range []string{"img-src 'self' data:", "connect-src 'self'",
+			"worker-src 'self'", "frame-ancestors 'none'"} {
 			if !strings.Contains(csp, want) {
 				t.Errorf("%s policy is missing %q: %s", path, want, csp)
 			}

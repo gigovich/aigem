@@ -863,8 +863,9 @@ func (s *Store) noteMessage(ctx context.Context, tx *sql.Tx, threadID string, m 
 	return err
 }
 
-// restingState decides what a message leaves the thread in, or "" to leave the
-// state alone.
+// MessageState is the resting state a message leaves its thread in, or "" for a
+// message that changes nothing. humanPresent says whether anyone in the thread
+// could answer.
 //
 // Three rules that are easy to get subtly wrong:
 //
@@ -875,21 +876,41 @@ func (s *Store) noteMessage(ctx context.Context, tx *sql.Tx, threadID string, m 
 //   - AwaitReply is only honoured when a person is actually in the thread.
 //     Otherwise a bot-only conversation parks itself in needs_you forever, where
 //     nobody who could answer will ever see it.
-func (s *Store) restingState(ctx context.Context, tx *sql.Tx, threadID string, m Message) (string, error) {
+//
+// StateIdle from here means "idle unless the thread is already asking", which
+// is the second rule: the caller holds the current state, and applying the
+// stickiness is its job.
+//
+// It is exported because the daemon's notifier decides whether to interrupt a
+// person from the same messages, and a second copy of these rules in another
+// package would drift the first time one of them changed.
+func MessageState(m Message, humanPresent bool) string {
 	if m.Kind == MsgSystem {
-		return "", nil
+		return ""
 	}
 	if kindOf(m.Author) == KindHuman {
-		return StateWaiting, nil
+		return StateWaiting
 	}
-	if m.Await {
-		human, err := hasHumanParticipant(ctx, tx, threadID)
-		if err != nil {
+	if m.Await && humanPresent {
+		return StateNeedsYou
+	}
+	return StateIdle
+}
+
+// restingState decides what a message leaves the thread in, or "" to leave the
+// state alone. It is MessageState plus the two things only the transaction
+// knows: who is in the thread, and what it is parked in now.
+func (s *Store) restingState(ctx context.Context, tx *sql.Tx, threadID string, m Message) (string, error) {
+	human := false
+	if m.Await && m.Kind != MsgSystem && kindOf(m.Author) == KindBot {
+		var err error
+		if human, err = hasHumanParticipant(ctx, tx, threadID); err != nil {
 			return "", err
 		}
-		if human {
-			return StateNeedsYou, nil
-		}
+	}
+	state := MessageState(m, human)
+	if state != StateIdle {
+		return state, nil
 	}
 	var current string
 	err := tx.QueryRowContext(ctx, `SELECT state FROM threads WHERE id = ?`, threadID).Scan(&current)

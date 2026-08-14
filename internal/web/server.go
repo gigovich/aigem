@@ -391,10 +391,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.handleAssets)
 }
 
-// handleAssets serves the built UI, or explains its absence. A plain `go build`
-// produces a binary with no assets on purpose - `go install` is the documented
-// way to get aigem and must keep working without a node toolchain - so this
-// says what to do rather than serving a blank page.
 // securityHeaders bounds what the page may load and where it may talk to.
 //
 // This is not defence in depth, it is the control that closes a live hole. The
@@ -405,13 +401,27 @@ func (s *Server) routes() {
 // contents, anything it had read. Sanitising the HTML does not help: the tag is
 // legitimate. img-src is the load-bearing directive; the rest is cheap.
 func securityHeaders(h http.Header) {
+	// worker-src is named rather than left to fall back to default-src: the
+	// fallback chain for it is worker-src, child-src, script-src, default-src,
+	// so tightening script-src later would silently take the service worker -
+	// and with it every notification - down with it.
 	h.Set("Content-Security-Policy",
-		"default-src 'self'; img-src 'self' data:; connect-src 'self'; "+
+		"default-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; "+
 			"frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 }
 
+// handleAssets serves the built UI, or explains its absence. A plain `go build`
+// produces a binary with no assets on purpose - `go install` is the documented
+// way to get aigem and must keep working without a node toolchain - so this
+// says what to do rather than serving a blank page.
+//
+// It is deliberately not behind Guard. The browser fetches the page, the
+// bundle, the manifest and the service worker before it has a credential to
+// send, and a service worker registration carries no Authorization header at
+// all - so putting the assets behind the token would take notifications down
+// with them.
 func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
 	securityHeaders(w.Header())
 	if s.assets == nil {

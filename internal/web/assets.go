@@ -3,10 +3,19 @@ package web
 import (
 	"embed"
 	"io/fs"
+	"mime"
 	"net/http"
 	"path"
 	"strings"
 )
+
+// Go has no MIME entry for .webmanifest, so the file server sniffs it as text -
+// and every response here carries nosniff, so the browser then refuses it. The
+// manifest is what lets a phone install the page, which on iOS is the only way
+// notifications work at all.
+func init() {
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
 
 // The built UI is embedded, but it is not committed: `go install
 // github.com/gigovich/aigem/cmd/aigem@latest` is the documented way to get

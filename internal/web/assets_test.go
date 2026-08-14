@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -83,5 +84,50 @@ func TestSPAHandlerServesThePageForARouteAnd404sAMissingAsset(t *testing.T) {
 	}
 	if code, _ := get("/assets/stale.js"); code != http.StatusNotFound {
 		t.Fatalf("GET a missing asset = %d, want 404", code)
+	}
+}
+
+// The service worker and the manifest are fetched by the browser itself, and a
+// service worker registration sends no Authorization header at all. Serving
+// them from behind the token check would take notifications down with them, so
+// the asset handler is deliberately not guarded - and this is the test that
+// fails if it ever is.
+func TestTheWorkerAndManifestAreServedWithoutACredential(t *testing.T) {
+	fsys := fstest.MapFS{
+		"index.html":           {Data: []byte("<!doctype html>")},
+		"sw.js":                {Data: []byte("self.addEventListener('push', () => {})")},
+		"manifest.webmanifest": {Data: []byte(`{"name":"aigem"}`)},
+	}
+	srv, err := New(Config{Assets: spaHandler(fsys), Mount: func(*http.ServeMux,
+		func(http.HandlerFunc) http.HandlerFunc) {
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+	go func() { _ = srv.Serve() }()
+
+	// The type matters as much as the status: every response here carries
+	// nosniff, so a manifest served as text/plain is one the browser refuses -
+	// and with it the home-screen install that push depends on.
+	for path, wantType := range map[string]string{
+		"/sw.js":                "text/javascript",
+		"/manifest.webmanifest": "application/manifest+json",
+	} {
+		res, err := http.Get("http://" + srv.Addr().String() + path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("%s answered %s with no credential", path, res.Status)
+		}
+		if len(body) == 0 {
+			t.Errorf("%s served nothing", path)
+		}
+		if got := res.Header.Get("Content-Type"); !strings.HasPrefix(got, wantType) {
+			t.Errorf("%s is served as %q, want %s", path, got, wantType)
+		}
 	}
 }

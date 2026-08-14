@@ -3,6 +3,7 @@ import { api, socketClosed, socketURL } from "./protocol";
 import type { Event } from "./protocol";
 import {
   isClientError,
+  OPERATOR,
   type ClientOp,
   type Frame,
   type Incoming,
@@ -55,6 +56,11 @@ export interface ChatState {
    *  raises a notification, so that firing one is a side effect of reading this
    *  rather than something the reducer does. */
   alerts: string[];
+  /** The last state each thread was at rest in, which is not the last state
+   *  seen: `working` is what the daemon reports while any turn is open, and it
+   *  says nothing about what the thread is parked in. Alerting compares against
+   *  this. */
+  resting: Record<string, ThreadState>;
 }
 
 export const emptyChat: ChatState = {
@@ -64,6 +70,7 @@ export const emptyChat: ChatState = {
   lastSeq: 0,
   connected: false,
   alerts: [],
+  resting: {},
 };
 
 export type ChatAction =
@@ -75,6 +82,7 @@ export type ChatAction =
   | { t: "alerted" };
 
 const NEEDS_YOU: ThreadState = "needs_you";
+const WORKING: ThreadState = "working";
 
 /** merge folds messages in by sequence. Both sources deliver the same message -
  *  the socket while a page is in flight, the page because it committed before
@@ -104,10 +112,22 @@ function withThread(s: ChatState, view: ThreadView, at: number): ChatState {
   // arriving for the first time already needing an answer is the replay a fresh
   // page load gets, and notifying for each of those is how the notification
   // stops meaning anything.
-  const began = !!prev && prev.view.state !== NEEDS_YOU && view.state === NEEDS_YOU;
+  //
+  // Against the last resting state, not the last state seen. `working` is what
+  // the daemon reports while any turn is open, and it replaces whatever the
+  // thread is parked in - so comparing against it made every later turn over an
+  // unanswered question read as a fresh needs_you and alert again, once per
+  // turn, for a question already on screen.
+  const resting = view.state === WORKING ? s.resting : { ...s.resting, [view.id]: view.state };
+  // An archived thread is one the operator has put away, and the daemon does
+  // not push those either. A screen that alerted for one would be the two
+  // halves of the same feature disagreeing.
+  const began =
+    !!prev && !view.archived && s.resting[view.id] !== NEEDS_YOU && view.state === NEEDS_YOU;
   return {
     ...s,
     threads: { ...s.threads, [view.id]: { view, at } },
+    resting,
     alerts: began ? [...s.alerts, view.id] : s.alerts,
   };
 }
@@ -115,12 +135,15 @@ function withThread(s: ChatState, view: ThreadView, at: number): ChatState {
 function withoutThread(s: ChatState, id: string): ChatState {
   const threads = { ...s.threads };
   const messages = { ...s.messages };
+  const resting = { ...s.resting };
   delete threads[id];
   delete messages[id];
+  delete resting[id];
   return {
     ...s,
     threads,
     messages,
+    resting,
     gone: s.gone.includes(id) ? s.gone : [...s.gone, id],
     alerts: s.alerts.filter((a) => a !== id),
   };
@@ -200,13 +223,25 @@ export function chatReducer(s: ChatState, a: ChatAction): ChatState {
         return withThread(s2, f.thr, f.seq);
       }
       if (f.stream === "message" && f.msg) {
+        // The operator speaking is what ends a thread's claim on them, and it
+        // is read from the message rather than from the thread frame that
+        // follows it: that frame reads `working` whenever any turn is open -
+        // a second bot, a heartbeat - and an answer that went unnoticed leaves
+        // this believing the thread is still asking, which silently swallows
+        // the next question. The daemon reads the same message for the same
+        // reason.
+        const answered = f.msg.author === OPERATOR;
+        const resting: Record<string, ThreadState> = answered
+          ? { ...s.resting, [f.msg.thread]: "waiting" }
+          : s.resting;
         const held = s.messages[f.msg.thread];
         // Only threads this client opened are held. The inbox row stays fresh
         // regardless: a thread frame rides with every message.
-        if (!held) return s;
+        if (!held) return answered ? { ...s, resting, lastSeq: Math.max(s.lastSeq, f.seq) } : s;
         return {
           ...s,
           lastSeq: Math.max(s.lastSeq, f.seq),
+          resting,
           messages: { ...s.messages, [f.msg.thread]: { ...held, items: merge(held.items, [f.msg]) } },
         };
       }

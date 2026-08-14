@@ -7,7 +7,10 @@
 // disagree with about that.
 //
 // The package knows nothing about bots, agents or models. It stores what was
-// said, what an agent did while saying it, and who was there.
+// said, what an agent did while saying it, who was there - and, because it is
+// the same durable state, where to reach the operator when no page is open.
+// That last one is a table and a validator borrowed from internal/push;
+// deciding when to notify, and delivering it, are somewhere else.
 package chat
 
 import (

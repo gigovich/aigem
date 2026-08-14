@@ -25,10 +25,12 @@ the workflow.
 | `internal/tui`       | the Bubble Tea front-end                                              |
 | `internal/bot`       | unattended bots, roles, memory, cron, and the store adapter           |
 | `internal/chat`      | the fleet's threads, messages, agent timeline and spend               |
+| `internal/push`      | Web Push: RFC 8291 encryption, RFC 8292 signing, and delivery         |
+| `internal/chat/chatpush` | the rule that decides a notification is worth raising             |
 | `internal/uisession` | one conversation's lifecycle and its event journal                    |
 | `internal/web`       | the daemon: HTTP, websocket, auth, and the built browser UI           |
 
-Roughly 28k lines of non-test Go, plus about 17k lines of tests.
+Roughly 44k lines of non-test Go, plus about 32k lines of tests.
 
 ## How a turn flows
 

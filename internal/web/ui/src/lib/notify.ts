@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { ready } from "./push";
 
 /** The base title, restored whenever nothing is asking for the operator. */
 const BASE = "aigem";
@@ -17,6 +18,38 @@ export function useTitleBadge(count: number) {
 }
 
 export type Permission = "default" | "granted" | "denied" | "unsupported";
+
+/** raise shows one notification from the open page.
+ *
+ *  Through the service worker when there is one, and through the constructor
+ *  otherwise. Chrome on Android grants the permission and then throws from the
+ *  constructor, demanding ServiceWorkerRegistration.showNotification instead -
+ *  which is exactly what a page that has subscribed to push already has. */
+function raise(title: string, tag: string) {
+  // data.url matters even here. Shown through the worker, this notification's
+  // click is handled by the worker too, and a click with nothing to open falls
+  // back to the inbox - which navigates the window away from whatever the
+  // operator had open, to the one screen the notification was not about.
+  const options = { body: "needs you", tag, data: { url: `/chat/${tag}` } };
+  void ready().then((reg) => {
+    if (reg) {
+      void reg.showNotification(title, options);
+      return;
+    }
+    try {
+      // Its click is this page's to handle: a notification raised by the
+      // constructor never reaches the service worker, so without this, tapping
+      // it does nothing at all.
+      const shown = new Notification(title, options);
+      shown.onclick = () => {
+        window.focus();
+        window.location.assign(options.data.url);
+      };
+    } catch {
+      // No worker and no constructor: the tab title still carries the count.
+    }
+  });
+}
 
 function current(): Permission {
   if (typeof Notification === "undefined") return "unsupported";
@@ -49,21 +82,16 @@ export function useNotifications(
       if (permission === "granted" && document.visibilityState !== "visible") {
         for (const thread of alerts) {
           // Tagged by thread, so a thread that asks twice replaces its own
-          // notification instead of stacking a second one behind it.
-          new Notification(titleOf(thread), { body: "needs you", tag: thread });
+          // notification instead of stacking a second one behind it - and the
+          // same tag the pushed notification uses, so the two cannot both be on
+          // screen for one conversation.
+          raise(titleOf(thread), thread);
         }
       }
-    } catch {
-      // Chrome on Android grants the permission and then throws from the
-      // constructor, demanding ServiceWorkerRegistration.showNotification
-      // instead - which arrives with Web Push, a later stage. Unguarded, that
-      // throw escapes the effect and React unmounts the whole screen, so a
-      // phone loses the inbox the moment a bot asks it something. Failing to
-      // notify is not a reason to stop showing the conversation; the tab title
-      // carries the same count either way.
     } finally {
       // Drained whatever happened, including a failure: an alert kept back
-      // would fire later for a thread answered an hour ago.
+      // would fire later for a thread answered an hour ago. raise() swallows
+      // its own failures, so this runs either way.
       drain();
     }
   }, [alerts, permission, titleOf, drain]);

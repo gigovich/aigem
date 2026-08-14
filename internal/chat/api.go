@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/gigovich/aigem/internal/push"
 )
 
 // API serves the chat over HTTP. It is mounted into the daemon that already
@@ -20,6 +22,9 @@ type API struct {
 	store *Store
 	hub   *Hub
 	live  func() map[string]LiveBot
+	// pushPublicKey is the application server key browsers subscribe with, or
+	// empty on a daemon that has none.
+	pushPublicKey string
 }
 
 func NewAPI(s *Store, h *Hub) *API { return &API{store: s, hub: h} }
@@ -59,6 +64,9 @@ func (a *API) Mount(mux *http.ServeMux, guard func(http.HandlerFunc) http.Handle
 		"GET /api/chat/search":                           a.search,
 		"GET /api/chat/fleet":                            a.fleet,
 		"GET /api/chat/meta":                             a.meta,
+		"GET /api/chat/push":                             a.pushKey,
+		"POST /api/chat/push/subs":                       a.subscribePush,
+		"DELETE /api/chat/push/subs":                     a.unsubscribePush,
 		"GET /api/chat/socket":                           a.socket,
 		"GET /api/chat/threads/{id}/socket":              a.threadSocket,
 	} {
@@ -395,6 +403,60 @@ func (a *API) meta(w http.ResponseWriter, _ *http.Request) {
 		MaxTitleChars: MaxTitleChars,
 		MaxUnread:     MaxUnread,
 	})
+}
+
+// ---- push ----
+
+// SetPushKey tells the API which application server key browsers subscribe
+// with. A daemon that could not load its keys sets nothing, and the routes then
+// say so rather than handing out a key nothing can push with.
+//
+// Set once, before the server starts, on the same terms as SetFleetStatus:
+// nothing synchronises this field, and a daemon that has keys has them before
+// it accepts a request.
+func (a *API) SetPushKey(publicKey string) { a.pushPublicKey = publicKey }
+
+// PushAvailability is what the page needs before it can subscribe: whether
+// this daemon can be pushed from at all, and the key to subscribe against.
+// Available is false on a daemon whose keys would not load, which is a
+// different thing from a browser that has not been asked yet.
+type PushAvailability struct {
+	Available bool   `json:"available"`
+	Key       string `json:"key,omitempty"`
+}
+
+func (a *API) pushKey(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK,
+		PushAvailability{Available: a.pushPublicKey != "", Key: a.pushPublicKey})
+}
+
+func (a *API) subscribePush(w http.ResponseWriter, r *http.Request) {
+	if a.pushPublicKey == "" {
+		writeErr(w, invalid("this daemon has no push keys, so a subscription to it could never be used"))
+		return
+	}
+	var sub push.Subscription
+	if !readJSON(w, r, &sub) {
+		return
+	}
+	writeErrOrNoContent(w, a.store.AddPushSub(r.Context(), sub))
+}
+
+// unsubscribePush takes the endpoint in the body rather than in the path or the
+// query. It is the capability to notify that browser, and a URL is written to
+// every access log between here and the operator.
+func (a *API) unsubscribePush(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Endpoint) == "" {
+		writeErr(w, invalid("no endpoint to unsubscribe"))
+		return
+	}
+	writeErrOrNoContent(w, a.store.DeletePushSub(r.Context(), body.Endpoint))
 }
 
 // ---- helpers ----

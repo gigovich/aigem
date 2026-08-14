@@ -4,9 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#11111b" />
-    <!-- Installable so a phone can keep it on the home screen. There is no
-         service worker: the page is useless without the daemon anyway, and an
-         offline cache would only ever show a conversation that has moved on. -->
+    <!-- Installable so a phone can keep it on the home screen, which on iOS is
+         also what makes notifications work at all. The service worker registered
+         from the page caches nothing: it exists to show a push and open the
+         thread it names. -->
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
