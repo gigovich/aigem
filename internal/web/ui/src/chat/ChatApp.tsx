@@ -30,6 +30,7 @@ import { AgentTrace } from "./AgentTrace";
 import { Participants } from "./Participants";
 import { ThreadPanel } from "./ThreadPanel";
 import { Fleet } from "./Fleet";
+import { DeleteThreadControl } from "./DeleteThreadDialog";
 
 /** The fallback limits, used only for the moment before the daemon answers.
  *  They are the daemon's own numbers, not guesses, and they never outlive the
@@ -123,7 +124,7 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
   // A refusal of one of this client's ops is the answer to something the
   // operator just did, so it goes where they are looking rather than nowhere.
   const {
-    state, refresh, archived, open, older, say, markRead, create, alerted,
+    state, refresh, archived, open, older, say, markRead, create, deleteThread, alerted,
     turns: fetchTurns, spend: fetchSpend, addActor, removeActor,
   } = useChat(setNotice, onEvent, traceResumed);
   const [meta, setMeta] = useState<ChatMeta | null>(null);
@@ -227,6 +228,13 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
     if (!active) return;
     open(active).catch((e: unknown) => setNotice(e instanceof Error ? e.message : String(e)));
   }, [active, open]);
+
+  // Both a successful local DELETE and a tombstone from another client use the
+  // same gone set. Closing from that one fact keeps the URL from naming an
+  // object the screen can no longer draw, regardless of which arrived first.
+  useEffect(() => {
+    if (active && state.gone.includes(active)) closeThread();
+  }, [active, state.gone, closeThread]);
 
   // The runs in the thread, and what they cost. Re-read when one starts or ends
   // rather than streamed: the counters on a turn row move on every step, and a
@@ -447,15 +455,21 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
             <Fleet members={fleet} loaded={loaded} />
           ) : showsMain && thread ? (
             <>
-              <div className="shrink-0 border-b border-line px-4 py-2">
-                <p className="truncate text-[15px] font-medium">{thread.title || "untitled"}</p>
-                <Participants
-                  participants={thread.participants}
-                  fleet={fleet}
-                  operator={limits.operator}
-                  connected={state.connected}
-                  onAdd={(actor) => addActor(thread.id, actor)}
-                  onRemove={(actor) => removeActor(thread.id, actor)}
+              <div className="flex shrink-0 items-start gap-2 border-b border-line px-4 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[15px] font-medium">{thread.title || "untitled"}</p>
+                  <Participants
+                    participants={thread.participants}
+                    fleet={fleet}
+                    operator={limits.operator}
+                    connected={state.connected}
+                    onAdd={(actor) => addActor(thread.id, actor)}
+                    onRemove={(actor) => removeActor(thread.id, actor)}
+                  />
+                </div>
+                <DeleteThreadControl
+                  title={thread.title || "untitled"}
+                  onDelete={() => deleteThread(thread.id)}
                 />
               </div>
               {/* The diff covers the transcript and nothing else: the composer

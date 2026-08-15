@@ -153,6 +153,25 @@ describe("chatReducer", () => {
     expect(inboxOf(s)).toEqual([]);
   });
 
+  it("uses the tombstone path for a successful local delete", () => {
+    let s = chatReducer(emptyChat, { t: "inbox", views: [view("t_1")] });
+    s = chatReducer(s, { t: "opening", thread: "t_1" });
+    s = { ...s, alerts: ["t_1"], resting: { t_1: "needs_you" } };
+
+    s = chatReducer(s, { t: "deleted", thread: "t_1" });
+
+    expect(s.threads.t_1).toBeUndefined();
+    expect(s.messages.t_1).toBeUndefined();
+    expect(s.resting.t_1).toBeUndefined();
+    expect(s.alerts).toEqual([]);
+    expect(s.gone).toEqual(["t_1"]);
+
+    const afterTombstone = apply(s, { seq: 12, stream: "thread", thread: "t_1" });
+    expect(afterTombstone.gone).toEqual(["t_1"]);
+    expect(afterTombstone.threads.t_1).toBeUndefined();
+    expect(chatReducer(afterTombstone, { t: "inbox", views: [view("t_1")] }).threads.t_1).toBeUndefined();
+  });
+
   it("does not re-render for timeline events nothing draws yet", () => {
     // One bot turn is hundreds of these. Until something renders them, a new
     // state object per event is a re-render of the whole screen per step of

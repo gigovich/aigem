@@ -79,6 +79,7 @@ export type ChatAction =
   | { t: "inbox"; views: ThreadView[] }
   | { t: "opening"; thread: string }
   | { t: "page"; thread: string; page: Page<Message> }
+  | { t: "deleted"; thread: string }
   | { t: "alerted" };
 
 const NEEDS_YOU: ThreadState = "needs_you";
@@ -156,6 +157,9 @@ export function chatReducer(s: ChatState, a: ChatAction): ChatState {
 
     case "alerted":
       return s.alerts.length === 0 ? s : { ...s, alerts: [] };
+
+    case "deleted":
+      return withoutThread(s, a.thread);
 
     case "inbox": {
       let next = s;
@@ -490,6 +494,11 @@ export function useChat(
     [],
   );
 
+  const deleteThread = useCallback(async (thread: string) => {
+    await api<void>(`/api/chat/threads/${encodeURIComponent(thread)}`, { method: "DELETE" });
+    dispatch({ t: "deleted", thread });
+  }, []);
+
   /** turns is the thread's runs, newest first. It is what the collapsed trace
    *  summaries and the thread panel are drawn from, and it is fetched rather
    *  than streamed: the row's counters move on every step of a running turn,
@@ -530,10 +539,10 @@ export function useChat(
 
   return useMemo(
     () => ({
-      state, refresh, archived, open, older, say, markRead, create, alerted,
+      state, refresh, archived, open, older, say, markRead, create, deleteThread, alerted,
       turns, spend, addActor, removeActor,
     }),
-    [state, refresh, archived, open, older, say, markRead, create, alerted,
+    [state, refresh, archived, open, older, say, markRead, create, deleteThread, alerted,
       turns, spend, addActor, removeActor],
   );
 }

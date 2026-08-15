@@ -213,6 +213,70 @@ describe("ChatApp", () => {
   });
 });
 
+describe("ChatApp thread deletion", () => {
+  it("deletes only after confirmation and closes the deleted route", async () => {
+    stubDaemon();
+    const inner = globalThis.fetch as unknown as (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+    const fetched = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+      return inner(input, init);
+    });
+    vi.stubGlobal("fetch", fetched);
+    renderChat();
+    const row = await threadRow();
+    act(() => row.click());
+    await screen.findByText("Reproduced on staging.");
+
+    act(() => screen.getByRole("button", { name: "Thread actions" }).click());
+    expect(fetched.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    act(() => screen.getByRole("menuitem", { name: "Delete thread" }).click());
+    act(() => screen.getByRole("button", { name: "Delete thread" }).click());
+
+    await waitFor(() => expect(window.location.pathname).toBe("/chat"));
+    expect(screen.queryByRole("button", { name: /Refresh-token rotation drops sessions/ })).toBeNull();
+    const deletes = fetched.mock.calls.filter(([, init]) => init?.method === "DELETE");
+    expect(deletes).toHaveLength(1);
+    expect(String(deletes[0][0])).toBe("/api/chat/threads/t_1");
+  });
+
+  it("keeps the thread and route when deletion fails", async () => {
+    stubDaemon();
+    const inner = globalThis.fetch as unknown as (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "DELETE") {
+          return Promise.resolve(new Response("try again", { status: 500, statusText: "Internal Server Error" }));
+        }
+        return inner(input, init);
+      }),
+    );
+    renderChat();
+    const row = await threadRow();
+    act(() => row.click());
+    await screen.findByText("Reproduced on staging.");
+    act(() => screen.getByRole("button", { name: "Thread actions" }).click());
+    act(() => screen.getByRole("menuitem", { name: "Delete thread" }).click());
+    act(() => screen.getByRole("button", { name: "Delete thread" }).click());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("500 Internal Server Error");
+    expect(window.location.pathname).toBe("/chat/t_1");
+    expect(screen.getByText("Reproduced on staging.")).toBeInTheDocument();
+  });
+
+  it("closes an open thread when another client sends its tombstone", async () => {
+    renderChat();
+    const row = await threadRow();
+    act(() => row.click());
+    await screen.findByText("Reproduced on staging.");
+
+    act(() => latest().deliver({ seq: 12, stream: "thread", thread: "t_1" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/chat"));
+    expect(screen.queryByRole("button", { name: "Thread actions" })).toBeNull();
+  });
+});
+
 describe("ChatApp while a bot is working", () => {
   it("shows the run in flight, before it has produced a message", async () => {
     // A trace otherwise hangs off the message its run produced, and that is the
@@ -381,6 +445,20 @@ describe("ChatApp on a phone", () => {
 
     expect(await screen.findByRole("navigation", { name: "Threads" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+  });
+
+  it("offers the deletion flow inside the phone thread view", async () => {
+    phone();
+    renderChat();
+    const row = await threadRow();
+    act(() => row.click());
+    await screen.findByText("Reproduced on staging.");
+
+    act(() => screen.getByRole("button", { name: "Thread actions" }).click());
+    act(() => screen.getByRole("menuitem", { name: "Delete thread" }).click());
+
+    expect(screen.getByRole("dialog", { name: "Delete thread?" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
   });
 
   it("opens the thread a shared link names", async () => {
