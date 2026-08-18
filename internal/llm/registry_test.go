@@ -53,6 +53,23 @@ func TestRegistryResolve(t *testing.T) {
 	}
 }
 
+func TestOpenAIPresetsContainOnlyGPT56Defaults(t *testing.T) {
+	op := openAIPresets()
+	got := make([]string, 0, len(op.Models))
+	for _, m := range op.Models {
+		got = append(got, m.ID)
+	}
+	want := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+	if len(got) != len(want) {
+		t.Fatalf("openai preset ids = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("openai preset ids = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestRegistryDefaultPreferring(t *testing.T) {
 	reg, _ := NewRegistry(t.TempDir(), testLocal())
 
@@ -320,7 +337,7 @@ func TestSubscriptionNarrowsContextWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sol.ContextWindow != 400000 {
+	if sol.ContextWindow != 1050000 {
 		t.Fatalf("preset context window = %d, want the api-key window", sol.ContextWindow)
 	}
 	tok := func(context.Context) (string, error) { return "tok", nil }
@@ -337,8 +354,8 @@ func TestSubscriptionNarrowsContextWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := b.Model().ContextWindow; got != 400000 {
-		t.Fatalf("api-key context window = %d, want the full 400000", got)
+	if got := b.Model().ContextWindow; got != 1050000 {
+		t.Fatalf("api-key context window = %d, want the full 1050000", got)
 	}
 
 	// A models.json window below the subscription cap is the user's choice; the

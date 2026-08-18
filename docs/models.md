@@ -54,9 +54,9 @@ A bare `--model <name>` keeps the old behavior: the local provider with that mod
 name.
 
 The ChatGPT subscription (Codex backend) only accepts Codex-supported models -
-currently `gpt-5.6-sol` (the default), `gpt-5.4`, `gpt-5.4-mini`, and
-`gpt-5.3-codex-spark`. Other models, and any you add via `models.json`, require an
-API key. If you have both a stored ChatGPT login and `$OPENAI_API_KEY`, aigem uses
+currently `gpt-5.6-sol` (the default), `gpt-5.6-terra`, and `gpt-5.6-luna`.
+Other models, and any you add via `models.json`, require an API key. If you have
+both a stored ChatGPT login and `$OPENAI_API_KEY`, aigem uses
 the API key automatically for models outside the Codex allow-list.
 
 ## Subscription logins: read this first

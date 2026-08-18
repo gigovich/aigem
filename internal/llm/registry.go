@@ -53,10 +53,9 @@ const (
 const CodexResponsesURL = "https://chatgpt.com/backend-api"
 
 var codexSubscriptionModels = map[string]bool{
-	"gpt-5.6-sol":         true,
-	"gpt-5.4":             true,
-	"gpt-5.4-mini":        true,
-	"gpt-5.3-codex-spark": true,
+	"gpt-5.6-sol":   true,
+	"gpt-5.6-terra": true,
+	"gpt-5.6-luna":  true,
 }
 
 // IsCodexSubscriptionModel reports whether the ChatGPT subscription/Codex
@@ -64,8 +63,9 @@ var codexSubscriptionModels = map[string]bool{
 func IsCodexSubscriptionModel(id string) bool { return codexSubscriptionModels[id] }
 
 // codexSubscriptionContext holds the input window the ChatGPT subscription
-// serves, for models where it is smaller than the API-key window. Sol's 400k is
-// the total budget; on the subscription it is split into 272k of input and the
+// serves, for models where it is smaller than the API-key window. Sol's API
+// context is larger than the subscription window; on the subscription it is
+// split into 272k of input and the
 // 128k of output the Codex backend reserves for itself. A session sized from
 // the preset would compact 128k too late and fail the turn on
 // context_length_exceeded rather than shrinking in time.
@@ -134,10 +134,9 @@ func openAIPresets() Provider {
 		API:     APICompletions,
 		Auth:    AuthOpenAI,
 		Models: []ModelInfo{
-			{ID: "gpt-5.6-sol", Name: "GPT-5.6 Sol", ContextWindow: 400000, MaxTokens: 128000, Reasoning: true},
-			{ID: "gpt-5.4", Name: "GPT-5.4", ContextWindow: 400000, MaxTokens: 128000, Reasoning: true},
-			{ID: "gpt-5.4-mini", Name: "GPT-5.4 mini", ContextWindow: 400000, MaxTokens: 128000, Reasoning: true},
-			{ID: "gpt-5.3-codex-spark", Name: "GPT-5.3 Codex Spark (Pro)", ContextWindow: 400000, MaxTokens: 128000, Reasoning: true},
+			{ID: "gpt-5.6-sol", Name: "GPT-5.6 Sol", ContextWindow: 1050000, MaxTokens: 128000, Reasoning: true},
+			{ID: "gpt-5.6-terra", Name: "GPT-5.6 Terra", ContextWindow: 1050000, MaxTokens: 128000, Reasoning: true},
+			{ID: "gpt-5.6-luna", Name: "GPT-5.6 Luna", ContextWindow: 1050000, MaxTokens: 128000, Reasoning: true},
 		},
 	}
 }
