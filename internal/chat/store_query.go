@@ -112,9 +112,10 @@ func (s *Store) ThreadFor(ctx context.Context, actor, threadID string) (ThreadVi
 	return v, nil
 }
 
-// threadViewsFor returns several threads in one statement. Tail used to fetch
-// them one at a time, which cost more than the query it followed.
-func (s *Store) threadViewsFor(ctx context.Context, actor string, ids []string) ([]ThreadView, error) {
+// threadViewsForTx returns several threads from Tail's snapshot in one statement.
+// Reading through the transaction is what keeps their shape at the same point as
+// the messages and cursor that accompany them.
+func threadViewsForTx(ctx context.Context, tx *sql.Tx, actor string, ids []string) ([]ThreadView, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -125,7 +126,7 @@ func (s *Store) threadViewsFor(ctx context.Context, actor string, ids []string) 
 		holes[i] = ":" + name
 		args = append(args, sql.Named(name, id))
 	}
-	rows, err := s.r.QueryContext(ctx,
+	rows, err := tx.QueryContext(ctx,
 		viewSelect(`t.id IN (`+strings.Join(holes, ",")+`)
 		   AND t.id IN (SELECT thread_id FROM participants WHERE actor_id = :me)`),
 		args...)
@@ -367,7 +368,7 @@ func (s *Store) Tail(ctx context.Context, actor string, since uint64, limit int)
 	for _, c := range changed {
 		ids = append(ids, c.id)
 	}
-	views, err := s.threadViewsFor(ctx, actor, ids)
+	views, err := threadViewsForTx(ctx, tx, actor, ids)
 	if err != nil {
 		return nil, 0, false, err
 	}

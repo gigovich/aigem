@@ -355,6 +355,9 @@ func TestSocketDeliversWhatHappensAfterAttaching(t *testing.T) {
 // correct again after a phone slept.
 func TestSocketReplaysFromSince(t *testing.T) {
 	s, srv := testAPI(t)
+	// Tail must render thread frames through its existing snapshot rather than
+	// wait for a second reader connection, which can be unavailable under load.
+	s.r.SetMaxOpenConns(1)
 	th := mustThread(t, s, "retries", amiran)
 
 	mark, err := s.Seq(t.Context())
