@@ -387,6 +387,7 @@ func TestPendingReportsWithheldProjectSkills(t *testing.T) {
 	}
 	if p == nil {
 		t.Fatal("untrusted project skills must be reported as pending")
+		return
 	}
 	if p.Invalidated {
 		t.Error("a never-approved project is pending, not invalidated")
@@ -596,6 +597,7 @@ func TestPendingNonEmptyWhenDefinitionsUnparsable(t *testing.T) {
 	// though nothing could be parsed to name.
 	if p == nil {
 		t.Fatal("unparsable project skills must still be reported as pending")
+		return
 	}
 	// The file exists and is covered by the approval, so it must be listed even
 	// though nothing could be parsed to name it.
@@ -736,6 +738,7 @@ func TestUnreadableDefinitionStillPrompts(t *testing.T) {
 	}
 	if p == nil {
 		t.Fatal("the readable skills are still withheld, so the user must still be asked")
+		return
 	}
 	if len(p.Names) != 2 {
 		t.Errorf("names = %v, want both the readable and the unreadable one", p.Names)

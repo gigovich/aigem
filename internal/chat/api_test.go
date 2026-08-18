@@ -24,7 +24,7 @@ import (
 // running the frontend suite has taken longer than three seconds to schedule
 // the goroutine that writes it - which failed as "no frame" and pointed at the
 // hub rather than at the load.
-const socketWait = 15 * time.Second
+const socketWait = 30 * time.Second
 
 func testAPI(t *testing.T) (*Store, *httptest.Server) {
 	t.Helper()
@@ -725,6 +725,7 @@ func TestFleetReportsWhatOnlyTheDaemonKnows(t *testing.T) {
 	live := byID[amiran].Live
 	if live == nil {
 		t.Fatal("amiran has no live state")
+		return
 	}
 	if !live.Running || live.Model != "xai/grok-4.3" || live.Heartbeat != "30m" {
 		t.Errorf("amiran's live state came through as %+v", live)

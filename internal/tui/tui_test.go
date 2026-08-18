@@ -1521,6 +1521,7 @@ func TestAssessActiveModelLocalNotSetUp(t *testing.T) {
 	a := assessActiveModel(llm.LocalProviderID+"/whatever.gguf", nil)
 	if a == nil {
 		t.Fatal("expected a warning for an unconfigured local model")
+		return
 	}
 	if a.action != alertLocalSetup {
 		t.Errorf("action = %d, want alertLocalSetup", a.action)
@@ -1536,6 +1537,7 @@ func TestAssessActiveModelRemoteUnauthed(t *testing.T) {
 	a := assessActiveModel("definitely-not-a-real-provider/m", nil)
 	if a == nil {
 		t.Fatal("expected a warning for an unauthenticated provider")
+		return
 	}
 	if a.action != alertDismiss || a.confirmLabel != "" {
 		t.Errorf("non-OpenAI provider should be dismiss-only, got action=%d label=%q", a.action, a.confirmLabel)

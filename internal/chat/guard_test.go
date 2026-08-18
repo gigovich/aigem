@@ -690,6 +690,7 @@ func TestAMessageRoundTrips(t *testing.T) {
 	}
 	if tailed == nil {
 		t.Fatal("the message is missing from the tail")
+		return
 	}
 	check("Tail", *tailed)
 
