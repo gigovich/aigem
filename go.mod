@@ -2,7 +2,7 @@ module github.com/gigovich/aigem
 
 go 1.26
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/charmbracelet/glamour v1.0.0

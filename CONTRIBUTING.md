@@ -11,9 +11,9 @@ go build ./cmd/aigem
 go test ./...
 ```
 
-Go 1.26 or newer is required. `go.mod` also carries a `toolchain go1.26.5`
-directive, so the Go tool fetches that patch release automatically - it contains a
-`crypto/tls` fix aigem is affected by.
+Go 1.26 or newer is required. `go.mod` also carries a `toolchain go1.26.6`
+directive, so the Go tool fetches that patch release automatically - it contains
+standard-library security fixes that affect aigem.
 
 You do not need a model to work on most of the codebase; the test suite is fully
 self-contained and never talks to a network.
