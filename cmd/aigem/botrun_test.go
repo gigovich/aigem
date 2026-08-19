@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,70 @@ func withBots(t *testing.T, names ...string) {
 	for _, n := range names {
 		if err := bot.Save(bot.Config{Name: n, Role: "tester", Workdir: "."}); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestOpenBotModelUsesBindingRoleDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("OPENAI_API_KEY", "test-openai-key")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, tt := range []struct {
+		name string
+		cfg  bot.Config
+		want string
+	}{
+		{name: "architect default", cfg: bot.Config{Role: "architect", Workdir: t.TempDir()}, want: bot.DefaultArchitectModel},
+		{name: "developer default", cfg: bot.Config{Role: "developer", Workdir: t.TempDir()}, want: bot.DefaultBotModel},
+		{name: "configured override", cfg: bot.Config{Role: "architect", Model: bot.DefaultBotModel, Workdir: t.TempDir()}, want: bot.DefaultBotModel},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client, err := openBotModel("worker", tt.cfg, log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := client.Model().Ref(); got != tt.want {
+				t.Fatalf("opened %q, want binding selection %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpenBotModelDoesNotFallbackWhenRoleDefaultIsUnavailable(t *testing.T) {
+	isolatedBots(t, "worker") // installs an authenticated no-auth fallback model
+	t.Setenv("OPENAI_API_KEY", "")
+	c, err := bot.Load("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	client, err := openBotModel("worker", c, log)
+	if err == nil {
+		t.Fatalf("opened fallback model %q, want binding default failure", client.Model().Ref())
+	}
+	for _, want := range []string{"worker", "developer", bot.DefaultBotModel, bot.ModelSourceRoleDefault, "aigem bot model worker <ref>"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("startup error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestOpenBotModelConfiguredErrorNamesBindingSource(t *testing.T) {
+	isolatedBots(t, "worker")
+	c, err := bot.Load("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Model = "locked/big"
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	_, err = openBotModel("worker", c, log)
+	if err == nil {
+		t.Fatal("unusable configured model opened")
+	}
+	for _, want := range []string{"worker", "developer", "locked/big", bot.ModelSourceConfigured, "aigem bot model worker <ref>"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("startup error %q does not contain %q", err, want)
 		}
 	}
 }

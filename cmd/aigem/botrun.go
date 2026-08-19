@@ -522,35 +522,23 @@ func billUsageToTurn(client *llm.Ref) {
 	})
 }
 
-// openBotModel resolves and opens the bot's model. A configured model is binding:
-// if it cannot be opened the bot refuses to start rather than silently running on
-// whatever else is authenticated. It is trimmed first because a blank ref means
-// "the default model" to Resolve, which would be exactly the silent fallback this
-// is meant to prevent.
+// openBotModel opens exactly the configured override or role default. Selection
+// is binding: provider order and authentication state must never silently move a
+// bot to a different model.
 func openBotModel(name string, c bot.Config, log *slog.Logger) (*llm.Ref, error) {
+	selection, err := c.ModelSelection()
+	if err != nil {
+		return nil, fmt.Errorf("select model for bot %q (role %q): %w", name, c.Role, err)
+	}
 	localCfg, _, _ := local.Load()
 	modelReg, modelWarns := llm.NewRegistry(c.Workdir, localProvider(localCfg, defaultMaxTokens))
 	warnModelsConfig(modelWarns)
-	pinned := strings.TrimSpace(c.Model)
-	ref := pinned
-	if ref == "" {
-		if def, ok := modelReg.DefaultPreferring(auth.IsAuthenticated); ok {
-			ref = def.Ref()
-		}
-	}
-	backend, _, info, err := auth.OpenModel(modelReg, ref, defaultMaxTokens)
+	backend, _, info, err := auth.OpenModel(modelReg, selection.Effective, defaultMaxTokens)
 	if err != nil {
-		if pinned != "" {
-			return nil, fmt.Errorf("open model %s configured for bot %q (change it with `aigem bot model %s <ref>`): %w",
-				pinned, name, name, err)
-		}
-		return nil, fmt.Errorf("open model: %w", err)
+		return nil, fmt.Errorf("bot %q (role %q) requires model %q from %s; set an override with `aigem bot model %s <ref>`: %w",
+			name, c.Role, selection.Effective, selection.Source, name, err)
 	}
-	source := "auto"
-	if pinned != "" {
-		source = "configured"
-	}
-	log.Info("model", "ref", info.Ref(), "ctx", info.ContextWindow, "source", source)
+	log.Info("model", "ref", info.Ref(), "ctx", info.ContextWindow, "source", selection.Source)
 	return llm.NewRef(backend), nil
 }
 

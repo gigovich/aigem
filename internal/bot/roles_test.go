@@ -34,6 +34,70 @@ func TestRolePresets(t *testing.T) {
 	}
 }
 
+func TestRolePromptsEnforceArchitectureFirstContract(t *testing.T) {
+	manager := flat(mustRole(t, "manager").Prompt)
+	for _, want := range []string{
+		"A complex task goes to the architect before an implementer",
+		"spanning multiple subsystems",
+		"new contract, storage design, or API",
+		"security or privacy trade-off or irreversible decision",
+		"Wait for an implementation-ready plan or decision record",
+		"A small, local, already specified fix does not need this architectural stage",
+	} {
+		if !strings.Contains(manager, want) {
+			t.Errorf("manager prompt missing architecture-first rule %q", want)
+		}
+	}
+
+	architect := flat(mustRole(t, "architect").Prompt)
+	for _, want := range []string{
+		"after reading the relevant code and verifying the current state",
+		"decisions and trade-offs",
+		"scope boundaries and explicit exclusions",
+		"changes by layer and file",
+		"migration and backward-compatibility impact",
+		"error, concurrency, and security semantics",
+		"acceptance criteria and a verification plan",
+		"genuinely ambiguous or difficult to reverse",
+	} {
+		if !strings.Contains(architect, want) {
+			t.Errorf("architect prompt missing implementation-plan requirement %q", want)
+		}
+	}
+
+	for _, name := range []string{"researcher", "developer", "tester"} {
+		prompt := flat(mustRole(t, name).Prompt)
+		for _, want := range []string{
+			"major unresolved architectural decision",
+			"no approved plan",
+			"do not invent the missing",
+			"specific uncertainty to the architect or manager",
+			"inside an approved design remain yours",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s prompt missing architectural return rule %q", name, want)
+			}
+		}
+	}
+}
+
+func TestRolePromptsDoNotEmbedRuntimeModelNames(t *testing.T) {
+	for _, role := range Roles() {
+		lower := strings.ToLower(role.Prompt)
+		if strings.Contains(lower, "gpt-5.6") {
+			t.Errorf("role %q prompt embeds a runtime model id", role.Name)
+		}
+		words := strings.FieldsFunc(lower, func(r rune) bool {
+			return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+		})
+		for _, word := range words {
+			if word == "sol" || word == "luna" {
+				t.Errorf("role %q prompt embeds runtime model name %q", role.Name, word)
+			}
+		}
+	}
+}
+
 // TestEveryRoleHasFullTooling locks in the policy that every bot may use the
 // whole aigem toolset; roles differ only by prompt. bash + open_url are what
 // let a bot reach an external API (e.g. plane) with an auth token.
