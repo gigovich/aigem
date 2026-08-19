@@ -70,6 +70,39 @@ func TestOpenAIPresetsContainOnlyGPT56Defaults(t *testing.T) {
 	}
 }
 
+func TestRegistryIncludesLunaWithVerifiedLimits(t *testing.T) {
+	reg, _ := NewRegistry(t.TempDir(), testLocal())
+	p, luna, err := reg.Resolve("openai/gpt-5.6-luna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ID != OpenAIProviderID || luna.Name != "GPT-5.6 Luna" {
+		t.Fatalf("unexpected Luna preset: provider=%q model=%+v", p.ID, luna)
+	}
+	if luna.ContextWindow != 1050000 || luna.MaxTokens != 128000 || !luna.Reasoning {
+		t.Fatalf("Luna limits = %+v", luna)
+	}
+	if !IsCodexSubscriptionModel(luna.ID) {
+		t.Fatal("Luna missing from the verified subscription allow-list")
+	}
+
+	tok := func(context.Context) (string, error) { return "tok", nil }
+	backend, err := Open(p, luna, Credential{Kind: AuthOAuthChatGPT, Token: tok}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := backend.Model().ContextWindow; got != 272000 {
+		t.Fatalf("subscription Luna context window = %d, want 272000", got)
+	}
+	backend, err = Open(p, luna, Credential{Kind: AuthAPIKey, Token: tok}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := backend.Model().ContextWindow; got != 1050000 {
+		t.Fatalf("API-key Luna context window = %d, want 1050000", got)
+	}
+}
+
 func TestRegistryDefaultPreferring(t *testing.T) {
 	reg, _ := NewRegistry(t.TempDir(), testLocal())
 

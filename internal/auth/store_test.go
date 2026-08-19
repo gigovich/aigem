@@ -101,12 +101,14 @@ func TestCredentialForModelPrefersEnvAPIKeyForNonCodexWhenOAuthStored(t *testing
 	if cred.Kind != llm.AuthAPIKey {
 		t.Fatalf("non-Codex model should use env API key, got %q", cred.Kind)
 	}
-	cred, err = CredentialForModel(context.Background(), llm.OpenAIProviderID, "gpt-5.6-sol")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cred.Kind != llm.AuthOAuthChatGPT {
-		t.Fatalf("Codex model should keep OAuth credential, got %q", cred.Kind)
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-luna"} {
+		cred, err = CredentialForModel(context.Background(), llm.OpenAIProviderID, modelID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cred.Kind != llm.AuthOAuthChatGPT {
+			t.Fatalf("Codex model %s should keep OAuth credential, got %q", modelID, cred.Kind)
+		}
 	}
 }
 

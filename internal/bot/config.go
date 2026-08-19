@@ -2,10 +2,12 @@
 package bot
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -21,12 +23,55 @@ type Config struct {
 	Name              string         `yaml:"name"`
 	Role              string         `yaml:"role"`
 	Persona           string         `yaml:"persona,omitempty"` // e.g. "female; speaks Russian with feminine forms"
-	Model             string         `yaml:"model,omitempty"`   // "provider/id"; empty auto-picks
+	Model             string         `yaml:"model,omitempty"`   // "provider/id"; empty inherits the role default
 	Workdir           string         `yaml:"workdir"`
 	CapabilityProfile string         `yaml:"capabilityProfile,omitempty"`
 	TurnBudget        TurnBudgetConf `yaml:"turnBudget,omitempty"`
 	LLMPaceFactor     *float64       `yaml:"llmPaceFactor,omitempty"`
 	Cron              []CronJob      `yaml:"cron,omitempty"`
+}
+
+const (
+	DefaultArchitectModel = "openai/gpt-5.6-sol"
+	DefaultBotModel       = "openai/gpt-5.6-luna"
+
+	ModelSourceConfigured  = "configured"
+	ModelSourceRoleDefault = "role-default"
+)
+
+// ModelSelection describes both the persisted override and the model a bot must
+// open. Configured stays empty for inherited defaults so reading a config never
+// turns inheritance into a pin.
+type ModelSelection struct {
+	Configured string
+	Effective  string
+	Source     string
+}
+
+// DefaultModelForRole returns the binding default for a built-in role. Unknown
+// roles fail instead of silently inheriting a model intended for valid bots.
+func DefaultModelForRole(role string) (string, error) {
+	role = strings.TrimSpace(role)
+	if _, ok := RoleByName(role); !ok {
+		return "", fmt.Errorf("unknown role %q", role)
+	}
+	if role == "architect" {
+		return DefaultArchitectModel, nil
+	}
+	return DefaultBotModel, nil
+}
+
+// ModelSelection resolves an explicit override or the built-in role default.
+func (c Config) ModelSelection() (ModelSelection, error) {
+	configured := strings.TrimSpace(c.Model)
+	if configured != "" {
+		return ModelSelection{Configured: configured, Effective: configured, Source: ModelSourceConfigured}, nil
+	}
+	effective, err := DefaultModelForRole(c.Role)
+	if err != nil {
+		return ModelSelection{}, err
+	}
+	return ModelSelection{Effective: effective, Source: ModelSourceRoleDefault}, nil
 }
 
 // DefaultLLMPaceFactor throttles an unattended bot's LLM request rate: after each
@@ -201,6 +246,44 @@ func Load(name string) (Config, error) {
 		c.Name = name
 	}
 	return c, nil
+}
+
+// Update serializes a bot.yaml read-modify-write across processes. The lock file
+// is intentionally persistent: the operating system releases its advisory lock
+// when a process exits, so a crash cannot leave stale ownership behind.
+func Update(name string, mutate func(*Config) error) (saved Config, err error) {
+	if name == "" {
+		return Config{}, fmt.Errorf("bot name is required")
+	}
+	if mutate == nil {
+		return Config{}, fmt.Errorf("bot config mutation is required")
+	}
+	dir, err := Dir(name)
+	if err != nil {
+		return Config{}, err
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, ".bot.yaml.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return Config{}, err
+	}
+	defer func() { err = errors.Join(err, lock.Close()) }()
+	if err := lockBotConfig(lock); err != nil {
+		return Config{}, fmt.Errorf("lock bot %q config: %w", name, err)
+	}
+	defer func() { err = errors.Join(err, unlockBotConfig(lock)) }()
+
+	current, err := Load(name)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := mutate(&current); err != nil {
+		return Config{}, err
+	}
+	current.Name = name
+	if err := Save(current); err != nil {
+		return Config{}, err
+	}
+	return current, nil
 }
 
 // List returns the names of all configured bots, sorted.
