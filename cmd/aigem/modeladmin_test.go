@@ -15,6 +15,9 @@ func testModelAdmin(t *testing.T) *fleetModelAdmin {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", root)
+	// Clearing validates the developer role default before persisting. A dummy
+	// key is sufficient because opening the client performs no network request.
+	t.Setenv("OPENAI_API_KEY", "test-only")
 	models := filepath.Join(root, "aigem", "models.json")
 	if err := os.MkdirAll(filepath.Dir(models), 0o700); err != nil {
 		t.Fatal(err)
