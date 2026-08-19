@@ -168,7 +168,7 @@ aigem bot model                        # what each bot runs on now
 aigem bot model amiran                 # just this one
 aigem bot model amiran openai/gpt-5.6-sol
 aigem bot model --all xai/grok-4.3     # or any provider from your own models.json
-aigem bot model amiran --clear         # back to the auto-picked default
+aigem bot model amiran --clear         # back to the role default
 aigem bot model --all --clear
 ```
 
