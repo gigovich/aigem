@@ -14,6 +14,7 @@
 package chat
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -105,6 +106,14 @@ var ErrInvalid = errors.New("chat: invalid request")
 // to. Losing a turn's spend accounting silently is worse than an error.
 var ErrNoSuchTurn = errors.New("chat: no such turn")
 
+// ErrNoSuchBot and ErrInvalidModel let the injected fleet administration
+// adapter distinguish a missing configured bot from a rejected selection.
+// The chat package still knows nothing about bot configuration itself.
+var (
+	ErrNoSuchBot    = errors.New("chat: no such bot")
+	ErrInvalidModel = errors.New("chat: invalid model")
+)
+
 func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
 }
@@ -158,6 +167,43 @@ type FleetMember struct {
 }
 
 // LiveBot is a bot's operational state inside the process running the fleet.
+// ModelOption is one trusted user-registry model. Unusable options remain in
+// the response so the editor can explain an authentication problem instead of
+// silently making a configured selection disappear.
+type ModelOption struct {
+	Ref      string `json:"ref"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Usable   bool   `json:"usable"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// BotModelSettings keeps saved intent separate from the model a live process
+// already opened. Running is empty for a stopped bot.
+type BotModelSettings struct {
+	Name            string `json:"name"`
+	Role            string `json:"role"`
+	Configured      string `json:"configured,omitempty"`
+	Selected        string `json:"selected"`
+	Source          string `json:"source"`
+	Running         string `json:"running,omitempty"`
+	RestartRequired bool   `json:"restart_required"`
+}
+
+// BotModels is the complete server-confirmed editor snapshot.
+type BotModels struct {
+	Options []ModelOption      `json:"options"`
+	Bots    []BotModelSettings `json:"bots"`
+}
+
+// ModelAdministration is injected only by the process that owns and runs the
+// configured fleet. A standalone server does not install it and gets no model
+// administration routes.
+type ModelAdministration interface {
+	Models(context.Context) (BotModels, error)
+	SetModel(context.Context, string, *string) (BotModelSettings, error)
+}
+
 type LiveBot struct {
 	// Running is false for a configured bot that could not be started and is
 	// being retried - the state an operator would otherwise have to read

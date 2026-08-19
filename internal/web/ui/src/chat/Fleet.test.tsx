@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { FleetMember } from "@/lib/chatprotocol";
 import { Fleet } from "./Fleet";
@@ -9,11 +9,12 @@ beforeEach(() => {
   // nothing - which is what an empty list means here.
   vi.stubGlobal(
     "fetch",
-    vi.fn(() =>
-      Promise.resolve(
-        new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }),
-      ),
-    ),
+    vi.fn((input: RequestInfo | URL) => {
+      const body = String(input).includes("/api/chat/bots/models") ? { options: [], bots: [] } : [];
+      return Promise.resolve(
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    }),
   );
 });
 
@@ -68,7 +69,7 @@ it("draws every operational column for a running bot", () => {
   const row = rowFor("amiran");
   expect(within(row).getByText("3")).toBeInTheDocument();
   expect(within(row).getByText("30m (t0)")).toBeInTheDocument();
-  expect(within(row).getByText("xai/grok-4.3")).toBeInTheDocument();
+  expect(within(row).getByText("running: xai/grok-4.3")).toBeInTheDocument();
   expect(within(row).getByText(/memory-review \d{2}:10/)).toBeInTheDocument();
   expect(within(row).getByText("idle")).toBeInTheDocument();
 });
@@ -147,4 +148,111 @@ it("draws a skeleton, and the header it will keep, while the roster is loading",
 it("names what is missing when no bot is configured", () => {
   render(<Fleet loaded members={[]} />);
   expect(screen.getByText(/No bots are configured/)).toBeInTheDocument();
+});
+
+const settings = {
+  name: "amiran",
+  role: "developer",
+  configured: "xai/grok-4.3",
+  selected: "xai/grok-4.3",
+  source: "configured" as const,
+  running: "openai/gpt-5.6-luna",
+  restart_required: true,
+};
+
+function modelFetch(put?: (body: unknown) => Response | Promise<Response>) {
+  const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/api/chat/bots/models")) {
+      return new Response(JSON.stringify({
+        options: [
+          { ref: "openai/gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai", usable: true },
+          { ref: "xai/grok-4.3", name: "Grok 4.3", provider: "xai", usable: true },
+          { ref: "openai/no-auth", name: "No auth", provider: "openai", usable: false, reason: "not authenticated" },
+        ],
+        bots: [settings],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("/api/chat/bots/amiran/model")) {
+      return put?.(JSON.parse(String(init?.body))) ?? new Response(JSON.stringify({
+        ...settings,
+        configured: "openai/gpt-5.6-luna",
+        selected: "openai/gpt-5.6-luna",
+        restart_required: false,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+  vi.stubGlobal("fetch", fetcher);
+  return fetcher;
+}
+
+it("shows selected, running, source, and restart state for a running bot", async () => {
+  modelFetch();
+  render(<Fleet loaded members={[member("amiran", { state: "idle", live: { running: true, model: settings.running, tier: 0 } })]} />);
+  const row = rowFor("amiran");
+  expect(await within(row).findByText(`selected: ${settings.selected}`)).toBeInTheDocument();
+  expect(within(row).getByText(`running: ${settings.running}`)).toBeInTheDocument();
+  expect(within(row).getByText("configured")).toBeInTheDocument();
+  expect(within(row).getByText("restart required")).toBeInTheDocument();
+});
+
+it("saves only on server confirmation and prevents a double submit", async () => {
+  let resolve!: (response: Response) => void;
+  const pending = new Promise<Response>((done) => { resolve = done; });
+  const fetcher = modelFetch(() => pending);
+  render(<Fleet loaded members={[member("amiran", { state: "idle", live: { running: true, model: settings.running, tier: 0 } })]} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Change model" }));
+  const select = screen.getByLabelText("Model selection");
+  expect(select).toHaveFocus();
+  fireEvent.change(select, { target: { value: "openai/gpt-5.6-luna" } });
+  const save = screen.getByRole("button", { name: "Save" });
+  fireEvent.click(save);
+  fireEvent.click(save);
+  expect(screen.getByText(`selected: ${settings.selected}`)).toBeInTheDocument();
+  expect(save).toBeDisabled();
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("/model"))).toHaveLength(1);
+  resolve(new Response(JSON.stringify({
+    ...settings,
+    configured: "openai/gpt-5.6-luna",
+    selected: "openai/gpt-5.6-luna",
+    restart_required: false,
+  }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  expect(screen.getByText("selected: openai/gpt-5.6-luna")).toBeInTheDocument();
+  expect(screen.queryByText("restart required")).not.toBeInTheDocument();
+});
+
+it("preserves the previous selection after failure and permits retry", async () => {
+  let writes = 0;
+  modelFetch(() => {
+    writes++;
+    if (writes === 1) return new Response(JSON.stringify({ error: "disk full" }), { status: 500 });
+    return new Response(JSON.stringify({ ...settings, configured: undefined, selected: "openai/gpt-5.6-luna", source: "role-default", running: undefined, restart_required: false }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  render(<Fleet loaded members={[member("amiran", { state: "stopped", live: { running: false, tier: 0 } })]} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Change model" }));
+  fireEvent.change(screen.getByLabelText("Model selection"), { target: { value: "__role_default__" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("disk full");
+  expect(screen.getByText(`selected: ${settings.selected}`)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("selected: openai/gpt-5.6-luna")).toBeInTheDocument();
+  expect(screen.getByText("Saved.")).toBeInTheDocument();
+});
+
+it("closes the keyboard-accessible mobile-sized editor with Escape", async () => {
+  modelFetch();
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
+  render(<Fleet loaded members={[member("amiran", { state: "stopped", live: { running: false, tier: 0 } })]} />);
+  const opener = await screen.findByRole("button", { name: "Change model" });
+  fireEvent.click(opener);
+  const dialog = screen.getByRole("dialog");
+  expect(dialog).toHaveClass("w-full", "max-w-md");
+  fireEvent.keyDown(dialog.parentElement!, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(opener).toHaveFocus();
 });

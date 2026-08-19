@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The browser Fleet screen can change a bot's saved model or return it to the
+  role default. It shows configured intent, selected source, the model already
+  running, and a restart-required state separately; a save is visible only after
+  daemon validation and persistence succeed. Options come from the same trusted
+  user registry as `aigem bot model`, unavailable authentication states are
+  explained, and the write API exists only in the bot-owning daemon rather than
+  standalone web mode.
+
 - Browser sessions survive a restart. Each daemon keeps its cookie table in a
   file of its own - `chat-cookies.json` for the fleet, `web-cookies.json` for
   `aigem web run`, both 0600 in `$XDG_STATE_HOME/aigem` - so deploying a new

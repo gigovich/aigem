@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"strconv"
@@ -19,9 +20,10 @@ import (
 // Every request is the operator. There is one human, authenticated by the
 // daemon before anything here runs; bots reach the store directly, in process.
 type API struct {
-	store *Store
-	hub   *Hub
-	live  func() map[string]LiveBot
+	store  *Store
+	hub    *Hub
+	live   func() map[string]LiveBot
+	models ModelAdministration
 	// pushPublicKey is the application server key browsers subscribe with, or
 	// empty on a daemon that has none.
 	pushPublicKey string
@@ -38,6 +40,11 @@ func NewAPI(s *Store, h *Hub) *API { return &API{store: s, hub: h} }
 // it. Set once, before the server starts; a daemon that runs no bots sets
 // nothing and every row simply says less.
 func (a *API) SetFleetStatus(f func() map[string]LiveBot) { a.live = f }
+
+// SetModelAdministration installs daemon-owned model settings. It is deliberately
+// separate from fleet status: a read-only/standalone server may report a roster
+// without gaining a persistent configuration writer.
+func (a *API) SetModelAdministration(admin ModelAdministration) { a.models = admin }
 
 // Mount registers the routes. guard is the daemon's wrapper: it applies the
 // origin check, the token check and the security headers, so nothing here can
@@ -71,6 +78,10 @@ func (a *API) Mount(mux *http.ServeMux, guard func(http.HandlerFunc) http.Handle
 		"GET /api/chat/threads/{id}/socket":              a.threadSocket,
 	} {
 		mux.HandleFunc(pattern, guard(h))
+	}
+	if a.models != nil {
+		mux.HandleFunc("GET /api/chat/bots/models", guard(a.botModels))
+		mux.HandleFunc("PUT /api/chat/bots/{name}/model", guard(a.setBotModel))
 	}
 }
 
@@ -318,6 +329,48 @@ var renderableImage = map[string]bool{
 	"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true,
 }
 
+// ---- fleet model administration ----
+
+const maxModelBodyBytes = 4 << 10
+
+func (a *API) botModels(w http.ResponseWriter, r *http.Request) {
+	models, err := a.models.Models(r.Context())
+	writeResult(w, models, err)
+}
+
+func (a *API) setBotModel(w http.ResponseWriter, r *http.Request) {
+	// RawMessage distinguishes a missing required field from an explicit null,
+	// which means return to the role default.
+	var body struct {
+		Model json.RawMessage `json:"model"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxModelBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeErr(w, invalid("bad request body: %v", err))
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeErr(w, invalid("bad request body: expected one JSON object"))
+		return
+	}
+	if len(body.Model) == 0 {
+		writeErr(w, invalid("bad request body: model is required"))
+		return
+	}
+	var model *string
+	if string(body.Model) != "null" {
+		var ref string
+		if err := json.Unmarshal(body.Model, &ref); err != nil {
+			writeErr(w, invalid("bad request body: model must be a string or null"))
+			return
+		}
+		model = &ref
+	}
+	settings, err := a.models.SetModel(r.Context(), r.PathValue("name"), model)
+	writeResult(w, settings, err)
+}
+
 // ---- misc ----
 
 func (a *API) search(w http.ResponseWriter, r *http.Request) {
@@ -497,9 +550,9 @@ func writeErrOrNoContent(w http.ResponseWriter, err error) {
 func writeErr(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, ErrNoSuchThread), errors.Is(err, ErrNoSuchTurn):
+	case errors.Is(err, ErrNoSuchThread), errors.Is(err, ErrNoSuchTurn), errors.Is(err, ErrNoSuchBot):
 		status = http.StatusNotFound
-	case errors.Is(err, ErrInvalid):
+	case errors.Is(err, ErrInvalid), errors.Is(err, ErrInvalidModel):
 		status = http.StatusBadRequest
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})

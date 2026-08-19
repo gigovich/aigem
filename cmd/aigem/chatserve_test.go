@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/gigovich/aigem/internal/bot"
 	"github.com/gigovich/aigem/internal/chat"
 )
 
@@ -70,6 +72,40 @@ func TestTheCLIReachesTheDaemonTheFleetStarts(t *testing.T) {
 
 // A bot that cannot be started must not take the daemon with it before the
 // operator has any way to see why.
+func TestFleetModelRoutesUseTheDaemonSecurityGuard(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := bot.Save(bot.Config{Name: "amiran", Role: "developer", Workdir: "."}); err != nil {
+		t.Fatal(err)
+	}
+	live := newLiveFleet([]string{"amiran"})
+	srv, err := startChatServer(t.Context(), chatServerOpts{
+		addr: "127.0.0.1:0", names: []string{"amiran"}, live: live,
+	}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	for _, request := range []struct{ method, path string }{
+		{http.MethodGet, "/api/chat/bots/models"},
+		{http.MethodPut, "/api/chat/bots/amiran/model"},
+	} {
+		req, err := http.NewRequestWithContext(t.Context(), request.method, "http://"+srv.srv.Addr().String()+request.path, strings.NewReader(`{"model":null}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s without credentials answered %d, want 401", request.method, request.path, res.StatusCode)
+		}
+	}
+}
+
 func TestTheDaemonComesUpBeforeAnyBot(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

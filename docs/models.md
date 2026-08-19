@@ -53,6 +53,13 @@ you added - and falls back to the local model when none is authenticated.
 A bare `--model <name>` keeps the old behavior: the local provider with that model
 name.
 
+Bot fleet selections are separate from this interactive-session heuristic. Use
+`aigem bot model` or **Change model** on the browser Fleet screen. The browser
+lists only the built-in and user `models.json` registry (never a repository's
+untrusted `.aigem/models.json`), shows unavailable authentication states, and
+persists only a server-validated choice. See [Choosing a bot's
+model](bots.md#choosing-a-bots-model).
+
 The ChatGPT subscription (Codex backend) only accepts Codex-supported models -
 currently `gpt-5.6-sol` (the default), `gpt-5.6-terra`, and `gpt-5.6-luna`.
 Other models, and any you add via `models.json`, require an API key. If you have

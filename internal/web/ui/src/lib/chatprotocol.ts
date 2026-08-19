@@ -50,6 +50,29 @@ export interface FleetMember extends Actor {
   live?: LiveBot;
 }
 
+export interface ModelOption {
+  ref: string;
+  name: string;
+  provider: string;
+  usable: boolean;
+  reason?: string;
+}
+
+export interface BotModelSettings {
+  name: string;
+  role: string;
+  configured?: string;
+  selected: string;
+  source: "configured" | "role-default";
+  running?: string;
+  restart_required: boolean;
+}
+
+export interface BotModels {
+  options: ModelOption[];
+  bots: BotModelSettings[];
+}
+
 export interface ThreadView {
   id: string;
   title?: string;
