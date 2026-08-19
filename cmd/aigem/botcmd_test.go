@@ -20,7 +20,9 @@ func isolatedBots(t *testing.T, names ...string) {
 	cfgHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfgHome)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("OPENAI_API_KEY", "")
+	// A dummy key is enough to construct (but not call) the built-in role-default
+	// clients, so clear/report tests exercise the real shared usability validator.
+	t.Setenv("OPENAI_API_KEY", "test-openai-key")
 	t.Setenv("XAI_API_KEY", "")
 	// "keyed" is authenticated but cannot be opened with an API key on the
 	// Responses API: it separates "a credential exists" from "this model opens".
@@ -76,8 +78,15 @@ func TestBotModelSetsNormalizesAndClears(t *testing.T) {
 		t.Fatalf("bare id stored as %q, want acme/fast", c.Model)
 	}
 
-	if err := botModel([]string{"kate", "--clear"}); err != nil {
-		t.Fatalf("clear: %v", err)
+	out := captureStdout(t, func() {
+		if err := botModel([]string{"kate", "--clear"}); err != nil {
+			t.Fatalf("clear: %v", err)
+		}
+	})
+	for _, want := range []string{bot.DefaultBotModel, bot.ModelSourceRoleDefault, "restart"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("clear output %q does not contain %q", out, want)
+		}
 	}
 	if c, _ := bot.Load("kate"); c.Model != "" {
 		t.Fatalf("model after clear = %q, want empty", c.Model)
@@ -91,6 +100,48 @@ func TestBotModelSetsNormalizesAndClears(t *testing.T) {
 	for _, e := range entries {
 		if strings.Contains(e.Name(), ".tmp") {
 			t.Fatalf("left a temporary file behind: %s", e.Name())
+		}
+	}
+}
+
+func TestBotModelClearRejectsUnusableRoleDefaultWithoutWriting(t *testing.T) {
+	isolatedBots(t, "kate")
+	if err := botModel([]string{"kate", "acme/fast"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	err := botModel([]string{"kate", "--clear"})
+	if err == nil {
+		t.Fatal("clear succeeded without a usable role default")
+	}
+	for _, want := range []string{bot.DefaultBotModel, bot.ModelSourceRoleDefault, "unusable"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("clear error %q does not contain %q", err, want)
+		}
+	}
+	if c, _ := bot.Load("kate"); c.Model != "acme/fast" {
+		t.Fatalf("failed clear changed configured model to %q", c.Model)
+	}
+}
+
+func TestBotModelReportsArchitectRoleDefault(t *testing.T) {
+	isolatedBots(t, "kate")
+	c, err := bot.Load("kate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Role = "architect"
+	if err := bot.Save(c); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if err := botModel([]string{"kate"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, want := range []string{bot.DefaultArchitectModel, bot.ModelSourceRoleDefault} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("architect report %q does not contain %q", out, want)
 		}
 	}
 }
@@ -159,7 +210,7 @@ func TestBotModelAllRejectsABotNameThatResolvesAsAModel(t *testing.T) {
 	}
 }
 
-func TestBotModelReportsPinnedUnusableAndAuto(t *testing.T) {
+func TestBotModelReportsConfiguredUnusableAndRoleDefault(t *testing.T) {
 	isolatedBots(t, "kate", "lisa", "zoe")
 	if err := botModel([]string{"kate", "acme/fast"}); err != nil {
 		t.Fatal(err)
@@ -187,7 +238,7 @@ func TestBotModelReportsPinnedUnusableAndAuto(t *testing.T) {
 	for name, want := range map[string][]string{
 		"kate": {"acme/fast", "configured"},
 		"lisa": {"locked/big", "UNUSABLE"},
-		"zoe":  {"auto"},
+		"zoe":  {bot.DefaultBotModel, bot.ModelSourceRoleDefault},
 	} {
 		got := strings.Join(rows[name], " ")
 		for _, w := range want {

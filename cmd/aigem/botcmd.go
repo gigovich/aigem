@@ -40,8 +40,8 @@ const botModelUsage = `usage:
   aigem bot model <name>           show one bot's model
   aigem bot model <name> <ref>     switch that bot to <ref> (e.g. openai/gpt-5.6-sol)
   aigem bot model --all <ref>      switch every bot to <ref>
-  aigem bot model <name> --clear   go back to the auto-picked default
-  aigem bot model --all --clear    clear every bot's model
+  aigem bot model <name> --clear   inherit that role's default model
+  aigem bot model --all --clear    return every bot to its role default
 
 Refs are listed by "aigem models", but a bot can only be pinned to a provider
 that comes from the built-ins or ~/.config/aigem/models.json - never from a
@@ -102,11 +102,13 @@ func botList() error {
 		if profile == "" {
 			profile = tools.DefaultCapabilityProfile
 		}
-		model := c.Model
-		if model == "" {
-			model = "auto"
+		selection, err := c.ModelSelection()
+		if err != nil {
+			fmt.Printf("%s\trole=%s\tprofile=%s\tmodel=(invalid: %v)\n", n, c.Role, profile, err)
+			continue
 		}
-		fmt.Printf("%s\trole=%s\tprofile=%s\tmodel=%s\n", n, c.Role, profile, model)
+		fmt.Printf("%s\trole=%s\tprofile=%s\tmodel=%s\tmodel_source=%s\n",
+			n, c.Role, profile, selection.Effective, selection.Source)
 	}
 	return nil
 }
@@ -134,6 +136,49 @@ func resolveBotModel(reg *llm.Registry, ref string) (llm.ModelInfo, error) {
 		return llm.ModelInfo{}, err
 	}
 	return m, nil
+}
+
+// botModelService is the single validation and persistence path for model
+// settings. The CLI uses it now; the fleet administration adapter can reuse it
+// without growing a second interpretation of role defaults or usable refs.
+type botModelService struct {
+	registry *llm.Registry
+}
+
+func newBotModelService() *botModelService {
+	return &botModelService{registry: botModelRegistry()}
+}
+
+func (s *botModelService) selection(c bot.Config, configured string) (bot.ModelSelection, error) {
+	c.Model = configured
+	selection, err := c.ModelSelection()
+	if err != nil {
+		return bot.ModelSelection{}, err
+	}
+	if _, err := resolveBotModel(s.registry, selection.Effective); err != nil {
+		return bot.ModelSelection{}, fmt.Errorf("model %q from %s is unusable: %w",
+			selection.Effective, selection.Source, err)
+	}
+	return selection, nil
+}
+
+func (s *botModelService) update(name, configured string) (bot.ModelSelection, bool, error) {
+	var selection bot.ModelSelection
+	changed := false
+	_, err := bot.Update(name, func(c *bot.Config) error {
+		var err error
+		selection, err = s.selection(*c, configured)
+		if err != nil {
+			return err
+		}
+		if c.Model == selection.Configured {
+			return nil
+		}
+		c.Model = selection.Configured
+		changed = true
+		return nil
+	})
+	return selection, changed, err
 }
 
 // botModel dispatches "aigem bot model ...". Flags and positional arguments may
@@ -199,21 +244,21 @@ func botModel(args []string) error {
 		names = configured
 	}
 
+	service := newBotModelService()
 	if ref == "" && !clear {
-		return reportBotModels(names, len(pos) == 0)
+		return reportBotModels(service, names, len(pos) == 0)
 	}
-	return setBotModels(names, ref)
+	return setBotModels(service, names, ref)
 }
 
 // reportBotModels prints one row per bot. tolerate keeps a broken config from
 // hiding the others, the way `bot list` does; a name the operator typed is an
 // error instead - and rows are collected before anything prints, so that error
 // is not preceded by a half-written table.
-func reportBotModels(names []string, tolerate bool) error {
-	reg := botModelRegistry()
+func reportBotModels(service *botModelService, names []string, tolerate bool) error {
 	rows := make([]string, 0, len(names))
 	for _, n := range names {
-		row, err := botModelRow(reg, n)
+		row, err := botModelRow(service, n)
 		if err != nil {
 			if !tolerate {
 				return err
@@ -230,43 +275,38 @@ func reportBotModels(names []string, tolerate bool) error {
 	return w.Flush()
 }
 
-// setBotModels validates the ref and every target before writing any of them, so
-// a ref one bot rejects cannot leave the fleet half-switched.
-func setBotModels(names []string, ref string) error {
-	for _, n := range names {
-		if _, err := bot.Load(n); err != nil {
-			return fmt.Errorf("bot %q: %w", n, err)
-		}
-	}
+// setBotModels validates the desired effective selection for every target before
+// writing any of them, so an unusable role default or override cannot leave an
+// --all operation half-switched.
+func setBotModels(service *botModelService, names []string, ref string) error {
 	if ref != "" {
-		m, err := resolveBotModel(botModelRegistry(), ref)
+		m, err := resolveBotModel(service.registry, ref)
 		if err != nil {
 			return explainPinFailure(ref, err)
 		}
 		ref = m.Ref() // normalize a bare id to provider/id
 	}
+	for _, n := range names {
+		c, err := bot.Load(n)
+		if err != nil {
+			return fmt.Errorf("bot %q: %w", n, err)
+		}
+		if _, err := service.selection(c, ref); err != nil {
+			return fmt.Errorf("bot %q (role %q): %w", n, c.Role, err)
+		}
+	}
+
 	changed := 0
 	for _, n := range names {
-		didChange := false
-		if _, err := bot.Update(n, func(c *bot.Config) error {
-			if c.Model == ref {
-				return nil
-			}
-			c.Model = ref
-			didChange = true
-			return nil
-		}); err != nil {
+		selection, didChange, err := service.update(n, ref)
+		if err != nil {
 			return fmt.Errorf("bot %q: %w", n, err)
 		}
 		if !didChange {
 			continue
 		}
 		changed++
-		if ref == "" {
-			fmt.Printf("%s: model cleared (auto)\n", n)
-		} else {
-			fmt.Printf("%s: model set to %s\n", n, ref)
-		}
+		fmt.Printf("%s: selected %s (%s)\n", n, selection.Effective, selection.Source)
 	}
 	if changed == 0 {
 		fmt.Println("no change")
@@ -354,25 +394,23 @@ func saveCronJobs(name string) func([]bot.CronJob) error {
 	}
 }
 
-// botModelRow renders one tab-separated row. An unpinned bot shows the model it
-// would pick today, which is the value a switch would actually be changing.
-func botModelRow(reg *llm.Registry, name string) (string, error) {
+// botModelRow renders the binding effective selection and its source. An
+// unusable selection remains visible rather than being replaced by an available
+// provider-order fallback.
+func botModelRow(service *botModelService, name string) (string, error) {
 	c, err := bot.Load(name)
 	if err != nil {
 		return "", fmt.Errorf("bot %q: %w", name, err)
 	}
-	if pinned := strings.TrimSpace(c.Model); pinned != "" {
-		note := "configured"
-		if _, err := resolveBotModel(reg, pinned); err != nil {
-			note = "configured, UNUSABLE: " + err.Error()
-		}
-		return fmt.Sprintf("%s\t%s\t%s", name, pinned, note), nil
+	selection, err := c.ModelSelection()
+	if err != nil {
+		return "", fmt.Errorf("bot %q: %w", name, err)
 	}
-	effective := "(none available)"
-	if def, ok := reg.DefaultPreferring(auth.IsAuthenticated); ok {
-		effective = def.Ref()
+	note := selection.Source
+	if _, err := resolveBotModel(service.registry, selection.Effective); err != nil {
+		note += ", UNUSABLE: " + err.Error()
 	}
-	return fmt.Sprintf("%s\t%s\tauto", name, effective), nil
+	return fmt.Sprintf("%s\t%s\t%s", name, selection.Effective, note), nil
 }
 
 func promptLine(rd *bufio.Reader, label string) string {
