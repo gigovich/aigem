@@ -62,15 +62,13 @@ var codexSubscriptionModels = map[string]bool{
 // backend is expected to accept this model. Other OpenAI models need an API key.
 func IsCodexSubscriptionModel(id string) bool { return codexSubscriptionModels[id] }
 
-// codexSubscriptionContext holds the input window the ChatGPT subscription
-// serves, for models where it is smaller than the API-key window. Sol's API
-// context is larger than the subscription window; on the subscription it is
-// split into 272k of input and the
-// 128k of output the Codex backend reserves for itself. A session sized from
-// the preset would compact 128k too late and fail the turn on
-// context_length_exceeded rather than shrinking in time.
+// codexSubscriptionContext holds the input window reported by the ChatGPT
+// subscription model registry when it is smaller than the API-key window. A
+// session sized from the API preset would otherwise compact too late and fail
+// the turn on context_length_exceeded rather than shrinking in time.
 var codexSubscriptionContext = map[string]int{
-	"gpt-5.6-sol": 272000,
+	"gpt-5.6-sol":  272000,
+	"gpt-5.6-luna": 272000,
 }
 
 // SubscriptionContextWindow returns the ChatGPT subscription input window for a

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -208,4 +209,206 @@ func TestResolveLLMPaceFactor(t *testing.T) {
 	if got := (Config{LLMPaceFactor: &zero}).ResolveLLMPaceFactor(); got != 0 {
 		t.Fatalf("zero = %v, want 0 (disabled)", got)
 	}
+}
+
+func TestModelSelection(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want ModelSelection
+	}{
+		{
+			name: "architect role default",
+			cfg:  Config{Role: "architect"},
+			want: ModelSelection{Effective: DefaultArchitectModel, Source: ModelSourceRoleDefault},
+		},
+		{
+			name: "manager role default",
+			cfg:  Config{Role: "manager"},
+			want: ModelSelection{Effective: DefaultBotModel, Source: ModelSourceRoleDefault},
+		},
+		{
+			name: "researcher role default",
+			cfg:  Config{Role: "researcher"},
+			want: ModelSelection{Effective: DefaultBotModel, Source: ModelSourceRoleDefault},
+		},
+		{
+			name: "developer role default",
+			cfg:  Config{Role: "developer"},
+			want: ModelSelection{Effective: DefaultBotModel, Source: ModelSourceRoleDefault},
+		},
+		{
+			name: "tester role default",
+			cfg:  Config{Role: "tester"},
+			want: ModelSelection{Effective: DefaultBotModel, Source: ModelSourceRoleDefault},
+		},
+		{
+			name: "trimmed configured override",
+			cfg:  Config{Role: "architect", Model: "  openai/gpt-5.4  "},
+			want: ModelSelection{Configured: "openai/gpt-5.4", Effective: "openai/gpt-5.4", Source: ModelSourceConfigured},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.cfg.ModelSelection()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("selection = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModelSelectionRejectsUnknownRoleWithoutOverride(t *testing.T) {
+	if _, err := (Config{Role: "developre"}).ModelSelection(); err == nil {
+		t.Fatal("expected unknown role error")
+	}
+	got, err := (Config{Role: "developre", Model: "openai/gpt-5.4"}).ModelSelection()
+	if err != nil {
+		t.Fatalf("configured override should remain readable: %v", err)
+	}
+	if got.Effective != "openai/gpt-5.4" || got.Source != ModelSourceConfigured {
+		t.Fatalf("configured selection = %+v", got)
+	}
+}
+
+func TestUpdateSerializesDisjointChangesAcrossProcesses(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := Save(Config{
+		Name: "amiran", Role: "developer", Model: "openai/gpt-5.4",
+		Cron: []CronJob{{ID: "old", Expr: "0 * * * *", Prompt: "old"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(configHome, "aigem", "bots", "amiran", "bot.yaml")
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	parentDone := make(chan error, 1)
+	go func() {
+		_, err := Update("amiran", func(c *Config) error {
+			close(entered)
+			<-release
+			c.Model = DefaultBotModel
+			return nil
+		})
+		parentDone <- err
+	}()
+	<-entered
+
+	ready := filepath.Join(configHome, "child-ready")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestUpdateProcessHelper$")
+	cmd.Env = append(os.Environ(), "AIGEM_UPDATE_HELPER=cron", "AIGEM_UPDATE_READY="+ready)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, ready)
+	childDone := make(chan error, 1)
+	go func() { childDone <- cmd.Wait() }()
+	select {
+	case err := <-childDone:
+		t.Fatalf("child update completed while parent held the lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-parentDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-childDone; err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load("amiran")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != DefaultBotModel {
+		t.Fatalf("model = %q, want %q", got.Model, DefaultBotModel)
+	}
+	if len(got.Cron) != 1 || got.Cron[0].ID != "new" {
+		t.Fatalf("cron = %+v, want child update", got.Cron)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("Update changed bot.yaml mode to %v", info.Mode().Perm())
+	}
+}
+
+func TestUpdateLockIsReleasedWhenProcessExits(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := Save(Config{Name: "amiran", Role: "developer"}); err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(configHome, "child-ready")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestUpdateProcessHelper$")
+	cmd.Env = append(os.Environ(), "AIGEM_UPDATE_HELPER=hold", "AIGEM_UPDATE_READY="+ready)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, ready)
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("killed helper unexpectedly succeeded")
+	}
+	if _, err := Update("amiran", func(c *Config) error {
+		c.Model = DefaultBotModel
+		return nil
+	}); err != nil {
+		t.Fatalf("update after lock holder exited: %v", err)
+	}
+}
+
+func TestUpdateProcessHelper(t *testing.T) {
+	mode := os.Getenv("AIGEM_UPDATE_HELPER")
+	if mode == "" {
+		return
+	}
+	ready := os.Getenv("AIGEM_UPDATE_READY")
+	switch mode {
+	case "cron":
+		if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Update("amiran", func(c *Config) error {
+			c.Cron = []CronJob{{ID: "new", Expr: "5 * * * *", Prompt: "new"}}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	case "hold":
+		if _, err := Update("amiran", func(*Config) error {
+			if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
+				return err
+			}
+			select {}
+		}); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatalf("unknown helper mode %q", mode)
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
 }

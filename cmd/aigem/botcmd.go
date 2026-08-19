@@ -247,19 +247,19 @@ func setBotModels(names []string, ref string) error {
 	}
 	changed := 0
 	for _, n := range names {
-		// Re-read rather than reuse the pre-flight copy: a running bot rewrites its
-		// own bot.yaml to persist cron jobs, and writing back a snapshot taken
-		// before that would erase them.
-		c, err := bot.Load(n)
-		if err != nil {
+		didChange := false
+		if _, err := bot.Update(n, func(c *bot.Config) error {
+			if c.Model == ref {
+				return nil
+			}
+			c.Model = ref
+			didChange = true
+			return nil
+		}); err != nil {
 			return fmt.Errorf("bot %q: %w", n, err)
 		}
-		if c.Model == ref {
+		if !didChange {
 			continue
-		}
-		c.Name, c.Model = n, ref
-		if err := bot.Save(c); err != nil {
-			return fmt.Errorf("bot %q: %w", n, err)
 		}
 		changed++
 		if ref == "" {
@@ -341,20 +341,16 @@ func logUsagePerCall(log *slog.Logger, client *llm.Ref) {
 // quotaSaveInterval bounds how often a bot rewrites its provider's snapshot.
 const quotaSaveInterval = time.Minute
 
-// saveCronJobs returns the scheduler's persist hook. It re-reads bot.yaml on
-// every call instead of closing over the config loaded at startup, so a model
-// switch made from the CLI while the bot runs is not erased by the next cron
-// write. Nothing locks the file, so a switch landing inside this read-modify-write
-// can still be lost; the scheduler re-persists its jobs, a lost switch is silent,
-// which is why the command tells the operator to restart the bot.
+// saveCronJobs returns the scheduler's persist hook. Update re-reads bot.yaml
+// under the same inter-process lock used by model changes, so the two disjoint
+// settings cannot overwrite each other.
 func saveCronJobs(name string) func([]bot.CronJob) error {
 	return func(jobs []bot.CronJob) error {
-		c, err := bot.Load(name)
-		if err != nil {
-			return err
-		}
-		c.Name, c.Cron = name, jobs
-		return bot.Save(c)
+		_, err := bot.Update(name, func(c *bot.Config) error {
+			c.Cron = jobs
+			return nil
+		})
+		return err
 	}
 }
 
