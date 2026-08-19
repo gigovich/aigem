@@ -91,6 +91,7 @@ func startChatServer(ctx context.Context, o chatServerOpts, log *slog.Logger) (*
 	api := chat.NewAPI(store, hub)
 	if o.live != nil {
 		api.SetFleetStatus(o.live.status)
+		api.SetModelAdministration(newFleetModelAdmin(o.names, o.live))
 	}
 	notifier := startPush(ctx, store, api, log)
 	srv, err := web.New(web.Config{

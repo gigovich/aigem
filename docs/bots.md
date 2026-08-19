@@ -159,15 +159,16 @@ save, or keep a copy.
 
 ## Choosing a bot's model
 
-Without a `model` field a bot opens the first authenticated provider, so adding a
-login can silently move every bot to another model. Pin it per bot instead:
+Without a `model` field a bot uses its role default: `architect` selects
+`openai/gpt-5.6-sol`, while every other role selects `openai/gpt-5.6-luna`. Pin
+it per bot instead:
 
 ```sh
 aigem bot model                        # what each bot runs on now
 aigem bot model amiran                 # just this one
 aigem bot model amiran openai/gpt-5.6-sol
 aigem bot model --all xai/grok-4.3     # or any provider from your own models.json
-aigem bot model amiran --clear         # back to the auto-picked default
+aigem bot model amiran --clear         # back to the role default
 aigem bot model --all --clear
 ```
 
@@ -271,7 +272,19 @@ at `/chat/fleet` directly. One row per bot:
 | threads | unarchived threads the bot takes part in |
 | heartbeat | the interval in force, and how far the idle backoff has walked (`30m (t0)`) |
 | next job | the scheduled job due soonest, built-in ones included |
-| model | the model that bot actually opened, which may not be the configured one |
+| models | saved selection and source, the model actually open, and whether restart is required |
+
+Each row's **Change model** action selects a usable model from the trusted user
+registry or returns the bot to its role default. The server validates and saves
+the choice before the row changes. A running bot is never hot-swapped: the row
+keeps showing its old `running` model and a **restart required** badge until that
+bot restarts. Stopped bots have no running model and need no restart. Save errors
+leave the previous selection visible and can be retried.
+
+The editor exists only on the daemon started by `aigem bot start`, which owns both
+the fleet and its configuration. A standalone `aigem web run` server does not
+mount these write routes, so the fleet page reports model editing unavailable
+rather than offering a control that cannot work.
 
 `working` is a turn with no end, read from the store, so it is the same answer
 the inbox gives and it survives the restart of whatever process was working.

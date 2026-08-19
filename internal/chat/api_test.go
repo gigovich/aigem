@@ -2,7 +2,10 @@ package chat
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -748,6 +751,112 @@ func TestFleetReportsWhatOnlyTheDaemonKnows(t *testing.T) {
 // same table the inbox reads, so the two screens cannot disagree. Deleting that
 // branch left every suite green while every running bot showed as idle beside an
 // inbox drawing a run dot for it.
+type fakeModelAdmin struct {
+	setName  string
+	setModel *string
+	setErr   error
+}
+
+func (f *fakeModelAdmin) Models(context.Context) (BotModels, error) {
+	return BotModels{
+		Options: []ModelOption{{Ref: "openai/gpt-5.6-luna", Name: "GPT-5.6 Luna", Provider: "openai", Usable: true}},
+		Bots:    []BotModelSettings{{Name: "amiran", Role: "developer", Selected: "openai/gpt-5.6-luna", Source: "role-default"}},
+	}, nil
+}
+
+func (f *fakeModelAdmin) SetModel(_ context.Context, name string, model *string) (BotModelSettings, error) {
+	f.setName, f.setModel = name, model
+	if f.setErr != nil {
+		return BotModelSettings{}, f.setErr
+	}
+	return BotModelSettings{Name: name, Role: "developer", Configured: valueOf(model), Selected: "openai/gpt-5.6-luna", Source: "configured"}, nil
+}
+
+func valueOf(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func modelAPI(t *testing.T, admin ModelAdministration) *httptest.Server {
+	t.Helper()
+	s := newStore(t)
+	a := NewAPI(s, NewHub())
+	if admin != nil {
+		a.SetModelAdministration(admin)
+	}
+	mux := http.NewServeMux()
+	a.Mount(mux, func(h http.HandlerFunc) http.HandlerFunc { return h })
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestModelAdministrationRoutesExistOnlyWhenInjected(t *testing.T) {
+	if got := do(t, modelAPI(t, nil), http.MethodGet, "/api/chat/bots/models", nil).StatusCode; got != http.StatusNotFound {
+		t.Fatalf("standalone model route answered %d, want 404", got)
+	}
+	admin := &fakeModelAdmin{}
+	res := do(t, modelAPI(t, admin), http.MethodGet, "/api/chat/bots/models", nil)
+	if res.StatusCode != http.StatusOK || len(decode[BotModels](t, res).Options) != 1 {
+		t.Fatalf("injected model route answered %d without its options", res.StatusCode)
+	}
+}
+
+func TestModelUpdateValidatesTheWireContract(t *testing.T) {
+	admin := &fakeModelAdmin{}
+	srv := modelAPI(t, admin)
+	for _, tc := range []struct{ name, raw string }{
+		{"missing model", `{}`},
+		{"unknown field", `{"model":null,"secret":"no"}`},
+		{"wrong type", `{"model":42}`},
+		{"trailing value", `{"model":null}{}`},
+		{"oversized", `{"model":"` + strings.Repeat("x", maxModelBodyBytes) + `"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, srv.URL+"/api/chat/bots/amiran/model", strings.NewReader(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != http.StatusBadRequest {
+				t.Fatalf("answered %d, want 400", res.StatusCode)
+			}
+		})
+	}
+
+	res := do(t, srv, http.MethodPut, "/api/chat/bots/amiran/model", map[string]any{"model": "gpt-5.6-luna"})
+	if res.StatusCode != http.StatusOK || admin.setName != "amiran" || admin.setModel == nil || *admin.setModel != "gpt-5.6-luna" {
+		t.Fatalf("set reached adapter as name=%q model=%v status=%d", admin.setName, admin.setModel, res.StatusCode)
+	}
+	res = do(t, srv, http.MethodPut, "/api/chat/bots/amiran/model", map[string]any{"model": nil})
+	if res.StatusCode != http.StatusOK || admin.setModel != nil {
+		t.Fatalf("clear did not reach adapter as nil")
+	}
+}
+
+func TestModelUpdateMapsMissingInvalidAndPersistenceErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{fmt.Errorf("%w: ghost", ErrNoSuchBot), http.StatusNotFound},
+		{fmt.Errorf("%w: unavailable", ErrInvalidModel), http.StatusBadRequest},
+		{errors.New("fsync failed"), http.StatusInternalServerError},
+	} {
+		admin := &fakeModelAdmin{setErr: tc.err}
+		res := do(t, modelAPI(t, admin), http.MethodPut, "/api/chat/bots/amiran/model", map[string]any{"model": nil})
+		if res.StatusCode != tc.want {
+			t.Errorf("%v answered %d, want %d", tc.err, res.StatusCode, tc.want)
+		}
+	}
+}
+
 func TestFleetSaysABotMidTurnIsWorking(t *testing.T) {
 	s, srv := testAPI(t)
 	th, err := s.NewThread(t.Context(), "t", Operator, []string{amiran})
