@@ -6,7 +6,7 @@ toolchain go1.26.6
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/chromedp/chromedp v0.16.0
 	github.com/gobwas/ws v1.4.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
