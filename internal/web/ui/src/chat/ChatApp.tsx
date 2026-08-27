@@ -42,6 +42,9 @@ const PROVISIONAL: ChatMeta = {
   max_body_bytes: 256 << 10,
   max_title_chars: 200,
   max_unread: 99,
+  max_attachment_bytes: 3 << 20,
+  max_attachments: 8,
+  inline_image_types: ["image/png", "image/jpeg", "image/gif", "image/webp"],
 };
 
 /** How often the roster is re-read. Slow on purpose: it changes when a bot is
@@ -124,7 +127,7 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
   // A refusal of one of this client's ops is the answer to something the
   // operator just did, so it goes where they are looking rather than nowhere.
   const {
-    state, refresh, archived, open, older, say, markRead, create, deleteThread, alerted,
+    state, refresh, archived, open, older, upload, say, markRead, create, deleteThread, alerted,
     turns: fetchTurns, spend: fetchSpend, addActor, removeActor,
   } = useChat(setNotice, onEvent, traceResumed);
   const [meta, setMeta] = useState<ChatMeta | null>(null);
@@ -519,10 +522,14 @@ export function ChatApp({ modeSwitch }: { modeSwitch?: ReactNode }) {
               <Composer
                 key={thread.id}
                 maxBytes={limits.max_body_bytes}
+                maxAttachmentBytes={limits.max_attachment_bytes}
+                maxAttachments={limits.max_attachments}
+                inlineImageTypes={limits.inline_image_types}
+                onUpload={(file) => upload(thread.id, file)}
                 connected={state.connected}
                 fleet={fleet}
                 participants={thread.participants}
-                onSend={(text) => say(thread.id, text)}
+                onSend={(text, attachments) => say(thread.id, text, undefined, attachments)}
                 onAdd={(actor) => addActor(thread.id, actor)}
               />
             </>

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Web UI thread composer accepts pasted PNG, JPEG, GIF, and WebP screenshots,
+  previews and removes them before send, supports image-only messages, and renders
+  sent images in the transcript. Uploads are sequential and retry-safe, with limits
+  published by the daemon.
+
 ## [0.4.0] - 2026-08-26
 
 ### Added

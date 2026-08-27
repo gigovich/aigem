@@ -5,6 +5,7 @@ import {
   isClientError,
   OPERATOR,
   type ClientOp,
+  type Attachment,
   type Frame,
   type Incoming,
   type Message,
@@ -473,9 +474,21 @@ export function useChat(
     dispatch({ t: "page", thread, page });
   }, []);
 
+  const upload = useCallback(
+    (thread: string, file: File): Promise<Attachment> => {
+      const body = new FormData();
+      body.append("file", file, file.name);
+      return api<Attachment>(`/api/chat/threads/${encodeURIComponent(thread)}/attachments`, {
+        method: "POST",
+        body,
+      });
+    },
+    [],
+  );
+
   const say = useCallback(
-    (thread: string, text: string, mentions?: string[]): boolean =>
-      send({ op: "send", thread, text, mentions }),
+    (thread: string, text: string, mentions?: string[], attachments?: string[]): boolean =>
+      send({ op: "send", thread, text, mentions, attachments }),
     [send],
   );
 
@@ -539,10 +552,10 @@ export function useChat(
 
   return useMemo(
     () => ({
-      state, refresh, archived, open, older, say, markRead, create, deleteThread, alerted,
+      state, refresh, archived, open, older, upload, say, markRead, create, deleteThread, alerted,
       turns, spend, addActor, removeActor,
     }),
-    [state, refresh, archived, open, older, say, markRead, create, deleteThread, alerted,
+    [state, refresh, archived, open, older, upload, say, markRead, create, deleteThread, alerted,
       turns, spend, addActor, removeActor],
   );
 }

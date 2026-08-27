@@ -89,6 +89,17 @@ export interface ThreadView {
   working: boolean;
 }
 
+export interface Attachment {
+  id: string;
+  thread: string;
+  message?: number;
+  filename: string;
+  mime: string;
+  size: number;
+  sha256: string;
+  created: string;
+}
+
 export interface Message {
   seq: number;
   thread: string;
@@ -218,6 +229,9 @@ export interface ChatMeta {
   max_body_bytes: number;
   max_title_chars: number;
   max_unread: number;
+  max_attachment_bytes?: number;
+  max_attachments?: number;
+  inline_image_types?: string[];
 }
 
 /** What each state is called on screen. One map, because the rail's filter

@@ -263,6 +263,13 @@ timeline of that run: every model round, every tool call, every file written.
 Beside the thread is the bot's working plan, the files the run changed with
 their diffs, and what the thread has cost.
 
+To paste a screenshot, open an existing thread, copy a PNG, JPEG, GIF, or WebP image,
+and press `Ctrl+V` (or the platform equivalent) in the composer. A preview appears and
+can be removed before sending; image-only messages are supported. Upload happens only
+when Send is pressed. The daemon currently limits each image to 3 MiB and each message
+to 8 images. SVG, documents, and arbitrary clipboard files are rejected. Failed uploads
+or a disconnected socket retain the draft for an explicit retry.
+
 The **fleet screen** is the roster, reached from the bot count in the header or
 at `/chat/fleet` directly. One row per bot:
 

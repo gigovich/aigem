@@ -438,11 +438,14 @@ func fleetState(m FleetMember) string {
 // a field served and dropped is a contract nobody is checking. Attachments and
 // blobs belong here too when the screen that shows them exists.
 type Meta struct {
-	Operator      string   `json:"operator"`
-	States        []string `json:"states"`
-	MaxBodyBytes  int      `json:"max_body_bytes"`
-	MaxTitleChars int      `json:"max_title_chars"`
-	MaxUnread     int      `json:"max_unread"`
+	Operator           string   `json:"operator"`
+	States             []string `json:"states"`
+	MaxBodyBytes       int      `json:"max_body_bytes"`
+	MaxTitleChars      int      `json:"max_title_chars"`
+	MaxUnread          int      `json:"max_unread"`
+	MaxAttachmentBytes int      `json:"max_attachment_bytes"`
+	MaxAttachments     int      `json:"max_attachments"`
+	InlineImageTypes   []string `json:"inline_image_types"`
 }
 
 func (a *API) meta(w http.ResponseWriter, _ *http.Request) {
@@ -451,10 +454,13 @@ func (a *API) meta(w http.ResponseWriter, _ *http.Request) {
 		// In inbox order, which is the order the filters are drawn in: the one
 		// state that spends the accent first, then what is live, then what is
 		// merely outstanding.
-		States:        []string{StateNeedsYou, StateWorking, StateWaiting, StateIdle},
-		MaxBodyBytes:  MaxBodyBytes,
-		MaxTitleChars: MaxTitleChars,
-		MaxUnread:     MaxUnread,
+		States:             []string{StateNeedsYou, StateWorking, StateWaiting, StateIdle},
+		MaxBodyBytes:       MaxBodyBytes,
+		MaxTitleChars:      MaxTitleChars,
+		MaxUnread:          MaxUnread,
+		MaxAttachmentBytes: MaxAttachmentBytes,
+		MaxAttachments:     MaxAttachments,
+		InlineImageTypes:   []string{"image/png", "image/jpeg", "image/gif", "image/webp"},
 	})
 }
 

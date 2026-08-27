@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Actor } from "@/lib/chatprotocol";
 import { Composer } from "./Composer";
@@ -66,6 +66,114 @@ describe("Composer", () => {
     fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
 
     expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("Composer images", () => {
+  function imageEvent(box: HTMLElement, name = "shot.png") {
+    const file = new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
+    fireEvent.paste(box, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] } });
+    return file;
+  }
+
+  it("previews and removes a pasted image", () => {
+    const onSend = vi.fn(() => true);
+    render(<Composer maxBytes={64000} connected fleet={[]} participants={[]} onSend={onSend} onAdd={vi.fn()} />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    imageEvent(box);
+    expect(screen.getByRole("img", { name: /shot.png/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remove image 1" }));
+    expect(screen.queryByRole("img", { name: /shot.png/ })).toBeNull();
+  });
+
+  it("uploads sequentially and sends an image-only message", async () => {
+    const order: string[] = [];
+    const onUpload = vi.fn(async (file: File) => { order.push(file.name); return { id: `a${order.length}` }; });
+    const onSend = vi.fn(() => true);
+    render(<Composer maxBytes={64000} connected fleet={[]} participants={[]} onSend={onSend} onAdd={vi.fn()} onUpload={onUpload} />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    imageEvent(box);
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("", ["a1"]));
+    expect(order).toEqual(["shot.png"]);
+    expect((box as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("keeps uploaded IDs and does not duplicate upload on retry", async () => {
+    let attempts = 0;
+    const onUpload = vi.fn(async () => { attempts += 1; if (attempts === 1) throw new Error("temporary"); return { id: "a1" }; });
+    const onSend = vi.fn(() => true);
+    render(<Composer maxBytes={64000} connected fleet={[]} participants={[]} onSend={onSend} onAdd={vi.fn()} onUpload={onUpload} />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    imageEvent(box);
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("temporary"));
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("", ["a1"]));
+    expect(onUpload).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects unsupported, oversized, and excessive images", () => {
+    const onSend = vi.fn(() => true);
+    render(<Composer maxBytes={64000} maxAttachmentBytes={2} maxAttachments={1} connected fleet={[]} participants={[]} onSend={onSend} onAdd={vi.fn()} />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    const large = new File([new Uint8Array([1, 2, 3])], "large.png", { type: "image/png" });
+    fireEvent.paste(box, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => large }] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("larger than 2");
+    const svg = new File(["<svg />"], "bad.svg", { type: "image/svg+xml" });
+    fireEvent.paste(box, { clipboardData: { items: [{ kind: "file", type: "image/svg+xml", getAsFile: () => svg }] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Unsupported image type");
+  });
+
+  it("sends mixed text and image after all uploads in order", async () => {
+    const order: string[] = [];
+    const onUpload = vi.fn(async (file: File) => { order.push(`upload:${file.name}`); return { id: file.name }; });
+    const onSend = vi.fn(() => { order.push("send"); return true; });
+    render(<Composer maxBytes={64000} maxAttachments={2} connected fleet={[]} participants={[]} onSend={onSend} onAdd={vi.fn()} onUpload={onUpload} />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(box, { target: { value: "look" } });
+    imageEvent(box, "one.png");
+    const two = new File([new Uint8Array([1])], "two.png", { type: "image/png" });
+    fireEvent.paste(box, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => two }] } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("look", ["one.png", "two.png"]));
+    expect(order).toEqual(["upload:one.png", "upload:two.png", "send"]);
+  });
+
+  it("keeps draft and attachment IDs when socket send fails", async () => {
+    const onSend = vi.fn(() => false);
+    render(<Composer maxBytes={64000} connected fleet={[]} participants={[]} onSend={onSend} onAdd={vi.fn()} onUpload={vi.fn(async () => ({ id: "a1" }))} />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(box, { target: { value: "keep this" } });
+    imageEvent(box);
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("did not send"));
+    expect((box as HTMLTextAreaElement).value).toBe("keep this");
+    expect(screen.getByRole("img", { name: /shot.png/ })).toBeInTheDocument();
+  });
+
+  it("revokes an image URL when its preview is removed", () => {
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    render(<Composer maxBytes={64000} connected fleet={[]} participants={[]} onSend={vi.fn(() => true)} onAdd={vi.fn()} />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    imageEvent(box);
+    fireEvent.click(screen.getByRole("button", { name: "Remove image 1" }));
+    expect(revoke).toHaveBeenCalledTimes(1);
+    revoke.mockRestore();
+  });
+
+  it("blocks duplicate submit while an upload is pending", async () => {
+    let resolve!: (value: { id: string }) => void;
+    const onUpload = vi.fn(() => new Promise<{ id: string }>((r) => { resolve = r; }));
+    const onSend = vi.fn(() => true);
+    render(<Composer maxBytes={64000} connected fleet={[]} participants={[]} onSend={onSend} onAdd={vi.fn()} onUpload={onUpload} />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    imageEvent(box);
+    fireEvent.keyDown(box, { key: "Enter" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onUpload).toHaveBeenCalledTimes(1);
+    resolve({ id: "a1" });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -180,6 +288,20 @@ describe("Composer @mention", () => {
     typeAt(box, "@demetre can you take the QA");
     fireEvent.keyDown(box, { key: "Enter" });
     expect(order).toEqual(["add", "send"]);
+  });
+
+  it("does not add a mentioned bot when an image upload fails", async () => {
+    const onAdd = vi.fn();
+    const onUpload = vi.fn(async () => { throw new Error("upload failed"); });
+    render(<Composer maxBytes={64000} connected fleet={fleet} participants={[]} onSend={vi.fn(() => true)} onAdd={onAdd} onUpload={onUpload} />);
+    const box = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(box, { target: { value: "@demetre please inspect this", selectionStart: 30 } });
+    const file = new File([new Uint8Array([1])], "shot.png", { type: "image/png" });
+    fireEvent.paste(box, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(onUpload).toHaveBeenCalled());
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("upload failed");
   });
 
   it("names a bot however it was capitalised", () => {

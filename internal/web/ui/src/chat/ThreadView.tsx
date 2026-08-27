@@ -48,6 +48,16 @@ function Said({
       <div className="mt-0.5 max-w-[68ch]">
         <Markdown text={message.body} />
       </div>
+      {message.attachments && message.attachments.length > 0 && (
+        <div className="mt-2 flex max-w-full flex-wrap gap-2" aria-label="Message attachments">
+          {message.attachments.map((id, index) => (
+            <a key={id} href={`/api/chat/attachments/${encodeURIComponent(id)}`} target="_blank" rel="noopener">
+              <img src={`/api/chat/attachments/${encodeURIComponent(id)}`} loading="lazy" alt={`Attached image ${index + 1}`} className="max-h-64 max-w-full object-contain" onError={(event) => { event.currentTarget.style.display = "none"; event.currentTarget.nextElementSibling?.removeAttribute("hidden"); }} />
+              <span hidden role="alert" className="text-[12px] text-bad">Attachment unavailable</span>
+            </a>
+          ))}
+        </div>
+      )}
     </li>
   );
 }

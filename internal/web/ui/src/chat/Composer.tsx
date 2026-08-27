@@ -1,14 +1,26 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Send } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Send, X } from "lucide-react";
 import { Button, RunDot } from "@/components/ui";
 import type { Actor } from "@/lib/chatprotocol";
 import { cn } from "@/lib/utils";
+
+export interface PendingImage {
+  key: string;
+  file: File;
+  url: string;
+  uploaded?: { id: string };
+  error?: string;
+}
 
 interface ComposerProps {
   /** The daemon's own limit, served rather than copied: a client enforcing a
    *  stale one either refuses what would be accepted or accepts what will be
    *  refused after the reader has already spent the words. */
   maxBytes: number;
+  maxAttachmentBytes?: number;
+  maxAttachments?: number;
+  inlineImageTypes?: string[];
+  onUpload?: (file: File) => Promise<{ id: string }>;
   /** Whether the socket the message travels over is up. A write to a closed
    *  one is dropped on the floor, so the draft must survive the attempt. */
   connected: boolean;
@@ -16,7 +28,7 @@ interface ComposerProps {
    *  in the thread is added to it when the message is sent. */
   fleet: Actor[];
   participants: string[];
-  onSend: (text: string) => boolean;
+  onSend: (text: string, attachmentIDs?: string[]) => boolean;
   /** Adds a named bot that was not already a participant. It is a convenience
    *  over the participants op, not a second mechanism: the daemon still decides,
    *  and the store still writes the system message that records it. */
@@ -55,6 +67,10 @@ export function mentionAt(text: string, caret: number): { at: number; query: str
  *  posting is the whole wake mechanism. */
 export function Composer({
   maxBytes,
+  maxAttachmentBytes = 3 << 20,
+  maxAttachments = 8,
+  inlineImageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"],
+  onUpload = async () => { throw new Error("Image upload unavailable"); },
   connected,
   fleet,
   participants,
@@ -62,17 +78,24 @@ export function Composer({
   onAdd,
 }: ComposerProps) {
   const [draft, setDraft] = useState("");
-  const [failed, setFailed] = useState(false);
+  const [images, setImages] = useState<PendingImage[]>([]);
+  const [failed, setFailed] = useState<string | false>(false);
+  const [sending, setSending] = useState(false);
   const [caret, setCaret] = useState(0);
   const [picked, setPicked] = useState(0);
   // Set by Escape, cleared by the next thing typed: dismissing the list must
   // not dismiss it for the rest of the message.
   const [dismissed, setDismissed] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
+  const imagesRef = useRef<PendingImage[]>([]);
   // Memoised: the composer re-renders with the screen, which re-renders on every
   // timeline frame, and this re-encodes the whole draft each time.
   const bytes = useMemo(() => new TextEncoder().encode(draft).length, [draft]);
   const overLimit = bytes > maxBytes;
+  useEffect(() => {
+    imagesRef.current = images;
+  }, [images]);
+  useEffect(() => () => imagesRef.current.forEach((image) => URL.revokeObjectURL(image.url)), []);
 
   const mention = dismissed ? null : mentionAt(draft, caret);
   const matches = mention
@@ -120,9 +143,11 @@ export function Composer({
     });
   };
 
-  const send = () => {
+  const send = async () => {
     const text = draft.trim();
-    if (!text || overLimit) return;
+    if ((!text && images.length === 0) || overLimit || sending) return;
+    setSending(true);
+    setFailed(false);
     // Before the message, not after. The daemon applies socket ops strictly in
     // order, and it resolves "@name" only against actors already in the thread -
     // so sending first means the mention is dropped, the bot joins a moment
@@ -133,25 +158,81 @@ export function Composer({
     // The cost of this order is a bot added for a message the socket then
     // refused: a membership change with nothing behind it, which is visible,
     // reversible, and recorded - unlike a silent non-wake.
-    for (const a of namedIn(text, fleet)) {
-      if (!participants.includes(a.id)) onAdd(a.id);
-    }
     // The draft is cleared only once the message is actually on the wire. It
     // travels over the socket, and a socket mid-reconnect drops what is written
     // to it - which used to empty the box for a message that never existed.
-    if (!onSend(text)) {
-      setFailed(true);
+    try {
+      for (const image of images) {
+        if (image.uploaded) continue;
+        const uploaded = await onUpload(image.file);
+        setImages((current) => current.map((item) => item.key === image.key ? { ...item, uploaded } : item));
+        image.uploaded = uploaded;
+      }
+      // Only mutate thread membership after every upload succeeded.
+      for (const a of namedIn(text, fleet)) {
+        if (!participants.includes(a.id)) onAdd(a.id);
+      }
+      const attachmentIDs = images.map((image) => image.uploaded!.id);
+      const accepted = attachmentIDs.length > 0 ? onSend(text, attachmentIDs) : onSend(text);
+      if (!accepted) {
+        setFailed(connected ? "That did not send." : "Not connected.");
+        return;
+      }
+      images.forEach((image) => URL.revokeObjectURL(image.url));
+      setImages([]);
+      setDraft("");
+      setCaret(0);
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const paste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => !!file);
+    const imageItems = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/"));
+    if (files.length === 0 && imageItems.length === 0) return;
+    event.preventDefault();
+    const accepted = files
+      .filter((file) => inlineImageTypes.includes(file.type))
+      .map((file, index) => file.name ? file : new File([file], `pasted-image-${index + 1}.${file.type.split("/")[1]}`, { type: file.type }));
+    if (accepted.length !== files.length || (imageItems.length > 0 && accepted.length === 0) || images.length + accepted.length > maxAttachments) {
+      setFailed(accepted.length !== files.length ? "Unsupported image type." : `A message may contain at most ${maxAttachments} images.`);
       return;
     }
+    const tooLarge = accepted.find((file) => file.size > maxAttachmentBytes);
+    if (tooLarge) {
+      setFailed(`${tooLarge.name || "Image"} is larger than ${maxAttachmentBytes} bytes.`);
+      return;
+    }
+    setImages((current) => [...current, ...accepted.map((file, index) => ({
+      key: `${Date.now()}-${index}-${Math.random()}`,
+      file,
+      url: URL.createObjectURL(file),
+    }))]);
     setFailed(false);
-    setDraft("");
-    setCaret(0);
   };
 
   return (
     // No safe-area padding here: index.css already puts it on the body, and
     // adding it again floats the composer an inset above the home indicator.
     <div className="relative shrink-0 border-t border-line bg-panel px-4 py-2">
+      {images.length > 0 && (
+        <div className="mb-2 flex max-w-full flex-wrap gap-2" aria-label="Pending images">
+          {images.map((image, index) => (
+            <div key={image.key} className="relative flex w-24 flex-col gap-1 rounded border border-line p-1 text-[11px]">
+              <img src={image.url} alt={`Image ${index + 1}: ${image.file.name || "pasted image"}`} className="h-16 w-full object-contain" />
+              <span className="truncate">{sending ? "Uploading…" : image.file.name || "pasted image"}</span>
+              <button type="button" aria-label={`Remove image ${index + 1}`} disabled={sending} onClick={() => { URL.revokeObjectURL(image.url); setImages((current) => current.filter((item) => item.key !== image.key)); }} className="absolute right-0 top-0 rounded p-1 [@media(pointer:coarse)]:p-2"><X className="h-3 w-3" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {open && (
         <ul
           // Above the composer, not below it: below is the edge of the viewport
@@ -212,6 +293,8 @@ export function Composer({
       <div className="flex items-end gap-2">
         <textarea
           ref={box}
+          onPaste={paste}
+          disabled={sending}
           value={draft}
           onChange={(e) => {
             setDraft(e.target.value);
@@ -274,7 +357,7 @@ export function Composer({
           placeholder="Reply..."
           className="max-h-[9.5rem] min-h-9 flex-1 resize-none overflow-y-auto rounded-md border border-line bg-raised px-3 py-2 text-[14px] outline-none placeholder:text-muted focus:border-accent/60 [@media(pointer:coarse)]:min-h-11"
         />
-        <Button size="icon" onClick={send} disabled={!draft.trim() || overLimit} title="Send">
+        <Button size="icon" onClick={send} disabled={(!draft.trim() && images.length === 0) || overLimit || sending} title="Send">
           <Send className="h-4 w-4" />
         </Button>
       </div>
@@ -300,8 +383,7 @@ export function Composer({
           draft with no explanation is the same silence this replaced. */}
       {failed && (
         <p role="alert" className="mt-1 text-[12px] text-bad">
-          {connected ? "That did not send." : "Not connected."} Your message is still here - send it
-          again in a moment.
+          {failed} Your message is still here - send it again in a moment.
         </p>
       )}
     </div>

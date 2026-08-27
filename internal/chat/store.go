@@ -664,9 +664,17 @@ func requireParticipant(ctx context.Context, tx *sql.Tx, threadID, actor string)
 // the inbox sorts by is recomputed here and nowhere else.
 func (s *Store) Say(ctx context.Context, threadID string, m Draft) (Message, error) {
 	body := strings.TrimSpace(m.Body)
+	attachments := dedupeActors(m.Attachments)
+	if body == "" && len(attachments) > 0 {
+		if len(attachments) == 1 {
+			body = "[1 attachment]"
+		} else {
+			body = fmt.Sprintf("[%d attachments]", len(attachments))
+		}
+	}
 	switch {
 	case body == "":
-		return Message{}, invalid("a message needs a body")
+		return Message{}, invalid("a message needs a body or attachment")
 	case len(body) > MaxBodyBytes:
 		return Message{}, invalid("a message may be at most %s", HumanSize(MaxBodyBytes))
 	case m.Kind != "" && m.Kind != MsgMessage && m.Kind != MsgHandoff:
@@ -679,7 +687,6 @@ func (s *Store) Say(ctx context.Context, threadID string, m Draft) (Message, err
 		m.Kind = MsgMessage
 	}
 	mentions := dedupeActors(m.Mentions)
-	attachments := dedupeActors(m.Attachments)
 	if len(mentions) > MaxMentions {
 		return Message{}, invalid("a message may mention at most %d actors", MaxMentions)
 	}
