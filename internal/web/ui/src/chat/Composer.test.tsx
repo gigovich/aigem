@@ -162,6 +162,15 @@ describe("Composer images", () => {
     revoke.mockRestore();
   });
 
+  it("revokes pending image URLs on unmount", () => {
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    const view = render(<Composer maxBytes={64000} connected fleet={[]} participants={[]} onSend={vi.fn(() => true)} onAdd={vi.fn()} />);
+    imageEvent(screen.getByRole("textbox", { name: "Message" }));
+    view.unmount();
+    expect(revoke).toHaveBeenCalledTimes(1);
+    revoke.mockRestore();
+  });
+
   it("blocks duplicate submit while an upload is pending", async () => {
     let resolve!: (value: { id: string }) => void;
     const onUpload = vi.fn(() => new Promise<{ id: string }>((r) => { resolve = r; }));
