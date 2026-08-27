@@ -5,6 +5,30 @@ import (
 	"time"
 )
 
+func TestClientFramesStartsOnceAndDetachBeforeStart(t *testing.T) {
+	h := NewHub()
+	c, err := h.Attach("human:operator", 0, func(uint64) ([]Frame, error) {
+		return []Frame{{Seq: 1, To: []string{"human:operator"}}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Detach()
+	first := c.Frames()
+	second := c.Frames()
+	if first != second {
+		t.Fatal("Frames returned different channels")
+	}
+	select {
+	case _, ok := <-first:
+		if ok {
+			t.Fatal("detached client delivered a frame")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("detached client channel did not close")
+	}
+}
+
 func TestHubAttachSplicesBacklogAndConcurrentPublish(t *testing.T) {
 	h := NewHub()
 	started := make(chan struct{})

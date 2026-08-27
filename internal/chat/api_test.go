@@ -365,6 +365,13 @@ func TestSocketReplaysFromSince(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustSay(t, s, th.ID, amiran, "said while you were away")
+	frames, _, _, err := s.Tail(t.Context(), Operator, mark, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) == 0 || !isMessage("said while you were away")(frames[0]) {
+		t.Fatalf("Tail(%d) = %#v, want the missed message first", mark, frames)
+	}
 
 	c := dialSocket(t, srv, "/api/chat/socket?since="+itoa(mark))
 	c.next(isMessage("said while you were away"))

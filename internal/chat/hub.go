@@ -30,6 +30,7 @@ type Client struct {
 	actor string
 	out   *fanout.Sub[Frame]
 	once  sync.Once
+	start sync.Once
 
 	// watch is the one thread whose timeline this client wants. A fleet
 	// mid-turn produces hundreds of events a minute across every thread, and
@@ -73,13 +74,16 @@ func (h *Hub) Attach(actor string, since uint64, backlog func(uint64) ([]Frame, 
 		}
 		c.out.Prepend(history)
 	}
-	go c.out.Run()
 	return c, nil
 }
 
-// Frames is what the client reads. It closes when the client detaches or is
-// dropped.
-func (c *Client) Frames() <-chan Frame { return c.out.Out() }
+// Frames starts delivery only once the caller is ready to consume the stream.
+// This avoids pumping a backlog into the network adapter before its WebSocket
+// handshake has completed.
+func (c *Client) Frames() <-chan Frame {
+	c.start.Do(func() { go c.out.Run() })
+	return c.out.Out()
+}
 
 // Watch points the client's timeline at one thread, or at none when thread is
 // empty. Events for anything else are not sent to it.

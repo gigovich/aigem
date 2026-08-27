@@ -188,6 +188,8 @@ func (s *Sub[T]) Stop() {
 	}
 	s.mu.Lock()
 	s.dead = true
+	s.q = nil
+	s.headroom = 0
 	s.mu.Unlock()
 	s.once.Do(func() { close(s.closing) })
 }
