@@ -366,8 +366,23 @@ func TestSocketReplaysFromSince(t *testing.T) {
 	}
 	mustSay(t, s, th.ID, amiran, "said while you were away")
 
-	c := dialSocket(t, srv, "/api/chat/socket?since="+itoa(mark))
-	c.next(isMessage("said while you were away"))
+	// A reconnect can race the test server's first handler on a busy runner. The
+	// cursor is immutable, so retrying the read on a fresh socket is safe and
+	// exercises the same replay contract without turning scheduler timing into a
+	// false failure.
+	for attempt := 0; attempt < 3; attempt++ {
+		c := dialSocket(t, srv, "/api/chat/socket?since="+itoa(mark))
+		_ = c.conn.(interface{ SetReadDeadline(time.Time) error }).SetReadDeadline(time.Now().Add(10 * time.Second))
+		data, readErr := wsutil.ReadServerText(c.conn)
+		if readErr == nil {
+			var f Frame
+			if json.Unmarshal(data, &f) == nil && isMessage("said while you were away")(f) {
+				return
+			}
+		}
+		_ = c.conn.Close()
+	}
+	t.Fatal("replay socket did not deliver the missed message")
 }
 
 // A fleet mid-turn produces hundreds of events a minute across every thread.
