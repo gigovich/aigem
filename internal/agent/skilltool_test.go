@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,6 +130,67 @@ func TestRefreshingSkillToolSeesRegistryReplacement(t *testing.T) {
 	}
 	if !strings.Contains(out, "Fresh body.") {
 		t.Fatalf("invocation did not use refreshed skill: %q", out)
+	}
+}
+
+func TestRefreshingSkillToolTracksSaveUpdateDeleteAndMalformed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	base := t.TempDir()
+	root := filepath.Join(base, ".skills")
+	reg, _ := skill.DiscoverDir(root)
+	toolsReg, _ := tools.NewRegistry(t.TempDir())
+	st := NewRefreshingSkillTool(reg, &fakeClient{}, toolsReg, 0.3, nil)
+	if st == nil {
+		t.Fatal("expected a stable skill tool")
+	}
+	write := func(description, body string) {
+		t.Helper()
+		writeSkillFile(t, base, "saved", "---\nname: saved\ndescription: "+description+"\n---\n"+body+"\n")
+	}
+	refresh := func() {
+		t.Helper()
+		fresh, _ := skill.DiscoverDir(root)
+		reg.Replace(fresh)
+	}
+	assertConsistent := func(name, body, listing string) {
+		t.Helper()
+		if !strings.Contains(st.Description(), listing) || !strings.Contains(string(st.Schema()), name) {
+			t.Fatalf("tool catalog omitted %q: description=%q schema=%s", name, st.Description(), st.Schema())
+		}
+		out, err := st.Run(context.Background(), json.RawMessage(fmt.Sprintf(`{"name":%q}`, name)))
+		if err != nil || !strings.Contains(out, body) {
+			t.Fatalf("invocation for %q = %q, err=%v; want body %q", name, out, err, body)
+		}
+	}
+
+	if strings.Contains(st.Description(), "saved") || strings.Contains(string(st.Schema()), "saved") {
+		t.Fatal("skill must be absent before save")
+	}
+	write("v1 listing", "v1 body")
+	refresh()
+	assertConsistent("saved", "v1 body", "v1 listing")
+
+	write("v2 listing", "v2 body")
+	refresh()
+	assertConsistent("saved", "v2 body", "v2 listing")
+
+	if err := os.RemoveAll(filepath.Join(root, "saved")); err != nil {
+		t.Fatal(err)
+	}
+	refresh()
+	if strings.Contains(st.Description(), "saved") || strings.Contains(string(st.Schema()), "saved") {
+		t.Fatal("deleted skill remained in the catalog")
+	}
+	if _, err := st.Run(context.Background(), json.RawMessage(`{"name":"saved"}`)); err == nil || !strings.Contains(err.Error(), "unknown skill") {
+		t.Fatalf("deleted skill invocation error = %v", err)
+	}
+
+	writeSkillFile(t, base, "broken", "not frontmatter")
+	refresh()
+	if strings.Contains(st.Description(), "broken") || strings.Contains(string(st.Schema()), "broken") {
+		t.Fatal("malformed skill appeared in one of the tool surfaces")
 	}
 }
 

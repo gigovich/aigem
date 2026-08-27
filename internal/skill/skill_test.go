@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -603,6 +604,37 @@ func TestPendingNonEmptyWhenDefinitionsUnparsable(t *testing.T) {
 	// though nothing could be parsed to name it.
 	if len(p.Names) != 1 || !strings.Contains(p.Names[0], "unparsable") {
 		t.Errorf("names = %v, want the directory flagged unparsable", p.Names)
+	}
+}
+
+func TestIndependentRegistriesRefreshConcurrently(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	writeSkill(t, left, "left", "---\nname: left\ndescription: left\n---\nbody\n")
+	writeSkill(t, right, "right", "---\nname: right\ndescription: right\n---\nbody\n")
+	registries := make([]*Registry, 2)
+	for i, dir := range []string{left, right} {
+		registries[i], _ = DiscoverDir(dir)
+	}
+	var wg sync.WaitGroup
+	for i, dir := range []string{left, right} {
+		wg.Add(1)
+		go func(i int, dir string) {
+			defer wg.Done()
+			for range 20 {
+				fresh, errs := DiscoverDir(dir)
+				if len(errs) != 0 {
+					t.Errorf("discover %s: %v", dir, errs)
+					return
+				}
+				registries[i].Replace(fresh)
+				_ = registries[i].Prompt()
+				_, _ = registries[i].Get([]string{"left", "right"}[i])
+			}
+		}(i, dir)
+	}
+	wg.Wait()
+	if registries[0].Len() != 1 || registries[1].Len() != 1 {
+		t.Fatalf("concurrent refresh lost registry contents: %d, %d", registries[0].Len(), registries[1].Len())
 	}
 }
 
