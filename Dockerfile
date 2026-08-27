@@ -3,7 +3,7 @@
 # ---- build: static, CGO-free aigem binary ----
 # Pinned to the build host's platform so a multi-arch buildx run cross-compiles
 # with Go instead of emulating a foreign arch under QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 # Module download is its own cached layer, so source edits do not re-fetch deps.
 COPY go.mod go.sum ./
