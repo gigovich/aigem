@@ -102,6 +102,36 @@ func TestPathActivationHint(t *testing.T) {
 	}
 }
 
+func TestRefreshingSkillToolSeesRegistryReplacement(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cwd := t.TempDir()
+	empty, _ := skill.DiscoverDir(filepath.Join(cwd, ".skills"))
+	reg, _ := tools.NewRegistry(cwd)
+	st := NewRefreshingSkillTool(empty, &fakeClient{}, reg, 0.3, nil)
+	if st == nil {
+		t.Fatal("expected a refreshing skill tool for an initially empty registry")
+	}
+	writeSkillFile(t, cwd, "newskill",
+		"---\nname: newskill\ndescription: created after agent startup\n---\nFresh body.\n")
+	fresh, _ := skill.DiscoverDir(filepath.Join(cwd, ".skills"))
+	empty.Replace(fresh)
+	if !strings.Contains(st.Description(), "newskill") {
+		t.Fatalf("description did not refresh: %s", st.Description())
+	}
+	if !strings.Contains(string(st.Schema()), "newskill") {
+		t.Fatalf("schema did not refresh: %s", st.Schema())
+	}
+	out, err := st.Run(context.Background(), json.RawMessage(`{"name":"newskill"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Fresh body.") {
+		t.Fatalf("invocation did not use refreshed skill: %q", out)
+	}
+}
+
 func TestSkillToolHidesUserOnlySkills(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

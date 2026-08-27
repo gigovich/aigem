@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -168,11 +169,14 @@ type frontmatter struct {
 
 // Registry holds discovered skills in priority order.
 type Registry struct {
+	mu     sync.RWMutex
 	order  []string
 	byName map[string]*Skill
 }
 
 func (r *Registry) List() []*Skill {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]*Skill, 0, len(r.order))
 	for _, n := range r.order {
 		out = append(out, r.byName[n])
@@ -181,18 +185,24 @@ func (r *Registry) List() []*Skill {
 }
 
 func (r *Registry) Get(name string) (*Skill, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	s, ok := r.byName[name]
 	return s, ok
 }
 
-func (r *Registry) Len() int { return len(r.order) }
+func (r *Registry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.order)
+}
 
 // Names returns the model-invocable skill names (for the tool enum).
 func (r *Registry) ModelNames() []string {
 	var out []string
-	for _, n := range r.order {
-		if r.byName[n].ModelInvocable() {
-			out = append(out, n)
+	for _, s := range r.List() {
+		if s.ModelInvocable() {
+			out = append(out, s.Name)
 		}
 	}
 	return out
@@ -500,7 +510,10 @@ func DiscoverFS(fsys fs.FS) (*Registry, []error) {
 // MergeMissing adds other's skills whose names r has not already claimed, preserving r's
 // first-name-wins precedence, then re-sorts the listing order.
 func (r *Registry) MergeMissing(other *Registry) {
-	for _, s := range other.List() {
+	incoming := other.List()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range incoming {
 		if _, taken := r.byName[s.Name]; taken {
 			continue
 		}
@@ -514,19 +527,24 @@ func (r *Registry) MergeMissing(other *Registry) {
 // holders of the pointer - the skill tool, the system-prompt builder - observe
 // the new set instead of having to be rebuilt around a fresh registry.
 func (r *Registry) Replace(other *Registry) {
+	var incoming []*Skill
+	if other != nil {
+		incoming = other.List()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.order = nil
 	r.byName = map[string]*Skill{}
-	if other == nil {
-		return
-	}
-	r.order = append(r.order, other.order...)
-	for name, s := range other.byName {
-		r.byName[name] = s
+	for _, s := range incoming {
+		r.order = append(r.order, s.Name)
+		r.byName[s.Name] = s
 	}
 }
 
 // Remove drops a skill from the registry by name; unknown names are a no-op.
 func (r *Registry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, ok := r.byName[name]; !ok {
 		return
 	}

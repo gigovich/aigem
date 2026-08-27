@@ -412,7 +412,10 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 		for _, e := range skillErrs {
 			log.Warn("skills discovery", "err", e)
 		}
-		if st := agent.NewSkillTool(skills, paced, reg, 0.3, gate); st != nil {
+		// Keep this registry pointer stable for the skill tool and refresh its contents
+		// in build below. The tool must be registered even when the initial directory
+		// is empty, otherwise a skill saved by an earlier turn cannot be invoked.
+		if st := agent.NewRefreshingSkillTool(skills, paced, reg, 0.3, gate); st != nil {
 			reg.Register(st)
 		}
 		if st := search.NewTool(searchCfg); st != nil {
@@ -426,15 +429,23 @@ func startBot(ctx context.Context, name string, shared *fleetResources, log *slo
 		}
 		allowed := intersectTools(role.Allow, capProfile.Allow)
 		sub := reg.Subset(allowed)
-		catalog := skills.Prompt()
+		var ag *agent.Agent
 		build := func() string {
+			fresh, freshErrs := bot.DiscoverBotSkills(skillsDir)
+			for _, e := range freshErrs {
+				log.Warn("skills discovery", "err", e)
+			}
+			skills.Replace(fresh)
+			if ag != nil {
+				ag.WatchSkills(skills.Conditional())
+			}
 			idx, ierr := store.Index()
 			if ierr != nil {
 				log.Warn("could not read memory index", "err", ierr)
 			}
-			return bot.ComposeSystem(c, role, idx, catalog, extra)
+			return bot.ComposeSystem(c, role, idx, skills.Prompt(), extra)
 		}
-		ag := agent.New(paced, sub, 0.3, gate, build())
+		ag = agent.New(paced, sub, 0.3, gate, build())
 		// After the agent, because the plan tool writes into it, and gated by the
 		// role like every other tool: a bot that may not plan should not be handed
 		// the tool that does it.
