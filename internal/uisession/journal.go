@@ -33,7 +33,6 @@ const blobThreshold = 2048
 
 // journal appends events for one session.
 type journal struct {
-	dir  string
 	f    *os.File
 	w    *bufio.Writer
 	err  error // first write error; reported once and then remembered
@@ -57,7 +56,7 @@ func openJournal(id string) (*journal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &journal{dir: dir, f: f, w: bufio.NewWriter(f), open: true}, nil
+	return &journal{f: f, w: bufio.NewWriter(f), open: true}, nil
 }
 
 // append writes one event. Records are flushed as they are written: a crash

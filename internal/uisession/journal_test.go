@@ -135,6 +135,7 @@ func TestResumeContinuesTheSequence(t *testing.T) {
 	if err := l.Save(); err != nil {
 		t.Fatal(err)
 	}
+	// Served from the still-intact ring: the events are still retained in memory.
 	before, err := l.Replay(0)
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +148,9 @@ func TestResumeContinuesTheSequence(t *testing.T) {
 	if _, err := l.Load(id); err != nil {
 		t.Fatal(err)
 	}
+	// Served from the journal: Reset cleared the ring (without resetting the
+	// sequence counter), so this only sees Load's own meta event unless
+	// replayLocked falls back to reading the journal file.
 	after, err := l.Replay(0)
 	if err != nil {
 		t.Fatal(err)

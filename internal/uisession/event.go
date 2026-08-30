@@ -16,8 +16,8 @@ import (
 	"github.com/gigovich/aigem/internal/agent"
 )
 
-// Kind tags an Event. The values are part of the wire format a remote
-// front-end decodes, so they are strings rather than an iota.
+// Kind tags an Event. The values are strings rather than an iota so they stay
+// stable if this is ever decoded outside this process.
 type Kind string
 
 const (
@@ -56,9 +56,9 @@ type Call struct {
 
 // Event is one step in a session, in the order it happened. It is a flat struct
 // with omitted empties rather than a per-kind union: the same value is written
-// to the journal, handed to an in-process front-end, and decoded on the far
-// side of a websocket, and a flat struct is the shape that costs nothing in all
-// three. Which fields apply is determined by Kind.
+// to the journal and handed to a front-end, and a flat struct is the shape
+// that costs nothing in either place. Which fields apply is determined by
+// Kind.
 type Event struct {
 	Seq  uint64    `json:"seq"`
 	Time time.Time `json:"time"`
@@ -123,6 +123,6 @@ type Event struct {
 // Client describes one attached front-end, for presence.
 type Client struct {
 	ID    string `json:"id"`
-	Kind  string `json:"kind,omitempty"`  // "tui", "web", ...
+	Kind  string `json:"kind,omitempty"`  // "tui", ...
 	Label string `json:"label,omitempty"` // free text, e.g. a device name
 }

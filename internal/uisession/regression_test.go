@@ -41,6 +41,9 @@ func TestResetDoesNotCarryHistoryIntoTheNextConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Served from the journal: Reset cleared the ring (without resetting the
+	// sequence counter), so replayLocked falls back to reading the journal
+	// file for "second conversation"'s own session id.
 	events, err := l.Replay(0)
 	if err != nil {
 		t.Fatal(err)
