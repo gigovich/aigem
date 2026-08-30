@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -156,8 +157,8 @@ func TestSaveSweepsOrphanTempsButKeepsRecentOnes(t *testing.T) {
 	path := filepath.Join(dir, "doc.json")
 	s := New[doc](path)
 
-	stale := filepath.Join(dir, "doc-123456.json")
-	fresh := filepath.Join(dir, "doc-999999.json")
+	stale := filepath.Join(dir, "doc-123456"+tempSuffix)
+	fresh := filepath.Join(dir, "doc-999999"+tempSuffix)
 	for _, p := range []string{stale, fresh} {
 		if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
 			t.Fatal(err)
@@ -195,6 +196,11 @@ func TestSaveDoesNotSweepASiblingDocumentSharingTheStem(t *testing.T) {
 		filepath.Join(dir, "doc-archive.json"),
 		filepath.Join(dir, "unrelated-1.json"),
 		filepath.Join(dir, "doc-123456.txt"), // right shape, wrong extension
+		// The dangerous one: a real document whose name is exactly what a temp
+		// would look like if temps ended in .json. Numbered documents are an
+		// obvious thing to keep beside an index.
+		filepath.Join(dir, "doc-7.json"),
+		filepath.Join(dir, "doc-123456.json"),
 	}
 	for _, p := range siblings {
 		if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
@@ -216,14 +222,21 @@ func TestSaveDoesNotSweepASiblingDocumentSharingTheStem(t *testing.T) {
 }
 
 // A lock left by a killed process must not wedge the store forever.
+//
+// lockWait is pushed out of reach first: the unlocked fallback would otherwise
+// complete this update on its own, and the test would pass with the whole
+// stale-lock path deleted. Whether the lock was broken or merely waited out is
+// visible afterwards - breaking it takes and releases our own, leaving nothing
+// behind; the fallback leaves the dead one in place.
 func TestUpdateBreaksStaleLock(t *testing.T) {
+	shrinkLockWait(t, time.Hour)
 	path := filepath.Join(t.TempDir(), "doc.json")
 	s := New[doc](path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	lock := path + ".lock"
-	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+	if err := os.WriteFile(lock, []byte("a-dead-process"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-2 * lockStale)
@@ -238,10 +251,13 @@ func TestUpdateBreaksStaleLock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Update: %v", err)
 		}
-	case <-time.After(lockWait + 5*time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Update blocked on a stale lock")
 	}
 
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Error("the stale lock is still there; the update waited it out rather than breaking it")
+	}
 	got, err := s.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -251,6 +267,106 @@ func TestUpdateBreaksStaleLock(t *testing.T) {
 	}
 }
 
+// A live lock held by another process is waited on, then given up on: a peer
+// that hangs must not be able to wedge this one. The update goes through
+// unlocked, and the peer's lock is left alone.
+func TestUpdateProceedsWithoutALockHeldTooLongByAPeer(t *testing.T) {
+	shrinkLockWait(t, 60*time.Millisecond)
+	path := filepath.Join(t.TempDir(), "doc.json")
+	s := New[doc](path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock := path + ".lock"
+	if err := os.WriteFile(lock, []byte("a-live-peer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Update(func(d *doc) error { d.Version = 9; return nil }); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != 9 {
+		t.Fatalf("version = %d, want 9 - the update never happened", got.Version)
+	}
+	data, err := os.ReadFile(lock)
+	if err != nil {
+		t.Fatalf("the peer's lock was removed: %v", err)
+	}
+	if string(data) != "a-live-peer" {
+		t.Errorf("lock = %q, want the peer's own token untouched", data)
+	}
+}
+
+// Windows refuses to rename onto a path another handle has open, and CI never
+// runs there - so the retry is reachable only through the seam.
+func TestReplaceRetriesUntilTheTargetIsFree(t *testing.T) {
+	dir := t.TempDir()
+	from, to := filepath.Join(dir, "tmp"), filepath.Join(dir, "doc.json")
+	if err := os.WriteFile(from, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := renameFile
+	t.Cleanup(func() { renameFile = prev })
+	attempts := 0
+	renameFile = func(a, b string) error {
+		attempts++
+		if attempts < 3 {
+			return os.ErrPermission
+		}
+		return prev(a, b)
+	}
+
+	if err := replaceRetrying(from, to, true); err != nil {
+		t.Fatalf("replaceRetrying: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want it to retry until the rename took", attempts)
+	}
+	if data, err := os.ReadFile(to); err != nil || string(data) != "new" {
+		t.Errorf("target = %q, %v; want the renamed contents", data, err)
+	}
+}
+
+func TestReplaceDoesNotRetryWhenRetryingIsOff(t *testing.T) {
+	prev := renameFile
+	t.Cleanup(func() { renameFile = prev })
+	attempts := 0
+	renameFile = func(string, string) error { attempts++; return os.ErrPermission }
+
+	if err := replaceRetrying("a", "b", false); err == nil {
+		t.Fatal("replaceRetrying reported success for a rename that always fails")
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 - a real failure must not be delayed", attempts)
+	}
+}
+
+// A path with no usable stem still has to produce a pattern CreateTemp accepts,
+// or the store cannot write at all.
+func TestDegenerateNamesStillSave(t *testing.T) {
+	for _, name := range []string{"doc", ".json", "a.b.json", "..json", "doc.JSON"} {
+		s := New[doc](filepath.Join(t.TempDir(), name))
+		if err := s.Save(doc{Version: 1}); err != nil {
+			t.Errorf("Save to %q: %v", name, err)
+			continue
+		}
+		if s.Path() == "" {
+			t.Errorf("Path() is empty for %q", name)
+		}
+		got, err := s.Load()
+		if err != nil || got.Version != 1 {
+			t.Errorf("round trip through %q = %+v, %v", name, got, err)
+		}
+	}
+}
+
+// Indented and newline-terminated because these documents are read and edited
+// by hand when something has gone wrong.
 func TestSaveWritesIndentedJSONWithTrailingNewline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "doc.json")
 	if err := New[doc](path).Save(doc{Version: 1, Counts: map[string]int{"a": 2}}); err != nil {
@@ -262,6 +378,9 @@ func TestSaveWritesIndentedJSONWithTrailingNewline(t *testing.T) {
 	}
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		t.Error("document does not end with a newline")
+	}
+	if !strings.Contains(string(data), "\n  \"version\": 1") {
+		t.Errorf("document is not indented:\n%s", data)
 	}
 	var back doc
 	if err := json.Unmarshal(data, &back); err != nil {
@@ -370,7 +489,7 @@ func TestSaveIsSerializedAgainstUpdate(t *testing.T) {
 // side is what this package is for.
 func TestEachStoreSweepsItsOwnTempsInASharedDirectory(t *testing.T) {
 	dir := t.TempDir()
-	orphan := filepath.Join(dir, "ticket-123456.json")
+	orphan := filepath.Join(dir, "ticket-123456"+tempSuffix)
 	if err := os.WriteFile(orphan, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -445,5 +564,45 @@ func TestReleaseLeavesAnUnreadableLockAlone(t *testing.T) {
 	releaseLock(lock, "ours")
 	if _, err := os.Stat(lock); err != nil {
 		t.Error("release removed a lock it could not read")
+	}
+}
+
+// The lock loop used to loop straight back on a break that could not unlink,
+// skipping both the sleep and the give-up test: a core spun at 100% forever
+// while holding the in-process mutex, so every other writer of the document
+// blocked with it. A read-only directory is the everyday shape of that - a
+// state dir owned by another uid, a read-only mount, a peer's lock under a
+// sticky bit.
+func TestUpdateGivesUpWhenAStaleLockCannotBeRemoved(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs unix permission bits and a non-root user")
+	}
+	shrinkLockWait(t, 60*time.Millisecond)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.json")
+	lock := path + ".lock"
+	if err := os.WriteFile(lock, []byte("a-dead-process"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * lockStale)
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// The save cannot succeed in a read-only directory; returning at all is
+		// what this asserts.
+		_ = New[doc](path).Update(func(d *doc) error { d.Version = 1; return nil })
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Update never returned; the lock loop is spinning on a break it cannot complete")
 	}
 }

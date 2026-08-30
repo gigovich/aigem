@@ -31,6 +31,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.11.0",
     "jsdom": "^30.0.1",
+    "postcss": "^8.5.6",
     "tailwindcss": "^4.3.3",
     "typescript": ">=6.0.3 <6.1.0",
     "typescript-eslint": "^8.68.0",
@@ -41,7 +42,6 @@
     "node": ">=22"
   },
   "comments": {
-    "eslint": "Held at 9: eslint-plugin-jsx-a11y has no release for 10, and the a11y rules matter more here than the major does. Revisit when it ships one.",
-    "typescript": "Held below 6.1: typescript-eslint declares typescript <6.1.0, and losing the type-aware lint rules would cost more than the version gains."
+    "typescript": "Held below 6.1: typescript-eslint declares typescript <6.1.0, and the type-aware lint rules configured in eslint.config.js come from it."
   }
 }

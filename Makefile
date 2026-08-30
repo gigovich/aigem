@@ -30,11 +30,7 @@ run: build ## Build and run
 # The bundle is embedded from internal/web/dist but never committed, so that
 # `go install github.com/gigovich/aigem/cmd/aigem@latest` keeps working on a
 # machine with no node. A binary built without this says it has no UI rather
-# than serving a blank page.
-#
-# dist is cleared first: asset names are content-hashed and the Vite build
-# cannot empty a directory outside its root, so every rebuild would otherwise
-# leave the previous bundle behind for `//go:embed all:dist` to pick up.
+# than serving a blank page. Emptying dist is the Vite build's own job.
 web: ## Build the browser UI into internal/web/dist
 	cd $(UI) && npm ci && npm run build
 
@@ -75,8 +71,12 @@ GOSRC = find . -path ./$(UI)/node_modules -prune -o -name '*.go' -print
 fmt: ## Format the source
 	@$(GOSRC) | xargs gofmt -w
 
+# The file list and gofmt are separate steps so that gofmt's own status - which
+# is how an unparseable file reports itself - is not thrown away by the command
+# substitution around it.
 fmt-check: ## Fail if anything is unformatted
-	@unformatted=$$($(GOSRC) | xargs gofmt -l); \
+	@files=$$($(GOSRC)); \
+	unformatted=$$(gofmt -l $$files) || exit 1; \
 	if [ -n "$$unformatted" ]; then echo "needs gofmt:"; echo "$$unformatted"; exit 1; fi
 
 vet: ## Run go vet

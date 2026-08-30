@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -23,8 +22,8 @@ type Config struct {
 	// Addr is the listen address. It defaults to a loopback port chosen by the
 	// kernel, and a non-loopback address is refused.
 	Addr string
-	// Assets serves the built UI. A build without one still runs the API, which
-	// is what the daemon is tested against.
+	// Assets serves the built UI. A daemon without one still serves /healthz and
+	// answers every page with a 501 that says which build step is missing.
 	Assets http.Handler
 }
 
@@ -34,9 +33,6 @@ type Server struct {
 	hasUI  bool
 	ln     net.Listener
 	http   *http.Server
-
-	mu     sync.Mutex
-	closed bool
 }
 
 // New binds the listener and builds the routes. The daemon is not serving until
@@ -63,6 +59,9 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
+	// hasUI is read before the fallback below replaces a nil handler, so it
+	// reports whether this daemon was given a UI rather than whether it has
+	// something to answer with - which is always.
 	s := &Server{assets: cfg.Assets, hasUI: cfg.Assets != nil}
 	if s.assets == nil {
 		s.assets = noAssets()
@@ -105,13 +104,6 @@ func (s *Server) Serve() error {
 
 // Close stops the daemon. Calling it twice is safe.
 func (s *Server) Close() error {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil
-	}
-	s.closed = true
-	s.mu.Unlock()
 	err := s.http.Close()
 	// http.Server only knows about listeners Serve registered, so a Server that
 	// was built and then abandoned - an error on a later step, a test that never

@@ -23,9 +23,7 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # The browser UI's lockfile. eslint is deliberately held at 9 and typescript
-  # at 6.0.x - see the constraints noted in internal/web/_ui/package.json - so
-  # those two are ignored rather than reopened weekly.
+  # The browser UI's lockfile.
   - package-ecosystem: npm
     directory: /internal/web/_ui
     schedule:
@@ -42,9 +40,22 @@ updates:
           - "vite"
           - "vitest"
           - "@vitejs/*"
+      # @eslint/js has no peer range on eslint, so nothing would stop it being
+      # taken to 10 while the engine stays at 9 and the config it exports is
+      # then fed to a version that cannot read it.
+      eslint:
+        patterns:
+          - "eslint"
+          - "@eslint/js"
     ignore:
+      # Held at 9: eslint-plugin-jsx-a11y has no release for 10, and the a11y
+      # rules matter more here than the major does. Lift both together when it
+      # ships one.
       - dependency-name: "eslint"
         versions: [">=10"]
+      - dependency-name: "@eslint/js"
+        versions: [">=10"]
+      # typescript-eslint declares typescript <6.1.0.
       - dependency-name: "typescript"
         versions: [">=6.1"]
     commit-message:

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `aigem web` serves a browser UI on a loopback port. It is the first phase of
+  the rewrite promised below: the daemon, the app shell and the build
+  integration, with the screens still to come. Reach it from another device by
+  putting a reverse proxy in front of it (`tailscale serve`) - it refuses to
+  bind an address the network can reach, because an origin check needs a public
+  URL stated by a person rather than read out of a request header.
+- `make web` builds the browser UI into `internal/web/dist`, where the binary
+  embeds it from. It needs Node 22+. **The bundle is not committed and the
+  release pipeline does not build it**, so a downloaded release binary and
+  `go install ...@latest` both answer every page with a 501 that says which
+  build step is missing. Build from a checkout to get a UI.
+
 ### Removed
 
 - The bot/fleet subsystem and the legacy browser Web UI. `aigem bot ...`,
@@ -15,9 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cron/scheduling, heartbeats, handoffs, team status, the fleet's shared
   conversation store, the Web UI and its HTTP/websocket API and Web Push
   notifications, the Docker image and `docker-entrypoint.sh`, the `deploy/`
-  systemd units, and Node/npm as a build prerequisite. aigem is a terminal
-  coding agent now, full stop; a new Web UI will be designed later from
-  scratch. Nothing under `~/.config/aigem/bots/`, `~/.config/aigem/fleet.json`,
+  systemd units, and Node/npm as a build prerequisite for the binary. The
+  replacement Web UI is being designed from scratch and its first phase is in
+  the same release - see Added above; nothing from the old one is carried
+  over. Nothing under `~/.config/aigem/bots/`, `~/.config/aigem/fleet.json`,
   or the fleet/web daemon's state files is deleted automatically - remove them
   by hand if you want the disk space back. Coding subagents (`task`, the
   scout/code-writer/simplifier/reviewer delegation the model uses mid-turn) are

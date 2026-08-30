@@ -11,6 +11,10 @@ go build ./cmd/aigem
 go test ./...
 ```
 
+That build deliberately produces a binary with no browser UI - the bundle is not
+committed, so installing aigem never requires a Node toolchain. If you are
+working on the UI you also need Node 22 or newer, and `make web && make build`.
+
 Go 1.26 or newer is required. `go.mod` also carries a `toolchain go1.26.6`
 directive, so the Go tool fetches that patch release automatically - it contains
 standard-library security fixes that affect aigem.
@@ -32,10 +36,21 @@ and lints under `GOOS=windows` - `make check-all` covers those too, if you have
 `govulncheck` installed. CI also compiles and vets on a real Windows runner,
 which nothing local can reproduce.
 
+`make check` is Go only. The browser UI is linted, typechecked and tested by its
+own CI job, and locally by:
+
+```sh
+make web-check
+```
+
+`make check-all` runs that too when `npm` is on your PATH, and skips it when it
+is not.
+
 If you would rather run them by hand:
 
 ```sh
-gofmt -l .            # must print nothing
+make fmt-check        # not `gofmt -l .`: that walks node_modules, where an
+                      # npm dependency ships Go files of its own
 go vet ./...
 go test -race ./...
 golangci-lint run     # see .golangci.yml

@@ -48,6 +48,7 @@ nav:
       - MCP servers: mcp.md
       - Web search: search.md
       - The TUI: tui.md
+      - The browser UI: web.md
       - Configuration: configuration.md
   - Architecture: architecture.md
 

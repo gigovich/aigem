@@ -7,7 +7,7 @@ afterEach(() => {
 })
 
 const answer = (body: unknown, init?: ResponseInit) =>
-  vi.fn(async () => new Response(JSON.stringify(body), { status: 200, ...init }))
+  vi.fn(() => Promise.resolve(new Response(JSON.stringify(body), { status: 200, ...init })))
 
 test('reports the daemon as reachable once /healthz answers', async () => {
   vi.stubGlobal('fetch', answer({ ok: true, ui: true }))
@@ -20,7 +20,7 @@ test('reports the daemon as reachable once /healthz answers', async () => {
 test('says so when the daemon does not answer', async () => {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => new Response('', { status: 503, statusText: 'Service Unavailable' })),
+    vi.fn(() => Promise.resolve(new Response('', { status: 503, statusText: 'Service Unavailable' }))),
   )
   render(<App />)
   expect(await screen.findByRole('status')).toHaveTextContent('daemon unreachable')

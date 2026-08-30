@@ -109,7 +109,10 @@ var rootExts = map[string]bool{
 // three.js and /p/tsconfig.json, which are ordinary repository names in exactly
 // the ecosystem this tool is used on.
 func isBuiltAsset(name string) bool {
-	if strings.HasPrefix(name, "assets/") {
+	// Case-insensitively, matching the /api/ test below: a mis-cased directory
+	// would otherwise be a route, and /ASSETS/index-abc123.js would answer a
+	// script tag with the page - the "unexpected token <" this exists to prevent.
+	if strings.HasPrefix(strings.ToLower(name), "assets/") {
 		return true
 	}
 	if strings.Contains(name, "/") {
@@ -131,9 +134,8 @@ func isAppRoute(fsys fs.FS, urlPath string) bool {
 	if name == "" || name == "." || isBuiltAsset(name) {
 		return false
 	}
-	// Case-insensitively, so a mis-cased URL gets the 404 it deserves rather
-	// than a page its JSON decoder reports as "unexpected token <". Go's mux is
-	// case-sensitive, so no real route is shadowed by being lenient here.
+	// Case-insensitively: Go's mux is case-sensitive, so no real route is
+	// shadowed by being lenient here.
 	if lower := strings.ToLower(name); lower == "api" || strings.HasPrefix(lower, "api/") {
 		return false
 	}

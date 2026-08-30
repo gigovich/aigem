@@ -56,6 +56,7 @@ func TestAppRoutesFallThroughToThePageAndAssetsDoNot(t *testing.T) {
 		// extension, so a missing one is a 404 rather than a page.
 		{"/assets/stale.mp4", false},
 		{"/assets/nested/stale.js", false},
+		{"/ASSETS/stale.js", false},
 		// Clean anchors at the root, so a traversal is only ever an unknown
 		// route. It becomes the page, and it can never name a file above dist.
 		{"/../secret", true},

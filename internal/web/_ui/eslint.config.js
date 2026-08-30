@@ -5,9 +5,11 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import jsxA11y from 'eslint-plugin-jsx-a11y'
 
 export default tseslint.config(
-  { ignores: ['dist', '../dist', 'node_modules'] },
+  // node_modules is an ESLint default; dist is Vite's, and it is written
+  // outside this directory anyway.
+  { ignores: ['dist'] },
   js.configs.recommended,
-  tseslint.configs.recommended,
+  tseslint.configs.recommendedTypeChecked,
   reactHooks.configs.flat['recommended-latest'],
   // The design is dense with icon-only buttons - a gear, a chevron, an x, a
   // theme glyph. Each needs a name a screen reader can read, and enforcing that
@@ -18,6 +20,15 @@ export default tseslint.config(
     languageOptions: {
       ecmaVersion: 2022,
       globals: globals.browser,
+      // Type-aware rules. no-floating-promises alone justifies it: an unawaited
+      // fetch chain in an effect is the defect this app is most likely to grow.
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
     },
+  },
+  // This file is not in either tsconfig project, so the type-aware rules have
+  // no program to ask and would error rather than lint it.
+  {
+    files: ['**/*.js'],
+    extends: [tseslint.configs.disableTypeChecked],
   },
 )

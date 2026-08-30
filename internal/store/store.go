@@ -4,9 +4,16 @@
 // The pattern is the one internal/trust arrived at: a mutex around
 // read-modify-write, an exclusive lock file around that for other processes, a
 // uniquely named temp file renamed into place, and a sweep for temps left by a
-// process killed between CreateTemp and Rename. This package exists so the web
-// daemon's project, ticket and worktree stores share that behaviour instead of
-// each reinventing a subset of it.
+// process killed between CreateTemp and Rename. It is extracted here so that
+// the several small JSON documents the web daemon is about to keep - projects,
+// tickets, worktree records - share one implementation rather than each
+// reinventing a subset of it.
+//
+// Exclusion between processes is best-effort by design: a writer that cannot
+// take the lock file within lockWait proceeds without it, because a peer killed
+// mid-write must not be able to wedge the daemon. That can lose an update; it
+// cannot corrupt the document, since a save only ever renames a fully written
+// file into place. Within one process the mutex is absolute.
 package store
 
 import (
@@ -25,6 +32,7 @@ const (
 	lockPoll   = 20 * time.Millisecond
 	lockStale  = 30 * time.Second
 	tempOrphan = time.Hour
+	tempSuffix = ".json.tmp"
 )
 
 // A variable so a test can shrink it: the behaviour that matters - a waiter
@@ -54,7 +62,10 @@ func New[T any](path string) *File[T] {
 	if stem == "" || stem == "." {
 		stem = "store"
 	}
-	return &File[T]{path: path, stem: stem, prefix: stem + "-*.json"}
+	// The temp suffix is deliberately not ".json": a pattern of stem + "-*.json"
+	// collides with the namespace documents live in, and the sweep below would
+	// then delete a real <stem>-7.json an hour after it was written.
+	return &File[T]{path: path, stem: stem, prefix: stem + "-*" + tempSuffix}
 }
 
 // Path reports the document's location.
@@ -139,14 +150,38 @@ func (f *File[T]) save(v T) error {
 		tmp.Close()
 		return fmt.Errorf("write %s: %w", tmp.Name(), err)
 	}
+	// Flushed before the rename, or a crash can leave the directory entry
+	// durable while the blocks behind it are not - a truncated document that
+	// Load refuses to parse and Update can never repair, because it loads first.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync %s: %w", tmp.Name(), err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", tmp.Name(), err)
 	}
 	if err := replace(tmp.Name(), f.path); err != nil {
 		return fmt.Errorf("replace %s: %w", f.path, err)
 	}
+	syncDir(dir)
 	return nil
 }
+
+// syncDir makes the rename itself durable. Best-effort: Windows cannot open a
+// directory this way, and a crash that loses only the rename leaves the previous
+// document intact, which is the state this package promises anyway.
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	_ = d.Sync()
+	_ = d.Close()
+}
+
+// renameFile is a variable so a test can reach the retry loop below, which is
+// otherwise unreachable on the platforms CI runs.
+var renameFile = os.Rename
 
 // replace renames into place, retrying on Windows only.
 //
@@ -156,13 +191,17 @@ func (f *File[T]) save(v T) error {
 // rename over an open file always succeeds and a retry would only delay a real
 // failure.
 func replace(from, to string) error {
-	err := os.Rename(from, to)
-	if err == nil || runtime.GOOS != "windows" {
+	return replaceRetrying(from, to, runtime.GOOS == "windows")
+}
+
+func replaceRetrying(from, to string, retry bool) error {
+	err := renameFile(from, to)
+	if err == nil || !retry {
 		return err
 	}
 	for range 9 {
 		time.Sleep(10 * time.Millisecond)
-		if err = os.Rename(from, to); err == nil {
+		if err = renameFile(from, to); err == nil {
 			return nil
 		}
 	}
@@ -183,15 +222,17 @@ func (f *File[T]) withFileLock(fn func() error) error {
 	}
 	lock := f.path + ".lock"
 	token := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
-	for waited := time.Duration(0); ; waited += lockPoll {
+	deadline := time.Now().Add(lockWait)
+	for {
 		h, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			_, werr := h.WriteString(token)
 			cerr := h.Close()
 			if werr != nil || cerr != nil {
 				// An empty lock is worse than none: releaseLock would read a token
-				// that is not ours and decline to remove it, wedging every writer
-				// for lockStale. Drop it and hold the mutex alone.
+				// that is not ours and decline to remove it, and every writer would
+				// then pay the full lockWait until lockStale reclaims it. Drop it
+				// and hold the mutex alone.
 				os.Remove(lock)
 				return fn()
 			}
@@ -201,13 +242,17 @@ func (f *File[T]) withFileLock(fn func() error) error {
 		if !errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("lock %s: %w", f.path, err)
 		}
-		if breakStaleLock(lock) {
-			continue
-		}
-		if waited >= lockWait {
+		// The deadline is checked first, and against real elapsed time. A break
+		// that cannot unlink - a read-only mount, a peer's lock under a sticky
+		// bit - would otherwise loop straight back with no sleep and spin a core
+		// forever, holding the in-process mutex while it did.
+		if time.Now().After(deadline) {
 			// Proceeding unlocked risks a lost update; corrupting the store does
 			// not, since save renames a fully written file into place.
 			return fn()
+		}
+		if breakStaleLock(lock) {
+			continue
 		}
 		time.Sleep(lockPoll)
 	}
@@ -231,13 +276,15 @@ func releaseLock(lock, token string) {
 }
 
 // breakStaleLock reclaims a lock whose owner is gone, and reports whether it
-// removed one.
+// actually removed one. Reporting the removal is what keeps the caller's loop
+// from spinning when the unlink cannot succeed.
 //
-// The token is re-read immediately before the remove so that an owner that
-// released between the stat and here - and a third writer that took the lock in
-// that gap - are not silently overridden. The gap cannot be closed entirely with
-// plain files, but it is now a few instructions wide rather than a syscall, and
-// what remains degrades to the same lost update the lockWait fallback already
+// Both the modification time and the token are re-checked before the remove,
+// because the decision to break was made from an earlier stat: an owner that
+// released in the gap, and a third writer that took the lock in it, would
+// otherwise be overridden - and a fresh lock carries a fresh mtime even when
+// its token happens to match. The window cannot be closed entirely with plain
+// files; what remains degrades to the lost update the lockWait fallback already
 // tolerates.
 func breakStaleLock(lock string) bool {
 	info, err := os.Stat(lock)
@@ -248,23 +295,27 @@ func breakStaleLock(lock string) bool {
 	if err != nil {
 		return false
 	}
-	again, err := os.ReadFile(lock)
-	if err != nil || string(again) != string(stale) {
+	again, err := os.Stat(lock)
+	if err != nil || !again.ModTime().Equal(info.ModTime()) || again.Size() != info.Size() {
 		return false
 	}
-	os.Remove(lock)
-	return true
+	current, err := os.ReadFile(lock)
+	if err != nil || string(current) != string(stale) {
+		return false
+	}
+	return os.Remove(lock) == nil
 }
 
 // sweepOrphanTemps removes temp files left by a process killed between
 // CreateTemp and Rename.
 //
-// The name has to match the shape CreateTemp produces - the stem, a hyphen,
-// the digits it substitutes for the star, and the extension - and nothing
-// looser. A prefix test alone would match a *different* store's document in
-// the same directory: a store at <state>/project.json has the stem "project",
-// and <state>/project-trust.json is every capability approval the user has
-// ever given.
+// The name has to match the shape CreateTemp produces - the stem, a hyphen, the
+// digits it substitutes for the star, and the temp suffix - and nothing looser.
+// A prefix test alone would match a *different* store's document in the same
+// directory: a store at <state>/project.json has the stem "project", and
+// <state>/project-trust.json is every capability approval the user has ever
+// given. The suffix is what keeps a legitimate <state>/ticket-7.json out of
+// reach as well, since no document this package writes ends in .json.tmp.
 func (f *File[T]) sweepOrphanTemps(dir string) {
 	// Once per document per process, not once per directory: the predicate below
 	// is keyed on this store's stem, so a directory-wide flag would let the first
@@ -296,7 +347,7 @@ func (f *File[T]) sweepOrphanTemps(dir string) {
 }
 
 func (f *File[T]) isTempName(name string) bool {
-	middle, ok := strings.CutSuffix(name, ".json")
+	middle, ok := strings.CutSuffix(name, tempSuffix)
 	if !ok {
 		return false
 	}

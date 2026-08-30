@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -197,21 +198,49 @@ func TestThePageIsServedWithoutACredential(t *testing.T) {
 }
 
 // http.Server only closes listeners Serve registered, so a Server that is built
-// and then abandoned would hold its port for the life of the process.
-func TestCloseReleasesThePortWhenServeNeverRan(t *testing.T) {
+// and then abandoned would hold its port for the life of the process. Closed
+// twice, because the command path closes on a signal and again from a defer.
+func TestCloseReleasesThePortAndCanBeCalledTwice(t *testing.T) {
 	srv, err := New(Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	addr := srv.Addr().String()
 	if err := srv.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatalf("the port is still held after Close: %v", err)
 	}
 	_ = ln.Close()
+}
+
+// checkBound is the backstop for the rule checkBind can only approximate, and
+// neither of its refusals is reachable through New on a machine whose resolver
+// behaves - so they are checked directly.
+func TestCheckBoundRefusesAnythingNotLoopbackTCP(t *testing.T) {
+	if err := checkBound(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}); err != nil {
+		t.Errorf("loopback TCP was refused: %v", err)
+	}
+	if err := checkBound(&net.TCPAddr{IP: net.IPv6loopback, Port: 1}); err != nil {
+		t.Errorf("loopback IPv6 was refused: %v", err)
+	}
+	routable := checkBound(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1})
+	if routable == nil {
+		t.Error("a routable address was accepted")
+	} else if !strings.Contains(routable.Error(), "network can reach") {
+		t.Errorf("error = %v, want it to say why", routable)
+	}
+	notTCP := checkBound(&net.UnixAddr{Name: "/tmp/x.sock", Net: "unix"})
+	if notTCP == nil {
+		t.Error("a non-TCP address was accepted")
+	} else if !strings.Contains(notTCP.Error(), "not a TCP address") {
+		t.Errorf("error = %v, want it to say the rule could not be checked", notTCP)
+	}
 }
 
 // The asset handler is the mux's catch-all, so it has to lose to a real route.
@@ -241,25 +270,17 @@ func TestARealRouteWinsOverTheAssetCatchAll(t *testing.T) {
 	}
 }
 
-func TestCloseIsIdempotent(t *testing.T) {
-	srv, err := New(Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := srv.Close(); err != nil {
-		t.Fatalf("first Close: %v", err)
-	}
-	if err := srv.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-}
-
 // Every other test here serves an fstest.MapFS, so this is the only one that
 // touches the real //go:embed filesystem - the arrangement the whole dist
 // dance exists for. It skips unless the binary was built with a UI, which is
 // why CI has a job that runs `npm run build` before calling it.
 func TestTheEmbeddedBundleIsServed(t *testing.T) {
 	if !HasAssets() {
+		// A skip exits 0, so the CI job that builds the bundle before calling
+		// this would pass while proving nothing. It sets the variable.
+		if os.Getenv("AIGEM_REQUIRE_UI") != "" {
+			t.Fatal("AIGEM_REQUIRE_UI is set but this binary carries no UI; did `npm run build` write to internal/web/dist?")
+		}
 		t.Skip("built without a UI; run `make web` first")
 	}
 	assets := Assets()

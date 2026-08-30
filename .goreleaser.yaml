@@ -84,3 +84,8 @@ release:
     ```
 
     Or download a binary above, then verify it against `checksums.txt`.
+
+    These binaries do not carry the browser UI: building it needs a Node
+    toolchain, which the release pipeline deliberately does not depend on.
+    `aigem web` will start and tell you so. To get one, build from a checkout
+    with `make web && make build`.

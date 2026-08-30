@@ -8,7 +8,7 @@ the workflow.
 
 | Package              | Responsibility                                                        |
 | -------------------- | --------------------------------------------------------------------- |
-| `cmd/aigem`          | entry point, flag parsing, and the `auth`/`mcp`/`models`/`search`/`paths`/`usage` subcommands |
+| `cmd/aigem`          | entry point, flag parsing, and the `auth`/`mcp`/`models`/`search`/`paths`/`usage`/`web` subcommands |
 | `internal/agent`     | the model/tool loop, turn budgets, context compaction, subagent delegation |
 | `internal/llm`       | backend interface, chat-completions and Responses adapters, model registry, retry, usage accounting |
 | `internal/auth`      | credential store, the ChatGPT OAuth flow, and the xAI device-code flow |
@@ -25,6 +25,8 @@ the workflow.
 | `internal/local`     | the local llama.cpp server: config, daemon lifecycle, download progress, health (the setup wizard itself lives in `cmd/aigem`) |
 | `internal/trace`     | JSONL recording of one agent run, for offline scoring by the eval harness |
 | `internal/tui`       | the Bubble Tea front-end                                              |
+| `internal/web`       | the loopback HTTP daemon and the embedded browser UI (`internal/web/_ui`, built by `make web`) |
+| `internal/store`     | atomic JSON persistence - file lock, temp and rename - for the daemon's small documents |
 | `internal/uisession` | the core session layer the TUI runs on: one conversation's lifecycle and its event journal, fanned out to subscribers via `fanout` |
 | `internal/fanout`    | ordered delivery of one stream to several subscribers, without the slowest setting the pace |
 

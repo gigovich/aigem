@@ -43,7 +43,8 @@
   /* Named rather than overriding --text-base: the design's body size is 13px
    * and Tailwind's text-sm is 14px, so redefining base would leave the scale
    * non-monotonic - text-sm rendering larger than text-base. The body size is
-   * applied on body below; these exist for the places that need it back. */
+   * applied on body below; text-body exists for a nested element that has to
+   * come back to it, and emits nothing until something uses it. */
   --text-body: var(--fs);
   --text-body--line-height: 1.45;
   --text-meta: var(--fs-meta);

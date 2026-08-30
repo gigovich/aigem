@@ -29,6 +29,9 @@ jobs:
           cache: true
       - name: Verify gofmt
         run: |
+          # pipefail, or a find that cannot read a directory reports success and
+          # the files under it are silently never checked.
+          set -o pipefail
           unformatted=$(find . -path ./internal/web/_ui/node_modules -prune -o -name '*.go' -print | xargs gofmt -l)
           if [ -n "$unformatted" ]; then
             echo "These files need gofmt:"
@@ -93,6 +96,10 @@ jobs:
           cache: true
       - name: Serve the embedded bundle
         run: go test -run TestTheEmbeddedBundleIsServed -v ./internal/web/
+        env:
+          # Without this the test skips - and a skip exits 0, so the job would
+          # pass while proving nothing.
+          AIGEM_REQUIRE_UI: "1"
 
   # Linted for both GOOS values: build-tagged files are invisible to a lint run
   # for the other platform, so the Windows-only sources would otherwise never be

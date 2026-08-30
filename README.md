@@ -49,7 +49,13 @@ needed.
 aigem                        # open the TUI in the current directory
 aigem -p 'what does internal/agent do?'    # one-shot, prints to stdout
 aigem auth login openai      # or `aigem models init` for a local model
+aigem web                    # serve the browser UI on a loopback port
 ```
+
+The browser UI is not in release binaries or in `go install` - the bundle is
+built by `make web`, which needs Node, and the release pipeline deliberately
+does not run it. From a checkout: `make web && make build`. A binary without it
+says so rather than serving a blank page.
 
 ## What it does
 
