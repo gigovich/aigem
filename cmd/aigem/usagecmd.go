@@ -19,9 +19,9 @@ const usageUsage = `usage:
   aigem usage --refresh [ref]  ask the provider for a fresh reading, then show it
 
 Quota state is read from the headers a provider returns on ordinary calls, so
-the report is as of the last request aigem (or a bot) made. --refresh sends one
-small request of its own, which costs a few tokens and updates one provider -
-the first authenticated one, or whichever <ref> names. The report itself always
+the report is as of the last request aigem made. --refresh sends one small
+request of its own, which costs a few tokens and updates one provider - the
+first authenticated one, or whichever <ref> names. The report itself always
 covers every provider with a stored reading.`
 
 func runUsageCommand(args []string) error {

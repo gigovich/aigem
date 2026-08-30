@@ -29,10 +29,10 @@ result pages in an isolated Chrome/Chromium profile, then extracts rendered page
 text from that browser. If --profile-dir is omitted, aigem creates one in its
 private state dir.
 
-The browser_action tool lets a tester bot drive the page (login, viewport,
+The browser_action tool lets the agent drive the page (login, viewport,
 keyboard, DOM checks). --test-host allowlists the internal app hosts it may reach
-(repeat for several). The bot fills login credentials directly, reading them from
-a local file or the ticket.`
+(repeat for several), so the agent can drive an internal staging site. It fills
+login credentials directly, reading them from a local file or the prompt.`
 
 // runSearchCommand handles "aigem search ..." subcommands.
 func runSearchCommand(args []string) error {
