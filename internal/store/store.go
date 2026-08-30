@@ -99,7 +99,7 @@ func (f *File[T]) Load() (T, error) {
 func (f *File[T]) Save(v T) error {
 	unlock := lockPath(f.path)
 	defer unlock()
-	return f.withFileLock(func() error { return f.save(v) })
+	return withFileLock(f.path, func() error { return f.save(v) })
 }
 
 // Update runs fn against the current document and saves the result, holding the
@@ -114,7 +114,7 @@ func (f *File[T]) Save(v T) error {
 func (f *File[T]) Update(fn func(*T) error) error {
 	unlock := lockPath(f.path)
 	defer unlock()
-	return f.withFileLock(func() error {
+	return withFileLock(f.path, func() error {
 		v, err := f.Load()
 		if err != nil {
 			return err
@@ -135,7 +135,7 @@ func (f *File[T]) Update(fn func(*T) error) error {
 func (f *File[T]) Delete() error {
 	unlock := lockPath(f.path)
 	defer unlock()
-	return f.withFileLock(func() error {
+	return withFileLock(f.path, func() error {
 		if err := os.Remove(f.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove %s: %w", f.path, err)
 		}
@@ -150,8 +150,15 @@ func (f *File[T]) save(v T) error {
 		return fmt.Errorf("encode %s: %w", f.path, err)
 	}
 	data = append(data, '\n')
+	return writeAtomically(f.path, f.prefix, data)
+}
 
-	dir := filepath.Dir(f.path)
+// writeAtomically puts data at path through a temp file and a rename, so a
+// reader sees either the previous contents or all of these bytes. prefix is the
+// os.CreateTemp pattern, which is what makes an abandoned temp recognisable to
+// the sweep.
+func writeAtomically(path, prefix string, data []byte) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
@@ -161,7 +168,7 @@ func (f *File[T]) save(v T) error {
 	// otherwise write the same file and rename a half-written one into place,
 	// which corrupts the store permanently since Load refuses to parse it.
 	// CreateTemp already creates at 0600.
-	tmp, err := os.CreateTemp(dir, f.prefix)
+	tmp, err := os.CreateTemp(dir, prefix)
 	if err != nil {
 		return fmt.Errorf("create temp in %s: %w", dir, err)
 	}
@@ -180,8 +187,8 @@ func (f *File[T]) save(v T) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", tmp.Name(), err)
 	}
-	if err := replace(tmp.Name(), f.path); err != nil {
-		return fmt.Errorf("replace %s: %w", f.path, err)
+	if err := replace(tmp.Name(), path); err != nil {
+		return fmt.Errorf("replace %s: %w", path, err)
 	}
 	syncDir(dir)
 	return nil
@@ -235,12 +242,12 @@ func replaceRetrying(from, to string, retry bool) error {
 // A lock left behind by a killed process is broken after lockStale. The lock
 // holds a token so that breaking one cannot make its owner delete a lock a
 // third party has since taken.
-func (f *File[T]) withFileLock(fn func() error) error {
-	dir := filepath.Dir(f.path)
+func withFileLock(path string, fn func() error) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
-	lock := f.path + ".lock"
+	lock := path + ".lock"
 	token := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 	deadline := time.Now().Add(lockWait)
 	for {
@@ -260,7 +267,7 @@ func (f *File[T]) withFileLock(fn func() error) error {
 			return fn()
 		}
 		if !errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("lock %s: %w", f.path, err)
+			return fmt.Errorf("lock %s: %w", path, err)
 		}
 		// The deadline is checked first, and against real elapsed time. A break
 		// that cannot unlink - a read-only mount, a peer's lock under a sticky
@@ -273,7 +280,7 @@ func (f *File[T]) withFileLock(fn func() error) error {
 			// which a write this package accepted can disappear, so it says so
 			// rather than leaving a support case with nothing to go on.
 			slog.Warn("proceeding without the store lock; a concurrent writer may lose an update",
-				"path", f.path, "waited", lockWait)
+				"path", path, "waited", lockWait)
 			return fn()
 		}
 		if breakStaleLock(lock) {
