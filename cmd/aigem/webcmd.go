@@ -8,10 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gigovich/aigem/internal/config"
 	"github.com/gigovich/aigem/internal/web"
 )
 
@@ -19,13 +22,32 @@ const webUsage = `usage:
   aigem web                       serve the browser UI on a loopback port
   aigem web --addr 127.0.0.1:7777 serve on a fixed port
   aigem web --open                open the page in the default browser
+  aigem web --addr 0.0.0.0:7777 --origin https://aigem.example.ts.net
 
-The daemon binds loopback only. To reach it from another device, put a reverse
-proxy in front of it - ` + "`tailscale serve`" + ` is the supported shape - rather than
-binding an address the network can reach.
+The printed URL carries the token the browser signs in with. The page trades it
+for a cookie and takes it back out of the address bar, but until it does it is a
+secret on stdout - and with --open, in the process table of this machine.
+
+The daemon binds loopback unless --origin says which public URL it is reached
+at. An address the network can reach needs an origin check, and nothing in a
+request can be trusted to supply the name to check against. A loopback bind with
+` + "`tailscale serve`" + ` or another reverse proxy in front of it needs no flag at all;
+--origin is for terminating that proxy yourself.
 
 A binary built with a plain "go build" carries no UI and says so when a page is
 requested. Build one with "make web && make build".`
+
+// originList collects a repeatable --origin. A daemon reached under two names -
+// a tailnet name and a LAN one - needs both, and one flag per name is how every
+// other repeatable flag in this binary reads.
+type originList []string
+
+func (o *originList) String() string { return strings.Join(*o, ",") }
+
+func (o *originList) Set(v string) error {
+	*o = append(*o, v)
+	return nil
+}
 
 func runWebCommand(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
@@ -34,6 +56,9 @@ func runWebCommand(args []string) error {
 	fs.SetOutput(io.Discard)
 	addr := fs.String("addr", "", "listen address (default: a loopback port chosen by the kernel)")
 	open := fs.Bool("open", false, "open the page in the default browser once it is serving")
+	var origins originList
+	fs.Var(&origins, "origin", "public origin this daemon is reached at, scheme and all;\n"+
+		"repeat for more than one. Required to bind an address the network can reach")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Println(webUsage)
@@ -45,7 +70,22 @@ func runWebCommand(args []string) error {
 		return fmt.Errorf("%w\n\n%s", err, webUsage)
 	}
 
-	srv, err := web.New(web.Config{Addr: *addr, Assets: web.Assets()})
+	// A failure to find the state directory costs the browser sessions their
+	// persistence, not the daemon its start: the operator locked out of the UI
+	// would be locked out by the one thing the UI is for.
+	cookies := ""
+	if dir, err := config.StateDir(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: browser sign-ins will not survive a restart: %v\n", err)
+	} else {
+		cookies = filepath.Join(dir, "web-cookies.json")
+	}
+
+	srv, err := web.New(web.Config{
+		Addr:       *addr,
+		Origins:    origins,
+		Assets:     web.Assets(),
+		CookieFile: cookies,
+	})
 	if err != nil {
 		return err
 	}

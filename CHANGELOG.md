@@ -11,10 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `aigem web` serves a browser UI on a loopback port. It is the first phase of
   the rewrite promised below: the daemon, the app shell and the build
-  integration, with the screens still to come. Reach it from another device by
-  putting a reverse proxy in front of it (`tailscale serve`) - it refuses to
-  bind an address the network can reach, because an origin check needs a public
-  URL stated by a person rather than read out of a request header.
+  integration, with the screens still to come. The printed URL carries a token;
+  the page trades it for an `HttpOnly; SameSite=Strict` cookie and takes it back
+  out of the address bar. Browser sign-ins survive a restart in
+  `$XDG_STATE_HOME/aigem/web-cookies.json`.
+- `aigem web --origin https://name.example.ts.net` states the public URL the
+  daemon is reached at, which is what lets it bind an address the network can
+  reach. Without it the bind is refused: an origin check needs a name a person
+  stated, and nothing in a request can be trusted to supply one. Repeat the flag
+  for a daemon reached under more than one name. A loopback bind behind
+  `tailscale serve` or another reverse proxy still needs no flag at all.
 - `make web` builds the browser UI into `internal/web/dist`, where the binary
   embeds it from. It needs Node 22+. **The bundle is not committed and the
   release pipeline does not build it**, so a downloaded release binary and

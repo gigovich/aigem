@@ -52,6 +52,12 @@ aigem auth login openai      # or `aigem models init` for a local model
 aigem web                    # serve the browser UI on a loopback port
 ```
 
+The URL it prints carries a token; the page trades it for a cookie on first
+load. To reach the daemon from another device, put `tailscale serve` or another
+reverse proxy in front of the loopback port - or terminate that proxy yourself
+and say which name it answers to: `aigem web --addr 0.0.0.0:7777 --origin
+https://name.example.ts.net`.
+
 The browser UI is not in release binaries or in `go install` - the bundle is
 built by `make web`, which needs Node, and the release pipeline deliberately
 does not run it. From a checkout: `make web && make build`. A binary without it

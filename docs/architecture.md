@@ -25,7 +25,7 @@ the workflow.
 | `internal/local`     | the local llama.cpp server: config, daemon lifecycle, download progress, health (the setup wizard itself lives in `cmd/aigem`) |
 | `internal/trace`     | JSONL recording of one agent run, for offline scoring by the eval harness |
 | `internal/tui`       | the Bubble Tea front-end                                              |
-| `internal/web`       | the loopback HTTP daemon and the embedded browser UI (`internal/web/_ui`, built by `make web`) |
+| `internal/web`       | the HTTP daemon - token, cookie and origin allowlist - and the embedded browser UI (`internal/web/_ui`, built by `make web`) |
 | `internal/store`     | atomic JSON persistence - file lock, temp and rename - for the daemon's small documents |
 | `internal/uisession` | the core session layer the TUI runs on: one conversation's lifecycle and its event journal, fanned out to subscribers via `fanout` |
 | `internal/fanout`    | ordered delivery of one stream to several subscribers, without the slowest setting the pace |

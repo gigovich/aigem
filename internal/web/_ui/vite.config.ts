@@ -78,9 +78,15 @@ export default defineConfig({
     // `aigem web` picks a port from the kernel by default, so the daemon has to
     // be started on this one - `aigem web --addr 127.0.0.1:7777` - or AIGEM_ADDR
     // pointed at wherever it landed.
+    //
+    // Origin is rewritten as well as Host. changeOrigin only does the latter, so
+    // the daemon would see Origin: http://localhost:5173 - a name its allowlist
+    // has never heard of - and answer 403 to every API call in the dev cycle.
+    // Sending the daemon's own origin is what the browser would send if the page
+    // were served from it, which in production it is.
     proxy: {
-      '/api': { target: daemon, changeOrigin: true, ws: true },
-      '/healthz': { target: daemon, changeOrigin: true },
+      '/api': { target: daemon, changeOrigin: true, ws: true, headers: { Origin: daemon } },
+      '/healthz': { target: daemon, changeOrigin: true, headers: { Origin: daemon } },
     },
   },
   test: {

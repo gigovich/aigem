@@ -33,7 +33,7 @@ func TestHealthzReportsThisServersUIState(t *testing.T) {
 	} {
 		t.Helper()
 		srv := newTestServer(t, cfg)
-		res, err := http.Get(srv.URL() + "healthz")
+		res, err := http.Get(srv.Base() + "healthz")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,7 +103,7 @@ func TestEveryResponseCarriesTheSecurityHeaders(t *testing.T) {
 		t.Helper()
 		srv := newTestServer(t, cfg)
 		for _, path := range paths {
-			res, err := http.Get(srv.URL() + path)
+			res, err := http.Get(srv.Base() + path)
 			if err != nil {
 				t.Fatalf("%s: %v", path, err)
 			}
@@ -159,7 +159,7 @@ func TestOptionsStarDoesNotBypassTheHeaders(t *testing.T) {
 // mismatch by itself and a POST would otherwise be answered with the page.
 func TestAWrongMethodOnARealRouteIsRejected(t *testing.T) {
 	srv := newTestServer(t, Config{Assets: spaHandler(testDist())})
-	res, err := http.Post(srv.URL()+"healthz", "application/json", strings.NewReader("{}"))
+	res, err := http.Post(srv.Base()+"healthz", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestAWrongMethodOnARealRouteIsRejected(t *testing.T) {
 func TestThePageIsServedWithoutACredential(t *testing.T) {
 	srv := newTestServer(t, Config{Assets: spaHandler(testDist())})
 	for _, path := range []string{"", "models", "assets/main.js"} {
-		req, err := http.NewRequest(http.MethodGet, srv.URL()+path, nil)
+		req, err := http.NewRequest(http.MethodGet, srv.Base()+path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -223,19 +223,19 @@ func TestCloseReleasesThePortAndCanBeCalledTwice(t *testing.T) {
 // neither of its refusals is reachable through New on a machine whose resolver
 // behaves - so they are checked directly.
 func TestCheckBoundRefusesAnythingNotLoopbackTCP(t *testing.T) {
-	if err := checkBound(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}); err != nil {
+	if err := checkBound(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}, nil); err != nil {
 		t.Errorf("loopback TCP was refused: %v", err)
 	}
-	if err := checkBound(&net.TCPAddr{IP: net.IPv6loopback, Port: 1}); err != nil {
+	if err := checkBound(&net.TCPAddr{IP: net.IPv6loopback, Port: 1}, nil); err != nil {
 		t.Errorf("loopback IPv6 was refused: %v", err)
 	}
-	routable := checkBound(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1})
+	routable := checkBound(&net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1}, nil)
 	if routable == nil {
 		t.Error("a routable address was accepted")
 	} else if !strings.Contains(routable.Error(), "network can reach") {
 		t.Errorf("error = %v, want it to say why", routable)
 	}
-	notTCP := checkBound(&net.UnixAddr{Name: "/tmp/x.sock", Net: "unix"})
+	notTCP := checkBound(&net.UnixAddr{Name: "/tmp/x.sock", Net: "unix"}, nil)
 	if notTCP == nil {
 		t.Error("a non-TCP address was accepted")
 	} else if !strings.Contains(notTCP.Error(), "not a TCP address") {
@@ -249,7 +249,7 @@ func TestARealRouteWinsOverTheAssetCatchAll(t *testing.T) {
 		"index.html": {Data: []byte("<!doctype html>the page")},
 	})})
 
-	res, err := http.Get(srv.URL() + "healthz")
+	res, err := http.Get(srv.Base() + "healthz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestARealRouteWinsOverTheAssetCatchAll(t *testing.T) {
 		t.Fatalf("GET /healthz served the SPA:\n%s", body)
 	}
 
-	page, err := http.Get(srv.URL() + "models")
+	page, err := http.Get(srv.Base() + "models")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestTheEmbeddedBundleIsServed(t *testing.T) {
 	}
 	srv := newTestServer(t, Config{Assets: assets})
 
-	res, err := http.Get(srv.URL() + "models")
+	res, err := http.Get(srv.Base() + "models")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestTheEmbeddedBundleIsServed(t *testing.T) {
 		t.Fatal("the page names no module under /assets/")
 	}
 	name, _, _ := strings.Cut(rest, `"`)
-	bundle, err := http.Get(srv.URL() + "assets/" + name)
+	bundle, err := http.Get(srv.Base() + "assets/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}

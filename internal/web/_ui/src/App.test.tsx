@@ -6,8 +6,16 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+// The page signs in first and asks after: /api/auth/session answers 204 with no
+// body, /healthz answers the JSON.
 const answer = (body: unknown, init?: ResponseInit) =>
-  vi.fn(() => Promise.resolve(new Response(JSON.stringify(body), { status: 200, ...init })))
+  vi.fn((path: string) =>
+    Promise.resolve(
+      path === '/api/auth/session'
+        ? new Response(null, { status: 204 })
+        : new Response(JSON.stringify(body), { status: 200, ...init }),
+    ),
+  )
 
 test('reports the daemon as reachable once /healthz answers', async () => {
   vi.stubGlobal('fetch', answer({ ok: true, ui: true }))
@@ -15,12 +23,29 @@ test('reports the daemon as reachable once /healthz answers', async () => {
   expect(await screen.findByRole('status')).toHaveTextContent('daemon reachable')
 })
 
+// A refused sign-in is not an unreachable daemon, and telling the operator the
+// wrong one sends them to check the network instead of the token.
+test('says so when the sign-in is refused', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => Promise.resolve(new Response(null, { status: 401 }))),
+  )
+  render(<App />)
+  expect(await screen.findByRole('status')).toHaveTextContent('sign-in refused: 401')
+})
+
 // A blank page is the failure this catches: the bundle loads, the daemon does
 // not answer, and without this the page says nothing at all.
 test('says so when the daemon does not answer', async () => {
   vi.stubGlobal(
     'fetch',
-    vi.fn(() => Promise.resolve(new Response('', { status: 503, statusText: 'Service Unavailable' }))),
+    vi.fn((path: string) =>
+      Promise.resolve(
+        path === '/api/auth/session'
+          ? new Response(null, { status: 204 })
+          : new Response(null, { status: 503, statusText: 'Service Unavailable' }),
+      ),
+    ),
   )
   render(<App />)
   expect(await screen.findByRole('status')).toHaveTextContent('daemon unreachable')
