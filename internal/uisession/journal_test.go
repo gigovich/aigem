@@ -80,9 +80,10 @@ func TestReplayTruncatedWithoutAJournal(t *testing.T) {
 	}
 }
 
-// An oversized tool result is kept whole beside the journal and only its head
-// is stored inline, so reconnecting does not ship megabytes of grep output.
-func TestOversizedToolResultGoesToABlob(t *testing.T) {
+// An oversized tool result is truncated to its head before it is stored, so
+// reconnecting does not ship megabytes of grep output. Bytes still records the
+// full original length.
+func TestOversizedToolResultIsTruncatedInTheJournal(t *testing.T) {
 	l := journalSession(t, 64)
 	ch, stop, err := l.Subscribe(Client{ID: "c"}, 0)
 	if err != nil {
@@ -110,16 +111,9 @@ func TestOversizedToolResultGoesToABlob(t *testing.T) {
 		t.Fatalf("expected the tool result back, got %+v", stored)
 	}
 	got := stored[0]
-	if len(got.Text) != blobThreshold || !got.Blob || got.Bytes != len(big) {
-		t.Fatalf("stored form = %d bytes blob=%v bytes=%d, want a %d-byte head recording %d",
-			len(got.Text), got.Blob, got.Bytes, blobThreshold, len(big))
-	}
-	body, err := l.Blob(live.Seq)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if body != big {
-		t.Fatalf("blob is %d bytes, want %d", len(body), len(big))
+	if len(got.Text) != blobThreshold || got.Bytes != len(big) {
+		t.Fatalf("stored form = %d bytes bytes=%d, want a %d-byte head recording %d",
+			len(got.Text), got.Bytes, blobThreshold, len(big))
 	}
 }
 
@@ -141,7 +135,7 @@ func TestResumeContinuesTheSequence(t *testing.T) {
 	if err := l.Save(); err != nil {
 		t.Fatal(err)
 	}
-	before, err := l.Timeline()
+	before, err := l.Replay(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +147,7 @@ func TestResumeContinuesTheSequence(t *testing.T) {
 	if _, err := l.Load(id); err != nil {
 		t.Fatal(err)
 	}
-	after, err := l.Timeline()
+	after, err := l.Replay(0)
 	if err != nil {
 		t.Fatal(err)
 	}

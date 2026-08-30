@@ -41,7 +41,7 @@ func TestResetDoesNotCarryHistoryIntoTheNextConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events, err := l.Timeline()
+	events, err := l.Replay(0)
 	if err != nil {
 		t.Fatal(err)
 	}

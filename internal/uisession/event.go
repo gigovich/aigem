@@ -81,11 +81,9 @@ type Event struct {
 	Args  json.RawMessage `json:"args,omitempty"`
 	Error string          `json:"error,omitempty"`
 
-	// Bytes is the full size of a tool result whose stored form was trimmed, and
-	// Blob says the whole of it is kept beside the journal under this event's
-	// seq. Both are absent on the live event, which carries the result whole.
-	Bytes int  `json:"bytes,omitempty"`
-	Blob  bool `json:"blob,omitempty"`
+	// Bytes is the full size of a tool result whose stored form was trimmed. It
+	// is absent on the live event, which carries the result whole.
+	Bytes int `json:"bytes,omitempty"`
 
 	// Ctx is the active model's context window, carried on session_meta so a
 	// front-end tracks it from the stream instead of asking for it.
