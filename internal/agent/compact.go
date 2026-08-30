@@ -276,7 +276,10 @@ func backupMessages(sessionID string, n int, msgs []llm.Message) error {
 		return err
 	}
 	dir := filepath.Join(base, "sessions")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// 0700, matching internal/session, which creates this same directory:
+	// whichever runs first sets the mode, so disagreeing would make the
+	// permissions depend on the order of two unrelated code paths.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	// Guard against a crafted session id escaping the backups directory: only the

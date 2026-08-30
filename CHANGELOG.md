@@ -27,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `go install ...@latest` both answer every page with a 501 that says which
   build step is missing. Build from a checkout to get a UI.
 
+### Changed
+
+- Saved conversations are written atomically and 0600, through the new
+  `internal/store`, in a 0700 `sessions` directory. They used to be written
+  0644 with `os.WriteFile`, which truncates the file before writing it: anyone
+  reading the same conversation in that window - soon a browser tab, or a
+  second aigem - saw a document that was not JSON, and a process killed there
+  left one on disk. Files already written keep their mode until they are saved
+  again.
+- A session id that is a path rather than a name is refused. Ids come from
+  `NewID` today, but the browser daemon takes them from requests, and
+  `../auth` was a path the sessions directory had no reason to reach.
+
 ### Removed
 
 - The bot/fleet subsystem and the legacy browser Web UI. `aigem bot ...`,
