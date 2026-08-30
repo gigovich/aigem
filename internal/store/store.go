@@ -1,19 +1,28 @@
-// Package store persists a JSON document atomically, so two writers cannot
-// leave a half-written file behind.
+// Package store persists state under the state directory in two shapes: File,
+// a whole JSON document replaced atomically, and Log, an append-only JSONL feed
+// with a cursor.
 //
 // The pattern is the one internal/trust arrived at: a mutex around
 // read-modify-write, an exclusive lock file around that for other processes, a
 // uniquely named temp file renamed into place, and a sweep for temps left by a
-// process killed between CreateTemp and Rename. It is extracted here so that
-// the several small JSON documents the web daemon is about to keep - projects,
-// tickets, worktree records - share one implementation rather than each
-// reinventing a subset of it.
+// process killed between CreateTemp and Rename. It is here so that the
+// documents the browser daemon keeps, and the conversations internal/session
+// keeps, share one implementation rather than each reinventing a subset of it.
 //
-// Exclusion between processes is best-effort by design: a writer that cannot
-// take the lock file within lockWait proceeds without it, because a peer killed
-// mid-write must not be able to wedge the daemon. That can lose an update; it
-// cannot corrupt the document, since a save only ever renames a fully written
-// file into place. Within one process the mutex is absolute.
+// Within one process the mutex is absolute. Between processes the two types
+// differ, and the difference is deliberate:
+//
+// File tolerates a lock it cannot take. A writer that has waited lockWait
+// proceeds anyway, because a peer killed mid-write must not be able to wedge
+// the daemon, and the worst case is a lost update - never a damaged document,
+// since a save only ever renames a fully written file into place.
+//
+// Log does not, and must not. Its append writes at an offset rather than
+// renaming, so two writers proceeding unlocked pick the same sequence number
+// and the same offset: one record is accepted and then destroyed, two clients
+// are handed one cursor, and a half-written line can end up in the middle of a
+// file that then reads back as damaged for good. So Log fails instead, and the
+// caller retries - a lock whose owner is gone is broken after lockStale.
 package store
 
 import (
@@ -43,9 +52,12 @@ var lockWait = 2 * time.Second
 
 // File is a JSON document at a fixed path, read and written atomically.
 //
-// A missing file loads as the zero value rather than an error: every caller
-// here starts from an empty collection, and distinguishing "not created yet"
-// from "empty" has no meaning for any of them.
+// A missing file loads as the zero value rather than an error, which is what a
+// caller holding a collection wants: it starts empty either way. A caller that
+// has to tell "never written" from "written empty" - resuming a conversation by
+// id, say - reads the file itself rather than through Load, as internal/session
+// does; going through Exists first would be a second syscall and a window in
+// between.
 type File[T any] struct {
 	path string
 	// prefix is the pattern os.CreateTemp is given, so a temp is recognisable as
@@ -129,9 +141,12 @@ func (f *File[T]) Update(fn func(*T) error) error {
 // Delete removes the document. A document that is not there is not an error:
 // the caller is asking for it to be gone, and it is.
 //
-// The lock is taken the same way a write takes it, so a Delete cannot land
-// between an Update's read and its save - which would otherwise resurrect the
-// document from the value the Update was already holding.
+// The lock is taken the same way a write takes it, so within this process a
+// Delete cannot land between an Update's read and its save - which would
+// otherwise resurrect the document from the value the Update was already
+// holding. Between processes that is the same best-effort exclusion everything
+// else here has: a peer whose Update proceeded past lockWait can still rename
+// the document back into place after this removed it.
 func (f *File[T]) Delete() error {
 	unlock := lockPath(f.path)
 	defer unlock()
@@ -213,10 +228,20 @@ var renameFile = os.Rename
 // replace renames into place, retrying on Windows only.
 //
 // Go opens files without FILE_SHARE_DELETE, so a rename onto a path another
-// goroutine is midway through reading fails with a sharing violation. The read
-// window is one ReadFile, so a handful of short retries closes it; on Unix a
+// goroutine is midway through reading fails with a sharing violation. On Unix a
 // rename over an open file always succeeds and a retry would only delay a real
 // failure.
+//
+// The window is one read, but a caller can hold several open in a row -
+// internal/session.List reads every conversation in the directory - so the
+// budget is a second rather than the 90ms it started at. A save that fails
+// where os.WriteFile would have succeeded is a lost turn, which is worse than
+// the wait.
+const (
+	replaceRetries = 50
+	replacePause   = 20 * time.Millisecond
+)
+
 func replace(from, to string) error {
 	return replaceRetrying(from, to, runtime.GOOS == "windows")
 }
@@ -226,8 +251,8 @@ func replaceRetrying(from, to string, retry bool) error {
 	if err == nil || !retry {
 		return err
 	}
-	for range 9 {
-		time.Sleep(10 * time.Millisecond)
+	for range replaceRetries {
+		time.Sleep(replacePause)
 		if err = renameFile(from, to); err == nil {
 			return nil
 		}
@@ -239,10 +264,26 @@ func replaceRetrying(from, to string, retry bool) error {
 // writer in *another process* cannot read a value this one is about to replace.
 // Goroutines in this process are already serialized by lockPath.
 //
+// A writer that has waited lockWait proceeds without the lock. See the package
+// doc: that is File's tolerance, and it is wrong for anything that writes in
+// place.
+func withFileLock(path string, fn func() error) error {
+	return holdingLock(path, false, fn)
+}
+
+// withFileLockStrict is withFileLock for a caller that cannot survive running
+// unlocked. It gives up rather than proceeding, so the caller can retry; a lock
+// whose owner is gone is broken after lockStale, which bounds the retrying.
+func withFileLockStrict(path string, fn func() error) error {
+	return holdingLock(path, true, fn)
+}
+
+// holdingLock takes the lock file and runs fn.
+//
 // A lock left behind by a killed process is broken after lockStale. The lock
 // holds a token so that breaking one cannot make its owner delete a lock a
 // third party has since taken.
-func withFileLock(path string, fn func() error) error {
+func holdingLock(path string, strict bool, fn func() error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
@@ -274,9 +315,14 @@ func withFileLock(path string, fn func() error) error {
 		// bit - would otherwise loop straight back with no sleep and spin a core
 		// forever, holding the in-process mutex while it did.
 		if time.Now().After(deadline) {
-			// Proceeding unlocked risks a lost update; corrupting the store does
-			// not, since save renames a fully written file into place. The risk
-			// is worth taking and not worth hiding: this is the only path on
+			if strict {
+				return fmt.Errorf("lock %s: still held after %s, and this write cannot "+
+					"proceed without it; retry - a lock whose owner is gone is broken "+
+					"after %s", path, lockWait, lockStale)
+			}
+			// Proceeding unlocked risks a lost update; corrupting the document
+			// does not, since save renames a fully written file into place. The
+			// risk is worth taking and not worth hiding: this is the only path on
 			// which a write this package accepted can disappear, so it says so
 			// rather than leaving a support case with nothing to go on.
 			slog.Warn("proceeding without the store lock; a concurrent writer may lose an update",
@@ -354,17 +400,18 @@ func breakStaleLock(lock string) bool {
 // per document for the life of the process, which for a store per session is a
 // leak that grows with uptime.
 func sweepOrphanTemps(dir string) {
-	// Once per directory per process. Temps this process creates are removed by
-	// save's own defer, so the only thing a repeat scan could find is an orphan
-	// from a peer that died after we started - and that one is collected by
-	// whichever process writes next.
-	if alreadySwept(dir) {
+	// At most once per tempOrphan per directory, rather than once per process.
+	// Temps this process creates are removed by save's own defer, so a repeat
+	// scan can only find an orphan from a peer that died after we started - and
+	// a daemon that is the only writer of its state directory would never have a
+	// "next process" to collect that one.
+	if sweptRecently(dir) {
 		return
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		// Not marked: a transient failure must not disable the sweep for the life
-		// of the process.
+		// Not marked: a transient failure must not disable the sweep for a whole
+		// tempOrphan.
 		return
 	}
 	markSwept(dir)
@@ -413,10 +460,15 @@ type held struct {
 	refs int
 }
 
+// maxSweptDirs bounds the table of directories already swept. Forgetting one
+// costs a ReadDir; never forgetting is the leak the refcounting above exists to
+// remove, relocated.
+const maxSweptDirs = 256
+
 var (
 	pathsMu sync.Mutex
 	paths   = map[string]*held{}
-	swept   = map[string]bool{}
+	swept   = map[string]time.Time{}
 )
 
 func canonical(path string) string {
@@ -458,14 +510,21 @@ func lockPath(path string) func() {
 	}
 }
 
-func alreadySwept(key string) bool {
+func sweptRecently(key string) bool {
 	pathsMu.Lock()
 	defer pathsMu.Unlock()
-	return swept[key]
+	at, ok := swept[key]
+	return ok && time.Since(at) < tempOrphan
 }
 
 func markSwept(key string) {
 	pathsMu.Lock()
 	defer pathsMu.Unlock()
-	swept[key] = true
+	if len(swept) >= maxSweptDirs {
+		// Wholesale, not one entry: this runs under the mutex every writer takes,
+		// and evicting one at a time would walk the table on every new directory.
+		// The cost of forgetting is a ReadDir the next writer pays.
+		clear(swept)
+	}
+	swept[key] = time.Now()
 }

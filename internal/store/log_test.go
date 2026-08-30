@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -295,7 +296,10 @@ func TestTheLogIsOwnerOnly(t *testing.T) {
 		t.Skip("unix permissions")
 	}
 	l := newTestLog(t)
-	appendAll(t, l, "a")
+	// Two records, not one: Compact keeps the newest and returns without writing
+	// when that is all there is, so a single-record log never reaches the rewrite
+	// this test exists to check.
+	appendAll(t, l, "a", "b")
 	info, err := os.Stat(l.Path())
 	if err != nil {
 		t.Fatal(err)
@@ -304,8 +308,12 @@ func TestTheLogIsOwnerOnly(t *testing.T) {
 		t.Errorf("the log is %o, want 600", perm)
 	}
 	// And still after a rewrite, which goes through a different path.
-	if _, err := l.Compact(time.Now().Add(time.Hour)); err != nil {
+	dropped, err := l.Compact(time.Now().Add(time.Hour))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if dropped != 1 {
+		t.Fatalf("Compact dropped %d records, so it never rewrote the file", dropped)
 	}
 	info, err = os.Stat(l.Path())
 	if err != nil {
@@ -349,5 +357,220 @@ func TestACorruptLogIsAnError(t *testing.T) {
 	}
 	if _, err := l.Range(0, 0); err == nil {
 		t.Error("a log whose first record does not parse was read as if it were fine")
+	}
+}
+
+// An append writes at an offset rather than renaming, so two writers that both
+// gave up on the lock pick the same sequence and the same offset: one record is
+// accepted and then destroyed, and two clients are handed one cursor. File
+// tolerates that fallback; Log must not.
+func TestAppendFailsRatherThanWritingWithoutTheLock(t *testing.T) {
+	shrinkLockWait(t, 60*time.Millisecond)
+	l := newTestLog(t)
+	appendAll(t, l, "a")
+
+	// A lock file too young for breakStaleLock to reclaim: a peer that is alive
+	// and mid-write, which is exactly when proceeding would destroy a record.
+	lock := l.Path() + ".lock"
+	if err := os.WriteFile(lock, []byte("a-live-peer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := l.Append(event{Kind: "b"}); err == nil {
+		t.Fatal("an append proceeded without the lock")
+	} else if !strings.Contains(err.Error(), "lock") {
+		t.Errorf("error = %v, want it to name the lock", err)
+	}
+	// And nothing was written: the caller was told no, so the caller's retry is
+	// the whole story.
+	got, err := l.Range(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("the log holds %d records after a refused append, want 1", len(got))
+	}
+
+	// The peer goes away and the lock ages out; the retry lands.
+	old := time.Now().Add(-2 * lockStale)
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(event{Kind: "b"}); err != nil {
+		t.Fatalf("the retry after the lock went stale failed: %v", err)
+	}
+}
+
+// Compaction copies the survivors byte for byte. Decoding them through this
+// binary's T and marshalling them back would strip whatever this binary does not
+// know about - a field a newer version wrote, or one a rollback has forgotten -
+// from records that were kept, silently and for good.
+func TestCompactKeepsFieldsThisBinaryDoesNotKnowAbout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.jsonl")
+
+	type richEvent struct {
+		Kind  string `json:"kind"`
+		Extra string `json:"extra"`
+	}
+	rich := NewLog[richEvent](path)
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	at := base
+	rich.now = func() time.Time { return at }
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := rich.Append(richEvent{Kind: k, Extra: "kept-" + k}); err != nil {
+			t.Fatal(err)
+		}
+		at = at.Add(24 * time.Hour)
+	}
+
+	// A binary that knows only half the record trims the log.
+	poor := NewLog[event](path)
+	if _, err := poor.Compact(base.Add(24 * time.Hour)); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	got, err := rich.Range(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("the log holds %d records, want 2", len(got))
+	}
+	for _, e := range got {
+		if e.V.Extra != "kept-"+e.V.Kind {
+			t.Errorf("record %d came back as %+v; the compaction stripped a field it could not read",
+				e.Seq, e.V)
+		}
+	}
+}
+
+// A damaged line is not something to write past. The index is what an append
+// truncates against, so building one out of a file this package cannot account
+// for is how one bad line turns into lost records.
+func TestADamagedRecordIsReportedByEveryMethod(t *testing.T) {
+	l := newTestLog(t)
+	appendAll(t, l, "a", "b", "c")
+
+	data, err := os.ReadFile(l.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitN(string(data), "\n", 2)
+	damaged := lines[0] + "\n{ this is not a record }\n"
+	if err := os.WriteFile(l.Path(), []byte(damaged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	next := NewLog[event](l.Path())
+	if _, err := next.Range(0, 0); err == nil {
+		t.Error("Range read a damaged log without complaining")
+	}
+	if _, err := next.Len(); err == nil {
+		t.Error("Len counted a damaged log without complaining")
+	}
+	if _, err := next.Append(event{Kind: "d"}); err == nil {
+		t.Error("Append wrote to a damaged log; the record it truncated against was not there")
+	}
+	if _, err := next.Compact(time.Now()); err == nil {
+		t.Error("Compact rewrote a damaged log")
+	}
+}
+
+// The sequences are read out of the file rather than derived from a position,
+// so a file whose numbering has a gap - a line removed by hand - is refused
+// rather than answered with a window shifted by the size of the gap.
+func TestAGapInTheSequencesIsRefused(t *testing.T) {
+	l := newTestLog(t)
+	appendAll(t, l, "a", "b", "c")
+	data, err := os.ReadFile(l.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+
+	// Out of order, which a position-derived index cannot see at all.
+	swapped := lines[1] + "\n" + lines[0] + "\n" + lines[2] + "\n"
+	if err := os.WriteFile(l.Path(), []byte(swapped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewLog[event](l.Path()).Range(0, 0); err == nil {
+		t.Error("a log whose records are out of order was read as if it were in order")
+	}
+
+	// A gap: record 2 removed. Reading from cursor 2 must still return record 3
+	// and not a window computed from the missing one.
+	gapped := lines[0] + "\n" + lines[2] + "\n"
+	if err := os.WriteFile(l.Path(), []byte(gapped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewLog[event](l.Path()).Range(2, 0)
+	if err != nil {
+		t.Fatalf("Range over a log with a gap: %v", err)
+	}
+	if len(got) != 1 || got[0].Seq != 3 {
+		t.Errorf("Range(2, 0) = %v, want only record 3", got)
+	}
+}
+
+// The largest cursor a client could hold must not wrap round into the smallest
+// and hand it the whole log back.
+func TestAnEnormousCursorReturnsNothing(t *testing.T) {
+	l := newTestLog(t)
+	appendAll(t, l, "a", "b")
+	for _, since := range []int{math.MaxInt, math.MaxInt - 1, 99} {
+		got, err := l.Range(since, 0)
+		if err != nil {
+			t.Fatalf("Range(%d, 0): %v", since, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("Range(%d, 0) returned %d records", since, len(got))
+		}
+	}
+	// And a nonsense cursor from the other end is the whole log, not a panic.
+	got, err := l.Range(math.MinInt, 0)
+	if err != nil {
+		t.Fatalf("Range(MinInt, 0): %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("Range(MinInt, 0) returned %d records, want 2", len(got))
+	}
+}
+
+// The mtime half of the staleness check. A peer's compaction that lands on the
+// same byte count is the case it exists for; with size alone the index keeps the
+// sequences of the file that is gone, and every cursor is then answered against
+// numbering that no longer exists.
+func TestASameSizeRewriteIsNoticed(t *testing.T) {
+	l := newTestLog(t)
+	appendAll(t, l, "a", "b")
+	if _, err := l.Range(0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Renumbered 5 and 6, which is the same number of bytes: what a peer rewrite
+	// can look like from a stat alone.
+	data, err := os.ReadFile(l.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	renumbered := strings.Replace(string(data), `{"seq":1,`, `{"seq":5,`, 1)
+	renumbered = strings.Replace(renumbered, `{"seq":2,`, `{"seq":6,`, 1)
+	if len(renumbered) != len(data) || renumbered == string(data) {
+		t.Fatalf("the rewrite has to be the same length and different; got %d vs %d bytes",
+			len(renumbered), len(data))
+	}
+	if err := os.WriteFile(l.Path(), []byte(renumbered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both records are past a cursor of 1 now. An index still holding 1 and 2
+	// would answer with one.
+	got, err := l.Range(1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("Range(1, 0) returned %d records, want 2; a same-size rewrite went unnoticed", len(got))
 	}
 }

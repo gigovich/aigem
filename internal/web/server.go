@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/gigovich/aigem/internal/store"
 )
@@ -33,8 +34,8 @@ type Config struct {
 	// ("https://aigem.example.ts.net"). Behind a reverse proxy the bind address
 	// is not the name requests arrive under, so the operator states it here.
 	Origins []string
-	// Token authenticates every request that is not the page itself. One is
-	// generated when empty.
+	// Token authenticates every request except the page itself and /healthz.
+	// One is generated when empty.
 	Token string
 	// CookieFile is where the browser sessions are kept across restarts. Empty
 	// keeps them in memory, so a restart signs every browser out.
@@ -60,9 +61,17 @@ type Server struct {
 	// cookies are the live browser sessions and when each expires. They are
 	// written to cookieStore on every change when there is one, and held in
 	// memory alone when there is not.
-	cookies     map[string]time.Time
+	cookies map[string]time.Time
+	// cookieGen numbers the snapshots handed to persist, which writes them in
+	// order and drops one a newer write has overtaken. See pendingLocked.
+	cookieGen   uint64
 	cookieStore *store.File[cookieFile]
 	closed      bool
+
+	// saveMu serializes the cookie file itself, held across the disk write that
+	// s.mu deliberately is not.
+	saveMu   sync.Mutex
+	savedGen uint64
 }
 
 // New binds the listener and builds the routes. The daemon is not serving until
@@ -187,19 +196,21 @@ func (s *Server) Addr() net.Addr { return s.ln.Addr() }
 // Token is the credential every request must carry.
 func (s *Server) Token() string { return s.token }
 
-// URL is what a person opens: the address with the token already in it, in the
-// style of jupyter, so there is no separate step of pasting a secret. The page
-// trades it for a cookie on its first load and takes it back out of the address
-// bar, so it is a secret in transit rather than one in browser history.
+// SignInURL is what a person opens: the address with the token already in it,
+// in the style of jupyter, so there is no separate step of pasting a secret.
+// The page trades it for a cookie on its first load and takes it back out of
+// the address bar, so it is a secret in transit rather than one in browser
+// history.
 //
-// It is a credential in a string, so a caller that prints it is publishing the
-// token - which the terminal that started the daemon is entitled to, and a log
-// file is not. Base is what everything else should build on.
+// The name is the warning. It returns a credential in a string, so a caller
+// that prints it is publishing the token - which the terminal that started the
+// daemon is entitled to, and a log file, a status output or an error message is
+// not. Everything that is not signing a person in wants Base.
 //
 // A configured origin wins over the bind address. Behind a proxy the daemon is
 // bound to a loopback port nobody outside the machine can reach, and printing
 // that is printing a link that does not work.
-func (s *Server) URL() string { return s.Base() + "?token=" + s.token }
+func (s *Server) SignInURL() string { return s.Base() + "?token=" + s.token }
 
 // Base is the daemon's address with no credential in it.
 func (s *Server) Base() string {
@@ -309,11 +320,25 @@ func hostsFor(addr net.Addr, origins []string) (allowlist, error) {
 		out.hosts = append(out.hosts, u.Host)
 	}
 
-	local := []string{net.JoinHostPort(host, port)}
-	if isLoopbackHost(host) || host == "0.0.0.0" || host == "::" {
-		for _, h := range []string{"127.0.0.1", "[::1]", "localhost"} {
-			local = append(local, h+":"+port)
-		}
+	var local []string
+	if len(origins) == 0 {
+		// Nothing was stated, so the address this socket is on is the only name
+		// there is - and checkBind has already refused anything but loopback.
+		// With an origin stated it is deliberately left out: a daemon bound to a
+		// LAN address and declared https-only must not also answer to
+		// http://192.168.1.5:7777, which is what keeping it here used to do.
+		local = append(local, net.JoinHostPort(host, port))
+	}
+	// The loopback names survive a stated origin - they are what lets curl on the
+	// machine keep working against a proxied daemon, and they are names no page
+	// on an attacker's host can send. Only the ones this socket actually answers
+	// on, though: allowlisting [::1] on a daemon bound to 127.0.0.1 alone names
+	// an origin any other local process is free to serve.
+	switch {
+	case host == "0.0.0.0" || host == "::":
+		local = append(local, "127.0.0.1:"+port, "[::1]:"+port, "localhost:"+port)
+	case isLoopbackHost(host):
+		local = append(local, net.JoinHostPort(host, port), "localhost:"+port)
 	}
 	for _, h := range local {
 		if !slices.Contains(out.hosts, h) {
@@ -347,6 +372,8 @@ func normalizeOrigin(raw string) (string, error) {
 		return "", fmt.Errorf("web: origin %q names no host", raw)
 	case u.User != nil:
 		return "", fmt.Errorf("web: origin %q must not carry credentials", raw)
+	case strings.HasSuffix(u.Host, ":"):
+		return "", fmt.Errorf("web: origin %q ends in a colon with no port", raw)
 	case u.Path != "" && u.Path != "/", u.RawQuery != "", u.Fragment != "":
 		return "", fmt.Errorf("web: origin %q must be a scheme and a host and nothing else "+
 			"(for example https://aigem.example.ts.net)", raw)
@@ -362,7 +389,30 @@ func normalizeOrigin(raw string) (string, error) {
 			host = "[" + host + "]"
 		}
 	}
+	// A browser sends an internationalised name in its punycode form, so an
+	// allowlist entry holding the unicode one matches nothing, ever. Converting
+	// here would mean depending on golang.org/x/net/idna for one flag; saying so
+	// costs the operator one lookup and cannot be wrong.
+	for _, r := range host {
+		if r > unicode.MaxASCII {
+			return "", fmt.Errorf("web: origin %q is not ASCII: give it in the punycode "+
+				"form a browser sends (xn--...), or nothing will ever match it", raw)
+		}
+	}
 	return u.Scheme + "://" + host, nil
+}
+
+// normalizeHost puts a Host header into the spelling the allowlist holds. A
+// hostname is case-insensitive to the resolver and may carry a trailing root
+// dot, and some clients send both; refusing either would be a 403 that reads as
+// a broken server, which is the failure the allowlist exists to avoid.
+func normalizeHost(raw string) string {
+	h := strings.ToLower(strings.TrimSpace(raw))
+	host, port, err := net.SplitHostPort(h)
+	if err != nil {
+		return strings.TrimSuffix(h, ".")
+	}
+	return net.JoinHostPort(strings.TrimSuffix(host, "."), port)
 }
 
 func methodNotAllowed(allow string) http.HandlerFunc {

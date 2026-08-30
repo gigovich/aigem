@@ -36,8 +36,9 @@ web: ## Build the browser UI into internal/web/dist
 
 # Start the daemon on the port the dev proxy expects:
 #   aigem web --addr 127.0.0.1:7777
-# or point AIGEM_ADDR at wherever it landed. The proxy sends the daemon's own
-# origin rather than the dev server's, so no --origin is needed here.
+# or point AIGEM_ADDR at wherever it landed - as a full origin,
+# http://127.0.0.1:9000, since the proxy sends that value as the Origin header
+# too. That is what makes the dev cycle work without an --origin flag.
 web-dev: ## Vite dev server, proxying /api to a running `aigem web`
 	cd $(UI) && npm run dev
 

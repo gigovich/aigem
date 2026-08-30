@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -64,7 +66,7 @@ func requestToken(r *http.Request) string {
 // written by whoever is talking to us, and deriving the allowlist from the
 // request it is meant to check is not a check.
 func (s *Server) originOK(r *http.Request) bool {
-	if !slices.Contains(s.allowed.hosts, r.Host) {
+	if !slices.Contains(s.allowed.hosts, normalizeHost(r.Host)) {
 		return false
 	}
 	origin := r.Header.Get("Origin")
@@ -121,6 +123,10 @@ const (
 )
 
 // issueCookie mints a browser session and returns its value.
+//
+// A session that could not be written to disk still works until this daemon
+// stops, so the write failure is logged rather than refused: turning a disk
+// problem into a sign-in that fails with nothing to see helps nobody.
 func (s *Server) issueCookie() (string, error) {
 	id, err := newToken()
 	if err != nil {
@@ -128,7 +134,6 @@ func (s *Server) issueCookie() (string, error) {
 	}
 	now := time.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for k, exp := range s.cookies {
 		if now.After(exp) {
 			delete(s.cookies, k)
@@ -145,28 +150,46 @@ func (s *Server) issueCookie() (string, error) {
 		delete(s.cookies, oldest)
 	}
 	s.cookies[id] = now.Add(cookieTTL)
-	s.saveCookies()
+	pending, gen := s.pendingLocked()
+	s.mu.Unlock()
+
+	if err := s.persist(pending, gen); err != nil {
+		slog.Warn("could not record the browser session; a restart will sign it out",
+			"path", s.cookieStore.Path(), "err", err)
+	}
 	return id, nil
 }
 
 // cookieOK reports whether the request carries a live browser session.
+//
+// This runs on every request, so the disk write an expiry triggers happens
+// after s.mu is released: holding the daemon's only mutex across two fsyncs and
+// a lock file another process may hold would queue every concurrent request
+// behind it.
 func (s *Server) cookieOK(r *http.Request) bool {
 	c, err := r.Cookie(cookieName)
 	if err != nil || c.Value == "" {
 		return false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	exp, ok := s.cookies[c.Value]
 	if !ok {
+		s.mu.Unlock()
 		return false
 	}
-	if time.Now().After(exp) {
-		delete(s.cookies, c.Value)
-		s.saveCookies()
-		return false
+	if !time.Now().After(exp) {
+		s.mu.Unlock()
+		return true
 	}
-	return true
+	delete(s.cookies, c.Value)
+	pending, gen := s.pendingLocked()
+	s.mu.Unlock()
+
+	if err := s.persist(pending, gen); err != nil {
+		slog.Warn("could not record an expired browser session being dropped",
+			"path", s.cookieStore.Path(), "err", err)
+	}
+	return false
 }
 
 // cookieFresh reports whether the request carries a live cookie that is not yet
@@ -184,26 +207,35 @@ func (s *Server) cookieFresh(r *http.Request) bool {
 
 // secureFor decides whether the cookie is marked Secure.
 //
-// It is set whenever the request reached us over TLS, or under an origin the
-// operator configured as https - which is how it is set behind a proxy that
+// It is set whenever the request reached us over TLS, or arrived under a name
+// the operator configured as https - which is how it is set behind a proxy that
 // terminates TLS, since the hop to us is plain HTTP. It is not set otherwise: a
 // Secure cookie on a plain-HTTP deployment is one the browser accepts and never
 // sends back, which is a sign-in that fails with nothing to see.
 //
-// The Origin here has already been matched against the allowlist by the caller,
-// so reading it is not trusting the request.
+// The stated origin is checked before the request's own Origin header, and that
+// order is load-bearing. The loopback origins are on the allowlist by
+// construction, so a request carrying Host: the-https-name and Origin:
+// http://127.0.0.1:7777 passes the guard - and reading the header first would
+// then hand an https deployment a cookie with no Secure flag. A proxy that
+// rewrites Origin to the backend's own is not hypothetical: this repository
+// ships one for the dev server.
+//
+// Both values have already been matched against the allowlist by the caller, so
+// reading either is not trusting the request.
 func (s *Server) secureFor(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
+	host := normalizeHost(r.Host)
+	for _, o := range s.allowed.public {
+		if after, ok := strings.CutPrefix(o, "https://"); ok && after == host {
+			return true
+		}
+	}
 	if o := r.Header.Get("Origin"); o != "" {
 		norm, err := normalizeOrigin(o)
 		return err == nil && strings.HasPrefix(norm, "https://")
-	}
-	for _, o := range s.allowed.public {
-		if after, ok := strings.CutPrefix(o, "https://"); ok && after == r.Host {
-			return true
-		}
 	}
 	return false
 }
@@ -224,8 +256,12 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// The one being replaced goes now rather than lingering for the rest of its
 	// window: a renewal that left both live would grow the table by one per
-	// renewal, which is the accumulation the reuse above exists to stop.
-	s.revokeCookie(r)
+	// renewal, which is the accumulation the reuse above exists to stop. A
+	// failure to record that removal is not worth refusing the renewal over -
+	// the worst case is a restart honouring a cookie the browser has replaced.
+	if err := s.revokeCookie(r); err != nil {
+		slog.Warn("could not record a replaced browser session", "err", err)
+	}
 	id, err := s.issueCookie()
 	if err != nil {
 		http.Error(w, "could not open a session", http.StatusInternalServerError)
@@ -243,27 +279,51 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// revokeCookie forgets the browser session this request carries, if any.
-func (s *Server) revokeCookie(r *http.Request) {
+// revokeCookie forgets the browser session this request carries, if any, and
+// reports whether that removal reached the disk.
+//
+// The error matters here in a way it does not when issuing. A revocation that
+// only cleared the table is undone by the next restart, so a caller that
+// answered "signed out" would have said something untrue - which is the one
+// thing an operator who has lost a phone cannot afford.
+func (s *Server) revokeCookie(r *http.Request) error {
 	c, err := r.Cookie(cookieName)
 	if err != nil || c.Value == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	// Only a held session is worth a disk write: the cookie exchange runs this
 	// on every page load, and a request carrying a value the table never issued
 	// must not be able to make the daemon write at all.
-	if _, held := s.cookies[c.Value]; held {
-		delete(s.cookies, c.Value)
-		s.saveCookies()
+	_, held := s.cookies[c.Value]
+	if !held {
+		s.mu.Unlock()
+		return nil
 	}
+	delete(s.cookies, c.Value)
+	pending, gen := s.pendingLocked()
+	closing := s.closed
+	s.mu.Unlock()
+
+	if closing && s.cookieStore != nil {
+		return errors.New("the daemon is shutting down and cannot record the sign-out")
+	}
+	return s.persist(pending, gen)
 }
 
 // handleAuthLogout revokes the cookie this request carried, and tells the
 // browser to drop it.
+//
+// A revocation the daemon could not record is a failure, not a detail: the
+// browser would drop its cookie, the file would keep the session, and the next
+// restart would honour it again with nothing left that could present it.
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
-	s.revokeCookie(r)
+	if err := s.revokeCookie(r); err != nil {
+		slog.Warn("could not record a sign-out", "err", err)
+		http.Error(w, "signed out here, but the daemon could not record it; "+
+			"the session may come back when it restarts", http.StatusInternalServerError)
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    "",
@@ -277,16 +337,19 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // Guard wraps a handler so it answers only for a request that passed every
-// check, and so its response carries the daemon's security headers. Every route
-// that is not the page itself goes through it, so a route added later cannot
-// answer under weaker rules than the ones this file sets.
+// check. Every route goes through it except the page, which a browser fetches
+// before it can hold any credential, and /healthz, which is a liveness probe -
+// so a route added later must be wrapped here or it answers under weaker rules
+// than the ones this file sets.
 func (s *Server) Guard(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.guard(w, r) {
 			return
 		}
-		// Held for as long as the handler runs, which for a websocket is as long
-		// as the connection lives.
+		// Held for as long as the handler runs. A websocket handler has to block
+		// for the life of its connection for that to bound anything: one that
+		// hijacks and returns, leaving goroutines behind, releases the slot
+		// immediately and makes this cap decorative.
 		if isUpgrade(r) {
 			if !s.sockets.acquire() {
 				w.Header().Set("Retry-After", "5")

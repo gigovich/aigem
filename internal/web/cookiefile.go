@@ -1,7 +1,9 @@
 package web
 
 import (
+	"fmt"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/gigovich/aigem/internal/store"
@@ -59,25 +61,64 @@ func loadCookies(f *store.File[cookieFile]) map[string]time.Time {
 	return live
 }
 
-// saveCookies writes the table. The caller holds s.mu, so what lands on disk is
-// the table as it was when it changed.
+// pendingLocked takes the snapshot of the table that persist will write, and
+// stamps it with a generation. The caller holds s.mu.
 //
-// A failed write is served past: the session it could not record still works
-// until this daemon stops, and refusing the request that caused it would turn a
-// disk problem into a sign-in that fails with nothing to see.
-func (s *Server) saveCookies() {
-	if s.cookieStore == nil {
-		return
+// The write itself happens outside s.mu, because it is not cheap: an
+// inter-process lock file that a peer may hold for up to two seconds, a
+// directory scan, and two fsyncs. s.mu is the mutex every authenticated request
+// takes to check its cookie, so holding it across all that would queue the
+// whole daemon behind one sign-in.
+//
+// A nil snapshot means there is nothing to write to, or the daemon is stopping.
+// Close empties the table and then keeps serving until the listener is shut, so
+// a page reloading through a deploy would otherwise write a file holding the one
+// session it just minted - signing out every other browser, which is the failure
+// this file exists to prevent.
+func (s *Server) pendingLocked() (map[string]time.Time, uint64) {
+	if s.cookieStore == nil || s.closed {
+		return nil, 0
 	}
-	// Close empties the table and then keeps serving until the listener is shut,
-	// so a page reloading through a deploy would otherwise reach issueCookie
-	// against an empty table and write a file holding one session - signing out
-	// every other browser, which is the failure this file exists to prevent.
-	if s.closed {
-		return
+	s.cookieGen++
+	return maps.Clone(s.cookies), s.cookieGen
+}
+
+// persist writes a snapshot taken by pendingLocked.
+//
+// Snapshots are written one at a time and in order. Taking them under s.mu and
+// writing them outside it means two mutations can reach here in the opposite
+// order, and an older table landing last would resurrect a session a newer one
+// removed - so a snapshot a newer write has already claimed is dropped rather
+// than written. The claim is staked before the write, so a failed newer write
+// does not let an older table win either.
+func (s *Server) persist(sessions map[string]time.Time, gen uint64) error {
+	if sessions == nil {
+		return nil
 	}
-	if err := s.cookieStore.Save(cookieFile{Sessions: s.cookies}); err != nil {
-		slog.Warn("could not record the browser sessions; a restart will sign them out",
-			"path", s.cookieStore.Path(), "err", err)
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	if gen <= s.savedGen {
+		return nil
 	}
+	s.savedGen = gen
+	if err := s.cookieStore.Save(cookieFile{Sessions: sessions}); err != nil {
+		return fmt.Errorf("write %s: %w", s.cookieStore.Path(), err)
+	}
+	return nil
+}
+
+// ForgetSessions removes the browser sessions kept at path, so every browser
+// has to sign in again with a token from the terminal.
+//
+// It is the answer to a token that got out. Restarting the daemon rotates the
+// token but not the sessions - that is the whole point of keeping them - so a
+// cookie an attacker traded that token for would otherwise renew itself for as
+// long as it was used. Stop the daemon first: a running one holds the table in
+// memory and would write it back.
+func ForgetSessions(path string) error {
+	f := cookieStoreFor(path)
+	if f == nil {
+		return nil
+	}
+	return f.Delete()
 }

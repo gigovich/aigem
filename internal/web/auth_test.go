@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -74,8 +76,8 @@ func TestConfiguredOriginsReplaceTheDerivedOnes(t *testing.T) {
 		t.Errorf("loopback was dropped from the hosts: %v", srv.allowed.hosts)
 	}
 	// And the printed URL is the one that works from outside.
-	if !strings.HasPrefix(srv.URL(), "https://aigem.example.ts.net/?token=") {
-		t.Errorf("the daemon prints %q, want the public origin", srv.URL())
+	if !strings.HasPrefix(srv.SignInURL(), "https://aigem.example.ts.net/?token=") {
+		t.Errorf("the daemon prints %q, want the public origin", srv.SignInURL())
 	}
 }
 
@@ -155,6 +157,151 @@ func TestARefusedOriginReleasesThePort(t *testing.T) {
 		t.Fatalf("the port is still held after the refusal: %v", err)
 	}
 	_ = again.Close()
+}
+
+// The bind address used to stay on the allowlist even when an origin replaced
+// the derived list, so a daemon on a routable address declared https-only also
+// answered to http://<that address>:7777 - which is what lets a plain-HTTP page
+// on that name pass the guard, and what made secureFor hand it a cookie with no
+// Secure flag.
+func TestAStatedOriginDropsTheBindAddress(t *testing.T) {
+	srv := newTestServer(t, Config{Addr: "0.0.0.0:0", Origins: []string{"https://aigem.example.ts.net"}})
+	// Read back rather than assumed: a wildcard bind comes back as "[::]:port"
+	// on a dual-stack host, and asserting on the string that was asked for would
+	// be a test of nothing.
+	bound := srv.Addr().String()
+	_, port, err := net.SplitHostPort(bound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(srv.allowed.hosts, bound) {
+		t.Errorf("the bind address %s is still an accepted Host: %v", bound, srv.allowed.hosts)
+	}
+	if slices.Contains(srv.allowed.origins, "http://"+bound) {
+		t.Errorf("the bind address %s is still an accepted Origin: %v", bound, srv.allowed.origins)
+	}
+	// The stated name is there, and so are the loopback names, which is the part
+	// that deliberately survives.
+	if !slices.Contains(srv.allowed.hosts, "aigem.example.ts.net") {
+		t.Errorf("the stated name is not allowed: %v", srv.allowed.hosts)
+	}
+	if !slices.Contains(srv.allowed.hosts, "127.0.0.1:"+port) {
+		t.Errorf("loopback was dropped: %v", srv.allowed.hosts)
+	}
+}
+
+// Allowlisting [::1] on a daemon bound to 127.0.0.1 alone names an origin this
+// daemon never answers on - and any other process on the machine is free to
+// bind it and serve a page from it.
+func TestOnlyTheLoopbackNamesThisSocketAnswersOnAreAllowed(t *testing.T) {
+	srv := newTestServer(t, Config{Addr: "127.0.0.1:0"})
+	_, port, err := net.SplitHostPort(srv.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(srv.allowed.origins, "http://[::1]:"+port) {
+		t.Errorf("a daemon bound to 127.0.0.1 allows an IPv6 loopback origin: %v", srv.allowed.origins)
+	}
+	for _, want := range []string{"http://127.0.0.1:" + port, "http://localhost:" + port} {
+		if !slices.Contains(srv.allowed.origins, want) {
+			t.Errorf("%s is not allowed: %v", want, srv.allowed.origins)
+		}
+	}
+}
+
+// A hostname is case-insensitive to the resolver and may carry a trailing root
+// dot. Refusing either is a 403 that reads as a broken server, which is the
+// failure the allowlist exists to avoid - and isLoopbackHost was already made
+// case-insensitive for exactly this reason.
+func TestAHostIsMatchedTheWayAResolverWouldRead(t *testing.T) {
+	srv := newTestServer(t, Config{Addr: "127.0.0.1:0", Origins: []string{"https://aigem.example.ts.net"}})
+	for _, host := range []string{
+		"aigem.example.ts.net",
+		"AIGEM.Example.TS.net",
+		"aigem.example.ts.net.",
+	} {
+		req := &http.Request{Host: host, Header: http.Header{}, URL: mustURL(t, "/")}
+		if !srv.originOK(req) {
+			t.Errorf("Host %q was refused against %v", host, srv.allowed.hosts)
+		}
+	}
+	// Still nothing looser than an exact name.
+	for _, host := range []string{"aigem.example.ts.net.evil.test", "evil.test", "aigem.example.ts"} {
+		req := &http.Request{Host: host, Header: http.Header{}, URL: mustURL(t, "/")}
+		if srv.originOK(req) {
+			t.Errorf("Host %q was accepted", host)
+		}
+	}
+}
+
+// A browser sends an internationalised name in punycode, so an allowlist entry
+// holding the unicode spelling matches nothing, ever. Refusing it at startup is
+// one lookup for the operator; accepting it is a daemon that 403s every request
+// with no way to tell why.
+func TestAUnicodeOriginIsRefusedWithTheFix(t *testing.T) {
+	srv, err := New(Config{Addr: "127.0.0.1:0", Origins: []string{"https://例え.jp"}})
+	if err == nil {
+		_ = srv.Close()
+		t.Fatal("a unicode origin was accepted")
+	}
+	if !strings.Contains(err.Error(), "punycode") {
+		t.Errorf("error = %v, want it to name the form that works", err)
+	}
+	// And the punycode form is accepted.
+	ok, err := New(Config{Addr: "127.0.0.1:0", Origins: []string{"https://xn--r8jz45g.jp"}})
+	if err != nil {
+		t.Fatalf("the punycode form was refused: %v", err)
+	}
+	_ = ok.Close()
+}
+
+// ---- the token in the URL ----
+
+// The whole sign-in story: the daemon prints .../?token=..., and the page spends
+// it on its first request. A browser cannot set a header on a websocket
+// handshake either, so the query form is the only credential that route will
+// ever have.
+func TestTheTokenInTheQueryStringAuthenticates(t *testing.T) {
+	srv := newTestServer(t, Config{})
+
+	res := exchangeWith(t, srv, func(r *http.Request) {
+		r.URL.RawQuery = "token=" + srv.token
+	})
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("the token from the query string answered %d, want 204", res.StatusCode)
+	}
+	var got *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == cookieName {
+			got = c
+		}
+	}
+	if got == nil {
+		t.Error("the exchange set no cookie for a query-string token")
+	}
+
+	// And the printed URL is that request, spelled out.
+	if !strings.Contains(srv.SignInURL(), "?token="+srv.token) {
+		t.Errorf("SignInURL = %q, which is not what the query check reads", srv.SignInURL())
+	}
+	wrong := exchangeWith(t, srv, func(r *http.Request) { r.URL.RawQuery = "token=nonsense" })
+	if wrong.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a wrong token in the query answered %d, want 401", wrong.StatusCode)
+	}
+}
+
+// An Authorization header that is not a bearer token is a credential this
+// daemon does not accept, and it must not fall through to the query string -
+// which would let a page smuggle one past a proxy that strips Authorization.
+func TestANonBearerAuthorizationDoesNotFallBackToTheQuery(t *testing.T) {
+	srv := newTestServer(t, Config{})
+	res := exchangeWith(t, srv, func(r *http.Request) {
+		r.Header.Set("Authorization", "Basic "+srv.token)
+		r.URL.RawQuery = "token=" + srv.token
+	})
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a Basic credential answered %d, want 401", res.StatusCode)
+	}
 }
 
 // ---- the cookie ----
@@ -277,6 +424,28 @@ func TestAnExpiredCookieIsNotACredential(t *testing.T) {
 	srv.mu.Unlock()
 	if srv.cookieOK(withCookie(t, &http.Cookie{Name: cookieName, Value: id})) {
 		t.Error("an expired cookie was accepted")
+	}
+}
+
+// The loopback origins are on the allowlist by construction, so a request can
+// carry the https name in Host and a plain-HTTP loopback Origin and still pass
+// the guard. Reading the header first then handed an https deployment a cookie
+// with no Secure flag, sent in cleartext ever after. A proxy that rewrites
+// Origin to the backend's own is not hypothetical - this repository ships one
+// for the dev server.
+func TestTheStatedOriginDecidesSecureNotTheHeader(t *testing.T) {
+	srv := newTestServer(t, Config{Addr: "127.0.0.1:0", Origins: []string{"https://aigem.example.ts.net"}})
+	_, port, err := net.SplitHostPort(srv.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &http.Request{Host: "aigem.example.ts.net", Header: http.Header{}, URL: mustURL(t, "/")}
+	req.Header.Set("Origin", "http://127.0.0.1:"+port)
+	if !srv.originOK(req) {
+		t.Fatal("the request this test is about does not pass the guard; it proves nothing")
+	}
+	if !srv.secureFor(req) {
+		t.Error("a request that arrived under the https name got a cookie with no Secure flag")
 	}
 }
 
@@ -656,4 +825,66 @@ func withCookie(t *testing.T, c *http.Cookie) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.AddCookie(c)
 	return r
+}
+
+// A revocation that only cleared the table is undone by the next restart, so
+// answering "signed out" when the daemon could not write it would be saying
+// something untrue - to exactly the operator who has lost a phone.
+func TestLogoutSaysSoWhenItCannotBeRecorded(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory anyway")
+	}
+	dir := t.TempDir()
+	srv := newTestServer(t, Config{CookieFile: filepath.Join(dir, "cookies.json")})
+	c := exchange(t, srv)
+
+	// The write starts failing after the session exists.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	req, err := http.NewRequest(http.MethodDelete, srv.Base()+"api/auth/session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(c)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Errorf("a sign-out the daemon could not record answered %d, want 500", res.StatusCode)
+	}
+}
+
+// Restarting the daemon rotates the token but keeps every session, which is the
+// point of keeping them - and means a restart is not how a leaked token is
+// remediated. This is.
+func TestForgetSessionsRemovesThemAll(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	first := newTestServer(t, Config{CookieFile: file})
+	c := exchange(t, first)
+	_ = first.Close()
+
+	if err := ForgetSessions(file); err != nil {
+		t.Fatalf("ForgetSessions: %v", err)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Error("the sessions file is still there")
+	}
+
+	next := newTestServer(t, Config{CookieFile: file})
+	res := exchangeWith(t, next, func(r *http.Request) { r.AddCookie(c) })
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a forgotten session still answered %d, want 401", res.StatusCode)
+	}
+	// And it is not an error to forget sessions that were never kept.
+	if err := ForgetSessions(file); err != nil {
+		t.Errorf("ForgetSessions on a missing file: %v", err)
+	}
+	if err := ForgetSessions(""); err != nil {
+		t.Errorf("ForgetSessions with no file: %v", err)
+	}
 }

@@ -208,12 +208,19 @@ func TestListIgnoresWhatTheStoreLeavesBeside(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Dir(saved(t, s.ID))
+	// Each decoy is a document List could parse, so the name filters are the only
+	// thing keeping it out. Unparseable ones would be skipped as garbage instead
+	// and the test would pass with both filters deleted.
+	decoy, err := json.Marshal(Session{Meta: Meta{ID: "decoy", Title: "decoy"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{
 		s.ID + ".json.lock",
 		s.ID + "-123456.json.tmp",
 		s.ID + ".precompact-1.json",
 	} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("[]"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), decoy, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -224,5 +231,64 @@ func TestListIgnoresWhatTheStoreLeavesBeside(t *testing.T) {
 	}
 	if len(metas) != 1 || metas[0].Title != "real" {
 		t.Fatalf("List returned %+v, want the one real session", metas)
+	}
+}
+
+// The id in the document is the one callers carry away - internal/uisession
+// names the event journal's directory after it - so validating the id that was
+// asked for and handing back a different one leaves that conversion unguarded.
+func TestADocumentThatDisagreesWithItsFilenameIsRefused(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	now := time.Now()
+	id := NewID(now)
+	if err := Save(&Session{Meta: Meta{ID: id}}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := json.Marshal(Session{Meta: Meta{ID: "../../pwned", Title: "planted"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(saved(t, id), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(id)
+	if err == nil {
+		t.Fatalf("Load returned a document calling itself %q", got.ID)
+	}
+	if !strings.Contains(err.Error(), "calls itself") {
+		t.Errorf("error = %v, want it to say what disagreed", err)
+	}
+}
+
+// MkdirAll leaves an existing directory's mode alone, so an installation made
+// before the 0700 change would have kept 0755 for good - and the CHANGELOG says
+// otherwise.
+func TestAnOlderInstallationsDirectoryIsNarrowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permissions")
+	}
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	old := filepath.Join(state, "aigem", "sessions")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	if err := Save(&Session{Meta: Meta{ID: NewID(now)}}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("the sessions directory is still %o after a save, want 700", perm)
 	}
 }

@@ -284,8 +284,10 @@ func backupMessages(sessionID string, n int, msgs []llm.Message) error {
 	}
 	// Guard against a crafted session id escaping the backups directory: only the
 	// final path element is used, and any separators leave it as "session".
+	// The same shapes internal/session.pathFor refuses, so the two guards on this
+	// one directory do not disagree about what an id is.
 	if sessionID = filepath.Base(sessionID); sessionID == "" || sessionID == "." ||
-		sessionID == string(filepath.Separator) {
+		sessionID == ".." || sessionID == string(filepath.Separator) {
 		sessionID = "session"
 	}
 	data, err := json.MarshalIndent(msgs, "", "  ")

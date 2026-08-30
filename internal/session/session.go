@@ -61,6 +61,13 @@ func dir() (string, error) {
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return "", err
 	}
+	// MkdirAll leaves an existing directory's mode alone, so an installation
+	// made before this would have stayed 0755 for good. Narrowing is
+	// best-effort: a directory this cannot chmod still holds 0600 files, and
+	// refusing to save over it would help nobody.
+	if info, err := os.Stat(d); err == nil && info.Mode().Perm()&0o077 != 0 {
+		_ = os.Chmod(d, 0o700)
+	}
 	return d, nil
 }
 
@@ -132,12 +139,26 @@ func List() ([]Meta, error) {
 }
 
 // Load reads a session by id, and reports one that is not there as an error.
+//
+// The document has to agree with the file it was found in. Callers take the id
+// out of what comes back - internal/uisession names the event journal's
+// directory after it - so validating the id that was asked for and then handing
+// back a different one would leave the second conversion unguarded, and a
+// document claiming "../.." would put the journal outside the state directory.
+// Nothing this package writes can disagree: Save names the file after the id.
 func Load(id string) (*Session, error) {
 	path, err := pathFor(id)
 	if err != nil {
 		return nil, err
 	}
-	return load(path)
+	s, err := load(path)
+	if err != nil {
+		return nil, err
+	}
+	if s.ID != id {
+		return nil, fmt.Errorf("session %q: the document in it calls itself %q", id, s.ID)
+	}
+	return s, nil
 }
 
 // load reads the document directly rather than through the store, which answers

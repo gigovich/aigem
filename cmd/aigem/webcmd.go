@@ -22,11 +22,18 @@ const webUsage = `usage:
   aigem web                       serve the browser UI on a loopback port
   aigem web --addr 127.0.0.1:7777 serve on a fixed port
   aigem web --open                open the page in the default browser
+  aigem web --sign-out            forget every browser session, then serve
   aigem web --addr 0.0.0.0:7777 --origin https://aigem.example.ts.net
+                                  serve where the network can reach, under a
+                                  name requests are checked against
 
 The printed URL carries the token the browser signs in with. The page trades it
 for a cookie and takes it back out of the address bar, but until it does it is a
 secret on stdout - and with --open, in the process table of this machine.
+
+Browser sign-ins outlive a restart, so restarting does not revoke one: it
+rotates the token and leaves every cookie working. If the token got out, use
+--sign-out, which forgets every session before serving.
 
 The daemon binds loopback unless --origin says which public URL it is reached
 at. An address the network can reach needs an origin check, and nothing in a
@@ -56,6 +63,8 @@ func runWebCommand(args []string) error {
 	fs.SetOutput(io.Discard)
 	addr := fs.String("addr", "", "listen address (default: a loopback port chosen by the kernel)")
 	open := fs.Bool("open", false, "open the page in the default browser once it is serving")
+	signOut := fs.Bool("sign-out", false,
+		"forget every browser session before serving, so each one signs in again")
 	var origins originList
 	fs.Var(&origins, "origin", "public origin this daemon is reached at, scheme and all;\n"+
 		"repeat for more than one. Required to bind an address the network can reach")
@@ -80,6 +89,12 @@ func runWebCommand(args []string) error {
 		cookies = filepath.Join(dir, "web-cookies.json")
 	}
 
+	if *signOut {
+		if err := web.ForgetSessions(cookies); err != nil {
+			return fmt.Errorf("could not forget the browser sessions: %w", err)
+		}
+	}
+
 	srv, err := web.New(web.Config{
 		Addr:       *addr,
 		Origins:    origins,
@@ -91,7 +106,8 @@ func runWebCommand(args []string) error {
 	}
 	defer func() { _ = srv.Close() }()
 
-	url := srv.URL()
+	// The one place the token is meant to be published: this terminal.
+	url := srv.SignInURL()
 	fmt.Println(url)
 	if !web.HasAssets() {
 		fmt.Fprintln(os.Stderr,

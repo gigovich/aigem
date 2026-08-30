@@ -676,7 +676,11 @@ func TestAWaiterKeepsThePathMutexAlive(t *testing.T) {
 	go func() { waiting <- lockPath(path) }()
 
 	// The waiter is parked on the mutex; the entry has to still be there, and
-	// there has to be exactly one.
+	// there has to be exactly one. On a deadline, because the mutation this test
+	// exists to catch - counting the reference after taking the mutex - makes the
+	// count never reach two, and an unbounded wait would report that as the
+	// package timing out rather than as this test failing.
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		pathsMu.Lock()
 		h, ok := paths[canonical(path)]
@@ -691,6 +695,10 @@ func TestAWaiterKeepsThePathMutexAlive(t *testing.T) {
 		if !ok {
 			t.Fatal("the entry was dropped while a caller was waiting on it")
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the entry never reached two references (saw %d); "+
+				"a waiter is not counted until it holds the mutex", refs)
+		}
 		time.Sleep(time.Millisecond)
 	}
 
@@ -703,5 +711,109 @@ func TestAWaiterKeepsThePathMutexAlive(t *testing.T) {
 	pathsMu.Unlock()
 	if still {
 		t.Error("the entry outlived every caller")
+	}
+}
+
+// Delete's doc comment makes a concurrency claim: it cannot land between an
+// Update's read and its save, which would resurrect the document from the value
+// the Update was already holding. Nothing exercised it - dropping both locks
+// from Delete left the whole package green.
+func TestDeleteIsSerializedAgainstUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "doc.json")
+	f := New[doc](path)
+	if err := f.Save(doc{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	inside := make(chan struct{})
+	release := make(chan struct{})
+	updated := make(chan error, 1)
+	go func() {
+		updated <- f.Update(func(d *doc) error {
+			close(inside)
+			<-release
+			d.Version = 2
+			return nil
+		})
+	}()
+	<-inside
+
+	deleted := make(chan error, 1)
+	go func() { deleted <- f.Delete() }()
+	select {
+	case err := <-deleted:
+		t.Fatalf("Delete ran while an Update body still held the document: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-updated; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-deleted; err != nil {
+		t.Fatal(err)
+	}
+	// The delete went last, so it is what stands. The other order would leave the
+	// Update's document behind, deleted and then written back.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("the document survived a Delete that ran after an Update")
+	}
+}
+
+// The sweep flag used to be set once per directory for the life of the process.
+// A daemon that is the only writer of its state directory would then never
+// collect an orphan that appeared after its first write - there is no next
+// process to do it.
+func TestALongLivedProcessCollectsAnOrphanThatArrivesLater(t *testing.T) {
+	dir := t.TempDir()
+	f := New[doc](filepath.Join(dir, "doc.json"))
+	if err := f.Save(doc{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	orphan := filepath.Join(dir, "peer-123456"+tempSuffix)
+	if err := os.WriteFile(orphan, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * tempOrphan)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.Save(doc{Version: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatalf("the sweep ran again immediately; it is meant to be rate limited: %v", err)
+	}
+
+	// Time passes.
+	pathsMu.Lock()
+	swept[canonical(dir)] = time.Now().Add(-2 * tempOrphan)
+	pathsMu.Unlock()
+
+	if err := f.Save(doc{Version: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Error("the orphan is still there; a long-lived process never sweeps twice")
+	}
+}
+
+// The table of swept directories is the leak the reference counting above
+// removed, in a different map. Forgetting an entry costs one ReadDir.
+func TestTheSweptDirectoryTableIsBounded(t *testing.T) {
+	base := t.TempDir()
+	for i := range maxSweptDirs + 20 {
+		f := New[doc](filepath.Join(base, fmt.Sprintf("d%04d", i), "doc.json"))
+		if err := f.Save(doc{Version: i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pathsMu.Lock()
+	held := len(swept)
+	pathsMu.Unlock()
+	if held > maxSweptDirs {
+		t.Errorf("the store remembers %d swept directories, cap is %d", held, maxSweptDirs)
 	}
 }
