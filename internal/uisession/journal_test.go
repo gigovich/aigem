@@ -95,7 +95,7 @@ func TestOversizedToolResultIsTruncatedInTheJournal(t *testing.T) {
 	}
 	waitFor(t, ch, KindTurnEnd)
 
-	big := strings.Repeat("x", blobThreshold*3)
+	big := strings.Repeat("x", journalTextCap*3)
 	l.emit(Event{Kind: KindToolEnd, ID: "call-1", Name: "grep", Text: big})
 
 	live := waitFor(t, ch, KindToolEnd)
@@ -111,9 +111,9 @@ func TestOversizedToolResultIsTruncatedInTheJournal(t *testing.T) {
 		t.Fatalf("expected the tool result back, got %+v", stored)
 	}
 	got := stored[0]
-	if len(got.Text) != blobThreshold || got.Bytes != len(big) {
+	if len(got.Text) != journalTextCap || got.Bytes != len(big) {
 		t.Fatalf("stored form = %d bytes bytes=%d, want a %d-byte head recording %d",
-			len(got.Text), got.Bytes, blobThreshold, len(big))
+			len(got.Text), got.Bytes, journalTextCap, len(big))
 	}
 }
 

@@ -25,11 +25,11 @@ func journalDir(id string) (string, error) {
 	return filepath.Join(base, "journal", id), nil
 }
 
-// blobThreshold bounds how much of a tool result is written to the journal.
+// journalTextCap bounds how much of a tool result is written to the journal.
 // Without it, one grep over a generated tree lands in the journal and in every
 // reconnect after it; the model itself only ever sees a clipped result, so the
-// truncated body here is already bounded by the agent.
-const blobThreshold = 2048
+// text kept here is already bounded by the agent.
+const journalTextCap = 2048
 
 // journal appends events for one session.
 type journal struct {
@@ -108,7 +108,7 @@ func readJournal(id string, since uint64) ([]Event, error) {
 
 	var out []Event
 	sc := bufio.NewScanner(f)
-	// A journalled tool result is capped at blobThreshold, but an event carries
+	// A journalled tool result is capped at journalTextCap, but an event carries
 	// other text too (an answer, a delegated prompt), so allow a generous line.
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
@@ -137,11 +137,11 @@ func (l *Local) journalled(ev Event) Event {
 	if ev.Kind != KindToolEnd && ev.Kind != KindSubToolEnd {
 		return ev
 	}
-	if len(ev.Text) <= blobThreshold {
+	if len(ev.Text) <= journalTextCap {
 		return ev
 	}
 	stored := ev
 	stored.Bytes = len(ev.Text)
-	stored.Text = ev.Text[:blobThreshold]
+	stored.Text = ev.Text[:journalTextCap]
 	return stored
 }

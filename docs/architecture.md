@@ -14,6 +14,7 @@ the workflow.
 | `internal/auth`      | credential store, the ChatGPT OAuth flow, and the xAI device-code flow |
 | `internal/tools`     | tool registry, the sandboxed tools, capability profiles, destructive-command deny list |
 | `internal/pathgrant` | persisted approvals for read paths outside the working directory      |
+| `internal/pathutil`  | path canonicalization shared by the sandbox and the persisted path grants |
 | `internal/trust`     | fingerprinted approvals for project-supplied hooks, skills, and MCP targets |
 | `internal/hooks`     | lifecycle hook discovery and execution                                |
 | `internal/skill`     | Agent Skill discovery, frontmatter, and body rendering                |
@@ -22,8 +23,10 @@ the workflow.
 | `internal/config`    | system-prompt assembly and path resolution                            |
 | `internal/session`   | conversation persistence for `/resume`                                |
 | `internal/local`     | the local llama.cpp server: config, daemon lifecycle, download progress, health (the setup wizard itself lives in `cmd/aigem`) |
+| `internal/trace`     | JSONL recording of one agent run, for offline scoring by the eval harness |
 | `internal/tui`       | the Bubble Tea front-end                                              |
 | `internal/uisession` | the core session layer the TUI runs on: one conversation's lifecycle and its event journal, fanned out to subscribers via `fanout` |
+| `internal/fanout`    | ordered delivery of one stream to several subscribers, without the slowest setting the pace |
 
 Roughly 27k lines of non-test Go, plus about 15k lines of tests.
 
