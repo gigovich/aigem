@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -46,8 +47,9 @@ var lockWait = 2 * time.Second
 // here starts from an empty collection, and distinguishing "not created yet"
 // from "empty" has no meaning for any of them.
 type File[T any] struct {
-	path   string
-	stem   string
+	path string
+	// prefix is the pattern os.CreateTemp is given, so a temp is recognisable as
+	// this package's - see isTempName, which is what sweeps the abandoned ones.
 	prefix string
 }
 
@@ -65,7 +67,7 @@ func New[T any](path string) *File[T] {
 	// The temp suffix is deliberately not ".json": a pattern of stem + "-*.json"
 	// collides with the namespace documents live in, and the sweep below would
 	// then delete a real <stem>-7.json an hour after it was written.
-	return &File[T]{path: path, stem: stem, prefix: stem + "-*" + tempSuffix}
+	return &File[T]{path: path, prefix: stem + "-*" + tempSuffix}
 }
 
 // Path reports the document's location.
@@ -124,6 +126,24 @@ func (f *File[T]) Update(fn func(*T) error) error {
 	})
 }
 
+// Delete removes the document. A document that is not there is not an error:
+// the caller is asking for it to be gone, and it is.
+//
+// The lock is taken the same way a write takes it, so a Delete cannot land
+// between an Update's read and its save - which would otherwise resurrect the
+// document from the value the Update was already holding.
+func (f *File[T]) Delete() error {
+	unlock := lockPath(f.path)
+	defer unlock()
+	return f.withFileLock(func() error {
+		if err := os.Remove(f.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", f.path, err)
+		}
+		syncDir(filepath.Dir(f.path))
+		return nil
+	})
+}
+
 func (f *File[T]) save(v T) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -135,7 +155,7 @@ func (f *File[T]) save(v T) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
-	f.sweepOrphanTemps(dir)
+	sweepOrphanTemps(canonical(dir))
 
 	// A unique temp name, not path+".tmp": two processes saving at once would
 	// otherwise write the same file and rename a half-written one into place,
@@ -248,7 +268,12 @@ func (f *File[T]) withFileLock(fn func() error) error {
 		// forever, holding the in-process mutex while it did.
 		if time.Now().After(deadline) {
 			// Proceeding unlocked risks a lost update; corrupting the store does
-			// not, since save renames a fully written file into place.
+			// not, since save renames a fully written file into place. The risk
+			// is worth taking and not worth hiding: this is the only path on
+			// which a write this package accepted can disappear, so it says so
+			// rather than leaving a support case with nothing to go on.
+			slog.Warn("proceeding without the store lock; a concurrent writer may lose an update",
+				"path", f.path, "waited", lockWait)
 			return fn()
 		}
 		if breakStaleLock(lock) {
@@ -307,24 +332,26 @@ func breakStaleLock(lock string) bool {
 }
 
 // sweepOrphanTemps removes temp files left by a process killed between
-// CreateTemp and Rename.
+// CreateTemp and Rename, wherever in this directory they came from.
 //
-// The name has to match the shape CreateTemp produces - the stem, a hyphen, the
+// The name has to match the shape CreateTemp produces - a stem, a hyphen, the
 // digits it substitutes for the star, and the temp suffix - and nothing looser.
-// A prefix test alone would match a *different* store's document in the same
-// directory: a store at <state>/project.json has the stem "project", and
-// <state>/project-trust.json is every capability approval the user has ever
-// given. The suffix is what keeps a legitimate <state>/ticket-7.json out of
-// reach as well, since no document this package writes ends in .json.tmp.
-func (f *File[T]) sweepOrphanTemps(dir string) {
-	// Once per document per process, not once per directory: the predicate below
-	// is keyed on this store's stem, so a directory-wide flag would let the first
-	// store to write it disable the sweep for every other one - and several
-	// stores sharing a directory is what this package is for. Temps this process
-	// creates are removed by save's own defer, so the only thing a repeat scan
-	// could find is an orphan from a peer that died after we started.
-	key := sweepKey(f.path)
-	if alreadySwept(key) {
+// The suffix is what keeps every real document out of reach, this store's and
+// its neighbours' alike: a legitimate <state>/project-trust.json is every
+// capability approval the user has ever given, and no document this package
+// writes ends in .json.tmp.
+//
+// It is deliberately not keyed on the calling store's own stem. An orphan is an
+// orphan whichever store abandoned it, the process that abandoned it is gone by
+// definition, and a per-store predicate meant a per-store flag - one map entry
+// per document for the life of the process, which for a store per session is a
+// leak that grows with uptime.
+func sweepOrphanTemps(dir string) {
+	// Once per directory per process. Temps this process creates are removed by
+	// save's own defer, so the only thing a repeat scan could find is an orphan
+	// from a peer that died after we started - and that one is collected by
+	// whichever process writes next.
+	if alreadySwept(dir) {
 		return
 	}
 	entries, err := os.ReadDir(dir)
@@ -333,9 +360,9 @@ func (f *File[T]) sweepOrphanTemps(dir string) {
 		// of the process.
 		return
 	}
-	markSwept(key)
+	markSwept(dir)
 	for _, e := range entries {
-		if e.IsDir() || !f.isTempName(e.Name()) {
+		if e.IsDir() || !isTempName(e.Name()) {
 			continue
 		}
 		info, err := e.Info()
@@ -346,16 +373,23 @@ func (f *File[T]) sweepOrphanTemps(dir string) {
 	}
 }
 
-func (f *File[T]) isTempName(name string) bool {
+func isTempName(name string) bool {
 	middle, ok := strings.CutSuffix(name, tempSuffix)
 	if !ok {
 		return false
 	}
-	middle, ok = strings.CutPrefix(middle, f.stem+"-")
-	if !ok || middle == "" {
+	// The last hyphen, not the first: a stem may hold hyphens of its own - a
+	// session id is "20260830-150405-9f3c" - and only the run of digits after
+	// the final one is what CreateTemp added.
+	cut := strings.LastIndex(middle, "-")
+	if cut <= 0 {
 		return false
 	}
-	for _, r := range middle {
+	digits := middle[cut+1:]
+	if digits == "" {
+		return false
+	}
+	for _, r := range digits {
 		if r < '0' || r > '9' {
 			return false
 		}
@@ -363,9 +397,18 @@ func (f *File[T]) isTempName(name string) bool {
 	return true
 }
 
+// held is one document's in-process mutex and the number of callers that are
+// holding or waiting on it. The count is what lets the entry be dropped when
+// the last one leaves: a map that only ever grew held a mutex per document for
+// the life of the process, and a store per session makes that unbounded.
+type held struct {
+	mu   sync.Mutex
+	refs int
+}
+
 var (
 	pathsMu sync.Mutex
-	paths   = map[string]*sync.Mutex{}
+	paths   = map[string]*held{}
 	swept   = map[string]bool{}
 )
 
@@ -386,22 +429,27 @@ func canonical(path string) string {
 func lockPath(path string) func() {
 	key := canonical(path)
 	pathsMu.Lock()
-	m := paths[key]
-	if m == nil {
-		// Never evicted: the set of documents a process opens is bounded by the
-		// projects it knows about, and dropping one while a goroutine waits on
-		// it would defeat the point.
-		m = &sync.Mutex{}
-		paths[key] = m
+	h := paths[key]
+	if h == nil {
+		h = &held{}
+		paths[key] = h
 	}
+	// Counted before the mutex is taken, so a waiter keeps the entry alive
+	// across the release below - dropping it while someone waits would hand the
+	// next caller a second mutex for the same document, which is no mutex at all.
+	h.refs++
 	pathsMu.Unlock()
-	m.Lock()
-	return m.Unlock
+	h.mu.Lock()
+	return func() {
+		h.mu.Unlock()
+		pathsMu.Lock()
+		h.refs--
+		if h.refs == 0 {
+			delete(paths, key)
+		}
+		pathsMu.Unlock()
+	}
 }
-
-// sweepKey is the document itself, canonicalised so two spellings of one path
-// are one key.
-func sweepKey(path string) string { return canonical(path) }
 
 func alreadySwept(key string) bool {
 	pathsMu.Lock()

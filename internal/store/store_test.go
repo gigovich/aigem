@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -183,10 +184,11 @@ func TestSaveSweepsOrphanTempsButKeepsRecentOnes(t *testing.T) {
 	}
 }
 
-// The sweep matches on a prefix, and state directories hold several documents
-// whose names share one. A store at <state>/project.json must not eat
-// <state>/project-trust.json, which is every capability approval the user has
-// ever given - deleted silently, an hour after it was written.
+// The sweep now looks at every name in the directory, so what keeps real
+// documents safe is the .json.tmp suffix and CreateTemp's digit shape - nothing
+// else. A store at <state>/project.json must not eat <state>/project-trust.json,
+// which is every capability approval the user has ever given, deleted silently
+// an hour after it was written.
 func TestSaveDoesNotSweepASiblingDocumentSharingTheStem(t *testing.T) {
 	dir := t.TempDir()
 	old := time.Now().Add(-2 * tempOrphan)
@@ -483,11 +485,11 @@ func TestSaveIsSerializedAgainstUpdate(t *testing.T) {
 	}
 }
 
-// The sweep's predicate is keyed on a store's own stem, so a flag keyed on the
-// directory would let whichever store wrote first disable it for every other -
-// and a state directory holding a project, ticket and worktree store side by
-// side is what this package is for.
-func TestEachStoreSweepsItsOwnTempsInASharedDirectory(t *testing.T) {
+// One sweep collects every orphan in the directory, whichever store abandoned
+// it. Keying the predicate on the calling store's stem meant keying the flag on
+// its document too - one map entry per document for the life of the process,
+// which for a store per session grows without bound.
+func TestASweepCollectsAnotherStoresOrphanInTheSameDirectory(t *testing.T) {
 	dir := t.TempDir()
 	orphan := filepath.Join(dir, "ticket-123456"+tempSuffix)
 	if err := os.WriteFile(orphan, []byte("{}"), 0o600); err != nil {
@@ -498,14 +500,12 @@ func TestEachStoreSweepsItsOwnTempsInASharedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The project store alone, and never the one whose stem the orphan carries.
 	if err := New[doc](filepath.Join(dir, "project.json")).Save(doc{Version: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := New[doc](filepath.Join(dir, "ticket.json")).Save(doc{Version: 1}); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
-		t.Error("the ticket store did not sweep its own orphan; another store had claimed the directory")
+		t.Error("a store left a neighbour's orphan behind; nothing else will ever collect it")
 	}
 }
 
@@ -523,7 +523,7 @@ func TestIsTempNameMatchesWhatCreateTempActuallyProduces(t *testing.T) {
 		name := filepath.Base(tmp.Name())
 		tmp.Close()
 		os.Remove(tmp.Name())
-		if !f.isTempName(name) {
+		if !isTempName(name) {
 			t.Fatalf("isTempName(%q) = false; the sweep would leave this orphan behind", name)
 		}
 	}
@@ -604,5 +604,104 @@ func TestUpdateGivesUpWhenAStaleLockCannotBeRemoved(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Update never returned; the lock loop is spinning on a break it cannot complete")
+	}
+}
+
+func TestDeleteRemovesTheDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "doc.json")
+	f := New[doc](path)
+	if err := f.Save(doc{Version: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Delete(); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("the document is still on disk")
+	}
+	// And it reads back as the zero value, exactly like one that was never
+	// written - which is what lets a caller delete without a second code path.
+	got, err := f.Load()
+	if err != nil {
+		t.Fatalf("Load after Delete: %v", err)
+	}
+	if got.Version != 0 {
+		t.Errorf("Load after Delete = %+v, want the zero value", got)
+	}
+}
+
+// A caller asking for the document to be gone is asking for a state, not for an
+// event: removing one twice, or one that a peer removed first, is that state.
+func TestDeletingWhatIsNotThereIsNotAnError(t *testing.T) {
+	f := New[doc](filepath.Join(t.TempDir(), "doc.json"))
+	if err := f.Delete(); err != nil {
+		t.Fatalf("Delete on a missing document: %v", err)
+	}
+	if err := f.Delete(); err != nil {
+		t.Fatalf("second Delete: %v", err)
+	}
+}
+
+// The map of per-document mutexes used to grow for the life of the process. One
+// entry is nothing; one per session held by a daemon that runs for weeks is a
+// leak whose size the workload chooses.
+func TestThePathMutexTableDoesNotGrow(t *testing.T) {
+	dir := t.TempDir()
+	for i := range 200 {
+		f := New[doc](filepath.Join(dir, fmt.Sprintf("doc-%03d.json", i)))
+		if err := f.Save(doc{Version: i}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Delete(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pathsMu.Lock()
+	held := len(paths)
+	pathsMu.Unlock()
+	if held != 0 {
+		t.Errorf("the store holds %d path mutexes after every caller released them", held)
+	}
+}
+
+// The entry may only go when the last caller leaves it. Dropping it while a
+// goroutine is still waiting would hand the next caller a second mutex for the
+// same document, which is no mutex at all - and this is the test that fails if
+// the count is moved after the Lock.
+func TestAWaiterKeepsThePathMutexAlive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "doc.json")
+	first := lockPath(path)
+
+	waiting := make(chan func(), 1)
+	go func() { waiting <- lockPath(path) }()
+
+	// The waiter is parked on the mutex; the entry has to still be there, and
+	// there has to be exactly one.
+	for {
+		pathsMu.Lock()
+		h, ok := paths[canonical(path)]
+		refs := 0
+		if ok {
+			refs = h.refs
+		}
+		pathsMu.Unlock()
+		if refs == 2 {
+			break
+		}
+		if !ok {
+			t.Fatal("the entry was dropped while a caller was waiting on it")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	first()
+	second := <-waiting
+	second()
+
+	pathsMu.Lock()
+	_, still := paths[canonical(path)]
+	pathsMu.Unlock()
+	if still {
+		t.Error("the entry outlived every caller")
 	}
 }
