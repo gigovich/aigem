@@ -20,11 +20,16 @@ var baseReadTools = []string{"read_file", "list_dir", "grep", "fuzzy_find", "web
 var baseWriteTools = []string{"write_file", "edit_file"}
 
 // coreTools are tools every capability profile allows regardless of what else it
-// grants: skill invocation and todo planning, which -p non-interactive mode
-// depends on. These mirror agent.SkillToolName and agent.TodoToolName; this
-// package cannot import internal/agent (agent imports tools), so the names are
-// literals here and internal/agent/profile_coverage_test.go asserts they stay
-// in step with the constants.
+// grants: skill invocation and todo planning. Today neither entry does any work:
+// cmd/aigem/main.go applies Subset(profile.Allow) to a registry holding only the
+// file, shell, search and fetch tools, and registers the skill and todo tools
+// afterwards, while Subset copies a name only if the registry already holds it.
+// The entries are forward protection for the day either tool is registered
+// before the subset is taken. They mirror agent.SkillToolName and
+// agent.TodoToolName; this package cannot import internal/agent (agent imports
+// tools), so the names are literals here and
+// internal/agent/profile_coverage_test.go asserts they stay in step with the
+// constants.
 var coreTools = []string{"skill", "todo_write"}
 
 // CapabilityProfiles are ordered from least to most permissive. The default for
