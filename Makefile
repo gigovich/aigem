@@ -1,6 +1,10 @@
 BIN     := bin/aigem
 PKG     := ./cmd/aigem
-UI      := internal/web/ui
+# Underscored so the Go tool skips the whole subtree: `go build ./...` otherwise
+# walks node_modules, where an npm dependency shipping a .go file becomes a Go
+# package - and one that does not compile breaks the build, vet, test and tidy.
+UI      := internal/web/_ui
+DIST    := internal/web/dist
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -9,7 +13,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.dat
 # Every target the release builds, so a portability break shows up locally.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs evals clean web web-dev web-check
+.PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs evals clean web web-dev web-check web-clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -27,11 +31,23 @@ run: build ## Build and run
 # `go install github.com/gigovich/aigem/cmd/aigem@latest` keeps working on a
 # machine with no node. A binary built without this says it has no UI rather
 # than serving a blank page.
-web: ## Build the browser UI into internal/web/dist
+#
+# dist is cleared first: asset names are content-hashed and the Vite build
+# cannot empty a directory outside its root, so every rebuild would otherwise
+# leave the previous bundle behind for `//go:embed all:dist` to pick up.
+web: web-clean ## Build the browser UI into internal/web/dist
 	cd $(UI) && npm ci && npm run build
 
+# Start the daemon on the port the dev proxy expects:
+#   aigem web --addr 127.0.0.1:7777
+# or point AIGEM_ADDR at wherever it landed. Note for when the origin check
+# lands: the proxy rewrites Host but not Origin, so the dev origin will need
+# allowlisting.
 web-dev: ## Vite dev server, proxying /api to a running `aigem web`
 	cd $(UI) && npm run dev
+
+web-clean: ## Empty internal/web/dist, keeping the committed .gitkeep
+	@test -d $(DIST) && find $(DIST) -mindepth 1 ! -name .gitkeep -exec rm -rf {} + || true
 
 web-check: ## Lint, typecheck and test the browser UI
 	cd $(UI) && npm run lint && npm run check && npm test
@@ -89,6 +105,5 @@ docs: ## Serve the documentation site locally
 evals: build ## Score subagent delegation against a live model (see evals/README.md)
 	go run ./evals/runner $(EVAL_ARGS)
 
-clean: ## Remove build output
+clean: web-clean ## Remove build output
 	rm -rf bin dist site
-	find internal/web/dist -mindepth 1 ! -name .gitkeep -exec rm -rf {} +

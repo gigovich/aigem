@@ -64,26 +64,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: internal/web/ui/package-lock.json
+          cache-dependency-path: internal/web/_ui/package-lock.json
       - name: Install
         run: npm ci
-        working-directory: internal/web/ui
+        working-directory: internal/web/_ui
       - name: Lint
         run: npm run lint
-        working-directory: internal/web/ui
+        working-directory: internal/web/_ui
       - name: Typecheck
         run: npm run check
-        working-directory: internal/web/ui
+        working-directory: internal/web/_ui
       - name: Test
         run: npm test
-        working-directory: internal/web/ui
+        working-directory: internal/web/_ui
       - name: Build
         run: npm run build
-        working-directory: internal/web/ui
+        working-directory: internal/web/_ui
+      # The Go jobs never run npm, so HasAssets() is false in every one of them
+      # and the //go:embed path - the one thing this whole arrangement exists
+      # for - is otherwise exercised only against a fake filesystem.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Go tests against the embedded bundle
+        run: go test ./internal/web/...
 
   # Linted for both GOOS values: build-tagged files are invisible to a lint run
   # for the other platform, so the Windows-only sources would otherwise never be

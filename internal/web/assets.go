@@ -3,17 +3,10 @@ package web
 import (
 	"embed"
 	"io/fs"
-	"mime"
 	"net/http"
 	"path"
 	"strings"
 )
-
-// Go has no MIME entry for .webmanifest, so the file server sniffs it as text -
-// and every response here carries nosniff, so the browser then refuses it.
-func init() {
-	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
-}
 
 // The built UI is embedded, but it is not committed: `go install
 // github.com/gigovich/aigem/cmd/aigem@latest` is the documented way to get
@@ -59,19 +52,34 @@ func spaHandler(fsys fs.FS) http.Handler {
 	})
 }
 
+// staticExts are the extensions a build actually emits. A request for one of
+// them was made by name - by a script tag, a stylesheet link, the font loader -
+// and a missing one has to 404: served as HTML it becomes a syntax error thrown
+// from a script tag, which points nowhere near the stale page that asked for it.
+//
+// An allowlist rather than "contains a dot", because this UI is organised
+// around projects and branches, and a screen at /p/my.project or a worktree at
+// /runs/release-1.2 is a route, not a file.
+var staticExts = map[string]bool{
+	".js": true, ".mjs": true, ".css": true, ".map": true, ".json": true,
+	".html": true, ".txt": true, ".xml": true, ".wasm": true,
+	".svg": true, ".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+	".webp": true, ".avif": true, ".ico": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+	".webmanifest": true,
+}
+
 // isAppRoute reports whether a path should fall through to the page rather than
 // 404. Only paths that could be a screen do.
 //
-// Two exclusions carry the weight. Anything whose last segment has an extension
-// was asked for by name, and answering a missing bundle with HTML turns a plain
-// 404 into a syntax error thrown from a script tag. And nothing under /api/ is
-// ever a screen: this handler is the mux's catch-all, so every route the daemon
-// does not serve lands here, and a client asking for a route that does not exist
-// has to be told 404 rather than handed a page that its JSON decoder reports as
-// "unexpected token <".
+// Two exclusions carry the weight: a name that looks like a built asset (see
+// staticExts), and anything under /api/. This handler is the mux's catch-all, so
+// every route the daemon does not serve lands here, and a client asking for one
+// that does not exist has to be told 404 rather than handed a page that its JSON
+// decoder reports as "unexpected token <".
 func isAppRoute(fsys fs.FS, urlPath string) bool {
 	name := strings.TrimPrefix(path.Clean("/"+urlPath), "/")
-	if name == "" || name == "." || strings.Contains(path.Base(name), ".") {
+	if name == "" || name == "." || staticExts[strings.ToLower(path.Ext(name))] {
 		return false
 	}
 	// Case-insensitively, so a mis-cased URL gets the 404 it deserves rather
@@ -88,15 +96,13 @@ func isAppRoute(fsys fs.FS, urlPath string) bool {
 }
 
 // noAssets answers every page request when the binary was built without a UI.
-// A blank page would look like a bug in the app; this says which build step is
-// missing.
+// A blank page would look like a bug in the app; this says why there is none.
 func noAssets() http.Handler {
 	const body = "aigem was built without a browser UI.\n\n" +
-		"Build it with:\n\n    make web && make build\n\n" +
 		"A plain `go build` or `go install` deliberately produces a binary with no UI,\n" +
-		"so installing aigem never requires a node toolchain.\n"
+		"so installing aigem never requires a node toolchain. From a checkout, build\n" +
+		"one with:\n\n    make web && make build\n"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		securityHeaders(w.Header())
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusNotImplemented)
 		_, _ = w.Write([]byte(body))

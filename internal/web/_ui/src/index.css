@@ -40,39 +40,55 @@
   --spacing-row: var(--row-h);
   --spacing-gut: var(--gut);
 
+  --text-base: var(--fs);
+  --text-meta: var(--fs-meta);
+
   --shadow-panel: var(--shadow);
 }
 
-html,
-body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background: var(--bg);
-}
+@layer base {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+  }
 
-#root {
-  height: 100%;
-}
+  /* The one place type is set. Every screen inherits it, so a `text-*` utility
+   * in a component means "deliberately not the body size" rather than "the
+   * design's size, spelled in Tailwind's scale". */
+  body {
+    font-family: var(--sans);
+    font-size: var(--fs);
+    line-height: 1.45;
+    color: var(--fg);
+    -webkit-font-smoothing: antialiased;
+  }
 
-a {
-  color: var(--primary);
-  text-decoration: none;
-}
+  #root {
+    height: 100%;
+  }
 
-a:hover {
-  color: var(--info);
-  text-decoration: underline;
-}
+  a {
+    color: var(--primary);
+    text-decoration: none;
+  }
 
-input,
-button,
-textarea,
-select {
-  font: inherit;
-  color: inherit;
-}
+  a:hover {
+    color: var(--info);
+    text-decoration: underline;
+  }
 
-::selection {
-  background: var(--s2);
+  input,
+  button,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  ::selection {
+    background: var(--s2);
+  }
 }

@@ -4,11 +4,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/gigovich/aigem/internal/web"
 )
@@ -27,18 +29,20 @@ requested. Build one with "make web && make build".`
 
 func runWebCommand(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, webUsage)
-		fmt.Fprintln(os.Stderr, "\nflags:")
-		fs.PrintDefaults()
-	}
+	// Silenced so a parse error is reported once, by the caller, rather than
+	// twice - the flag package's own line and then main's "error: " prefix.
+	fs.SetOutput(io.Discard)
 	addr := fs.String("addr", "", "listen address (default: a loopback port chosen by the kernel)")
 	open := fs.Bool("open", false, "open the page in the default browser once it is serving")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fmt.Println(webUsage)
+			fmt.Println("\nflags:")
+			fs.SetOutput(os.Stdout)
+			fs.PrintDefaults()
 			return nil
 		}
-		return err
+		return fmt.Errorf("%w\n\n%s", err, webUsage)
 	}
 
 	srv, err := web.New(web.Config{Addr: *addr, Assets: web.Assets()})
@@ -70,7 +74,17 @@ func runWebCommand(args []string) error {
 		return err
 	case <-sig:
 		fmt.Fprintln(os.Stderr, "\nstopping")
-		return srv.Close()
+		if err := srv.Close(); err != nil {
+			return err
+		}
+		// Serve's error is the one worth reporting, so give it a moment to
+		// surface rather than exiting on the signal alone.
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(2 * time.Second):
+			return nil
+		}
 	}
 }
 

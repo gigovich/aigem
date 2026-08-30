@@ -31,6 +31,7 @@ type Config struct {
 // Server is a running daemon.
 type Server struct {
 	assets http.Handler
+	hasUI  bool
 	ln     net.Listener
 	http   *http.Server
 
@@ -53,8 +54,16 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("web: listen on %s: %w", addr, err)
 	}
+	// checkBind reads the address as written; this reads what the kernel
+	// actually gave us. "localhost" goes through the system resolver, and a host
+	// whose resolver answers with a routable address would otherwise pass the
+	// string test and bind where the network can reach.
+	if err := checkBound(ln.Addr()); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
 
-	s := &Server{assets: cfg.Assets}
+	s := &Server{assets: cfg.Assets, hasUI: cfg.Assets != nil}
 	if s.assets == nil {
 		s.assets = noAssets()
 	}
@@ -64,7 +73,11 @@ func New(cfg Config) (*Server, error) {
 
 	s.ln = ln
 	s.http = &http.Server{
-		Handler: mux,
+		// One wrapper rather than a call per handler: the page and the bundle are
+		// the responses the policy exists for, and they are served by
+		// http.FileServerFS, which will never call anything of ours. Every route
+		// added later is covered by construction.
+		Handler: withSecurityHeaders(mux),
 		// A websocket hijacks the connection before any of these apply, so they
 		// bound the plain HTTP surface only. ReadHeaderTimeout is the one that
 		// matters here: without it a connection that opens and says nothing
@@ -93,7 +106,14 @@ func (s *Server) Close() error {
 	}
 	s.closed = true
 	s.mu.Unlock()
-	return s.http.Close()
+	err := s.http.Close()
+	// http.Server only knows about listeners Serve registered, so a Server that
+	// was built and then abandoned - an error on a later step, a test that never
+	// serves - would otherwise hold the port for the life of the process.
+	if lerr := s.ln.Close(); lerr != nil && err == nil && !errors.Is(lerr, net.ErrClosed) {
+		err = lerr
+	}
+	return err
 }
 
 // Addr is the bound address, with the port the kernel chose when none was given.
@@ -103,7 +123,10 @@ func (s *Server) Addr() net.Addr { return s.ln.Addr() }
 func (s *Server) URL() string { return "http://" + s.ln.Addr().String() + "/" }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"ok": true, "ui": HasAssets()})
+	// This server's own state, not the binary's: a caller can build one with no
+	// assets out of a binary that has them, and answering from the embedded FS
+	// would promise a UI that this daemon serves 501 for.
+	writeJSON(w, map[string]any{"ok": true, "ui": s.hasUI})
 }
 
 // checkBind refuses an address the network can reach. Serving one means
@@ -123,32 +146,53 @@ func checkBind(addr string) error {
 		"from elsewhere", addr)
 }
 
+// checkBound is the guarantee checkBind can only approximate: whatever the
+// address resolved to, the socket has to be on a loopback interface.
+func checkBound(addr net.Addr) error {
+	tcp, ok := addr.(*net.TCPAddr)
+	if ok && tcp.IP.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("web: refusing to serve on %s: it resolved to an address the "+
+		"network can reach; the daemon binds loopback only", addr)
+}
+
 func isLoopbackHost(host string) bool {
-	if host == "localhost" {
+	// Hostnames are case-insensitive to the resolver, so refusing "Localhost"
+	// would be a fail-closed wart rather than a control.
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	return ip != nil && ip.IsLoopback()
 }
 
+// withSecurityHeaders applies the policy to every response, including the ones
+// served straight out of the embedded filesystem.
+func withSecurityHeaders(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		securityHeaders(w.Header())
+		h.ServeHTTP(w, r)
+	})
+}
+
 func securityHeaders(h http.Header) {
-	// worker-src is named rather than left to fall back to default-src: the
-	// fallback chain for it is worker-src, child-src, script-src, default-src,
-	// so tightening script-src later would silently take the service worker
-	// down with it.
+	// The agent reads pages an attacker may have written and the UI renders model
+	// output, so this is not defence in depth - it is what stops injected markup
+	// from reaching anywhere. img-src and form-action are the load-bearing ones:
+	// an <img> to an outside host and a <form> posting to one are both
+	// exfiltration with no script involved. form-action does not fall back to
+	// default-src, so it has to be named.
 	h.Set("Content-Security-Policy",
-		"default-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; "+
-			"frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
+		"default-src 'self'; img-src 'self' data:; connect-src 'self'; "+
+			"form-action 'none'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
-	securityHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		// The status is already written by now, so there is nowhere to report
-		// this but the connection, which the client will see as a short read.
-		_ = err
-	}
+	// The status is already written by now, so a failure here has nowhere to go
+	// but the connection, which the client sees as a short read.
+	_ = json.NewEncoder(w).Encode(v)
 }

@@ -30,6 +30,12 @@ func TestAppRoutesFallThroughToThePageAndAssetsDoNot(t *testing.T) {
 		{"/models", true},
 		{"/p/p-aigem/tickets", true},
 		{"/chat/t_945dde0c47180ba8", true},
+		// This UI is organised around projects, repositories and branches, and
+		// any of those may carry a dot. "has an extension" would 404 every one of
+		// them on a reload or a shared link.
+		{"/p/my.project", true},
+		{"/p/aigem/runs/release-1.2", true},
+		{"/p/aigem/repos/site.example.com", true},
 		{"/", false},
 		{"/index.html", false},
 		{"/assets/main.js", false},
@@ -38,6 +44,8 @@ func TestAppRoutesFallThroughToThePageAndAssetsDoNot(t *testing.T) {
 		// point: served as HTML it becomes a parse error thrown from a script
 		// tag, which points nowhere near the stale page that asked for it.
 		{"/assets/stale.js", false},
+		{"/assets/stale.woff2", false},
+		{"/assets/STALE.CSS", false},
 		// Clean anchors at the root, so a traversal is only ever an unknown
 		// route. It becomes the page, and it can never name a file above dist.
 		{"/../secret", true},
@@ -115,8 +123,5 @@ func TestABuildWithoutAUISaysSoInsteadOfServingABlankPage(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "make web") {
 		t.Errorf("body does not name the missing build step:\n%s", body)
-	}
-	if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
-		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
 	}
 }

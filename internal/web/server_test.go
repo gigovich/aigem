@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -20,31 +21,43 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 	return srv
 }
 
-func TestHealthzReportsWhetherTheBuildCarriesAUI(t *testing.T) {
-	srv := newTestServer(t, Config{})
-	res, err := http.Get(srv.URL() + "healthz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", res.StatusCode)
-	}
-	var got struct {
+// The answer describes this server, not the binary: a caller can build a daemon
+// with no assets out of a binary that carries them, and the page it serves is
+// then a 501.
+func TestHealthzReportsThisServersUIState(t *testing.T) {
+	health := func(t *testing.T, cfg Config) struct {
 		OK bool `json:"ok"`
 		UI bool `json:"ui"`
+	} {
+		t.Helper()
+		srv := newTestServer(t, cfg)
+		res, err := http.Get(srv.URL() + "healthz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", res.StatusCode)
+		}
+		var got struct {
+			OK bool `json:"ok"`
+			UI bool `json:"ui"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if !got.OK {
+			t.Error("ok = false")
+		}
+		return got
 	}
-	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
+
+	if got := health(t, Config{}); got.UI {
+		t.Error("a server built with no assets reported ui = true")
 	}
-	if !got.OK {
-		t.Error("ok = false")
-	}
-	if got.UI != HasAssets() {
-		t.Errorf("ui = %v, want %v", got.UI, HasAssets())
-	}
-	if got := res.Header.Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
-		t.Errorf("CSP = %q, want it to start from default-src 'self'", got)
+	withUI := Config{Assets: spaHandler(testDist())}
+	if got := health(t, withUI); !got.UI {
+		t.Error("a server built with assets reported ui = false")
 	}
 }
 
@@ -66,7 +79,9 @@ func TestNonLoopbackBindIsRefused(t *testing.T) {
 }
 
 func TestLoopbackBindsAreAccepted(t *testing.T) {
-	for _, addr := range []string{"127.0.0.1:0", "localhost:0", "[::1]:0"} {
+	// Mixed case included: hostnames are case-insensitive to the resolver, so
+	// refusing "Localhost" would be a usability wart, not a control.
+	for _, addr := range []string{"127.0.0.1:0", "localhost:0", "Localhost:0", "[::1]:0"} {
 		srv, err := New(Config{Addr: addr})
 		if err != nil {
 			t.Errorf("New(%q) = %v, want it to bind", addr, err)
@@ -74,6 +89,74 @@ func TestLoopbackBindsAreAccepted(t *testing.T) {
 		}
 		_ = srv.Close()
 	}
+}
+
+// The agent reads pages an attacker may have written and the UI renders model
+// output, so the policy has to reach the document it bounds. It is applied as
+// one wrapper around the mux precisely because the page and the bundle are
+// served by http.FileServerFS, which calls nothing of ours - and because the
+// build that carries no UI is not the one that needs protecting.
+func TestEveryResponseCarriesTheSecurityHeaders(t *testing.T) {
+	srv := newTestServer(t, Config{Assets: spaHandler(testDist())})
+
+	for _, path := range []string{"", "index.html", "models", "assets/main.js", "healthz", "api/typo"} {
+		res, err := http.Get(srv.URL() + path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		_ = res.Body.Close()
+		csp := res.Header.Get("Content-Security-Policy")
+		for _, want := range []string{"default-src 'self'", "img-src 'self' data:", "form-action 'none'"} {
+			if !strings.Contains(csp, want) {
+				t.Errorf("/%s CSP = %q, missing %q", path, csp, want)
+			}
+		}
+		if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("/%s X-Content-Type-Options = %q, want nosniff", path, got)
+		}
+		if got := res.Header.Get("Referrer-Policy"); got != "no-referrer" {
+			t.Errorf("/%s Referrer-Policy = %q, want no-referrer", path, got)
+		}
+	}
+}
+
+// The page is fetched by the browser before it can hold any credential, so the
+// asset handler is deliberately outside whatever guard the API grows. This is
+// the test that fails if someone puts it behind one.
+func TestThePageIsServedWithoutACredential(t *testing.T) {
+	srv := newTestServer(t, Config{Assets: spaHandler(testDist())})
+	for _, path := range []string{"", "models", "assets/main.js"} {
+		req, err := http.NewRequest(http.MethodGet, srv.URL()+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("/%s answered %s with no credential", path, res.Status)
+		}
+	}
+}
+
+// http.Server only closes listeners Serve registered, so a Server that is built
+// and then abandoned would hold its port for the life of the process.
+func TestCloseReleasesThePortWhenServeNeverRan(t *testing.T) {
+	srv, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := srv.Addr().String()
+	if err := srv.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("the port is still held after Close: %v", err)
+	}
+	_ = ln.Close()
 }
 
 // The asset handler is the mux's catch-all, so it has to lose to a real route.
