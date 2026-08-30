@@ -67,6 +67,18 @@ const (
 	policyDeny  = "deny"
 )
 
+// closeWait bounds how long Close waits for a running turn to unwind. A turn
+// that will not - a tool blocked on something no cancellation reaches - must
+// not hold the process on its way out, and the caller of Close is usually a
+// defer on the exit path with a terminal already torn down and nothing left to
+// explain the pause. Giving up is the race Close used to lose every time; a
+// bound only leaves it to the cases that were going to hang anyway.
+//
+// A variable so a test can shrink it: the behaviour that matters only appears
+// once a turn outlives it, and a test that waits five real seconds is a test
+// nobody runs.
+var closeWait = 5 * time.Second
+
 // defaultRing bounds the in-memory history a late subscriber can catch up on.
 // It is generous because the cost is one struct per event and the alternative -
 // a client that reconnects into a hole - is much worse. The on-disk journal
@@ -240,28 +252,50 @@ func (l *Local) Command(name, args string) error {
 // channel is closed.
 func (l *Local) Close() {
 	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
-		return
+	first := !l.closed
+	if first {
+		l.closed = true
+		if l.cancel != nil {
+			l.cancel()
+		}
+		l.failPendingLocked()
+		l.journal.close()
 	}
-	l.closed = true
-	if l.cancel != nil {
-		l.cancel()
-	}
-	l.failPendingLocked()
-	l.journal.close()
 	subs := l.subs
 	l.subs = map[string]*subscriber{}
 	l.mu.Unlock()
 
-	close(l.done)
+	if first {
+		close(l.done)
+	}
 	for _, s := range subs {
 		s.stop()
 	}
-	// After the cancel and after failPendingLocked, so the turn is unwinding
-	// rather than waiting on an approval nobody is left to answer. What is being
-	// waited for is the save at the end of it.
-	l.turns.Wait()
+	// Every caller waits, not just the first. A second Close returning while the
+	// first is still waiting would hand its caller the guarantee this exists to
+	// give without the wait that makes it true.
+	//
+	// The wait comes after the cancel, after failPendingLocked and after
+	// close(l.done), so the turn is unwinding rather than parked on an approval
+	// nobody is left to answer. What is being waited for is the save at the end
+	// of it.
+	l.waitForTurns()
+}
+
+// waitForTurns blocks until every running turn has finished, or closeWait has
+// passed. The goroutine outlives a timeout, which is what the bound is for: the
+// process is on its way out and a turn that will not unwind should not decide
+// when it gets there.
+func (l *Local) waitForTurns() {
+	done := make(chan struct{})
+	go func() {
+		l.turns.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(closeWait):
+	}
 }
 
 func (l *Local) nextApprovalID() string {

@@ -133,10 +133,12 @@ func (s *Server) issueCookie() (string, error) {
 		return "", err
 	}
 	now := time.Now()
+	var dropped []string
 	s.mu.Lock()
 	for k, exp := range s.cookies {
 		if now.After(exp) {
 			delete(s.cookies, k)
+			dropped = append(dropped, k)
 		}
 	}
 	for len(s.cookies) >= maxCookieSessions {
@@ -148,12 +150,16 @@ func (s *Server) issueCookie() (string, error) {
 			}
 		}
 		delete(s.cookies, oldest)
+		dropped = append(dropped, oldest)
 	}
 	s.cookies[id] = now.Add(cookieTTL)
-	pending, gen := s.pendingLocked()
+	change := s.pendingLocked(cookieChange{
+		add:    map[string]time.Time{id: s.cookies[id]},
+		remove: dropped,
+	})
 	s.mu.Unlock()
 
-	if err := s.persist(pending, gen); err != nil {
+	if err := s.persist(change); err != nil {
 		slog.Warn("could not record the browser session; a restart will sign it out",
 			"path", s.cookieStore.Path(), "err", err)
 	}
@@ -182,10 +188,10 @@ func (s *Server) cookieOK(r *http.Request) bool {
 		return true
 	}
 	delete(s.cookies, c.Value)
-	pending, gen := s.pendingLocked()
+	change := s.pendingLocked(cookieChange{remove: []string{c.Value}})
 	s.mu.Unlock()
 
-	if err := s.persist(pending, gen); err != nil {
+	if err := s.persist(change); err != nil {
 		slog.Warn("could not record an expired browser session being dropped",
 			"path", s.cookieStore.Path(), "err", err)
 	}
@@ -292,6 +298,14 @@ func (s *Server) revokeCookie(r *http.Request) error {
 		return nil
 	}
 	s.mu.Lock()
+	// Checked before the table, not after: Close empties the table under this
+	// same mutex, so a request arriving during shutdown would otherwise find
+	// nothing held, return nil, and be answered "signed out" while the file keeps
+	// the session for the next start.
+	if s.closed && s.cookieStore != nil {
+		s.mu.Unlock()
+		return errors.New("the daemon is shutting down and cannot record the sign-out")
+	}
 	// Only a held session is worth a disk write: the cookie exchange runs this
 	// on every page load, and a request carrying a value the table never issued
 	// must not be able to make the daemon write at all.
@@ -301,14 +315,10 @@ func (s *Server) revokeCookie(r *http.Request) error {
 		return nil
 	}
 	delete(s.cookies, c.Value)
-	pending, gen := s.pendingLocked()
-	closing := s.closed
+	change := s.pendingLocked(cookieChange{remove: []string{c.Value}})
 	s.mu.Unlock()
 
-	if closing && s.cookieStore != nil {
-		return errors.New("the daemon is shutting down and cannot record the sign-out")
-	}
-	return s.persist(pending, gen)
+	return s.persist(change)
 }
 
 // handleAuthLogout revokes the cookie this request carried, and tells the

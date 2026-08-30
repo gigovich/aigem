@@ -50,6 +50,15 @@ const (
 // and a test that waits two real seconds per case is a test nobody runs.
 var lockWait = 2 * time.Second
 
+// ErrLocked is returned to a caller that cannot run unlocked - Log's writes -
+// when the lock file is held by someone else. It is worth retrying: a lock whose
+// owner is gone is broken after lockStale.
+//
+// Retrying is not guaranteed to succeed. Breaking a stale lock means unlinking
+// it, and a lock this process cannot unlink - a read-only mount, a sticky
+// directory owned by someone else - stays until a person removes it.
+var ErrLocked = errors.New("the store lock is held by another process")
+
 // File is a JSON document at a fixed path, read and written atomically.
 //
 // A missing file loads as the zero value rather than an error, which is what a
@@ -299,9 +308,16 @@ func holdingLock(path string, strict bool, fn func() error) error {
 			if werr != nil || cerr != nil {
 				// An empty lock is worse than none: releaseLock would read a token
 				// that is not ours and decline to remove it, and every writer would
-				// then pay the full lockWait until lockStale reclaims it. Drop it
-				// and hold the mutex alone.
+				// then pay the full lockWait until lockStale reclaims it. Drop it.
 				os.Remove(lock)
+				if strict {
+					// Holding the in-process mutex alone is exactly what a strict
+					// caller must not do. This is the same refusal as a lock that
+					// stays held; the caller retries either way.
+					return fmt.Errorf("%w: %s could not be written: %w",
+						ErrLocked, lock, errors.Join(werr, cerr))
+				}
+				// File can carry on: its worst case is a lost update.
 				return fn()
 			}
 			defer releaseLock(lock, token)
@@ -316,9 +332,8 @@ func holdingLock(path string, strict bool, fn func() error) error {
 		// forever, holding the in-process mutex while it did.
 		if time.Now().After(deadline) {
 			if strict {
-				return fmt.Errorf("lock %s: still held after %s, and this write cannot "+
-					"proceed without it; retry - a lock whose owner is gone is broken "+
-					"after %s", path, lockWait, lockStale)
+				return fmt.Errorf("%w: %s, still held after %s; retry - a lock whose "+
+					"owner is gone is broken after %s", ErrLocked, lock, lockWait, lockStale)
 			}
 			// Proceeding unlocked risks a lost update; corrupting the document
 			// does not, since save renames a fully written file into place. The

@@ -34,6 +34,10 @@ import (
 // through an append and is overwritten by the next one. Anything else needs the
 // file repaired or removed; removing it restarts the numbering at 1, so a
 // client's cursor has to be treated as stale after that.
+//
+// A gap in the numbering is read, not refused: a cursor lands correctly either
+// side of it. What is refused is a sequence that does not increase, because
+// that is a file whose order this package cannot reason about.
 type Log[T any] struct {
 	path   string
 	prefix string
@@ -49,12 +53,13 @@ type Log[T any] struct {
 	// a process died midway through a write. The next append starts there and
 	// truncates, so the torn tail is overwritten rather than parsed.
 	size int64
-	// seen is the file as the index last saw it - its size and its mtime. It is
-	// tracked apart from size precisely because a torn tail makes the two
-	// differ, and comparing against size would then rescan on every call.
-	seen    int64
-	mod     time.Time
-	scanned bool
+	// seen is the file as the index last saw it: the stat itself, plus its size
+	// broken out because a torn tail makes that differ from l.size. The stat is
+	// kept whole so os.SameFile can tell a rewrite from an append - a compaction
+	// renames a new inode into place, which size and mtime alone can miss.
+	seen     int64
+	seenInfo os.FileInfo
+	scanned  bool
 }
 
 // Entry is one record with what the log knows about it.
@@ -168,6 +173,10 @@ func (l *Log[T]) Len() (int, error) {
 // type this binary happens to hold, so a field written by a newer binary - or
 // by one a rollback has replaced - would disappear from history at the next
 // trim.
+//
+// A non-zero count with a non-nil error means the rewrite landed and the index
+// could not be rebuilt afterwards. The records are gone from the file either
+// way; the next call reads the index again.
 func (l *Log[T]) Compact(before time.Time) (int, error) {
 	unlock := lockPath(l.path)
 	defer unlock()
@@ -268,8 +277,11 @@ func (l *Log[T]) write(line []byte, seq int) error {
 	l.offsets = append(l.offsets, l.size)
 	l.seqs = append(l.seqs, seq)
 	l.size, l.seen = end, end
+	// The stat this index will be compared against next time. A failure here is
+	// not a failed append - the record is on disk - so the index is dropped and
+	// the next call reads the file instead.
 	if info, err := os.Stat(l.path); err == nil {
-		l.mod = info.ModTime()
+		l.seenInfo = info
 	} else {
 		l.scanned = false
 	}
@@ -297,6 +309,15 @@ func (l *Log[T]) read(start, end int) ([]Entry[T], error) {
 		var e Entry[T]
 		if err := json.Unmarshal(line, &e); err != nil {
 			return nil, fmt.Errorf("parse %s: record %d: %w", l.path, l.seqs[i], err)
+		}
+		// The offset came from an index that may describe a file a peer has since
+		// replaced. Without this the read returns whatever happens to sit at that
+		// byte - a window of real records, shifted, which a client accepts and
+		// then advances its cursor past. Range's retry only fires on an error, so
+		// the mismatch has to be one.
+		if e.Seq != l.seqs[i] {
+			return nil, fmt.Errorf("read %s: record %d is at the offset the index gave "+
+				"for record %d; the file changed underneath it", l.path, e.Seq, l.seqs[i])
 		}
 		out = append(out, e)
 	}
@@ -357,29 +378,54 @@ func (l *Log[T]) bytesFrom(off int64) ([]byte, error) {
 // compacting is what makes that necessary; this process's own writes keep the
 // index and the file in step as they go.
 //
-// Size and mtime together are what "the same file" means here. A peer rewrite
-// landing on the same byte count within one mtime tick would go unnoticed, and
-// the next append would then truncate at a stale offset - but nothing this
-// package does can produce one: an append strictly grows the file, and a
-// compaction that would drop nothing returns without writing.
+// "The same file" is os.SameFile first, then size and mtime. The identity check
+// is what catches a compaction, which renames a new inode into place and can
+// land on the same byte count within one mtime tick - and the cost of missing
+// that is not a stale read but an append truncating at an offset from a file
+// that is gone. Size and mtime then catch what happens to the same inode: an
+// append, or a rewrite in place that kept the length.
+//
+// A file that only grew is indexed from where the last scan stopped rather than
+// from the top: the alternative is parsing every record of a feed on every
+// request that touches it, which on a few megabytes is tens of milliseconds.
 func (l *Log[T]) sync() error {
 	info, err := os.Stat(l.path)
 	if errors.Is(err, os.ErrNotExist) {
-		l.seqs, l.offsets, l.size, l.seen = nil, nil, 0, 0
-		l.mod, l.scanned = time.Time{}, true
+		l.reset()
+		l.scanned = true
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", l.path, err)
 	}
-	if l.scanned && info.Size() == l.seen && info.ModTime().Equal(l.mod) {
+	if !l.scanned || !os.SameFile(info, l.seenInfo) {
+		return l.scan(info, 0)
+	}
+	if info.Size() == l.seen && info.ModTime().Equal(l.seenInfo.ModTime()) {
 		return nil
 	}
-	return l.scan(info)
+	if info.Size() == l.seen {
+		// Same inode, same length, different mtime: something rewrote it in place.
+		// The offsets may still be right and the numbering may not, so the index
+		// is built again rather than trusted.
+		return l.scan(info, 0)
+	}
+	if info.Size() > l.seen {
+		return l.scan(info, l.size)
+	}
+	// Shrunk without being replaced: something truncated the file under us. The
+	// index describes bytes that are no longer there, so it is built again.
+	return l.scan(info, 0)
 }
 
-// scan rebuilds the index by walking the file one line at a time, reading the
-// wrapper of each.
+func (l *Log[T]) reset() {
+	l.seqs, l.offsets, l.size, l.seen = nil, nil, 0, 0
+	l.seenInfo, l.scanned = nil, false
+}
+
+// scan indexes the file from byte `from`, keeping whatever the index already
+// holds up to that point. from is zero for a file this index cannot vouch for,
+// and l.size for one that has only grown since the last scan.
 //
 // A final line with no newline is a record a process died partway through
 // writing. It is left out of the index and out of size, so the next append
@@ -387,17 +433,22 @@ func (l *Log[T]) sync() error {
 // Anything else that does not parse is reported: the index is what Append
 // truncates against, and building one out of a file this package cannot account
 // for is how a damaged line becomes lost records.
-func (l *Log[T]) scan(info os.FileInfo) error {
+func (l *Log[T]) scan(info os.FileInfo, from int64) error {
 	f, err := os.Open(l.path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", l.path, err)
 	}
 	defer f.Close()
 
+	offsets, seqs := l.offsets, l.seqs
+	if from == 0 {
+		offsets, seqs = nil, nil
+	} else if _, err := f.Seek(from, io.SeekStart); err != nil {
+		return fmt.Errorf("seek %s: %w", l.path, err)
+	}
+
 	r := bufio.NewReader(f)
-	var offsets []int64
-	var seqs []int
-	var off int64
+	off := from
 	for {
 		line, err := r.ReadBytes('\n')
 		if err != nil {
@@ -408,12 +459,18 @@ func (l *Log[T]) scan(info os.FileInfo) error {
 		}
 		var h head
 		if err := json.Unmarshal(line, &h); err != nil {
+			l.reset()
 			return fmt.Errorf("parse %s: the record at byte %d: %w", l.path, off, err)
 		}
 		switch {
 		case h.Seq < 1:
+			l.reset()
 			return fmt.Errorf("parse %s: the record at byte %d has sequence %d", l.path, off, h.Seq)
 		case len(seqs) > 0 && h.Seq <= seqs[len(seqs)-1]:
+			// Also the guard on an incremental scan: a file that grew but is not
+			// the one the index describes cannot continue its numbering, so it is
+			// caught here rather than indexed as if it did.
+			l.reset()
 			return fmt.Errorf("parse %s: the record at byte %d has sequence %d, after %d: "+
 				"the log is out of order", l.path, off, h.Seq, seqs[len(seqs)-1])
 		}
@@ -423,6 +480,6 @@ func (l *Log[T]) scan(info os.FileInfo) error {
 	}
 
 	l.seqs, l.offsets, l.size, l.seen = seqs, offsets, off, info.Size()
-	l.mod, l.scanned = info.ModTime(), true
+	l.seenInfo, l.scanned = info, true
 	return nil
 }

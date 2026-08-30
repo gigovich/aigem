@@ -448,6 +448,10 @@ func (s *scriptedClient) Stream(_ context.Context, _ []llm.Message, toolDefs []l
 }
 
 func TestSubmitRunsATurn(t *testing.T) {
+	// A turn ends by saving the conversation, so a test that runs one and does
+	// not point the state directory somewhere of its own writes into the
+	// developer's real ~/.local/state/aigem.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	reg, err := tools.NewRegistry(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -494,6 +498,7 @@ func TestSubmitRunsATurn(t *testing.T) {
 // A message typed while the agent is working joins the running turn instead of
 // being dropped, which is what makes typing on a phone mid-turn useful.
 func TestSubmitDuringTurnInjects(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	reg, err := tools.NewRegistry(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -655,5 +660,143 @@ func TestCloseWaitsForTheTurnItCancelled(t *testing.T) {
 	}
 	if len(metas) != 1 {
 		t.Fatalf("the conversation was not saved before Close returned: %+v", metas)
+	}
+}
+
+// The ordering inside Close is load-bearing, and the wait is the last step for
+// a reason: a turn that parks *after* failPendingLocked has run is released by
+// close(l.done), so waiting before that closes would leave it parked and Close
+// would sit out its whole bound. The bound means the wrong order is a pause
+// rather than a hang, which is exactly why this asserts on how long it took.
+func TestCloseReleasesATurnThatParksWhileItIsClosing(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := New(Config{
+		Tools: reg,
+		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
+			return agent.New(&scriptedClient{}, reg, 0.3, confirm, "")
+		},
+		Ring: 64,
+	})
+
+	parked := make(chan struct{})
+	if err := l.Run("skill", "skill", func(context.Context, agent.Events) (string, error) {
+		close(parked)
+		// The shape an approval parks in: an answer, or the session ending.
+		select {
+		case <-l.done:
+		case <-time.After(30 * time.Second):
+			return "", errors.New("never released")
+		}
+		return "done", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-parked
+
+	start := time.Now()
+	l.Close()
+	if elapsed := time.Since(start); elapsed > closeWait/2 {
+		t.Errorf("Close took %s: it waited for a turn it had not released yet", elapsed)
+	}
+}
+
+// Every caller of Close waits, not only the first. A second one returning early
+// would hand its caller the guarantee without the wait that makes it true.
+func TestASecondCloseWaitsToo(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := New(Config{
+		Tools: reg,
+		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
+			return agent.New(&scriptedClient{}, reg, 0.3, confirm, "")
+		},
+		Ring: 64,
+	})
+
+	release := make(chan struct{})
+	if err := l.Run("skill", "skill", func(context.Context, agent.Events) (string, error) {
+		<-release
+		return "done", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	firstDone := make(chan struct{})
+	go func() { l.Close(); close(firstDone) }()
+	// The first Close is inside its wait; the second must join it rather than
+	// walk past.
+	time.Sleep(50 * time.Millisecond)
+	secondDone := make(chan struct{})
+	go func() { l.Close(); close(secondDone) }()
+	select {
+	case <-secondDone:
+		t.Fatal("a second Close returned while the first was still waiting for the turn")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	for _, c := range []chan struct{}{firstDone, secondDone} {
+		select {
+		case <-c:
+		case <-time.After(10 * time.Second):
+			t.Fatal("a Close never returned after the turn was released")
+		}
+	}
+}
+
+// The bound itself. A turn parked on something no cancellation reaches would
+// otherwise hold the process on its way out, with the terminal already gone and
+// nothing left to say why.
+func TestCloseGivesUpOnATurnThatWillNotUnwind(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	prev := closeWait
+	closeWait = 100 * time.Millisecond
+	t.Cleanup(func() { closeWait = prev })
+
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := New(Config{
+		Tools: reg,
+		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
+			return agent.New(&scriptedClient{}, reg, 0.3, confirm, "")
+		},
+		Ring: 64,
+	})
+
+	stuck := make(chan struct{})
+	// Released at the end so the goroutine does not outlive the test.
+	t.Cleanup(func() { close(stuck) })
+	if err := l.Run("skill", "skill", func(context.Context, agent.Events) (string, error) {
+		<-stuck
+		return "done", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// On a deadline rather than inline: without the bound this does not take too
+	// long, it never returns, and a test that hangs reports the defect as the
+	// package timing out ten minutes later.
+	done := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		l.Close()
+		done <- time.Since(start)
+	}()
+	select {
+	case elapsed := <-done:
+		if elapsed > 2*time.Second {
+			t.Errorf("Close waited %s for a turn that never unwinds", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close never gave up on a turn that never unwinds")
 	}
 }

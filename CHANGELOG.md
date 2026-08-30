@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `aigem web --sign-out` forgets every browser session before serving. Sign-ins
   outlive a restart on purpose, so a restart mints a new token and leaves every
   cookie working - which makes it the wrong reflex for a token that got out.
+  Stop the daemon first: a running one holds the sessions in memory and goes on
+  honouring them.
 - `make web` builds the browser UI into `internal/web/dist`, where the binary
   embeds it from. It needs Node 22+. **The bundle is not committed and the
   release pipeline does not build it**, so a downloaded release binary and
@@ -33,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `bash` tool no longer waits for a command's backgrounded children after
+  its context is cancelled. Killing the shell left an orphan holding the output
+  pipe, so an interrupted turn ran on for as long as that child lived - thirty
+  seconds for a `sleep 30 &`, and unbounded for anything long-running. It gets
+  the process group and the `WaitDelay` that hooks have had.
 - A session that was closed while a turn was running could still be writing
   after `Close` returned. The turn is emitted as ended and saved after that, so
   a caller that closed on seeing the end of it raced a write it had no way to
@@ -158,6 +165,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `bash` tool no longer waits for a command's backgrounded children after
+  its context is cancelled. Killing the shell left an orphan holding the output
+  pipe, so an interrupted turn ran on for as long as that child lived - thirty
+  seconds for a `sleep 30 &`, and unbounded for anything long-running. It gets
+  the process group and the `WaitDelay` that hooks have had.
 - A session that was closed while a turn was running could still be writing
   after `Close` returned. The turn is emitted as ended and saved after that, so
   a caller that closed on seeing the end of it raced a write it had no way to
@@ -331,6 +343,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `bash` tool no longer waits for a command's backgrounded children after
+  its context is cancelled. Killing the shell left an orphan holding the output
+  pipe, so an interrupted turn ran on for as long as that child lived - thirty
+  seconds for a `sleep 30 &`, and unbounded for anything long-running. It gets
+  the process group and the `WaitDelay` that hooks have had.
 - A session that was closed while a turn was running could still be writing
   after `Close` returned. The turn is emitted as ended and saved after that, so
   a caller that closed on seeing the end of it raced a write it had no way to
@@ -387,6 +404,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `bash` tool no longer waits for a command's backgrounded children after
+  its context is cancelled. Killing the shell left an orphan holding the output
+  pipe, so an interrupted turn ran on for as long as that child lived - thirty
+  seconds for a `sleep 30 &`, and unbounded for anything long-running. It gets
+  the process group and the `WaitDelay` that hooks have had.
 - A session that was closed while a turn was running could still be writing
   after `Close` returned. The turn is emitted as ended and saved after that, so
   a caller that closed on seeing the end of it raced a write it had no way to
@@ -486,6 +508,11 @@ First public release.
 
 ### Fixed
 
+- The `bash` tool no longer waits for a command's backgrounded children after
+  its context is cancelled. Killing the shell left an orphan holding the output
+  pipe, so an interrupted turn ran on for as long as that child lived - thirty
+  seconds for a `sleep 30 &`, and unbounded for anything long-running. It gets
+  the process group and the `WaitDelay` that hooks have had.
 - A session that was closed while a turn was running could still be writing
   after `Close` returned. The turn is emitted as ended and saved after that, so
   a caller that closed on seeing the end of it raced a write it had no way to

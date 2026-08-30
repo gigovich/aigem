@@ -34,12 +34,24 @@ That cuts both ways, and it is the one thing to know about this design:
 **restarting is not how you revoke a leaked token.** A restart mints a new
 token and leaves every cookie working, and a cookie renews itself for as long
 as it is used. If the token got out, stop the daemon and start it with
-`--sign-out`, which forgets every session first. `DELETE /api/auth/session`
-revokes just the browser that asks.
+`--sign-out`, which forgets every session first. Stopping it is not optional: a
+daemon still running holds the sessions in memory, goes on honouring every
+cookie, and records its next change against the file `--sign-out` removed.
+`DELETE /api/auth/session` revokes just the browser that asks.
 
-Everything except the page itself and `/healthz` needs a credential. The page is
-what the browser fetches before it can hold one, and `/healthz` is a liveness
-probe that reports nothing the page would not.
+One more thing the cookie inherits from being a cookie: browsers do not scope
+cookies by port. Any other service you visit on the same loopback host receives
+the aigem session cookie in its request headers, and that value is a working
+credential. The token in the URL is not sent anywhere, but the cookie it buys
+is - so a loopback daemon is only as private as the other things listening on
+that host.
+
+Everything except the page itself and `/healthz` needs a credential, and those
+two are outside the origin check as well: the page is what a browser fetches
+before it can hold any credential, and `/healthz` is a liveness probe. Both are
+served under any `Host`, so on a daemon bound where the network can reach, the
+bundle and a liveness bit are readable by anyone who can connect. Everything
+behind them - every `/api/` route - is not.
 
 ## Release binaries have no UI
 
@@ -89,6 +101,10 @@ An internationalised name has to be given in the punycode form a browser sends
 (`https://xn--r8jz45g.jp`); the unicode spelling is refused at startup, because
 it would match nothing and every request would 403.
 
+With `--origin` the printed link is the public one. The address the daemon
+actually bound goes to stderr, which is the only way to learn it when the port
+was left to the kernel.
+
 Repeat `--origin` for a daemon reached under more than one name. A stated origin
 **replaces** the derived allowlist rather than extending it - behind a proxy the
 bind address is not the name requests arrive under, and leaving it allowed only
@@ -111,7 +127,7 @@ though the hop to the daemon is plain HTTP.
 
 A binary built without a bundle is the exception to the last two rows: it has no
 page to serve and no route to be wrong about, so it answers 501 everywhere but
-`/healthz`.
+`/healthz` and the wrong-method 405s.
 
 Every response carries a content security policy, `X-Content-Type-Options:
 nosniff` and `Referrer-Policy: no-referrer` - including the page and the bundle,
@@ -130,9 +146,10 @@ make web-check     # lint, typecheck and test the UI
 The dev server proxies `/api` and `/healthz` to a running daemon on
 `127.0.0.1:7777`, so start one with `aigem web --addr 127.0.0.1:7777` in another
 terminal, or point `AIGEM_ADDR` at wherever it landed - **as a full origin**,
-`http://127.0.0.1:9000` rather than `127.0.0.1:9000`, because the proxy sends
-that same value as the `Origin` header and a value with no scheme is one the
-daemon refuses.
+`http://127.0.0.1:9000` rather than `127.0.0.1:9000`. The value is both the
+proxy target and the `Origin` it sends, and without a scheme the proxy cannot
+resolve the target at all: every request gets Vite's own 502 and the daemon
+never sees it.
 
 The proxy sends the daemon's own origin rather than `http://localhost:5173`, so
 the dev cycle needs no `--origin`. Sign in by opening the dev server once with

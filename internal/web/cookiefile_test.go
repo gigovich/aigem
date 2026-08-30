@@ -250,3 +250,78 @@ func readCookieFile(t *testing.T, path string) map[string]time.Time {
 	}
 	return stored.Sessions
 }
+
+// Each daemon holds the whole table in memory. Writing that table wholesale
+// meant the second one to write erased every session the first had issued - the
+// exact failure this file exists to prevent, and reachable from the dev
+// workflow's own advice to start a second daemon on a fixed port. The file is
+// updated with a change instead, and changes compose.
+func TestTwoDaemonsSharingAFileKeepBothSessions(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	first := newTestServer(t, Config{CookieFile: file})
+	a := exchange(t, first)
+	second := newTestServer(t, Config{CookieFile: file})
+	b := exchange(t, second)
+
+	stored := readCookieFile(t, file)
+	if _, ok := stored[a.Value]; !ok {
+		t.Errorf("the first daemon's session was erased by the second: %v", stored)
+	}
+	if _, ok := stored[b.Value]; !ok {
+		t.Errorf("the second daemon's session is missing: %v", stored)
+	}
+
+	// And a sign-out removes the one session it was asked to, not the file.
+	if err := first.revokeCookie(withCookie(t, a)); err != nil {
+		t.Fatal(err)
+	}
+	stored = readCookieFile(t, file)
+	if _, ok := stored[a.Value]; ok {
+		t.Error("a revoked session is still in the file")
+	}
+	if _, ok := stored[b.Value]; !ok {
+		t.Errorf("revoking one session took another daemon's with it: %v", stored)
+	}
+}
+
+// Close empties the table under the same mutex a sign-out reads it with, so a
+// request served during shutdown used to find nothing held, return nil, and be
+// answered "signed out" while the file kept the session for the next start.
+func TestASignOutDuringShutdownSaysItCouldNotBeRecorded(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	srv := newTestServer(t, Config{CookieFile: file})
+	c := exchange(t, srv)
+	_ = srv.Close()
+
+	if err := srv.revokeCookie(withCookie(t, c)); err == nil {
+		t.Error("a sign-out during shutdown reported success")
+	}
+	if _, ok := readCookieFile(t, file)[c.Value]; !ok {
+		t.Error("the session is gone from the file, so there was nothing to report")
+	}
+}
+
+// A file this daemon cannot parse is one no browser can be signed out of and
+// none can be signed in to. The table in memory is the best account of who
+// still holds a session, so the update path repairs the file with it rather
+// than failing every mutation from then on.
+func TestAnUnparseableFileIsRepairedByTheNextChange(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	srv := newTestServer(t, Config{CookieFile: file})
+	c := exchange(t, srv)
+
+	if err := os.WriteFile(file, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next, err := srv.issueCookie()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stored := readCookieFile(t, file)
+	for _, want := range []string{c.Value, next} {
+		if _, ok := stored[want]; !ok {
+			t.Errorf("the repaired file is missing a live session: %v", stored)
+		}
+	}
+}

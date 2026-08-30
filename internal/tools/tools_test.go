@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -289,6 +290,44 @@ func TestBashRespectsCancellation(t *testing.T) {
 	out, _ := tool.Run(ctx, json.RawMessage(`{"cmd":"sleep 30"}`))
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("bash ignored cancellation, ran %s: %q", elapsed, out)
+	}
+}
+
+// Cancelling kills bash, but a child it backgrounded still holds the output
+// pipe, and CombinedOutput waits for that pipe to close - measured at the full
+// 30 seconds for a `sleep 30 &`, and unbounded for a dev server. The turn the
+// caller thinks it cancelled runs on for as long as the orphan lives, and
+// closing the session waits for that turn.
+func TestBashDoesNotWaitForABackgroundedChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no bash")
+	}
+	r, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := r.Get("bash")
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		_, _ = tool.Run(ctx, json.RawMessage(`{"cmd":"sleep 60 & echo started; sleep 30"}`))
+		done <- time.Since(start)
+	}()
+	// Long enough for bash to have started the child and gone to sleep.
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	select {
+	case elapsed := <-done:
+		// The command's own WaitDelay is 2s; anything near the child's lifetime
+		// means the orphan was waited for.
+		if elapsed > 10*time.Second {
+			t.Errorf("bash waited %s for a backgrounded child", elapsed)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("bash never returned after its context was cancelled")
 	}
 }
 

@@ -1,9 +1,7 @@
 package web
 
 import (
-	"fmt"
 	"log/slog"
-	"maps"
 	"time"
 
 	"github.com/gigovich/aigem/internal/store"
@@ -22,6 +20,23 @@ import (
 type cookieFile struct {
 	Sessions map[string]time.Time `json:"sessions"`
 }
+
+// cookieChange is one mutation of the table: the sessions it adds and the ones
+// it removes.
+//
+// The file is updated with a change rather than replaced with a snapshot, which
+// is what lets two daemons share a state directory. Each held its whole table in
+// memory and wrote it wholesale, so the second to write erased every session the
+// first had issued - the exact failure this file exists to prevent, reached by
+// the dev workflow's own advice to start a second daemon on a fixed port.
+// Additions and removals of distinct ids compose in any order; whole tables do
+// not compose at all.
+type cookieChange struct {
+	add    map[string]time.Time
+	remove []string
+}
+
+func (c cookieChange) empty() bool { return len(c.add) == 0 && len(c.remove) == 0 }
 
 // cookieStoreFor returns the store for path, or nil when the daemon was given
 // no file and the table lives in memory alone.
@@ -61,8 +76,7 @@ func loadCookies(f *store.File[cookieFile]) map[string]time.Time {
 	return live
 }
 
-// pendingLocked takes the snapshot of the table that persist will write, and
-// stamps it with a generation. The caller holds s.mu.
+// pendingLocked records a change for persist to write. The caller holds s.mu.
 //
 // The write itself happens outside s.mu, because it is not cheap: an
 // inter-process lock file that a peer may hold for up to two seconds, a
@@ -70,41 +84,58 @@ func loadCookies(f *store.File[cookieFile]) map[string]time.Time {
 // takes to check its cookie, so holding it across all that would queue the
 // whole daemon behind one sign-in.
 //
-// A nil snapshot means there is nothing to write to, or the daemon is stopping.
+// An empty change means there is nothing to write to, or the daemon is stopping.
 // Close empties the table and then keeps serving until the listener is shut, so
-// a page reloading through a deploy would otherwise write a file holding the one
-// session it just minted - signing out every other browser, which is the failure
-// this file exists to prevent.
-func (s *Server) pendingLocked() (map[string]time.Time, uint64) {
+// a page reloading through a deploy would otherwise record a session nothing is
+// going to honour.
+func (s *Server) pendingLocked(c cookieChange) cookieChange {
 	if s.cookieStore == nil || s.closed {
-		return nil, 0
+		return cookieChange{}
 	}
-	s.cookieGen++
-	return maps.Clone(s.cookies), s.cookieGen
+	return c
 }
 
-// persist writes a snapshot taken by pendingLocked.
+// persist applies a change to the file.
 //
-// Snapshots are written one at a time and in order. Taking them under s.mu and
-// writing them outside it means two mutations can reach here in the opposite
-// order, and an older table landing last would resurrect a session a newer one
-// removed - so a snapshot a newer write has already claimed is dropped rather
-// than written. The claim is staked before the write, so a failed newer write
-// does not let an older table win either.
-func (s *Server) persist(sessions map[string]time.Time, gen uint64) error {
-	if sessions == nil {
+// A parse failure is repaired rather than returned: a file this daemon cannot
+// read is one no browser can be signed out of and none can be signed in to, and
+// the table in memory is the best account of the sessions anyone still holds.
+// That is the one path that overwrites rather than composes, and it is the same
+// choice loadCookies makes at startup.
+func (s *Server) persist(c cookieChange) error {
+	if c.empty() {
 		return nil
 	}
-	s.saveMu.Lock()
-	defer s.saveMu.Unlock()
-	if gen <= s.savedGen {
+	err := s.cookieStore.Update(func(f *cookieFile) error {
+		if f.Sessions == nil {
+			f.Sessions = map[string]time.Time{}
+		}
+		now := time.Now()
+		for id, exp := range f.Sessions {
+			if id == "" || now.After(exp) {
+				delete(f.Sessions, id)
+			}
+		}
+		for _, id := range c.remove {
+			delete(f.Sessions, id)
+		}
+		for id, exp := range c.add {
+			f.Sessions[id] = exp
+		}
+		return nil
+	})
+	if err == nil {
 		return nil
 	}
-	s.savedGen = gen
-	if err := s.cookieStore.Save(cookieFile{Sessions: sessions}); err != nil {
-		return fmt.Errorf("write %s: %w", s.cookieStore.Path(), err)
+	slog.Warn("the browser sessions file could not be updated; rewriting it from this daemon's table",
+		"path", s.cookieStore.Path(), "err", err)
+	s.mu.Lock()
+	table := make(map[string]time.Time, len(s.cookies))
+	for id, exp := range s.cookies {
+		table[id] = exp
 	}
-	return nil
+	s.mu.Unlock()
+	return s.cookieStore.Save(cookieFile{Sessions: table})
 }
 
 // ForgetSessions removes the browser sessions kept at path, so every browser
@@ -114,7 +145,8 @@ func (s *Server) persist(sessions map[string]time.Time, gen uint64) error {
 // token but not the sessions - that is the whole point of keeping them - so a
 // cookie an attacker traded that token for would otherwise renew itself for as
 // long as it was used. Stop the daemon first: a running one holds the table in
-// memory and would write it back.
+// memory, goes on honouring every cookie in it, and records the next change
+// against the file this removed.
 func ForgetSessions(path string) error {
 	f := cookieStoreFor(path)
 	if f == nil {

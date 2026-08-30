@@ -61,17 +61,9 @@ type Server struct {
 	// cookies are the live browser sessions and when each expires. They are
 	// written to cookieStore on every change when there is one, and held in
 	// memory alone when there is not.
-	cookies map[string]time.Time
-	// cookieGen numbers the snapshots handed to persist, which writes them in
-	// order and drops one a newer write has overtaken. See pendingLocked.
-	cookieGen   uint64
+	cookies     map[string]time.Time
 	cookieStore *store.File[cookieFile]
 	closed      bool
-
-	// saveMu serializes the cookie file itself, held across the disk write that
-	// s.mu deliberately is not.
-	saveMu   sync.Mutex
-	savedGen uint64
 }
 
 // New binds the listener and builds the routes. The daemon is not serving until
@@ -295,11 +287,15 @@ func checkBound(addr net.Addr, origins []string) error {
 // are reached under, and leaving it allowed only widens what a rebinding attack
 // may claim to be.
 //
-// The loopback names survive that replacement, and so do their origins. The
-// hosts are what lets curl keep working against a proxied daemon; the origins
-// are what lets the operator open the same daemon in a browser on the machine
-// itself. Neither weakens anything - a page on an attacker's host can send its
-// own Origin, and it will never be one of these.
+// The loopback names survive that replacement, and so do their origins - so a
+// daemon bound to loopback behind a proxy is still reachable with curl on the
+// machine, and the operator can still open it in a browser there. Neither
+// weakens anything: a page on an attacker's host can send its own Origin, and it
+// will never be one of these.
+//
+// A bind that is neither loopback nor a wildcard has no local name to keep, so
+// with an origin stated it answers to that origin and nothing else - including
+// from the machine it runs on.
 func hostsFor(addr net.Addr, origins []string) (allowlist, error) {
 	host, port, err := net.SplitHostPort(addr.String())
 	if err != nil {
@@ -329,16 +325,23 @@ func hostsFor(addr net.Addr, origins []string) (allowlist, error) {
 		// http://192.168.1.5:7777, which is what keeping it here used to do.
 		local = append(local, net.JoinHostPort(host, port))
 	}
-	// The loopback names survive a stated origin - they are what lets curl on the
-	// machine keep working against a proxied daemon, and they are names no page
-	// on an attacker's host can send. Only the ones this socket actually answers
-	// on, though: allowlisting [::1] on a daemon bound to 127.0.0.1 alone names
-	// an origin any other local process is free to serve.
+	// The loopback names survive a stated origin - on a loopback or wildcard bind
+	// they are what lets curl and a browser on the machine itself keep working
+	// against a proxied daemon, and they are names no page on an attacker's host
+	// can send. Only the ones this socket actually answers on, though:
+	// allowlisting [::1] on a daemon bound to 127.0.0.1 alone names an origin any
+	// other local process is free to bind and serve.
+	//
+	// "localhost" goes with the two addresses it resolves to and no other. A
+	// daemon on 127.0.0.2 is not reachable as localhost, so allowing that origin
+	// would name a page some neighbour on 127.0.0.1 is free to serve.
 	switch {
 	case host == "0.0.0.0" || host == "::":
 		local = append(local, "127.0.0.1:"+port, "[::1]:"+port, "localhost:"+port)
-	case isLoopbackHost(host):
+	case host == "127.0.0.1" || host == "::1":
 		local = append(local, net.JoinHostPort(host, port), "localhost:"+port)
+	case isLoopbackHost(host):
+		local = append(local, net.JoinHostPort(host, port))
 	}
 	for _, h := range local {
 		if !slices.Contains(out.hosts, h) {
@@ -374,6 +377,8 @@ func normalizeOrigin(raw string) (string, error) {
 		return "", fmt.Errorf("web: origin %q must not carry credentials", raw)
 	case strings.HasSuffix(u.Host, ":"):
 		return "", fmt.Errorf("web: origin %q ends in a colon with no port", raw)
+	case u.Hostname() == "":
+		return "", fmt.Errorf("web: origin %q names a port but no host", raw)
 	case u.Path != "" && u.Path != "/", u.RawQuery != "", u.Fragment != "":
 		return "", fmt.Errorf("web: origin %q must be a scheme and a host and nothing else "+
 			"(for example https://aigem.example.ts.net)", raw)
@@ -389,6 +394,11 @@ func normalizeOrigin(raw string) (string, error) {
 			host = "[" + host + "]"
 		}
 	}
+	// The same trailing root dot normalizeHost strips off an incoming Host. The
+	// two have to agree: an allowlist entry keeping the dot could never match a
+	// request that had it taken off, and one without it could never match a
+	// browser that sent it in both headers.
+	host = trimRootDot(host)
 	// A browser sends an internationalised name in its punycode form, so an
 	// allowlist entry holding the unicode one matches nothing, ever. Converting
 	// here would mean depending on golang.org/x/net/idna for one flag; saying so
@@ -410,9 +420,19 @@ func normalizeHost(raw string) string {
 	h := strings.ToLower(strings.TrimSpace(raw))
 	host, port, err := net.SplitHostPort(h)
 	if err != nil {
-		return strings.TrimSuffix(h, ".")
+		return trimRootDot(h)
 	}
-	return net.JoinHostPort(strings.TrimSuffix(host, "."), port)
+	return net.JoinHostPort(trimRootDot(host), port)
+}
+
+// trimRootDot removes the trailing dot of a fully qualified name, and leaves
+// everything else alone - an address is not a name, and "." is not a root dot
+// with a name in front of it.
+func trimRootDot(host string) string {
+	if len(host) > 1 && strings.HasSuffix(host, ".") {
+		return host[:len(host)-1]
+	}
+	return host
 }
 
 func methodNotAllowed(allow string) http.HandlerFunc {

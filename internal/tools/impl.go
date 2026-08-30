@@ -387,6 +387,13 @@ func (t *bashTool) Run(ctx context.Context, args json.RawMessage) (string, error
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", a.Cmd)
 	cmd.Dir = t.r.root
+	configureProcessGroup(cmd)
+	// Without these two, cancelling kills bash and then CombinedOutput waits for
+	// whatever the command backgrounded, because the orphan still holds the
+	// output pipe. Measured at 30s for a `sleep 30 &`, and unbounded for a dev
+	// server - all of it inside a turn the caller believes it has cancelled, and
+	// which closing the session now waits for.
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
 	res := string(out)
 	if err != nil {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -537,40 +538,224 @@ func TestAnEnormousCursorReturnsNothing(t *testing.T) {
 	}
 }
 
-// The mtime half of the staleness check. A peer's compaction that lands on the
-// same byte count is the case it exists for; with size alone the index keeps the
-// sequences of the file that is gone, and every cursor is then answered against
-// numbering that no longer exists.
-func TestASameSizeRewriteIsNoticed(t *testing.T) {
+// A file the index cannot vouch for has to be read again, and neither half of
+// that check is enough on its own.
+//
+// Same inode, same length, different mtime: an in-place rewrite. Different
+// inode, same length, same mtime: a compaction, which renames a new file into
+// place - and there size and mtime agree with the file that is gone, so only
+// os.SameFile can tell. Missing either leaves the index holding the numbering of
+// a file that no longer exists, and every cursor is answered against it.
+func TestARewriteOfTheSameLengthIsNoticed(t *testing.T) {
+	renumber := func(t *testing.T, data []byte) []byte {
+		t.Helper()
+		out := strings.Replace(string(data), `{"seq":1,`, `{"seq":5,`, 1)
+		out = strings.Replace(out, `{"seq":2,`, `{"seq":6,`, 1)
+		if len(out) != len(data) || out == string(data) {
+			t.Fatalf("the rewrite has to be the same length and different; got %d vs %d bytes",
+				len(out), len(data))
+		}
+		return []byte(out)
+	}
+
+	t.Run("in place", func(t *testing.T) {
+		l := newTestLog(t)
+		appendAll(t, l, "a", "b")
+		if _, err := l.Range(0, 0); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(l.Path())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(l.Path(), renumber(t, data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Both records are past a cursor of 1 now. An index still holding 1 and 2
+		// would answer with one.
+		got, err := l.Range(1, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 {
+			t.Errorf("Range(1, 0) returned %d records, want 2", len(got))
+		}
+	})
+
+	t.Run("renamed into place with the same size and mtime", func(t *testing.T) {
+		l := newTestLog(t)
+		appendAll(t, l, "a", "b")
+		if _, err := l.Range(0, 0); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(l.Path())
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(l.Path())
+		if err != nil {
+			t.Fatal(err)
+		}
+		replacement := l.Path() + ".replacement"
+		if err := os.WriteFile(replacement, renumber(t, data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// The stat a compaction leaves behind can match the file it replaced on
+		// both counts, so the test hands sync the hardest version of that.
+		if err := os.Chtimes(replacement, info.ModTime(), info.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(replacement, l.Path()); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := l.Range(1, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 {
+			t.Errorf("Range(1, 0) returned %d records, want 2; the replacement went unnoticed",
+				len(got))
+		}
+	})
+}
+
+// The last line of defence, and the only one that can act on a file that was
+// replaced between the stat and the read: a record is checked against the
+// sequence the index promised for it. Without it a stale offset that lands on a
+// line boundary - which fixed-width records make systematic - comes back as a
+// window of real records, shifted, and the client advances its cursor past the
+// ones it never saw.
+//
+// The index is staled by hand because every path through Range is meant to stop
+// this happening; what is under test is what remains when one of them does not.
+func TestAReadFromAStaleIndexIsRefusedRatherThanShifted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "activity.jsonl")
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	reader := NewLog[event](path)
+	at := base
+	reader.now = func() time.Time { return at }
+	// Nine records, so every sequence is one digit and every timestamp the same
+	// width: the offsets then shift by whole records.
+	for _, k := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"} {
+		at = at.Add(time.Second)
+		if _, err := reader.Append(event{Kind: k}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := reader.Range(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	staleSeqs := append([]int(nil), reader.seqs...)
+	staleOffsets := append([]int64(nil), reader.offsets...)
+
+	peer := NewLog[event](path)
+	if dropped, err := peer.Compact(base.Add(3 * time.Second)); err != nil || dropped != 2 {
+		t.Fatalf("the peer dropped %d records (%v), want 2", dropped, err)
+	}
+
+	reader.seqs, reader.offsets = staleSeqs, staleOffsets
+	if _, err := reader.window(2, 0); err == nil {
+		t.Error("a read from a stale index returned a window instead of an error")
+	}
+
+	// And Range, which syncs first and reads again on an error, still answers
+	// correctly.
+	reader.seqs, reader.offsets = staleSeqs, staleOffsets
+	got, err := reader.Range(2, 0)
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if len(got) == 0 || got[0].Seq != 3 {
+		t.Errorf("Range(2, 0) = %v, want the window starting at record 3", got)
+	}
+}
+
+// A caller that cannot write unlocked has to be able to tell "come back later"
+// from "this file is broken", without matching on the message.
+func TestARefusedLockIsRecognisable(t *testing.T) {
+	shrinkLockWait(t, 60*time.Millisecond)
 	l := newTestLog(t)
-	appendAll(t, l, "a", "b")
-	if _, err := l.Range(0, 0); err != nil {
+	appendAll(t, l, "a")
+	if err := os.WriteFile(l.Path()+".lock", []byte("a-live-peer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := l.Append(event{Kind: "b"})
+	if !errors.Is(err, ErrLocked) {
+		t.Errorf("Append refused with %#v, want something errors.Is-able as ErrLocked", err)
+	}
+	if _, err := l.Compact(time.Now()); !errors.Is(err, ErrLocked) {
+		t.Errorf("Compact refused with %#v, want ErrLocked", err)
+	}
+}
+
+// The index is extended from where the last scan stopped rather than rebuilt,
+// because rebuilding parses every record of the feed on every request that
+// touches it. The guard on that shortcut is the numbering: a file that grew but
+// is not the one the index describes cannot continue it.
+func TestAFileThatGrewWithoutContinuingIsRefused(t *testing.T) {
+	l := newTestLog(t)
+	appendAll(t, l, "a", "b", "c")
+	if _, err := l.Len(); err != nil {
 		t.Fatal(err)
 	}
 
-	// Renumbered 5 and 6, which is the same number of bytes: what a peer rewrite
-	// can look like from a stat alone.
-	data, err := os.ReadFile(l.Path())
+	// Appended to the same inode, so the identity check passes and only the
+	// numbering can catch it.
+	f, err := os.OpenFile(l.Path(), os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	renumbered := strings.Replace(string(data), `{"seq":1,`, `{"seq":5,`, 1)
-	renumbered = strings.Replace(renumbered, `{"seq":2,`, `{"seq":6,`, 1)
-	if len(renumbered) != len(data) || renumbered == string(data) {
-		t.Fatalf("the rewrite has to be the same length and different; got %d vs %d bytes",
-			len(renumbered), len(data))
+	line, err := json.Marshal(Entry[event]{Seq: 1, At: time.Now().UTC(), V: event{Kind: "x"}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := os.WriteFile(l.Path(), []byte(renumbered), 0o600); err != nil {
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	// Both records are past a cursor of 1 now. An index still holding 1 and 2
-	// would answer with one.
-	got, err := l.Range(1, 0)
+	if _, err := l.Len(); err == nil {
+		t.Error("a file whose numbering restarted was indexed as a continuation")
+	}
+	// And the index was dropped rather than left half-built, so the next call
+	// reads the file rather than a mixture of two.
+	if _, err := l.Range(0, 0); err == nil {
+		t.Error("the second call trusted an index built from a refused scan")
+	}
+}
+
+// Only what is new is parsed when the file has merely grown. The visible half
+// of that is the result being identical either way.
+func TestAnIncrementalScanAgreesWithAFullOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "activity.jsonl")
+	warm := NewLog[event](path)
+	appendAll(t, warm, "a", "b")
+	if _, err := warm.Range(0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	peer := NewLog[event](path)
+	appendAll(t, peer, "c", "d")
+
+	// warm's index is extended across the peer's two records; cold reads the
+	// whole file from scratch.
+	incremental, err := warm.Range(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		t.Errorf("Range(1, 0) returned %d records, want 2; a same-size rewrite went unnoticed", len(got))
+	full, err := NewLog[event](path).Range(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(incremental) != len(full) {
+		t.Fatalf("extended index sees %d records, a fresh one sees %d", len(incremental), len(full))
+	}
+	for i := range full {
+		if incremental[i].Seq != full[i].Seq || incremental[i].V != full[i].V {
+			t.Errorf("record %d: extended %+v, fresh %+v", i, incremental[i], full[i])
+		}
 	}
 }

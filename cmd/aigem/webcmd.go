@@ -32,8 +32,11 @@ for a cookie and takes it back out of the address bar, but until it does it is a
 secret on stdout - and with --open, in the process table of this machine.
 
 Browser sign-ins outlive a restart, so restarting does not revoke one: it
-rotates the token and leaves every cookie working. If the token got out, use
---sign-out, which forgets every session before serving.
+rotates the token and leaves every cookie working. If the token got out, stop
+the daemon and start it again with --sign-out, which forgets every session
+first. Stopping it is not optional: a daemon still running holds the sessions in
+memory, goes on honouring every cookie, and records its next change against the
+file --sign-out removed.
 
 The daemon binds loopback unless --origin says which public URL it is reached
 at. An address the network can reach needs an origin check, and nothing in a
@@ -64,7 +67,8 @@ func runWebCommand(args []string) error {
 	addr := fs.String("addr", "", "listen address (default: a loopback port chosen by the kernel)")
 	open := fs.Bool("open", false, "open the page in the default browser once it is serving")
 	signOut := fs.Bool("sign-out", false,
-		"forget every browser session before serving, so each one signs in again")
+		"forget every browser session before serving, so each one signs in again.\n"+
+			"Stop any running daemon first, or it will keep honouring them")
 	var origins originList
 	fs.Var(&origins, "origin", "public origin this daemon is reached at, scheme and all;\n"+
 		"repeat for more than one. Required to bind an address the network can reach")
@@ -90,6 +94,12 @@ func runWebCommand(args []string) error {
 	}
 
 	if *signOut {
+		// Refused rather than skipped: the operator asked for a revocation, and
+		// serving on as if it had happened is the answer they cannot check.
+		if cookies == "" {
+			return errors.New("--sign-out: there is no browser sessions file to forget, " +
+				"because the state directory could not be found")
+		}
 		if err := web.ForgetSessions(cookies); err != nil {
 			return fmt.Errorf("could not forget the browser sessions: %w", err)
 		}
@@ -109,6 +119,12 @@ func runWebCommand(args []string) error {
 	// The one place the token is meant to be published: this terminal.
 	url := srv.SignInURL()
 	fmt.Println(url)
+	// With --origin the printed link is the public one, which says nothing about
+	// where the daemon actually bound - and with a kernel-chosen port there
+	// would otherwise be no way to find out.
+	if bound := "http://" + srv.Addr().String() + "/"; !strings.HasPrefix(url, bound) {
+		fmt.Fprintln(os.Stderr, "listening on", srv.Addr())
+	}
 	if !web.HasAssets() {
 		fmt.Fprintln(os.Stderr,
 			"note: this binary carries no browser UI; build one with `make web && make build`")
