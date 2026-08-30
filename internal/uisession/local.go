@@ -158,6 +158,10 @@ type Local struct {
 
 	running bool
 	cancel  context.CancelFunc
+	// turns counts the goroutines running a turn, so Close can wait for one to
+	// unwind. Not guarded by mu: Close waits on it after releasing the lock,
+	// which is the whole point - finishTurn takes mu.
+	turns sync.WaitGroup
 
 	journal *journal
 
@@ -254,6 +258,10 @@ func (l *Local) Close() {
 	for _, s := range subs {
 		s.stop()
 	}
+	// After the cancel and after failPendingLocked, so the turn is unwinding
+	// rather than waiting on an approval nobody is left to answer. What is being
+	// waited for is the save at the end of it.
+	l.turns.Wait()
 }
 
 func (l *Local) nextApprovalID() string {
@@ -499,7 +507,14 @@ func (l *Local) startLocked(display, title string, images int,
 	l.emitLocked(Event{Kind: KindUserMessage, Text: display, Images: images})
 	l.emitLocked(Event{Kind: KindTurnStart})
 	ev := l.agentEvents()
+	// Tracked so Close can wait for it. The turn outlives the event that says it
+	// ended - finishTurn emits KindTurnEnd and only then saves - so a caller that
+	// closed on seeing that event would otherwise race a write it has no way to
+	// know about. A test whose t.TempDir is being removed is the visible half of
+	// that; a process tearing down its state directory is the other.
+	l.turns.Add(1)
 	go func() {
+		defer l.turns.Done()
 		defer cancel()
 		answer, err := run(ctx, ev)
 		l.finishTurn(answer, err)

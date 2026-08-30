@@ -19,13 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   daemon is reached at, which is what lets it bind an address the network can
   reach. Without it the bind is refused: an origin check needs a name a person
   stated, and nothing in a request can be trusted to supply one. Repeat the flag
-  for a daemon reached under more than one name. A loopback bind behind
-  `tailscale serve` or another reverse proxy still needs no flag at all.
+  for a daemon reached under more than one name; give an internationalised name
+  in its punycode form. A loopback bind behind `tailscale serve` or another
+  reverse proxy still needs no flag at all.
+- `aigem web --sign-out` forgets every browser session before serving. Sign-ins
+  outlive a restart on purpose, so a restart mints a new token and leaves every
+  cookie working - which makes it the wrong reflex for a token that got out.
 - `make web` builds the browser UI into `internal/web/dist`, where the binary
   embeds it from. It needs Node 22+. **The bundle is not committed and the
   release pipeline does not build it**, so a downloaded release binary and
   `go install ...@latest` both answer every page with a 501 that says which
   build step is missing. Build from a checkout to get a UI.
+
+### Fixed
+
+- A session that was closed while a turn was running could still be writing
+  after `Close` returned. The turn is emitted as ended and saved after that, so
+  a caller that closed on seeing the end of it raced a write it had no way to
+  know about. `Close` now waits for the turn to unwind. This was visible as an
+  occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
 
 ### Changed
 
@@ -36,9 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   second aigem - saw a document that was not JSON, and a process killed there
   left one on disk. Files already written keep their mode until they are saved
   again.
-- A session id that is a path rather than a name is refused. Ids come from
-  `NewID` today, but the browser daemon takes them from requests, and
-  `../auth` was a path the sessions directory had no reason to reach.
+- A session id that is a path rather than a name is refused, and a document
+  whose own id disagrees with the file it was found in is refused with it. Ids
+  come from `NewID` today, but the browser daemon takes them from requests,
+  `../auth` was a path the sessions directory had no reason to reach, and the
+  id inside the document is the one callers carry away to name the event
+  journal.
 
 ### Removed
 
@@ -140,6 +155,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run fails, so the rule protected nothing there and turned a 5xx into a failed
   delegation. On a reasoning model, whose deltas start immediately, that was
   nearly every hiccup.
+
+### Fixed
+
+- A session that was closed while a turn was running could still be writing
+  after `Close` returned. The turn is emitted as ended and saved after that, so
+  a caller that closed on seeing the end of it raced a write it had no way to
+  know about. `Close` now waits for the turn to unwind. This was visible as an
+  occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
 
 ### Changed
 
@@ -306,6 +329,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the message came from, and teammates are matched by chat username rather than
   by aigem name.
 
+### Fixed
+
+- A session that was closed while a turn was running could still be writing
+  after `Close` returned. The turn is emitted as ended and saved after that, so
+  a caller that closed on seeing the end of it raced a write it had no way to
+  know about. `Close` now waits for the turn to unwind. This was visible as an
+  occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
+
 ### Changed
 
 - Every LLM client in a process, the TUI's included, shares one HTTP connection
@@ -353,6 +384,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model that works and pointed at a login that would have failed. Only the
   built-in local provider was exempt; `-p` was never affected.
 - `aigem --help` printed a literal `%%` in the two compaction percentage flags.
+
+### Fixed
+
+- A session that was closed while a turn was running could still be writing
+  after `Close` returned. The turn is emitted as ended and saved after that, so
+  a caller that closed on seeing the end of it raced a write it had no way to
+  know about. `Close` now waits for the turn to unwind. This was visible as an
+  occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
 
 ### Changed
 
@@ -444,6 +483,14 @@ First public release.
   `bash`-style `-c` they reject.
 - A container started with neither a command nor `BOT_NAME` exits non-zero
   instead of reporting success to whatever supervises it.
+
+### Fixed
+
+- A session that was closed while a turn was running could still be writing
+  after `Close` returned. The turn is emitted as ended and saved after that, so
+  a caller that closed on seeing the end of it raced a write it had no way to
+  know about. `Close` now waits for the turn to unwind. This was visible as an
+  occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
 
 ### Changed
 

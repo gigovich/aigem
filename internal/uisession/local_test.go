@@ -10,6 +10,7 @@ import (
 
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/llm"
+	"github.com/gigovich/aigem/internal/session"
 	"github.com/gigovich/aigem/internal/tools"
 )
 
@@ -595,5 +596,64 @@ func TestSubmitTitleForImagesOnly(t *testing.T) {
 		if got := submitTitle(c.text, c.images); got != c.want {
 			t.Errorf("submitTitle(%q, %d) = %q, want %q", c.text, c.images, got, c.want)
 		}
+	}
+}
+
+// A turn outlives the event that says it ended: finishTurn emits KindTurnEnd and
+// only then saves. So Close cancelling the turn and returning left a goroutine
+// writing into a state directory its caller believes it is done with - a test
+// whose t.TempDir cannot be removed, and outside a test a save landing after
+// whatever was going to replace it.
+//
+// The turn here is a closure that does not stop the instant its context is
+// cancelled - a skill midway through a shell command. An ordinary turn returns
+// on cancel promptly, which leaves only the save in the window and is why this
+// went unnoticed as an occasional cleanup failure rather than as a bug.
+func TestCloseWaitsForTheTurnItCancelled(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := New(Config{
+		Tools: reg,
+		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
+			return agent.New(&scriptedClient{}, reg, 0.3, confirm, "")
+		},
+		Ring: 64,
+	})
+
+	release := make(chan struct{})
+	if err := l.Run("skill", "skill", func(context.Context, agent.Events) (string, error) {
+		<-release
+		return "done", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	closed := make(chan struct{})
+	go func() { l.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a turn was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close never returned after the turn was released")
+	}
+
+	// The save at the end of the turn is what Close was waiting for, so it has
+	// already landed by the time this runs. Without the wait it is a coin flip,
+	// and the losing side is a write into a directory nobody is watching.
+	metas, err := session.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("the conversation was not saved before Close returned: %+v", metas)
 	}
 }
