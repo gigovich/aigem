@@ -156,19 +156,6 @@ func (l *Local) reopenJournalLocked() {
 	}
 }
 
-// Timeline returns what was recorded for the conversation now loaded, oldest
-// first. It is the timeline a front-end draws on resume: the saved messages say
-// what the agent remembers, and this says what happened.
-func (l *Local) Timeline() ([]Event, error) {
-	l.mu.Lock()
-	id := l.id
-	l.mu.Unlock()
-	if id == "" {
-		return nil, nil
-	}
-	return readJournal(id, 0)
-}
-
 // SetRebuildSystem installs the system-prompt assembler after construction,
 // for a caller that only has it once the session exists.
 func (l *Local) SetRebuildSystem(f func() string) {

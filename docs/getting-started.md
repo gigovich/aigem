@@ -137,7 +137,7 @@ and `-v` do the same but only as the first argument.
 
 ### Unattended turn budgets
 
-These bound a `-p` or bot turn so a loop cannot run forever. Set any to `0` to
+These bound a `-p` turn so a loop cannot run forever. Set any to `0` to
 disable it.
 
 | Flag                       | Default | What it bounds                     |

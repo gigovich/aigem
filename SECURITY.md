@@ -29,7 +29,7 @@ enforce. Those claims are:
   require an explicit grant; writes outside it are asked about every time and are
   never remembered. A path that escapes the sandbox without the documented
   prompt is a vulnerability.
-- **Capability profiles.** Unattended runs (`-p`, bots) use a profile.
+- **Capability profiles.** Unattended runs (`-p`) use a profile.
   `workspace-write`, the default, does not expose `bash` at all. `-y` approving a
   shell command under a profile that should not expose shell is a vulnerability.
 - **The destructive-command deny list.** Some shell commands are refused even
@@ -46,7 +46,6 @@ enforce. Those claims are:
 Things that are **not** vulnerabilities:
 
 - The model running a destructive command you approved at the prompt.
-- A bot with `capabilityProfile: dangerous-shell` doing something destructive.
 - Prompt injection changing what the model *says*. Prompt injection that makes
   it cross one of the boundaries above **is** in scope, and is the case worth
   reporting.

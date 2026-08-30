@@ -49,9 +49,6 @@ nav:
       - Web search: search.md
       - The TUI: tui.md
       - Configuration: configuration.md
-  - Unattended:
-      - Chat bots: bots.md
-      - Docker: docker.md
   - Architecture: architecture.md
 
 markdown_extensions:

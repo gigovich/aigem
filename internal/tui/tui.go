@@ -377,13 +377,14 @@ type alertBox struct {
 
 type Model struct {
 	// sess is the conversation: submitting, interrupting, answering an approval,
-	// and the event stream this model renders. It is an interface because the
-	// same model has to drive a session in this process and one in a daemon.
+	// and the event stream this model renders. It is an interface because a
+	// session need not run in this process; uisession.Local, which does, is the
+	// only implementation today.
 	sess uisession.Session
-	// local is that same session when it runs here, and nil when it does not.
-	// It carries what cannot cross a socket - chiefly a turn driven by a closure
-	// (a skill, an MCP prompt, a compaction) - so every use of it is a statement
-	// that the feature is local-only until it grows a command.
+	// local is that same session as its concrete type. It carries what cannot
+	// cross a process boundary - chiefly a turn driven by a closure (a skill, an
+	// MCP prompt, a compaction) - so every use of it is a statement that the
+	// feature is local-only until it grows a command.
 	local    *uisession.Local
 	agent    *agent.Agent
 	backend  *llm.Ref
@@ -1542,8 +1543,8 @@ func (m *Model) navHistory(delta int) {
 }
 
 // submit sends a typed message. It goes through the interface rather than
-// through a closure, which is what makes the ordinary case - the one that is
-// almost all of the use - work against a session in a daemon.
+// through a closure, which is what would let the ordinary case - the one that is
+// almost all of the use - work against a session that does not run here.
 func (m *Model) submit(input string) tea.Cmd {
 	images := append([]llm.Image(nil), m.pendingImages...)
 	m.pendingImages = nil
@@ -1635,16 +1636,10 @@ func (m *Model) turnFailed(err error) tea.Cmd {
 }
 
 // startTurn runs a turn from a closure: a skill, an MCP prompt, a compaction.
-// A function cannot cross a socket, so these need the session to be in this
-// process; a front-end attached to a daemon reaches them as commands instead.
+// A function cannot cross a process boundary, so these need the session to be
+// the local one; a front-end that did not run here would need commands instead.
 func (m *Model) startTurn(display block, title string,
 	run func(context.Context, agent.Events) (string, error)) tea.Cmd {
-	if m.local == nil {
-		m.blocks = append(m.blocks, block{kind: bkNotice,
-			text: "not available while attached to a daemon"})
-		m.refresh()
-		return nil
-	}
 	m.beginTurn(display)
 	if err := m.local.Run(display.text, title, run); err != nil {
 		return m.turnFailed(err)

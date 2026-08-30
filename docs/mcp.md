@@ -46,8 +46,3 @@ the server starts with `autoApprove` disabled until the new policy is approved.
 
 HTTP approval is per named target and fingerprint, and never grants general
 network access. See [the security model](security.md) for the details.
-
-## Bots
-
-Bot mode does not connect MCP servers, so bots never auto-start project-local
-ones.

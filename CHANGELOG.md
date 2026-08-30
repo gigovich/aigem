@@ -7,12 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Removed
 
-- The Web UI thread composer accepts pasted PNG, JPEG, GIF, and WebP screenshots,
-  previews and removes them before send, supports image-only messages, and renders
-  sent images in the transcript. Uploads are sequential and retry-safe, with limits
-  published by the daemon.
+- The bot/fleet subsystem and the legacy browser Web UI. `aigem bot ...`,
+  `aigem chat ...`, `aigem web run`, `aigem attach`, and the global `-listen` /
+  `-origin` flags are gone, along with bot accounts, roles, bot memory,
+  cron/scheduling, heartbeats, handoffs, team status, the fleet's shared
+  conversation store, the Web UI and its HTTP/websocket API and Web Push
+  notifications, the Docker image and `docker-entrypoint.sh`, the `deploy/`
+  systemd units, and Node/npm as a build prerequisite. aigem is a terminal
+  coding agent now, full stop; a new Web UI will be designed later from
+  scratch. Nothing under `~/.config/aigem/bots/`, `~/.config/aigem/fleet.json`,
+  or the fleet/web daemon's state files is deleted automatically - remove them
+  by hand if you want the disk space back. Coding subagents (`task`, the
+  scout/code-writer/simplifier/reviewer delegation the model uses mid-turn) are
+  a separate system and are unaffected.
 
 ## [0.4.0] - 2026-08-26
 

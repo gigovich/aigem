@@ -103,16 +103,16 @@ func TestPathActivationHint(t *testing.T) {
 	}
 }
 
-func TestRefreshingSkillToolSeesRegistryReplacement(t *testing.T) {
+func TestSkillToolSeesRegistryReplacement(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	cwd := t.TempDir()
 	empty, _ := skill.DiscoverDir(filepath.Join(cwd, ".skills"))
 	reg, _ := tools.NewRegistry(cwd)
-	st := NewRefreshingSkillTool(empty, &fakeClient{}, reg, 0.3, nil)
+	st := newSkillTool(empty, &fakeClient{}, reg, 0.3, nil)
 	if st == nil {
-		t.Fatal("expected a refreshing skill tool for an initially empty registry")
+		t.Fatal("expected a skill tool for an initially empty registry")
 	}
 	writeSkillFile(t, cwd, "newskill",
 		"---\nname: newskill\ndescription: created after agent startup\n---\nFresh body.\n")
@@ -133,7 +133,7 @@ func TestRefreshingSkillToolSeesRegistryReplacement(t *testing.T) {
 	}
 }
 
-func TestRefreshingSkillToolTracksSaveUpdateDeleteAndMalformed(t *testing.T) {
+func TestSkillToolTracksSaveUpdateDeleteAndMalformed(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -141,7 +141,7 @@ func TestRefreshingSkillToolTracksSaveUpdateDeleteAndMalformed(t *testing.T) {
 	root := filepath.Join(base, ".skills")
 	reg, _ := skill.DiscoverDir(root)
 	toolsReg, _ := tools.NewRegistry(t.TempDir())
-	st := NewRefreshingSkillTool(reg, &fakeClient{}, toolsReg, 0.3, nil)
+	st := newSkillTool(reg, &fakeClient{}, toolsReg, 0.3, nil)
 	if st == nil {
 		t.Fatal("expected a stable skill tool")
 	}

@@ -76,8 +76,8 @@ func translate(ev uisession.Event) tea.Msg {
 		return usageMsg(ev.Tokens)
 	case uisession.KindSessionMeta:
 		// The gauge's denominator arrives with the conversation's identity, so a
-		// model switch updates it the same way whether the session is here or in
-		// a daemon.
+		// model switch updates it through the event stream alone - which would hold
+		// for a session that does not run in this process too.
 		return sessionMetaMsg{ctx: ev.Ctx, model: ev.Name}
 	case uisession.KindTodo:
 		return todoUpdateMsg(ev.Todos)

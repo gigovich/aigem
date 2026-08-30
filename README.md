@@ -90,11 +90,6 @@ output, drops duplicate reads, and finally summarizes older turns - with the ful
 history backed up before every summarization.
 → [Compaction](docs/tui.md#context-compaction)
 
-**Chat bots.** The same agent, unattended, in its own web UI: run one bot
-or the whole team in a single process, with per-bot models and budgets, cron
-prompts, and handoff between roles.
-→ [Chat bots](docs/bots.md)
-
 ## Documentation
 
 Full docs are at **[gigovich.github.io/aigem](https://gigovich.github.io/aigem/)**.
@@ -108,7 +103,6 @@ Full docs are at **[gigovich.github.io/aigem](https://gigovich.github.io/aigem/)
 | [Skills](docs/skills.md) · [Hooks](docs/hooks.md) · [MCP](docs/mcp.md) | Extending the agent |
 | [The TUI](docs/tui.md) | Keys, sessions, compaction, theming |
 | [Configuration](docs/configuration.md) | Paths, system prompt, project files |
-| [Chat bots](docs/bots.md) · [Docker](docs/docker.md) | Running unattended |
 | [Architecture](docs/architecture.md) | Package map, for contributors |
 
 ## Caveats worth reading

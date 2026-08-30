@@ -36,17 +36,6 @@ func NewSkillTool(skills *skill.Registry, client streamer, reg *tools.Registry, 
 	return newSkillTool(skills, client, reg, temp, confirm)
 }
 
-// NewRefreshingSkillTool builds a skill tool whose registry may be populated after
-// construction. It is used by long-lived bot agents that rediscover skills before
-// every turn, including agents that started with no skills.
-func NewRefreshingSkillTool(skills *skill.Registry, client streamer, reg *tools.Registry, temp float64,
-	confirm ConfirmFunc) tools.Tool {
-	if skills == nil {
-		return nil
-	}
-	return newSkillTool(skills, client, reg, temp, confirm)
-}
-
 func newSkillTool(skills *skill.Registry, client streamer, reg *tools.Registry, temp float64,
 	confirm ConfirmFunc) tools.Tool {
 	return &skillTool{skills: skills, client: client, tools: reg, temp: temp, confirm: confirm}

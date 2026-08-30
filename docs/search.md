@@ -35,8 +35,8 @@ profile's cookies carry over between calls.
 `open_url` only opens public web addresses; internal hosts (localhost, private
 and link-local ranges) are refused. `browser_action` honors the same rule, with
 one deliberate exception: hosts you allowlist explicitly with
-`aigem search set browser --test-host HOST` are reachable, so a bot can drive an
-internal staging site you pointed it at.
+`aigem search set browser --test-host HOST` are reachable, so the agent can drive
+an internal staging site you pointed it at.
 
 It uses an isolated profile; if `--profile-dir` is omitted, aigem creates one in
 its private state directory. Chrome/Chromium is auto-detected, and `--executable`

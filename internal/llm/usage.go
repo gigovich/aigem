@@ -97,9 +97,9 @@ type UsageReporter interface {
 }
 
 // UsageOf returns b's reporter, unwrapping a Ref so callers holding the shared
-// swappable handle see the live backend's numbers. Note that Paced and Retrying
-// wrap a bare streamer and cannot be unwrapped: hold the Ref, not the decorated
-// chain, to observe usage.
+// swappable handle see the live backend's numbers. Note that Retrying wraps a
+// bare streamer and cannot be unwrapped: hold the Ref, not the decorated chain,
+// to observe usage.
 func UsageOf(b Backend) (UsageReporter, bool) {
 	if r, ok := b.(*Ref); ok {
 		return r, r.usable()

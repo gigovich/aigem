@@ -1,10 +1,14 @@
 // Package fanout delivers an ordered stream to several readers without letting
 // the slowest one set the pace.
 //
-// It was extracted from the session fan-out so a second ordered stream - a chat
-// store's frames - could reuse the same behaviour rather than reimplement its
-// subtler parts: history the reader asked for must not count as falling behind,
-// and a reader that is dropped must still be told where to resume.
+// It holds the two properties that are easy to get wrong when a reader
+// subscribes, falls behind, or comes back: history the reader asked for must
+// not count against how far behind it is allowed to fall, and a reader that is
+// dropped must still be told where to resume. It is generic over the element
+// type, and knows nothing about who is reading, so it was kept separate from
+// its caller rather than inlined - today that caller is
+// internal/uisession/subscriber.go, which is what the TUI's subscribe and
+// resubscribe path runs on.
 package fanout
 
 import "sync"

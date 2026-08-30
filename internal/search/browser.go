@@ -238,79 +238,53 @@ func startChrome(ctx context.Context, cfg BrowserConfig) (context.Context, conte
 	if err != nil {
 		return nil, nil, err
 	}
-	// Then the process-wide launch cap, in that order: a call queueing for its own
-	// profile must not sit on a launch slot the rest of the fleet could use. The
-	// slot is held for the whole session, because that is how long the browser
-	// lives.
-	leave, err := cfg.Launches.enter(ctx)
-	if err != nil {
+	// The lock is released on every path that does not hand a live browser back,
+	// and by the returned cancel when one is handed back.
+	bctx, cancel, err := probeChrome(ctx, cfg)
+	if err == nil {
+		return bctx, withUnlock(cancel, unlock), nil
+	}
+	if ctx.Err() != nil {
 		unlock()
 		return nil, nil, err
 	}
-	// Both gates are released together on every path that does not hand a live
-	// browser back, and by the returned cancel when one is handed back.
-	release := chain(leave, unlock)
-
-	bctx, cancel, err := probeChrome(ctx, cfg)
-	if err == nil {
-		return bctx, withUnlock(cancel, release), nil
-	}
-	if ctx.Err() != nil {
-		release()
-		return nil, nil, err
-	}
-	if dir != "" && clearStaleProfileLocks(dir, browserLog(cfg)) {
-		browserLog(cfg).Warn("browser failed to start; retrying after clearing stale profile locks", "err", err)
+	if dir != "" && clearStaleProfileLocks(dir, browserLog()) {
+		browserLog().Warn("browser failed to start; retrying after clearing stale profile locks", "err", err)
 		if bctx, cancel, err = probeChrome(ctx, cfg); err == nil {
-			return bctx, withUnlock(cancel, release), nil
+			return bctx, withUnlock(cancel, unlock), nil
 		}
 		if ctx.Err() != nil {
-			release()
+			unlock()
 			return nil, nil, err
 		}
 	}
 	tmp, terr := os.MkdirTemp("", "aigem-browser-*")
 	if terr != nil {
-		release()
+		unlock()
 		return nil, nil, err
 	}
 	// The temp profile shares nothing with the persistent one, so stop holding the
-	// persistent gate here: concurrent callers should not queue behind a throwaway
-	// session, and one of them may even get the persistent profile working again.
-	// The launch slot is NOT released - a throwaway browser is still a browser, and
-	// the cap counts it.
+	// persistent profile lock here: concurrent callers should not queue behind a
+	// throwaway session, and one of them may even get the persistent profile
+	// working again.
 	unlock()
-	browserLog(cfg).Warn("browser still failing; falling back to a fresh temporary profile", "err", err, "profile", tmp)
+	browserLog().Warn("browser still failing; falling back to a fresh temporary profile", "err", err, "profile", tmp)
 	tmpCfg := cfg
 	tmpCfg.ProfileDir = tmp
 	bctx, cancel, err = probeChrome(ctx, tmpCfg)
 	if err != nil {
-		leave()
 		_ = os.RemoveAll(tmp)
 		return nil, nil, fmt.Errorf("browser failed to start even with a fresh profile: %w", err)
 	}
 	return bctx, func() {
 		cancel()
 		_ = os.RemoveAll(tmp)
-		leave()
 	}, nil
 }
 
-// browserLog is the logger for this call: the bot's own when one was wired in,
-// so a browser warning names whose turn produced it.
-func browserLog(cfg BrowserConfig) *slog.Logger {
-	if cfg.Log != nil {
-		return cfg.Log
-	}
+// browserLog is the logger for browser warnings.
+func browserLog() *slog.Logger {
 	return slog.Default()
-}
-
-// chain runs both cleanups, in the order given.
-func chain(first, second func()) func() {
-	return func() {
-		first()
-		second()
-	}
 }
 
 // profileGates holds one gate channel per resolved profile dir; profileGatesMu

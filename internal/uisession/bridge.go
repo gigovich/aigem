@@ -8,10 +8,10 @@ import (
 
 // Bridge turns the agent's callbacks into events on the stream emit writes to.
 //
-// It is package-level rather than a method because there is a second thing that
-// runs agents and wants the same timeline: an unattended bot, whose steps
-// otherwise reach only the log. Both feed the same event vocabulary, so one
-// front-end renders either.
+// It is package-level rather than a method because it needs nothing from a
+// session: it is a plain translation of agent.Events into this package's event
+// vocabulary, parameterized by where the events go. The local session is what
+// supplies emit.
 func Bridge(emit func(Event)) agent.Events {
 	return agent.Events{
 		OnContent:          func(d string) { emit(Event{Kind: KindContent, Text: d}) },

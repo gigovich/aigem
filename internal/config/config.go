@@ -33,16 +33,6 @@ func AgentsDir() (string, error) {
 	return filepath.Join(dir, "agents"), nil
 }
 
-// BotsDir returns ~/.config/aigem/bots, where each subdirectory holds one bot's
-// config, memory, and self-authored skills.
-func BotsDir() (string, error) {
-	dir, err := configDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "bots"), nil
-}
-
 // SkillRoots returns the directories to scan for skills (each holds
 // <name>/SKILL.md subdirs), in priority order: project .skills, global aigem
 // skills, project .claude/skills, global Claude skills. aigem locations come
@@ -212,8 +202,9 @@ func ModelsFiles(cwd string) []string {
 }
 
 // UserModelsFiles returns the user-level models.json if it exists, without the
-// project-local file. Callers that must not depend on the current directory (a
-// bot's model is pinned once and opened later from another cwd) use this.
+// project-local file. Callers that must not depend on the current directory (an
+// unattended run's model is pinned once and opened later from another cwd) use
+// this.
 func UserModelsFiles() []string {
 	dir, err := configDir()
 	if err != nil {

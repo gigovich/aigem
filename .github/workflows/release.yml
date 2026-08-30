@@ -1,9 +1,7 @@
 name: Release
 
-# Tags only. Both jobs are meaningless on a branch: goreleaser refuses to
-# release an untagged commit, and the semver image tags would come out empty.
-# Semver tags only. A non-numeric tag like "vnext" would make the semver image
-# tags come out empty, and the image push then fails with no tag to push.
+# Tags only: goreleaser refuses to release an untagged commit, so a push to a
+# branch has nothing to do here.
 on:
   push:
     tags: ["v[0-9]*"]
@@ -31,51 +29,3 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  docker:
-    name: container image
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      # Match exactly what GoReleaser stamps into the binaries, so the image and
-      # the release archives never report three different versions.
-      - id: vars
-        run: |
-          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          # GoReleaser renders the commit date as UTC RFC3339, so derive it from
-          # the epoch seconds rather than %cI, which carries the local offset.
-          echo "date=$(date -u -d "@$(git show -s --format=%ct HEAD)" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          # latest=auto (the default) already moves `latest` onto the newest
-          # non-prerelease semver tag, so it is not listed again here.
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
-            COMMIT=${{ steps.vars.outputs.commit }}
-            DATE=${{ steps.vars.outputs.date }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

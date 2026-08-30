@@ -40,27 +40,6 @@ jobs:
       - name: Test
         run: go test -race -timeout 15m ./...
 
-  web:
-    name: web
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: internal/web/ui/package-lock.json
-      - working-directory: internal/web/ui
-        run: npm ci
-      - working-directory: internal/web/ui
-        run: npm run check
-      - working-directory: internal/web/ui
-        run: npm run lint
-      - working-directory: internal/web/ui
-        run: npm test
-      - working-directory: internal/web/ui
-        run: npm run build
-
   # aigem builds for Windows but its hook runner shells out to bash, so the
   # suite is not meaningful there. Compile and vet instead of reporting a red
   # test run for an untested platform.

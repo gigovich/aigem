@@ -19,13 +19,3 @@ type TurnBudget struct {
 	MaxRepeatedToolCalls int
 	MaxDuration          time.Duration
 }
-
-// DefaultTurnBudget returns the safe default for unattended front-ends (-p and bots).
-func DefaultTurnBudget() TurnBudget {
-	return TurnBudget{
-		MaxModelRounds:       DefaultBudgetMaxModelRounds,
-		MaxToolCalls:         DefaultBudgetMaxToolCalls,
-		MaxRepeatedToolCalls: DefaultBudgetMaxRepeatedToolCalls,
-		MaxDuration:          DefaultBudgetMaxDuration,
-	}
-}
