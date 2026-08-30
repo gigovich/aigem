@@ -1,0 +1,34 @@
+/* Catppuccin Latte. Only the role tokens are redefined - nothing here knows
+ * about a component, so a new screen is light and dark the moment it uses the
+ * roles. */
+:root[data-theme='latte'] {
+  --bg: #dce0e8;
+  --shell: #e6e9ef;
+  --surface: #eff1f5;
+
+  --s0: #ccd0da;
+  --s1: #bcc0cc;
+  --s2: #acb0be;
+
+  --fg: #4c4f69;
+  --fg-muted: #6c6f85;
+  --fg-subtle: #8c8fa1;
+
+  --border: #ccd0da;
+  --border-strong: #acb0be;
+
+  --primary: #1e66f5;
+  --info: #209fb5;
+  --success: #40a02b;
+  --warning: #df8e1d;
+  --attention: #fe640b;
+  --danger: #d20f39;
+  --agent: #8839ef;
+  --running: #179299;
+
+  --added: #40a02b;
+  --modified: #df8e1d;
+  --deleted: #d20f39;
+
+  --shadow: 0 10px 30px -12px rgb(76 79 105 / 0.28), 0 0 0 1px rgb(76 79 105 / 0.08);
+}

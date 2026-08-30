@@ -7,6 +7,11 @@
 /dist/
 /site/
 
+# Built browser UI - filled by `make web`, never committed, so `go install`
+# works with no node toolchain. See internal/web/assets.go.
+/internal/web/dist/*
+!/internal/web/dist/.gitkeep
+
 # Local agent/editor state
 /.claude
 /.remember/

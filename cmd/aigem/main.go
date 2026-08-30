@@ -70,6 +70,7 @@ const topLevelUsage = `usage:
   aigem search ...           configure the web-search backend
   aigem mcp ...              manage MCP servers
   aigem paths ...            manage approved paths outside the working directory
+  aigem web                  serve the browser UI on a loopback port
   aigem version              print the version
 
 flags:`
@@ -172,6 +173,11 @@ func main() {
 			return
 		case "paths":
 			if err := runPathsCommand(os.Args[2:]); err != nil {
+				fatal(err)
+			}
+			return
+		case "web":
+			if err := runWebCommand(os.Args[2:]); err != nil {
 				fatal(err)
 			}
 			return

@@ -1,0 +1,36 @@
+/* Catppuccin Mocha, mapped onto role names.
+ *
+ * Every token here says what the colour is for, never what the colour is, so a
+ * second palette is a second file and not a search-and-replace. Mocha lives on
+ * bare :root because it is the default; Latte overrides under an attribute. */
+:root {
+  --bg: #11111b;
+  --shell: #181825;
+  --surface: #1e1e2e;
+
+  --s0: #313244;
+  --s1: #45475a;
+  --s2: #585b70;
+
+  --fg: #cdd6f4;
+  --fg-muted: #a6adc8;
+  --fg-subtle: #7f849c;
+
+  --border: #2a2b3c;
+  --border-strong: #45475a;
+
+  --primary: #89b4fa;
+  --info: #74c7ec;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --attention: #fab387;
+  --danger: #f38ba8;
+  --agent: #cba6f7;
+  --running: #94e2d5;
+
+  --added: #a6e3a1;
+  --modified: #f9e2af;
+  --deleted: #f38ba8;
+
+  --shadow: 0 10px 30px -10px rgb(0 0 0 / 0.6), 0 0 0 1px rgb(0 0 0 / 0.25);
+}

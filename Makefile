@@ -1,5 +1,6 @@
 BIN     := bin/aigem
 PKG     := ./cmd/aigem
+UI      := internal/web/ui
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -8,7 +9,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.dat
 # Every target the release builds, so a portability break shows up locally.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs evals clean
+.PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs evals clean web web-dev web-check
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -21,6 +22,19 @@ install: ## Install aigem into GOBIN
 
 run: build ## Build and run
 	$(BIN)
+
+# The bundle is embedded from internal/web/dist but never committed, so that
+# `go install github.com/gigovich/aigem/cmd/aigem@latest` keeps working on a
+# machine with no node. A binary built without this says it has no UI rather
+# than serving a blank page.
+web: ## Build the browser UI into internal/web/dist
+	cd $(UI) && npm ci && npm run build
+
+web-dev: ## Vite dev server, proxying /api to a running `aigem web`
+	cd $(UI) && npm run dev
+
+web-check: ## Lint, typecheck and test the browser UI
+	cd $(UI) && npm run lint && npm run check && npm test
 
 test: ## Run the test suite
 	go test ./...
@@ -61,7 +75,11 @@ cross: ## Build every released target
 
 check: fmt-check vet lint race cross ## The usual pre-PR set
 
+# npm is optional on purpose: a Go contributor without a node toolchain still
+# gets a full check run, and CI runs the UI checks in a job of their own.
 check-all: check lint-windows vuln tidy-check ## Everything CI runs
+	@command -v npm >/dev/null 2>&1 || { echo "skipping web checks: npm not found"; exit 0; }; \
+	$(MAKE) web-check
 
 docs: ## Serve the documentation site locally
 	mkdocs serve
@@ -73,3 +91,4 @@ evals: build ## Score subagent delegation against a live model (see evals/README
 
 clean: ## Remove build output
 	rm -rf bin dist site
+	find internal/web/dist -mindepth 1 ! -name .gitkeep -exec rm -rf {} +

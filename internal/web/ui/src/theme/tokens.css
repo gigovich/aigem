@@ -1,0 +1,57 @@
+/* Metrics and motion. Density changes three numbers and nothing else, which is
+ * why toggling it costs no re-render: the attribute lives on <html> and every
+ * rule reads through the variable. */
+:root {
+  --row-h: 30px;
+  --gut: 12px;
+  --fs: 13px;
+  --fs-meta: 11px;
+}
+
+:root[data-density='comfortable'] {
+  --row-h: 40px;
+  --gut: 18px;
+  --fs: 13.5px;
+}
+
+@keyframes aigem-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes aigem-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes aigem-sheet {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

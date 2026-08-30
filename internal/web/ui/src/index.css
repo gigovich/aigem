@@ -1,0 +1,78 @@
+@import 'tailwindcss';
+
+@import './theme/fonts.css';
+@import './theme/mocha.css';
+@import './theme/latte.css';
+@import './theme/tokens.css';
+
+/* The bridge between the two systems. `inline` makes Tailwind emit
+ * `background-color: var(--surface)` rather than baking today's hex into the
+ * utility, so flipping data-theme or data-density on <html> restyles the whole
+ * page with no class swapping and no React re-render. Add a role here only once
+ * it is defined in every palette file. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-shell: var(--shell);
+  --color-surface: var(--surface);
+  --color-s0: var(--s0);
+  --color-s1: var(--s1);
+  --color-s2: var(--s2);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-primary: var(--primary);
+  --color-info: var(--info);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-attention: var(--attention);
+  --color-danger: var(--danger);
+  --color-agent: var(--agent);
+  --color-running: var(--running);
+  --color-added: var(--added);
+  --color-modified: var(--modified);
+  --color-deleted: var(--deleted);
+
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+
+  --spacing-row: var(--row-h);
+  --spacing-gut: var(--gut);
+
+  --shadow-panel: var(--shadow);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+}
+
+#root {
+  height: 100%;
+}
+
+a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--info);
+  text-decoration: underline;
+}
+
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: var(--s2);
+}

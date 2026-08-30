@@ -55,6 +55,36 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
 
+  # The browser UI is never committed built, so nothing in the Go jobs compiles
+  # it and nothing in them fails when it breaks. This job is the only place that
+  # notices. It runs unconditionally rather than behind a paths filter: a
+  # path-filtered required check never reports on a PR that does not touch it.
+  web:
+    name: web ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: internal/web/ui/package-lock.json
+      - name: Install
+        run: npm ci
+        working-directory: internal/web/ui
+      - name: Lint
+        run: npm run lint
+        working-directory: internal/web/ui
+      - name: Typecheck
+        run: npm run check
+        working-directory: internal/web/ui
+      - name: Test
+        run: npm test
+        working-directory: internal/web/ui
+      - name: Build
+        run: npm run build
+        working-directory: internal/web/ui
+
   # Linted for both GOOS values: build-tagged files are invisible to a lint run
   # for the other platform, so the Windows-only sources would otherwise never be
   # checked anywhere.
