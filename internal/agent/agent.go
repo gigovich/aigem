@@ -144,7 +144,7 @@ type Agent struct {
 	failedEdits map[string]string
 	guardTrips  int
 
-	// budget bounds one user turn when a front-end opts in (non-interactive/bot).
+	// budget bounds one user turn when a front-end opts in (an unattended run).
 	budget TurnBudget
 
 	// Compaction policy and state (all guarded by mu).

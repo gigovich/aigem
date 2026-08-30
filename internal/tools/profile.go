@@ -19,44 +19,38 @@ type CapabilityProfile struct {
 var baseReadTools = []string{"read_file", "list_dir", "grep", "fuzzy_find", "web_search", "open_url", "browser_action"}
 var baseWriteTools = []string{"write_file", "edit_file"}
 
-// botTools are the tools only the fleet has. Every profile allows all of them:
-// a profile bounds what a bot may do to the machine, and talking to its own
-// threads is not that.
-//
-// It must stay in step with roles.full - a name here that no tool answers to is
-// harmless, but a tool missing from here is silently absent from every bot,
-// however plainly the role allows it. "read_chat" sat here for a release after
-// the tool was renamed read_threads, and no bot could search its own threads
-// for the whole of it. TestEveryRoleToolIsInTheBotProfile is what catches that.
-var botTools = []string{
-	"memory", "schedule", "post_message", "handoff", "read_threads", "team_status",
-	"save_skill", "delete_skill", "skill", "todo_write",
-}
+// coreTools are tools every capability profile allows regardless of what else it
+// grants: skill invocation and todo planning, which -p non-interactive mode
+// depends on. These mirror agent.SkillToolName and agent.TodoToolName; this
+// package cannot import internal/agent (agent imports tools), so the names are
+// literals here and internal/agent/profile_coverage_test.go asserts they stay
+// in step with the constants.
+var coreTools = []string{"skill", "todo_write"}
 
 // CapabilityProfiles are ordered from least to most permissive. The default for
-// non-interactive and bot use is workspace-write: filesystem edits are possible
+// non-interactive use is workspace-write: filesystem edits are possible
 // only through the audited file tools, while arbitrary shell is absent.
 var CapabilityProfiles = []CapabilityProfile{
 	{
 		Name:        "read-only",
 		Description: "read/search tools only; no writes and no shell",
-		Allow:       appendSlices(baseReadTools, botTools),
+		Allow:       appendSlices(baseReadTools, coreTools),
 	},
 	{
 		Name:        "workspace-write",
 		Description: "read/search plus write_file/edit_file; no shell (safe unattended default)",
-		Allow:       appendSlices(baseReadTools, baseWriteTools, botTools),
+		Allow:       appendSlices(baseReadTools, baseWriteTools, coreTools),
 	},
 	{
 		Name:            "shell",
 		Description:     "workspace-write plus bash; unattended auto-approval denies destructive bash",
-		Allow:           appendSlices(baseReadTools, baseWriteTools, []string{"bash"}, botTools),
+		Allow:           appendSlices(baseReadTools, baseWriteTools, []string{"bash"}, coreTools),
 		AutoApproveBash: true,
 	},
 	{
 		Name:                       "dangerous-shell",
 		Description:                "shell with destructive bash auto-approval; catastrophic patterns remain hard-denied",
-		Allow:                      appendSlices(baseReadTools, baseWriteTools, []string{"bash"}, botTools),
+		Allow:                      appendSlices(baseReadTools, baseWriteTools, []string{"bash"}, coreTools),
 		AutoApproveBash:            true,
 		AutoApproveDestructiveBash: true,
 	},

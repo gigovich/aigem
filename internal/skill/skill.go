@@ -488,8 +488,8 @@ func projectSkillsFingerprint(cwd string) (string, []skillSource, error) {
 	return fingerprint, sources, nil
 }
 
-// DiscoverDir scans a single directory for skills (each a <name>/SKILL.md). It is used for a
-// bot's self-authored skills, which live outside the standard skill roots.
+// DiscoverDir scans a single directory for skills (each a <name>/SKILL.md). It is used for
+// self-authored skills that live outside the standard skill roots.
 func DiscoverDir(dir string) (*Registry, []error) {
 	r := &Registry{byName: map[string]*Skill{}}
 	errs := r.scanRoot(dir, false)

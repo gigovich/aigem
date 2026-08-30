@@ -51,7 +51,7 @@ type Registry struct {
 	mcp          map[string]bool  // tools sourced from MCP servers (main agent only)
 	onFileChange func(FileChange) // optional artifact hook, fired by write/edit tools
 
-	// Escaping the sandbox is off unless a front-end opts in: an unattended bot
+	// Escaping the sandbox is off unless a front-end opts in: an unattended run
 	// leaves both unset and keeps the hard refusal. Tool instances hold the
 	// registry they were built from, so a Subset shares these.
 	pathMu       sync.RWMutex
@@ -91,7 +91,7 @@ func (r *Registry) SetPathApprover(fn PathApprover) {
 
 // SetPathGrants enables the persisted per-project directory grants, so a
 // directory the user already approved is read without asking again. Off by
-// default: a bot must not inherit a grant a human made for the same directory.
+// default: an unattended run must not inherit a grant a human made for the same directory.
 func (r *Registry) SetPathGrants(enabled bool) {
 	r.pathMu.Lock()
 	r.pathGrants = enabled
