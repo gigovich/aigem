@@ -24,6 +24,7 @@ import (
 	"github.com/gigovich/aigem/internal/search"
 	"github.com/gigovich/aigem/internal/session"
 	"github.com/gigovich/aigem/internal/skill"
+	"github.com/gigovich/aigem/internal/testenv"
 	"github.com/gigovich/aigem/internal/tools"
 	"github.com/gigovich/aigem/internal/uisession"
 )
@@ -32,19 +33,7 @@ func TestMain(m *testing.M) {
 	if os.Getenv("AIGEM_HISTORY_HELPER") != "" {
 		os.Exit(m.Run())
 	}
-	state, err := os.MkdirTemp("", "aigem-tui-test-state-")
-	if err != nil {
-		panic(err)
-	}
-	if err := os.Setenv("XDG_STATE_HOME", state); err != nil {
-		panic(err)
-	}
-	code := m.Run()
-	if err := os.RemoveAll(state); err != nil {
-		fmt.Fprintln(os.Stderr, "remove test state:", err)
-		code = 1
-	}
-	os.Exit(code)
+	os.Exit(testenv.Run(m))
 }
 
 func typeEnter(m Model, s string) Model {
