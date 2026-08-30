@@ -1,9 +1,7 @@
 name: Release
 
-# Tags only. Both jobs are meaningless on a branch: goreleaser refuses to
-# release an untagged commit, and the semver image tags would come out empty.
-# Semver tags only. A non-numeric tag like "vnext" would make the semver image
-# tags come out empty, and the image push then fails with no tag to push.
+# Tags only: goreleaser refuses to release an untagged commit, so a push to a
+# branch has nothing to do here.
 on:
   push:
     tags: ["v[0-9]*"]
