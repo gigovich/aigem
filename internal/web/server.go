@@ -69,6 +69,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// The catch-all below matches every method, so the mux never reports a method
+	// mismatch on its own. A more specific pattern has to say so.
+	mux.HandleFunc("/healthz", methodNotAllowed("GET, HEAD"))
 	mux.Handle("/", s.assets)
 
 	s.ln = ln
@@ -78,6 +81,9 @@ func New(cfg Config) (*Server, error) {
 		// http.FileServerFS, which will never call anything of ours. Every route
 		// added later is covered by construction.
 		Handler: withSecurityHeaders(mux),
+		// net/http answers "OPTIONS *" itself, without ever calling Handler, so
+		// that one response would leave without the policy.
+		DisableGeneralOptionsHandler: true,
 		// A websocket hijacks the connection before any of these apply, so they
 		// bound the plain HTTP surface only. ReadHeaderTimeout is the one that
 		// matters here: without it a connection that opens and says nothing
@@ -150,11 +156,22 @@ func checkBind(addr string) error {
 // address resolved to, the socket has to be on a loopback interface.
 func checkBound(addr net.Addr) error {
 	tcp, ok := addr.(*net.TCPAddr)
-	if ok && tcp.IP.IsLoopback() {
+	if !ok {
+		return fmt.Errorf("web: refusing to serve on %s: it is not a TCP address, "+
+			"and the loopback rule cannot be checked against it", addr)
+	}
+	if tcp.IP.IsLoopback() {
 		return nil
 	}
 	return fmt.Errorf("web: refusing to serve on %s: it resolved to an address the "+
 		"network can reach; the daemon binds loopback only", addr)
+}
+
+func methodNotAllowed(allow string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", allow)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func isLoopbackHost(host string) bool {

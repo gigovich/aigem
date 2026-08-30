@@ -73,6 +73,9 @@ func runWebCommand(args []string) error {
 	case err := <-done:
 		return err
 	case <-sig:
+		// Hand the signal back to the runtime so a second Ctrl-C during the wait
+		// below kills the process rather than being swallowed.
+		signal.Stop(sig)
 		fmt.Fprintln(os.Stderr, "\nstopping")
 		if err := srv.Close(); err != nil {
 			return err

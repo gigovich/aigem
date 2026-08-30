@@ -3,10 +3,19 @@ package web
 import (
 	"embed"
 	"io/fs"
+	"mime"
 	"net/http"
 	"path"
 	"strings"
 )
+
+// Go has no MIME entry for .webmanifest, so the file server sniffs it as text -
+// and every response carries nosniff, so the browser then refuses it. Registered
+// here rather than beside the manifest that needs it, because the failure is a
+// silent refusal and the fix is not obvious from it.
+func init() {
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
 
 // The built UI is embedded, but it is not committed: `go install
 // github.com/gigovich/aigem/cmd/aigem@latest` is the documented way to get
@@ -44,6 +53,21 @@ func Assets() http.Handler {
 func spaHandler(fsys fs.FS) http.Handler {
 	files := http.FileServerFS(fsys)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isDirectory(fsys, r.URL.Path) {
+			// Otherwise the file server answers with an index of the bundle. It is
+			// not a secret, but it is not a page either, and no route asks for one.
+			http.NotFound(w, r)
+			return
+		}
+		// Only what the build content-hashes may be cached: a changed file is
+		// then a changed name, so this can never serve a stale one. Everything
+		// else - the page above all, which names the hashed files - has to be
+		// revalidated, or a rebuild is invisible until the browser is emptied.
+		if strings.HasPrefix(strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/"), "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		if isAppRoute(fsys, r.URL.Path) {
 			r = r.Clone(r.Context())
 			r.URL.Path = "/"
@@ -52,34 +76,56 @@ func spaHandler(fsys fs.FS) http.Handler {
 	})
 }
 
-// staticExts are the extensions a build actually emits. A request for one of
-// them was made by name - by a script tag, a stylesheet link, the font loader -
-// and a missing one has to 404: served as HTML it becomes a syntax error thrown
-// from a script tag, which points nowhere near the stale page that asked for it.
+// isDirectory reports whether the path names a directory in the bundle. The
+// root is excluded: the file server turns it into index.html, which is the page.
+func isDirectory(fsys fs.FS, urlPath string) bool {
+	name := strings.TrimPrefix(path.Clean("/"+urlPath), "/")
+	if name == "" || name == "." || !fs.ValidPath(name) {
+		return false
+	}
+	info, err := fs.Stat(fsys, name)
+	return err == nil && info.IsDir()
+}
+
+// rootExts are the extensions a build emits at the top of the bundle, beside
+// index.html. Everything else it emits lives under assets/.
+var rootExts = map[string]bool{
+	".html": true, ".js": true, ".css": true, ".txt": true, ".xml": true,
+	".svg": true, ".png": true, ".ico": true, ".webmanifest": true,
+}
+
+// isBuiltAsset reports whether a path names something the build produced rather
+// than a screen. Such a request was made by name - by a script tag, a stylesheet
+// link, the font loader - and a missing one has to 404: served as HTML it
+// becomes a syntax error thrown from a script tag, which points nowhere near the
+// stale page that asked for it.
 //
-// An allowlist rather than "contains a dot", because this UI is organised
-// around projects and branches, and a screen at /p/my.project or a worktree at
-// /runs/release-1.2 is a route, not a file.
-var staticExts = map[string]bool{
-	".js": true, ".mjs": true, ".css": true, ".map": true, ".json": true,
-	".html": true, ".txt": true, ".xml": true, ".wasm": true,
-	".svg": true, ".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
-	".webp": true, ".avif": true, ".ico": true,
-	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
-	".webmanifest": true,
+// The rule is where the path is, not whether it has a dot, because this UI is
+// organised around projects, repositories and branches. "Anything with an
+// extension is a file" would 404 a screen at /p/my.project - and, worse, /p/
+// three.js and /p/tsconfig.json, which are ordinary repository names in exactly
+// the ecosystem this tool is used on.
+func isBuiltAsset(name string) bool {
+	if strings.HasPrefix(name, "assets/") {
+		return true
+	}
+	if strings.Contains(name, "/") {
+		return false
+	}
+	return rootExts[strings.ToLower(path.Ext(name))]
 }
 
 // isAppRoute reports whether a path should fall through to the page rather than
 // 404. Only paths that could be a screen do.
 //
-// Two exclusions carry the weight: a name that looks like a built asset (see
-// staticExts), and anything under /api/. This handler is the mux's catch-all, so
+// Two exclusions carry the weight: a name that is built output (see
+// isBuiltAsset), and anything under /api/. This handler is the mux's catch-all, so
 // every route the daemon does not serve lands here, and a client asking for one
 // that does not exist has to be told 404 rather than handed a page that its JSON
 // decoder reports as "unexpected token <".
 func isAppRoute(fsys fs.FS, urlPath string) bool {
 	name := strings.TrimPrefix(path.Clean("/"+urlPath), "/")
-	if name == "" || name == "." || staticExts[strings.ToLower(path.Ext(name))] {
+	if name == "" || name == "." || isBuiltAsset(name) {
 		return false
 	}
 	// Case-insensitively, so a mis-cased URL gets the 404 it deserves rather

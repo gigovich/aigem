@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"net"
@@ -97,26 +98,80 @@ func TestLoopbackBindsAreAccepted(t *testing.T) {
 // served by http.FileServerFS, which calls nothing of ours - and because the
 // build that carries no UI is not the one that needs protecting.
 func TestEveryResponseCarriesTheSecurityHeaders(t *testing.T) {
-	srv := newTestServer(t, Config{Assets: spaHandler(testDist())})
-
-	for _, path := range []string{"", "index.html", "models", "assets/main.js", "healthz", "api/typo"} {
-		res, err := http.Get(srv.URL() + path)
-		if err != nil {
-			t.Fatalf("%s: %v", path, err)
-		}
-		_ = res.Body.Close()
-		csp := res.Header.Get("Content-Security-Policy")
-		for _, want := range []string{"default-src 'self'", "img-src 'self' data:", "form-action 'none'"} {
-			if !strings.Contains(csp, want) {
-				t.Errorf("/%s CSP = %q, missing %q", path, csp, want)
+	check := func(t *testing.T, cfg Config, paths ...string) {
+		t.Helper()
+		srv := newTestServer(t, cfg)
+		for _, path := range paths {
+			res, err := http.Get(srv.URL() + path)
+			if err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			_ = res.Body.Close()
+			csp := res.Header.Get("Content-Security-Policy")
+			for _, want := range []string{"default-src 'self'", "img-src 'self' data:", "form-action 'none'"} {
+				if !strings.Contains(csp, want) {
+					t.Errorf("/%s CSP = %q, missing %q", path, csp, want)
+				}
+			}
+			if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("/%s X-Content-Type-Options = %q, want nosniff", path, got)
+			}
+			if got := res.Header.Get("Referrer-Policy"); got != "no-referrer" {
+				t.Errorf("/%s Referrer-Policy = %q, want no-referrer", path, got)
 			}
 		}
-		if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
-			t.Errorf("/%s X-Content-Type-Options = %q, want nosniff", path, got)
-		}
-		if got := res.Header.Get("Referrer-Policy"); got != "no-referrer" {
-			t.Errorf("/%s Referrer-Policy = %q, want no-referrer", path, got)
-		}
+	}
+
+	check(t, Config{Assets: spaHandler(testDist())},
+		"", "index.html", "models", "assets/main.js", "assets/", "healthz", "api/typo")
+	// The 501 page too: it is the build most likely to be refactored, and the
+	// policy is not optional there either.
+	check(t, Config{}, "", "models")
+}
+
+// net/http answers "OPTIONS *" itself, without ever calling Handler, so that one
+// response would leave the daemon without the policy.
+func TestOptionsStarDoesNotBypassTheHeaders(t *testing.T) {
+	srv := newTestServer(t, Config{Assets: spaHandler(testDist())})
+	conn, err := net.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := io.WriteString(conn, "OPTIONS * HTTP/1.1\r\nHost: localhost\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodOptions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("OPTIONS * X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := res.Header.Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
+		t.Errorf("OPTIONS * CSP = %q, want the policy", got)
+	}
+}
+
+// The asset handler matches every method, so the mux never reports a method
+// mismatch by itself and a POST would otherwise be answered with the page.
+func TestAWrongMethodOnARealRouteIsRejected(t *testing.T) {
+	srv := newTestServer(t, Config{Assets: spaHandler(testDist())})
+	res, err := http.Post(srv.URL()+"healthz", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST /healthz = %d, want 405", res.StatusCode)
+	}
+	if got := res.Header.Get("Allow"); got == "" {
+		t.Error("405 carries no Allow header")
+	}
+	if strings.Contains(string(body), "the page") {
+		t.Errorf("POST /healthz served the SPA:\n%s", body)
 	}
 }
 

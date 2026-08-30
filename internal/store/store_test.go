@@ -269,12 +269,23 @@ func TestSaveWritesIndentedJSONWithTrailingNewline(t *testing.T) {
 	}
 }
 
-// The file lock gives up after lockWait and proceeds unlocked, so that a peer
-// killed mid-write cannot wedge the daemon. Between goroutines in one process
-// that fallback is a silently lost update - and concurrent request handlers on
-// one document are exactly that case - so an in-process mutex has to keep two
-// update bodies from ever overlapping.
+// shrinkLockWait makes the fallback reachable in a test. The file lock gives up
+// after lockWait and proceeds unlocked so a peer killed mid-write cannot wedge
+// the daemon, and that fallback is the only path on which two goroutines can
+// overlap - a body shorter than the real two seconds never reaches it, and a
+// test that waits two seconds per case is a test nobody runs.
+func shrinkLockWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := lockWait
+	lockWait = d
+	t.Cleanup(func() { lockWait = prev })
+}
+
+// Between goroutines the unlocked fallback is a silently lost update - and
+// concurrent request handlers on one document are exactly that case - so an
+// in-process mutex has to keep two update bodies from ever overlapping.
 func TestUpdateBodiesNeverOverlap(t *testing.T) {
+	shrinkLockWait(t, 30*time.Millisecond)
 	s := New[doc](filepath.Join(t.TempDir(), "doc.json"))
 	var inside atomic.Int32
 	var overlapped atomic.Bool
@@ -288,7 +299,9 @@ func TestUpdateBodiesNeverOverlap(t *testing.T) {
 				if inside.Add(1) != 1 {
 					overlapped.Store(true)
 				}
-				time.Sleep(15 * time.Millisecond)
+				// Longer than lockWait, so a waiter that is not held by the mutex
+				// reaches the unlocked fallback and runs alongside this body.
+				time.Sleep(120 * time.Millisecond)
 				inside.Add(-1)
 				d.Version++
 				return nil
@@ -311,8 +324,13 @@ func TestUpdateBodiesNeverOverlap(t *testing.T) {
 
 // Save is a last-write-wins replace, but it must still not interleave with an
 // Update's read-modify-write, or the Update reads a value Save is replacing.
+//
+// The handshake replaces a sleep: Save is not started until the Update body is
+// provably running, so there is no timing on which this test asserts nothing.
 func TestSaveIsSerializedAgainstUpdate(t *testing.T) {
+	shrinkLockWait(t, 30*time.Millisecond)
 	s := New[doc](filepath.Join(t.TempDir(), "doc.json"))
+	running := make(chan struct{})
 	var inside atomic.Int32
 	var overlapped atomic.Bool
 
@@ -321,10 +339,9 @@ func TestSaveIsSerializedAgainstUpdate(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_ = s.Update(func(d *doc) error {
-			if inside.Add(1) != 1 {
-				overlapped.Store(true)
-			}
-			time.Sleep(40 * time.Millisecond)
+			inside.Add(1)
+			close(running)
+			time.Sleep(120 * time.Millisecond)
 			inside.Add(-1)
 			d.Version = 1
 			return nil
@@ -332,21 +349,101 @@ func TestSaveIsSerializedAgainstUpdate(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		time.Sleep(5 * time.Millisecond)
-		if inside.Load() != 0 {
-			// Save holds no body of its own, so overlap is observed by whether it
-			// completes while the Update body is still running.
-			_ = s.Save(doc{Version: 2})
-			if inside.Load() != 0 {
-				overlapped.Store(true)
-			}
-			return
-		}
+		<-running
+		// Save holds no body of its own, so the overlap is observed by whether it
+		// returns while the Update body is still inside.
 		_ = s.Save(doc{Version: 2})
+		if inside.Load() != 0 {
+			overlapped.Store(true)
+		}
 	}()
 	wg.Wait()
 
 	if overlapped.Load() {
-		t.Error("Save completed while an Update body was still running")
+		t.Error("Save returned while an Update body was still running")
+	}
+}
+
+// The sweep's predicate is keyed on a store's own stem, so a flag keyed on the
+// directory would let whichever store wrote first disable it for every other -
+// and a state directory holding a project, ticket and worktree store side by
+// side is what this package is for.
+func TestEachStoreSweepsItsOwnTempsInASharedDirectory(t *testing.T) {
+	dir := t.TempDir()
+	orphan := filepath.Join(dir, "ticket-123456.json")
+	if err := os.WriteFile(orphan, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * tempOrphan)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := New[doc](filepath.Join(dir, "project.json")).Save(doc{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := New[doc](filepath.Join(dir, "ticket.json")).Save(doc{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Error("the ticket store did not sweep its own orphan; another store had claimed the directory")
+	}
+}
+
+// isTempName is coupled to the shape os.CreateTemp produces, which the standard
+// library documents only as "a random string". A sweep that stops matching is
+// as silent as one that matches too much.
+func TestIsTempNameMatchesWhatCreateTempActuallyProduces(t *testing.T) {
+	dir := t.TempDir()
+	f := New[doc](filepath.Join(dir, "doc.json"))
+	for range 200 {
+		tmp, err := os.CreateTemp(dir, f.prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := filepath.Base(tmp.Name())
+		tmp.Close()
+		os.Remove(tmp.Name())
+		if !f.isTempName(name) {
+			t.Fatalf("isTempName(%q) = false; the sweep would leave this orphan behind", name)
+		}
+	}
+}
+
+// A holder that overran lockStale has its lock broken and replaced. Removing
+// the replacement on the way out would let a third writer in alongside its
+// owner, so a release only removes a lock that still carries its own token.
+func TestReleaseLeavesALockThatIsNoLongerOurs(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "doc.json.lock")
+	if err := os.WriteFile(lock, []byte("someone-else"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releaseLock(lock, "ours")
+	if _, err := os.Stat(lock); err != nil {
+		t.Error("release removed a lock carrying another writer's token")
+	}
+
+	if err := os.WriteFile(lock, []byte("ours"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releaseLock(lock, "ours")
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Error("release left our own lock behind")
+	}
+}
+
+// A lock that cannot be read is left alone: lockStale reclaims it, and guessing
+// is what the token check exists to prevent.
+func TestReleaseLeavesAnUnreadableLockAlone(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs unix permission bits and a non-root user")
+	}
+	lock := filepath.Join(t.TempDir(), "doc.json.lock")
+	if err := os.WriteFile(lock, []byte("someone-else"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	releaseLock(lock, "ours")
+	if _, err := os.Stat(lock); err != nil {
+		t.Error("release removed a lock it could not read")
 	}
 }

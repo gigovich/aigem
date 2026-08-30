@@ -23,10 +23,14 @@ import (
 
 const (
 	lockPoll   = 20 * time.Millisecond
-	lockWait   = 2 * time.Second
 	lockStale  = 30 * time.Second
 	tempOrphan = time.Hour
 )
+
+// A variable so a test can shrink it: the behaviour that matters - a waiter
+// giving up and proceeding unlocked - only appears once a holder outlives it,
+// and a test that waits two real seconds per case is a test nobody runs.
+var lockWait = 2 * time.Second
 
 // File is a JSON document at a fixed path, read and written atomically.
 //
@@ -89,6 +93,11 @@ func (f *File[T]) Save(v T) error {
 // lock for the whole read-modify-write. fn may be called with the zero value
 // when the document does not exist yet, and the document is left untouched when
 // fn returns an error.
+//
+// fn must not touch any store, including this one. The lock is a plain mutex, so
+// a nested Update or Save on the same path deadlocks, and two goroutines nesting
+// two stores in opposite orders deadlock against each other. Read what you need
+// before calling Update and write it inside fn.
 func (f *File[T]) Update(fn func(*T) error) error {
 	unlock := lockPath(f.path)
 	defer unlock()
@@ -177,16 +186,22 @@ func (f *File[T]) withFileLock(fn func() error) error {
 	for waited := time.Duration(0); ; waited += lockPoll {
 		h, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			_, _ = h.WriteString(token)
-			h.Close()
+			_, werr := h.WriteString(token)
+			cerr := h.Close()
+			if werr != nil || cerr != nil {
+				// An empty lock is worse than none: releaseLock would read a token
+				// that is not ours and decline to remove it, wedging every writer
+				// for lockStale. Drop it and hold the mutex alone.
+				os.Remove(lock)
+				return fn()
+			}
 			defer releaseLock(lock, token)
 			return fn()
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("lock %s: %w", f.path, err)
 		}
-		if info, serr := os.Stat(lock); serr == nil && time.Since(info.ModTime()) > lockStale {
-			os.Remove(lock)
+		if breakStaleLock(lock) {
 			continue
 		}
 		if waited >= lockWait {
@@ -201,11 +216,44 @@ func (f *File[T]) withFileLock(fn func() error) error {
 func releaseLock(lock, token string) {
 	// Only ours: a holder that overran lockStale had its lock broken and
 	// replaced, and removing the replacement would let a third writer in
-	// alongside its owner.
-	if data, err := os.ReadFile(lock); err == nil && string(data) != token {
+	// alongside its owner. A read that fails for any reason other than the file
+	// being gone leaves the lock alone - lockStale reclaims it, and guessing
+	// wrong here is what this check exists to prevent.
+	data, err := os.ReadFile(lock)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return
+	case string(data) != token:
 		return
 	}
 	os.Remove(lock)
+}
+
+// breakStaleLock reclaims a lock whose owner is gone, and reports whether it
+// removed one.
+//
+// The token is re-read immediately before the remove so that an owner that
+// released between the stat and here - and a third writer that took the lock in
+// that gap - are not silently overridden. The gap cannot be closed entirely with
+// plain files, but it is now a few instructions wide rather than a syscall, and
+// what remains degrades to the same lost update the lockWait fallback already
+// tolerates.
+func breakStaleLock(lock string) bool {
+	info, err := os.Stat(lock)
+	if err != nil || time.Since(info.ModTime()) <= lockStale {
+		return false
+	}
+	stale, err := os.ReadFile(lock)
+	if err != nil {
+		return false
+	}
+	again, err := os.ReadFile(lock)
+	if err != nil || string(again) != string(stale) {
+		return false
+	}
+	os.Remove(lock)
+	return true
 }
 
 // sweepOrphanTemps removes temp files left by a process killed between
@@ -218,16 +266,23 @@ func releaseLock(lock, token string) {
 // and <state>/project-trust.json is every capability approval the user has
 // ever given.
 func (f *File[T]) sweepOrphanTemps(dir string) {
-	if !markSwept(dir) {
-		// Once per directory per process. Temps this process creates are removed
-		// by save's own defer, so re-scanning the directory on every write buys
-		// nothing and costs a full ReadDir inside the lock.
+	// Once per document per process, not once per directory: the predicate below
+	// is keyed on this store's stem, so a directory-wide flag would let the first
+	// store to write it disable the sweep for every other one - and several
+	// stores sharing a directory is what this package is for. Temps this process
+	// creates are removed by save's own defer, so the only thing a repeat scan
+	// could find is an orphan from a peer that died after we started.
+	key := sweepKey(f.path)
+	if alreadySwept(key) {
 		return
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		// Not marked: a transient failure must not disable the sweep for the life
+		// of the process.
 		return
 	}
+	markSwept(key)
 	for _, e := range entries {
 		if e.IsDir() || !f.isTempName(e.Name()) {
 			continue
@@ -263,6 +318,13 @@ var (
 	swept   = map[string]bool{}
 )
 
+func canonical(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return filepath.Clean(abs)
+	}
+	return path
+}
+
 // lockPath serializes writers to one document within this process and returns
 // the release.
 //
@@ -271,10 +333,7 @@ var (
 // daemon. Between goroutines that fallback is a silently lost update, and the
 // daemon's own concurrent request handlers are exactly that case.
 func lockPath(path string) func() {
-	key := path
-	if abs, err := filepath.Abs(path); err == nil {
-		key = filepath.Clean(abs)
-	}
+	key := canonical(path)
 	pathsMu.Lock()
 	m := paths[key]
 	if m == nil {
@@ -289,12 +348,18 @@ func lockPath(path string) func() {
 	return m.Unlock
 }
 
-func markSwept(dir string) bool {
+// sweepKey is the document itself, canonicalised so two spellings of one path
+// are one key.
+func sweepKey(path string) string { return canonical(path) }
+
+func alreadySwept(key string) bool {
 	pathsMu.Lock()
 	defer pathsMu.Unlock()
-	if swept[dir] {
-		return false
-	}
-	swept[dir] = true
-	return true
+	return swept[key]
+}
+
+func markSwept(key string) {
+	pathsMu.Lock()
+	defer pathsMu.Unlock()
+	swept[key] = true
 }
