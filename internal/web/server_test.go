@@ -253,3 +253,56 @@ func TestCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("second Close: %v", err)
 	}
 }
+
+// Every other test here serves an fstest.MapFS, so this is the only one that
+// touches the real //go:embed filesystem - the arrangement the whole dist
+// dance exists for. It skips unless the binary was built with a UI, which is
+// why CI has a job that runs `npm run build` before calling it.
+func TestTheEmbeddedBundleIsServed(t *testing.T) {
+	if !HasAssets() {
+		t.Skip("built without a UI; run `make web` first")
+	}
+	assets := Assets()
+	if assets == nil {
+		t.Fatal("Assets() is nil for a build that reports HasAssets()")
+	}
+	srv := newTestServer(t, Config{Assets: assets})
+
+	res, err := http.Get(srv.URL() + "models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /models = %d, want 200", res.StatusCode)
+	}
+	if !strings.Contains(string(page), `id="root"`) {
+		t.Fatalf("the served page is not the built index.html:\n%s", page)
+	}
+
+	// Follow the bundle the page actually names, so this cannot pass against a
+	// stale or partial dist.
+	_, rest, ok := strings.Cut(string(page), `src="/assets/`)
+	if !ok {
+		t.Fatal("the page names no module under /assets/")
+	}
+	name, _, _ := strings.Cut(rest, `"`)
+	bundle, err := http.Get(srv.URL() + "assets/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bundle.Body.Close() }()
+	if bundle.StatusCode != http.StatusOK {
+		t.Errorf("GET /assets/%s = %d, want 200", name, bundle.StatusCode)
+	}
+	if got := bundle.Header.Get("Content-Type"); !strings.Contains(got, "javascript") {
+		t.Errorf("bundle Content-Type = %q, want javascript", got)
+	}
+	if got := bundle.Header.Get("Cache-Control"); !strings.Contains(got, "immutable") {
+		t.Errorf("bundle Cache-Control = %q, want it cached forever", got)
+	}
+}

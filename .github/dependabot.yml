@@ -23,6 +23,33 @@ updates:
     commit-message:
       prefix: "ci"
 
+  # The browser UI's lockfile. eslint is deliberately held at 9 and typescript
+  # at 6.0.x - see the constraints noted in internal/web/_ui/package.json - so
+  # those two are ignored rather than reopened weekly.
+  - package-ecosystem: npm
+    directory: /internal/web/_ui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react*"
+      vite:
+        patterns:
+          - "vite"
+          - "vitest"
+          - "@vitejs/*"
+    ignore:
+      - dependency-name: "eslint"
+        versions: [">=10"]
+      - dependency-name: "typescript"
+        versions: [">=6.1"]
+    commit-message:
+      prefix: "chore"
+
   # The docs site's pinned mkdocs-material.
   - package-ecosystem: pip
     directory: /docs

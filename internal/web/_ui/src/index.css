@@ -40,8 +40,14 @@
   --spacing-row: var(--row-h);
   --spacing-gut: var(--gut);
 
-  --text-base: var(--fs);
+  /* Named rather than overriding --text-base: the design's body size is 13px
+   * and Tailwind's text-sm is 14px, so redefining base would leave the scale
+   * non-monotonic - text-sm rendering larger than text-base. The body size is
+   * applied on body below; these exist for the places that need it back. */
+  --text-body: var(--fs);
+  --text-body--line-height: 1.45;
   --text-meta: var(--fs-meta);
+  --text-meta--line-height: 1.45;
 
   --shadow-panel: var(--shadow);
 }
@@ -55,9 +61,9 @@
     background: var(--bg);
   }
 
-  /* The one place type is set. Every screen inherits it, so a `text-*` utility
-   * in a component means "deliberately not the body size" rather than "the
-   * design's size, spelled in Tailwind's scale". */
+  /* The one place the body size is set; every screen inherits it. A `text-*`
+   * utility is Tailwind's own scale and is deliberately left alone - reach for
+   * text-body when a nested element has to come back to the design's size. */
   body {
     font-family: var(--sans);
     font-size: var(--fs);

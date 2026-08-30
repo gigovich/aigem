@@ -35,7 +35,7 @@ run: build ## Build and run
 # dist is cleared first: asset names are content-hashed and the Vite build
 # cannot empty a directory outside its root, so every rebuild would otherwise
 # leave the previous bundle behind for `//go:embed all:dist` to pick up.
-web: web-clean ## Build the browser UI into internal/web/dist
+web: ## Build the browser UI into internal/web/dist
 	cd $(UI) && npm ci && npm run build
 
 # Start the daemon on the port the dev proxy expects:
@@ -47,7 +47,7 @@ web-dev: ## Vite dev server, proxying /api to a running `aigem web`
 	cd $(UI) && npm run dev
 
 web-clean: ## Empty internal/web/dist, keeping the committed .gitkeep
-	@test -d $(DIST) && find $(DIST) -mindepth 1 ! -name .gitkeep -exec rm -rf {} + || true
+	@if [ -d $(DIST) ]; then find $(DIST) -mindepth 1 ! -name .gitkeep -exec rm -rf {} + ; fi
 
 web-check: ## Lint, typecheck and test the browser UI
 	cd $(UI) && npm run lint && npm run check && npm test
@@ -67,11 +67,16 @@ lint-windows: ## Lint the Windows-only sources (invisible to a linux lint run)
 vuln: ## Scan for known vulnerabilities
 	govulncheck ./...
 
+# The underscore in $(UI) hides it from the go tool, which reads package
+# patterns - not from gofmt, which walks the filesystem. Without the prune,
+# `make fmt` reformats files inside node_modules.
+GOSRC = find . -path ./$(UI)/node_modules -prune -o -name '*.go' -print
+
 fmt: ## Format the source
-	gofmt -w .
+	@$(GOSRC) | xargs gofmt -w
 
 fmt-check: ## Fail if anything is unformatted
-	@unformatted=$$(gofmt -l .); \
+	@unformatted=$$($(GOSRC) | xargs gofmt -l); \
 	if [ -n "$$unformatted" ]; then echo "needs gofmt:"; echo "$$unformatted"; exit 1; fi
 
 vet: ## Run go vet

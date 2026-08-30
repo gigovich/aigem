@@ -32,8 +32,9 @@ test('says it is connecting before the daemon answers', () => {
   expect(screen.getByRole('status')).toHaveTextContent('connecting…')
 })
 
-// StrictMode mounts twice, so an unaborted request from the discarded mount
-// would resolve into a component that no longer exists.
+// An unaborted request outlives the component: it resolves into a setState on
+// something that no longer exists, and under StrictMode's double mount the
+// discarded first mount does it on every render.
 test('aborts the request when it unmounts before the answer arrives', () => {
   const signals: AbortSignal[] = []
   vi.stubGlobal(

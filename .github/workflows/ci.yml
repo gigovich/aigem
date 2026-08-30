@@ -29,7 +29,7 @@ jobs:
           cache: true
       - name: Verify gofmt
         run: |
-          unformatted=$(gofmt -l .)
+          unformatted=$(find . -path ./internal/web/_ui/node_modules -prune -o -name '*.go' -print | xargs gofmt -l)
           if [ -n "$unformatted" ]; then
             echo "These files need gofmt:"
             echo "$unformatted"
@@ -85,14 +85,14 @@ jobs:
         run: npm run build
         working-directory: internal/web/_ui
       # The Go jobs never run npm, so HasAssets() is false in every one of them
-      # and the //go:embed path - the one thing this whole arrangement exists
-      # for - is otherwise exercised only against a fake filesystem.
+      # and TestTheEmbeddedBundleIsServed - the only test that touches the real
+      # //go:embed filesystem rather than a fake one - skips everywhere else.
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-      - name: Go tests against the embedded bundle
-        run: go test ./internal/web/...
+      - name: Serve the embedded bundle
+        run: go test -run TestTheEmbeddedBundleIsServed -v ./internal/web/
 
   # Linted for both GOOS values: build-tagged files are invisible to a lint run
   # for the other platform, so the Windows-only sources would otherwise never be

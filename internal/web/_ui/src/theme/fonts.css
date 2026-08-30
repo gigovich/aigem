@@ -1,17 +1,20 @@
 /* Bundled, not fetched: the daemon's CSP is default-src 'self', so a webfont
  * from a CDN never loads, and every byte here is compiled into the Go binary.
  *
- * Sans keeps all its subsets: ticket titles, epic intents and chat messages are
- * whatever the person writing them types, and a Cyrillic title dropping to a
- * fallback face is a visible defect. `wght` rather than the default entrypoint
- * because nothing here uses the width axis.
+ * Both faces keep all their subsets. Titles and messages are whatever the person
+ * writing them types, and mono renders paths, branch names and diff bodies -
+ * none of which is ASCII by construction either. The per-subset entrypoints also
+ * carry the unicode-range declarations that let the browser decide up front
+ * which file to fetch; the latin-only ones do not, so the face claims every
+ * codepoint and falls back glyph by glyph, which shifts advance widths in the
+ * one place that cannot afford it - a diff.
  *
- * Mono is latin-only and two weights: it renders paths, ids, branch names,
- * commands and diffs, which are ASCII by construction. IBM Plex Mono has no
- * variable build on fontsource, so the weights are separate files. */
+ * `wght` rather than the default Sans entrypoint because nothing uses the width
+ * axis. IBM Plex Mono has no variable build on fontsource, so its weights are
+ * separate files. */
 @import '@fontsource-variable/ibm-plex-sans/wght.css';
-@import '@fontsource/ibm-plex-mono/latin-400.css';
-@import '@fontsource/ibm-plex-mono/latin-500.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
 
 :root {
   --sans: 'IBM Plex Sans Variable', -apple-system, 'Helvetica Neue', sans-serif;

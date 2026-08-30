@@ -20,9 +20,12 @@ func init() {
 // The built UI is embedded, but it is not committed: `go install
 // github.com/gigovich/aigem/cmd/aigem@latest` is the documented way to get
 // aigem and has to keep working on a machine with no node toolchain. So the
-// directory holds only a .gitkeep in git, `make web` fills it, and the release
-// build runs that before compiling. A plain build produces a binary that says
-// it has no UI rather than one that serves a blank page.
+// directory holds only a .gitkeep in git and `make web` fills it. A build
+// without that step produces a binary that says it has no UI rather than one
+// that serves a blank page.
+//
+// The release pipeline does not run `make web` yet, so released binaries are
+// currently in that state.
 //
 //go:embed all:dist
 var distFS embed.FS
