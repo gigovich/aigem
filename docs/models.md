@@ -53,13 +53,6 @@ you added - and falls back to the local model when none is authenticated.
 A bare `--model <name>` keeps the old behavior: the local provider with that model
 name.
 
-Bot fleet selections are separate from this interactive-session heuristic. Use
-`aigem bot model` or **Change model** on the browser Fleet screen. The browser
-lists only the built-in and user `models.json` registry (never a repository's
-untrusted `.aigem/models.json`), shows unavailable authentication states, and
-persists only a server-validated choice. See [Choosing a bot's
-model](bots.md#choosing-a-bots-model).
-
 The ChatGPT subscription (Codex backend) only accepts Codex-supported models -
 currently `gpt-5.6-sol` (the default), `gpt-5.6-terra`, and `gpt-5.6-luna`.
 Other models, and any you add via `models.json`, require an API key. If you have
@@ -154,17 +147,9 @@ plain `aigem usage` reports the last reading and how old it is. `--refresh` spen
 a few tokens on one small request to update a single provider; the report itself
 covers all of them.
 
-The TUI status bar shows the tightest window next to the context gauge. Each bot
-logs `msg="llm usage"` for every model call: the tokens it cost, the running
-totals, and the tightest quota window - which is what makes burn rate comparable
-between models. A call the provider reported no counts for (an aborted runaway, a
-backend that sends none) is logged as `uncounted` rather than folded into the
-totals.
-
-A bot's calls are recorded a second time against the conversation thread they
-were made for, which is what [Bots](bots.md#observability) describes. The two
-count `calls` differently: the log excludes the uncounted ones, and a thread's
-total includes them and says how many they were.
+The TUI status bar shows the tightest window next to the context gauge. A call
+the provider reported no counts for (an aborted runaway, a backend that sends
+none) is logged as `uncounted` rather than folded into the totals.
 
 Coverage follows what each provider sends. A ChatGPT subscription reports plan,
 percent used per rolling window, per-model buckets, and credits. An API key

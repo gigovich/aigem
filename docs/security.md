@@ -14,7 +14,7 @@ shell, and any confirm-gated MCP tool - and still stops for irreversible shell
 actions. Only `bash` is ever classified destructive, so an MCP tool that deletes
 something is auto-approved in auto mode.
 
-**Unattended sessions** (`-p` and bots) have nobody to ask, so they use capability
+**Unattended sessions** (`-p`) have nobody to ask, so they use capability
 profiles instead:
 
 | Profile            | Read/search | File writes | `bash`                      |
@@ -27,15 +27,10 @@ profiles instead:
 `workspace-write` is the default. Under it, `-y` can approve file edits but
 cannot silently approve shell, because `bash` is not in the toolset at all.
 
-The table describes the **workspace** file tools. Two things it does not cover:
+The table describes the **workspace** file tools. One thing it does not cover:
 
 - `browser_action` is a built-in read tool present in every profile, so even
   `read-only` can drive a browser session - clicking and submitting forms.
-- A bot's own tools are also in every profile: `memory`, `schedule`,
-  `save_skill`, and `delete_skill` persist under
-  `~/.config/aigem/bots/<name>/`, and `post_message` and `handoff` write to chat.
-
-A `read-only` bot cannot modify your repository, but it is not inert.
 
 `shell` is the explicit opt-in for unattended non-destructive shell; destructive
 commands (`rm`, `git reset --hard`, `git clean`, ...) are still denied.
@@ -53,10 +48,7 @@ if the wrap-up call fails.
 
 For `-p`, tune them with `--turn-timeout`, `--max-model-rounds`,
 `--max-tool-calls`, and `--max-repeat-tool-calls`, or set a value to `0` to
-disable that budget. **Those flags do not reach bots**: a bot is configured by
-`turnBudget:` in its `bot.yaml`, and some roles ship with larger defaults than the
-figures above (the `developer` role starts at 45 minutes, 120 rounds, and 300 tool
-calls). See [Chat bots](bots.md#turn-budgets).
+disable that budget.
 
 ## The filesystem sandbox
 
@@ -85,12 +77,8 @@ aigem paths forget <dir>    # drop one
 aigem paths forget --all    # drop all of this working directory's grants
 ```
 
-Unattended sessions behave differently, deliberately:
-
-- **Bots** have nobody to ask and do not read the grant file at all. A directory
-  you approved interactively never opens for a bot in the same working directory.
-- **`-p`** honors existing grants but cannot create new ones, and refuses
-  anything not already granted.
+Unattended sessions behave differently, deliberately: **`-p`** honors existing
+grants but cannot create new ones, and refuses anything not already granted.
 
 ### What the sandbox does not defend against
 
@@ -153,6 +141,3 @@ A project-local `.aigem/models.json` may add providers and tweak an existing
 provider's models, but never its `base_url`, `api`, `auth`, or `headers`. That
 file ships with a possibly-cloned repository, and must not be able to aim a
 credential you stored at another host.
-
-Pinned bot models are resolved only against the built-in providers and
-`~/.config/aigem/models.json`, never a repo's own `models.json`.

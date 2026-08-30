@@ -117,7 +117,7 @@ Two guards keep the agent from spinning:
   forever. A truncated response shows a notice.
 
 Interactive turns keep unbounded tool-loop behavior, because a human can press
-`Esc` or `Ctrl+C`. Unattended `-p` and bot turns additionally enforce the
+`Esc` or `Ctrl+C`. Unattended `-p` turns additionally enforce the
 [turn budgets](security.md#turn-budgets), returning `Budget exhausted: ...` when a
 loop exceeds them.
 

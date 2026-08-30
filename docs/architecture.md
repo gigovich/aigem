@@ -8,7 +8,7 @@ the workflow.
 
 | Package              | Responsibility                                                        |
 | -------------------- | --------------------------------------------------------------------- |
-| `cmd/aigem`          | entry point, flag parsing, and the `auth`/`mcp`/`models`/`bot`/`search`/`paths`/`usage` subcommands |
+| `cmd/aigem`          | entry point, flag parsing, and the `auth`/`mcp`/`models`/`search`/`paths`/`usage` subcommands |
 | `internal/agent`     | the model/tool loop, turn budgets, context compaction, subagent delegation |
 | `internal/llm`       | backend interface, chat-completions and Responses adapters, model registry, retry, usage accounting |
 | `internal/auth`      | credential store, the ChatGPT OAuth flow, and the xAI device-code flow |
@@ -23,14 +23,9 @@ the workflow.
 | `internal/session`   | conversation persistence for `/resume`                                |
 | `internal/local`     | the local llama.cpp server: config, daemon lifecycle, download progress, health (the setup wizard itself lives in `cmd/aigem`) |
 | `internal/tui`       | the Bubble Tea front-end                                              |
-| `internal/bot`       | unattended bots, roles, memory, cron, and the store adapter           |
-| `internal/chat`      | the fleet's threads, messages, agent timeline and spend               |
-| `internal/push`      | Web Push: RFC 8291 encryption, RFC 8292 signing, and delivery         |
-| `internal/chat/chatpush` | the rule that decides a notification is worth raising             |
-| `internal/uisession` | one conversation's lifecycle and its event journal                    |
-| `internal/web`       | the daemon: HTTP, websocket, auth, and the built browser UI           |
+| `internal/uisession` | the core session layer the TUI runs on: one conversation's lifecycle and its event journal, fanned out to subscribers via `fanout` |
 
-Roughly 44k lines of non-test Go, plus about 32k lines of tests.
+Roughly 27k lines of non-test Go, plus about 15k lines of tests.
 
 ## How a turn flows
 
@@ -58,9 +53,9 @@ Roughly 44k lines of non-test Go, plus about 32k lines of tests.
 
 - **The sandbox is in `tools`, not the front-end.** Every front-end gets the same
   enforcement; the front-end only decides *how to ask*.
-- **Unattended paths never escalate.** `-p` and bots resolve their capabilities
-  from a profile up front. There is deliberately no code path that lets an
-  unattended run acquire a capability mid-turn.
+- **Unattended paths never escalate.** `-p` resolves its capabilities from a
+  profile up front. There is deliberately no code path that lets an unattended
+  run acquire a capability mid-turn.
 - **Project-supplied configuration is inert until fingerprinted and approved.**
   `trust` is the single place that decides; `hooks`, `skill`, and `mcp` ask it.
 - **The local daemon outlives the process.** `local` spawns `llama-server` in its

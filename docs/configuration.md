@@ -11,9 +11,6 @@ aigem honors the XDG base directories.
 | `~/.config/aigem/models.json`             | your own providers and models                       |
 | `~/.config/aigem/agents/*.md`             | custom subagents                                    |
 | `~/.config/aigem/skills/`                 | global skills                                       |
-| `~/.config/aigem/fleet.json`              | limits shared by every bot in one process           |
-| `~/.config/aigem/bots/<name>/bot.yaml`    | one bot's definition                                |
-| `~/.config/aigem/bots/<name>/memory/`     | that bot's persisted memory                         |
 | `~/.local/state/aigem/auth.json`          | credentials (`0600`)                                |
 | `~/.local/state/aigem/sessions/`          | saved conversations                                 |
 | `~/.local/state/aigem/path-grants.json`   | approved read paths outside a working directory     |
@@ -30,6 +27,24 @@ On macOS the config directory is `~/Library/Application Support/aigem`.
 Project-local configuration lives in `<project>/.aigem/` and, for compatibility,
 `<project>/.claude/`. Anything project-local that executes is
 [trust-gated](security.md#project-trust).
+
+### No longer used
+
+aigem no longer reads or writes these paths, left over from the removed bot fleet
+and web UI. It does not delete them automatically; remove them by hand if you
+want the disk space back.
+
+- `~/.config/aigem/bots/` (per-bot `bot.yaml`, `memory/`, `skills/`)
+- `~/.config/aigem/fleet.json`
+- `~/.local/state/aigem/chat/` (`chat.db`, `blobs/`, `vapid.json`)
+- `~/.local/state/aigem/chat-cookies.json`
+- `~/.local/state/aigem/chat.json`
+- `~/.local/state/aigem/web-cookies.json`
+- `~/.local/state/aigem/web.json`
+- `~/.local/state/aigem/browser-profile/<botname>/` - only the per-bot
+  subdirectories; the parent directory is still used by the interactive
+  browser tool
+- `~/.local/state/aigem/journal/<id>/blobs/`
 
 ## System prompt
 
