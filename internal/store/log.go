@@ -249,6 +249,16 @@ func (l *Log[T]) write(line []byte, seq int) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", l.path, err)
 	}
+	// sync ran under this same lock a moment ago, so l.size is at or before the
+	// end of the file. Checked anyway, because the one thing a wrong offset here
+	// does is not refuse - it writes past the end, and the hole that leaves is
+	// the only state in this package that no later call can recover from.
+	if info, serr := f.Stat(); serr == nil && info.Size() < l.size {
+		f.Close()
+		l.scanned = false
+		return fmt.Errorf("write %s: the index ends at byte %d and the file at %d; "+
+			"it was truncated underneath this write", l.path, l.size, info.Size())
+	}
 	end := l.size + int64(len(line))
 	if _, err := f.WriteAt(line, l.size); err != nil {
 		f.Close()
@@ -258,6 +268,12 @@ func (l *Log[T]) write(line []byte, seq int) error {
 	// something this process can vouch for: a failure below is reported, but the
 	// record it describes may well be there, and the next call has to find out
 	// from the file rather than from what we think we wrote.
+	//
+	// The truncate is insurance rather than a step this package's own writes
+	// need. What it removes is a torn tail longer than the record replacing it,
+	// and a torn tail is by definition unterminated, so scan would treat the
+	// remainder as one too. It costs nothing and it is the difference between a
+	// file with a stray suffix and one without.
 	if err := f.Truncate(end); err != nil {
 		f.Close()
 		l.scanned = false
@@ -398,6 +414,10 @@ func (l *Log[T]) sync() error {
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", l.path, err)
 	}
+	// os.SameFile is documented to return false for anything it did not produce,
+	// which covers l.seenInfo being nil - the state the missing-file branch above
+	// leaves behind. The short circuit is what keeps the mtime read below from
+	// reaching a nil.
 	if !l.scanned || !os.SameFile(info, l.seenInfo) {
 		return l.scan(info, 0)
 	}
@@ -411,11 +431,44 @@ func (l *Log[T]) sync() error {
 		return l.scan(info, 0)
 	}
 	if info.Size() > l.seen {
+		// Extending the index trusts the bytes before l.size unread. The record
+		// at the seam is checked by scan's ordering guard; this checks the one
+		// the index ends on, which is what catches a prefix rewritten in place
+		// under an inode that also grew. It is a spot check, not a verification:
+		// a rewrite that left this record alone and changed an earlier one would
+		// still get past, and the alternative is parsing the whole file on every
+		// call to a growing feed.
+		if !l.lastRecordStillThere() {
+			return l.scan(info, 0)
+		}
 		return l.scan(info, l.size)
 	}
 	// Shrunk without being replaced: something truncated the file under us. The
 	// index describes bytes that are no longer there, so it is built again.
 	return l.scan(info, 0)
+}
+
+// lastRecordStillThere reports whether the record the index ends on still reads
+// back with the sequence the index has for it.
+func (l *Log[T]) lastRecordStillThere() bool {
+	if len(l.offsets) == 0 {
+		return true
+	}
+	last := len(l.offsets) - 1
+	f, err := os.Open(l.path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if _, err := f.Seek(l.offsets[last], io.SeekStart); err != nil {
+		return false
+	}
+	line, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil {
+		return false
+	}
+	var h head
+	return json.Unmarshal(line, &h) == nil && h.Seq == l.seqs[last]
 }
 
 func (l *Log[T]) reset() {

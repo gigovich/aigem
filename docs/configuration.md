@@ -12,7 +12,8 @@ aigem honors the XDG base directories.
 | `~/.config/aigem/agents/*.md`             | custom subagents                                    |
 | `~/.config/aigem/skills/`                 | global skills                                       |
 | `~/.local/state/aigem/auth.json`          | credentials (`0600`)                                |
-| `~/.local/state/aigem/sessions/`          | saved conversations                                 |
+| `~/.local/state/aigem/sessions/`          | saved conversations (`0600` in a `0700` directory)  |
+| `~/.local/state/aigem/web-cookies.json`   | browser sign-ins for `aigem web` (`0600`)           |
 | `~/.local/state/aigem/path-grants.json`   | approved read paths outside a working directory     |
 | `~/.local/state/aigem/project-trust.json` | approved project hooks, skills, and MCP targets     |
 | `~/.local/state/aigem/local.json`         | local llama.cpp server settings                     |
@@ -39,7 +40,6 @@ want the disk space back.
 - `~/.local/state/aigem/chat/` (`chat.db`, `blobs/`, `vapid.json`)
 - `~/.local/state/aigem/chat-cookies.json`
 - `~/.local/state/aigem/chat.json`
-- `~/.local/state/aigem/web-cookies.json`
 - `~/.local/state/aigem/web.json`
 - `~/.local/state/aigem/browser-profile/<botname>/` - only the per-bot
   subdirectories; the parent directory is still used by the interactive

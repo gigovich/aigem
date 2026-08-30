@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -151,7 +152,7 @@ func TestConcurrentAppendsAllLandWithDistinctSequences(t *testing.T) {
 			}
 		}()
 	}
-	wg.Wait()
+	awaitGroup(t, &wg, "every concurrent Append")
 
 	got, err := l.Range(0, 0)
 	if err != nil {
@@ -571,14 +572,14 @@ func TestARewriteOfTheSameLengthIsNoticed(t *testing.T) {
 		if err := os.WriteFile(l.Path(), renumber(t, data), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		// Both records are past a cursor of 1 now. An index still holding 1 and 2
-		// would answer with one.
-		got, err := l.Range(1, 0)
-		if err != nil {
+		// Asserted on the index rather than through Range: Range resyncs and
+		// reads again on an error, so it answers correctly even when sync missed
+		// the change - and then the test pins the retry instead of the check.
+		if err := l.sync(); err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 2 {
-			t.Errorf("Range(1, 0) returned %d records, want 2", len(got))
+		if want := []int{5, 6}; !slices.Equal(l.seqs, want) {
+			t.Errorf("the index holds %v after an in-place rewrite, want %v", l.seqs, want)
 		}
 	})
 
@@ -609,13 +610,12 @@ func TestARewriteOfTheSameLengthIsNoticed(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		got, err := l.Range(1, 0)
-		if err != nil {
+		if err := l.sync(); err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 2 {
-			t.Errorf("Range(1, 0) returned %d records, want 2; the replacement went unnoticed",
-				len(got))
+		if want := []int{5, 6}; !slices.Equal(l.seqs, want) {
+			t.Errorf("the index holds %v after the replacement, want %v; it went unnoticed",
+				l.seqs, want)
 		}
 	})
 }
@@ -654,20 +654,26 @@ func TestAReadFromAStaleIndexIsRefusedRatherThanShifted(t *testing.T) {
 		t.Fatalf("the peer dropped %d records (%v), want 2", dropped, err)
 	}
 
+	// A limit, so the stale offsets stay inside the shortened file: without one
+	// the window runs off the end and EOF answers for the check that is under
+	// test, which passes whether or not the check is there.
 	reader.seqs, reader.offsets = staleSeqs, staleOffsets
-	if _, err := reader.window(2, 0); err == nil {
-		t.Error("a read from a stale index returned a window instead of an error")
+	got, err := reader.window(2, 2)
+	if err == nil {
+		t.Errorf("a read from a stale index returned %v instead of an error", got)
+	} else if !strings.Contains(err.Error(), "the index gave") {
+		t.Errorf("error = %v, want it to name the mismatch rather than the end of the file", err)
 	}
 
 	// And Range, which syncs first and reads again on an error, still answers
 	// correctly.
 	reader.seqs, reader.offsets = staleSeqs, staleOffsets
-	got, err := reader.Range(2, 0)
+	window, err := reader.Range(2, 0)
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
-	if len(got) == 0 || got[0].Seq != 3 {
-		t.Errorf("Range(2, 0) = %v, want the window starting at record 3", got)
+	if len(window) == 0 || window[0].Seq != 3 {
+		t.Errorf("Range(2, 0) = %v, want the window starting at record 3", window)
 	}
 }
 
@@ -757,5 +763,62 @@ func TestAnIncrementalScanAgreesWithAFullOne(t *testing.T) {
 		if incremental[i].Seq != full[i].Seq || incremental[i].V != full[i].V {
 			t.Errorf("record %d: extended %+v, fresh %+v", i, incremental[i], full[i])
 		}
+	}
+}
+
+// Extending the index trusts the bytes before it unread, and the ordering guard
+// only sees the record at the seam. A prefix renumbered in place under an inode
+// that also grew would splice a stale head onto a fresh tail, and a cursor
+// landing in the tail would then be answered with a short window and no error -
+// the failure read's own check exists to stop, one level up.
+func TestAnExtendedIndexNoticesARewrittenPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "activity.jsonl")
+	at := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	warm := NewLog[event](path)
+	warm.now = func() time.Time { return at }
+	for _, k := range []string{"a", "b", "c"} {
+		at = at.Add(time.Second)
+		if _, err := warm.Append(event{Kind: k}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := warm.Range(0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Renumbered 4, 5, 6 in place - same inode, same widths - and a seventh
+	// record appended, so the file has grown and the seam is in order.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten := string(data)
+	for from, to := range map[string]string{`{"seq":1,`: `{"seq":4,`, `{"seq":2,`: `{"seq":5,`, `{"seq":3,`: `{"seq":6,`} {
+		rewritten = strings.Replace(rewritten, from, to, 1)
+	}
+	if len(rewritten) != len(data) {
+		t.Fatalf("the rewrite changed the length; the test needs it fixed")
+	}
+	seventh, err := json.Marshal(Entry[event]{Seq: 7, At: at, V: event{Kind: "g"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append([]byte(rewritten), append(seventh, '\n')...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := warm.Range(3, 0)
+	if err != nil {
+		// Refusing is a fine answer too - what must not happen is a short window
+		// returned as if it were the whole one.
+		return
+	}
+	fresh, err := NewLog[event](path).Range(3, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(fresh) {
+		t.Errorf("the extended index answered with %d records and a fresh one with %d; "+
+			"a cursor would advance past the difference", len(got), len(fresh))
 	}
 }

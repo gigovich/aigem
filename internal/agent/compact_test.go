@@ -152,6 +152,10 @@ func TestEvictProtectsTail(t *testing.T) {
 
 func newCompactAgent(t *testing.T, fc *fakeClient) *Agent {
 	t.Helper()
+	// Compaction writes a pre-compaction backup under the state directory, so a
+	// test that does not point it somewhere of its own writes into the
+	// developer's real ~/.local/state/aigem.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	reg, err := tools.NewRegistry(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

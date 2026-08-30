@@ -163,19 +163,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delegation. On a reasoning model, whose deltas start immediately, that was
   nearly every hiccup.
 
-### Fixed
-
-- The `bash` tool no longer waits for a command's backgrounded children after
-  its context is cancelled. Killing the shell left an orphan holding the output
-  pipe, so an interrupted turn ran on for as long as that child lived - thirty
-  seconds for a `sleep 30 &`, and unbounded for anything long-running. It gets
-  the process group and the `WaitDelay` that hooks have had.
-- A session that was closed while a turn was running could still be writing
-  after `Close` returned. The turn is emitted as ended and saved after that, so
-  a caller that closed on seeing the end of it raced a write it had no way to
-  know about. `Close` now waits for the turn to unwind. This was visible as an
-  occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
-
 ### Changed
 
 - `aigem chat read --json` prints a paging envelope rather than a bare array:
@@ -341,19 +328,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the message came from, and teammates are matched by chat username rather than
   by aigem name.
 
-### Fixed
-
-- The `bash` tool no longer waits for a command's backgrounded children after
-  its context is cancelled. Killing the shell left an orphan holding the output
-  pipe, so an interrupted turn ran on for as long as that child lived - thirty
-  seconds for a `sleep 30 &`, and unbounded for anything long-running. It gets
-  the process group and the `WaitDelay` that hooks have had.
-- A session that was closed while a turn was running could still be writing
-  after `Close` returned. The turn is emitted as ended and saved after that, so
-  a caller that closed on seeing the end of it raced a write it had no way to
-  know about. `Close` now waits for the turn to unwind. This was visible as an
-  occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
-
 ### Changed
 
 - Every LLM client in a process, the TUI's included, shares one HTTP connection
@@ -401,19 +375,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model that works and pointed at a login that would have failed. Only the
   built-in local provider was exempt; `-p` was never affected.
 - `aigem --help` printed a literal `%%` in the two compaction percentage flags.
-
-### Fixed
-
-- The `bash` tool no longer waits for a command's backgrounded children after
-  its context is cancelled. Killing the shell left an orphan holding the output
-  pipe, so an interrupted turn ran on for as long as that child lived - thirty
-  seconds for a `sleep 30 &`, and unbounded for anything long-running. It gets
-  the process group and the `WaitDelay` that hooks have had.
-- A session that was closed while a turn was running could still be writing
-  after `Close` returned. The turn is emitted as ended and saved after that, so
-  a caller that closed on seeing the end of it raced a write it had no way to
-  know about. `Close` now waits for the turn to unwind. This was visible as an
-  occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
 
 ### Changed
 
@@ -505,19 +466,6 @@ First public release.
   `bash`-style `-c` they reject.
 - A container started with neither a command nor `BOT_NAME` exits non-zero
   instead of reporting success to whatever supervises it.
-
-### Fixed
-
-- The `bash` tool no longer waits for a command's backgrounded children after
-  its context is cancelled. Killing the shell left an orphan holding the output
-  pipe, so an interrupted turn ran on for as long as that child lived - thirty
-  seconds for a `sleep 30 &`, and unbounded for anything long-running. It gets
-  the process group and the `WaitDelay` that hooks have had.
-- A session that was closed while a turn was running could still be writing
-  after `Close` returned. The turn is emitted as ended and saved after that, so
-  a caller that closed on seeing the end of it raced a write it had no way to
-  know about. `Close` now waits for the turn to unwind. This was visible as an
-  occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
 
 ### Changed
 

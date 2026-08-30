@@ -137,7 +137,7 @@ func TestConcurrentUpdatesAllLand(t *testing.T) {
 			})
 		}()
 	}
-	wg.Wait()
+	awaitGroup(t, &wg, "every concurrent Update")
 	close(errs)
 	for err := range errs {
 		if err != nil {
@@ -429,7 +429,7 @@ func TestUpdateBodiesNeverOverlap(t *testing.T) {
 			})
 		}()
 	}
-	wg.Wait()
+	awaitGroup(t, &wg, "every concurrent Update")
 
 	if overlapped.Load() {
 		t.Error("two Update bodies ran at once; one of their writes is lost")
@@ -478,7 +478,7 @@ func TestSaveIsSerializedAgainstUpdate(t *testing.T) {
 			overlapped.Store(true)
 		}
 	}()
-	wg.Wait()
+	awaitGroup(t, &wg, "the Save and the Update")
 
 	if overlapped.Load() {
 		t.Error("Save returned while an Update body was still running")
@@ -506,6 +506,33 @@ func TestASweepCollectsAnotherStoresOrphanInTheSameDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
 		t.Error("a store left a neighbour's orphan behind; nothing else will ever collect it")
+	}
+}
+
+// The digit run and the hyphen are what keep the sweep off a real file, and the
+// suffix alone is not enough: this package writes into a directory other stores
+// share, and a name is all it has to go on.
+func TestIsTempNameWantsCreateTempsShape(t *testing.T) {
+	for _, name := range []string{
+		"doc-123456" + tempSuffix,
+		"20260830-150405-9f3c-123456" + tempSuffix,
+	} {
+		if !isTempName(name) {
+			t.Errorf("isTempName(%q) = false; the sweep would leave this orphan behind", name)
+		}
+	}
+	for _, name := range []string{
+		"doc-abc" + tempSuffix,     // no digits after the hyphen
+		"doc-12a4" + tempSuffix,    // not all digits
+		"doc-" + tempSuffix,        // nothing after the hyphen
+		"doc123456" + tempSuffix,   // no hyphen at all
+		"-123456" + tempSuffix,     // nothing before it
+		"doc-123456.json",          // the wrong suffix
+		"doc-123456" + ".tmp.json", // the suffix the other way round
+	} {
+		if isTempName(name) {
+			t.Errorf("isTempName(%q) = true; the sweep would delete this", name)
+		}
 	}
 }
 
@@ -703,7 +730,7 @@ func TestAWaiterKeepsThePathMutexAlive(t *testing.T) {
 	}
 
 	first()
-	second := <-waiting
+	second := awaitValue(t, waiting, "the waiter to take the mutex")
 	second()
 
 	pathsMu.Lock()
@@ -736,7 +763,7 @@ func TestDeleteIsSerializedAgainstUpdate(t *testing.T) {
 			return nil
 		})
 	}()
-	<-inside
+	awaitValue(t, inside, "the Update body to start")
 
 	deleted := make(chan error, 1)
 	go func() { deleted <- f.Delete() }()
@@ -747,10 +774,10 @@ func TestDeleteIsSerializedAgainstUpdate(t *testing.T) {
 	}
 
 	close(release)
-	if err := <-updated; err != nil {
+	if err := awaitValue(t, updated, "Update to return"); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-deleted; err != nil {
+	if err := awaitValue(t, deleted, "Delete to return"); err != nil {
 		t.Fatal(err)
 	}
 	// The delete went last, so it is what stands. The other order would leave the
@@ -815,5 +842,34 @@ func TestTheSweptDirectoryTableIsBounded(t *testing.T) {
 	pathsMu.Unlock()
 	if held > maxSweptDirs {
 		t.Errorf("the store remembers %d swept directories, cap is %d", held, maxSweptDirs)
+	}
+}
+
+// testWait is how this package's tests wait on anything. A regression that
+// leaves a goroutine parked should report itself as the test that was waiting,
+// with the name of what it was waiting for - not as the whole package timing
+// out ten minutes later and taking every other result with it.
+const testWait = 10 * time.Second
+
+func awaitGroup(t *testing.T, wg *sync.WaitGroup, what string) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(testWait):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func awaitValue[T any](t *testing.T, c <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-c:
+		return v
+	case <-time.After(testWait):
+		t.Fatalf("timed out waiting for %s", what)
+		var zero T
+		return zero
 	}
 }

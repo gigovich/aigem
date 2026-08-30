@@ -1,6 +1,8 @@
 package web
 
 import (
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -73,6 +75,20 @@ func loadCookies(f *store.File[cookieFile]) map[string]time.Time {
 			live[id] = exp
 		}
 	}
+	// The cap is applied here as well as when a session is issued, because a
+	// file two daemons share can hold more than either of them would keep. The
+	// ones with longest left are the ones kept, which is the rule the eviction
+	// on issue uses.
+	for len(live) > maxCookieSessions {
+		var soonest string
+		var at time.Time
+		for id, exp := range live {
+			if soonest == "" || exp.Before(at) {
+				soonest, at = id, exp
+			}
+		}
+		delete(live, soonest)
+	}
 	return live
 }
 
@@ -97,11 +113,15 @@ func (s *Server) pendingLocked(c cookieChange) cookieChange {
 
 // persist applies a change to the file.
 //
-// A parse failure is repaired rather than returned: a file this daemon cannot
-// read is one no browser can be signed out of and none can be signed in to, and
-// the table in memory is the best account of the sessions anyone still holds.
-// That is the one path that overwrites rather than composes, and it is the same
-// choice loadCookies makes at startup.
+// Every failure is reported except one: a file that does not parse, which no
+// read-modify-write can ever get past. That one is started over from this
+// change alone - never from the table in memory. Writing the table back would
+// mean rewriting ids this daemon did not just touch, and an id in this table
+// may be one a peer revoked, or one it issued and has since dropped: a repair
+// that resurrects a revoked session, or erases a live one, is worse than the
+// unreadable file it is repairing. Sessions the file loses this way stay live
+// here until this daemon stops, which is what they would have been worth from
+// an unreadable file anyway.
 func (s *Server) persist(c cookieChange) error {
 	if c.empty() {
 		return nil
@@ -110,32 +130,45 @@ func (s *Server) persist(c cookieChange) error {
 		if f.Sessions == nil {
 			f.Sessions = map[string]time.Time{}
 		}
-		now := time.Now()
-		for id, exp := range f.Sessions {
-			if id == "" || now.After(exp) {
-				delete(f.Sessions, id)
-			}
-		}
-		for _, id := range c.remove {
-			delete(f.Sessions, id)
-		}
-		for id, exp := range c.add {
-			f.Sessions[id] = exp
-		}
+		apply(f, c)
 		return nil
 	})
-	if err == nil {
-		return nil
+	if err == nil || !unparseable(err) {
+		return err
 	}
-	slog.Warn("the browser sessions file could not be updated; rewriting it from this daemon's table",
+	slog.Warn("the browser sessions file does not parse; starting it again from this change",
 		"path", s.cookieStore.Path(), "err", err)
-	s.mu.Lock()
-	table := make(map[string]time.Time, len(s.cookies))
-	for id, exp := range s.cookies {
-		table[id] = exp
+	fresh := cookieFile{Sessions: map[string]time.Time{}}
+	apply(&fresh, c)
+	return s.cookieStore.Save(fresh)
+}
+
+// apply folds one change into a table, dropping whatever has expired on the way
+// through. The expiry test is the one cookieOK and loadCookies use, so an entry
+// this daemon has never heard of is judged exactly as its owner would judge it.
+func apply(f *cookieFile, c cookieChange) {
+	now := time.Now()
+	for id, exp := range f.Sessions {
+		if id == "" || now.After(exp) {
+			delete(f.Sessions, id)
+		}
 	}
-	s.mu.Unlock()
-	return s.cookieStore.Save(cookieFile{Sessions: table})
+	for _, id := range c.remove {
+		delete(f.Sessions, id)
+	}
+	for id, exp := range c.add {
+		f.Sessions[id] = exp
+	}
+}
+
+// unparseable reports whether the file's contents are the problem, rather than
+// the disk, the permissions or a peer holding the lock. Only the first is worth
+// overwriting: the others describe a file that is still whatever it was, and a
+// second write attempt is the same failure twice.
+func unparseable(err error) bool {
+	var syntax *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	return errors.As(err, &syntax) || errors.As(err, &typ)
 }
 
 // ForgetSessions removes the browser sessions kept at path, so every browser

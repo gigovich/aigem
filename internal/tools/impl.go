@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +17,11 @@ import (
 )
 
 const maxReadBytes = 256 * 1024
+
+// bashWaitDelay bounds how long a finished or cancelled command is waited on
+// when something it started in the background still holds the output pipe. The
+// same two seconds internal/hooks uses, and a variable so a test can shrink it.
+var bashWaitDelay = 2 * time.Second
 
 const (
 	// maxGrepMatches caps how many matching lines grep returns.
@@ -393,10 +399,18 @@ func (t *bashTool) Run(ctx context.Context, args json.RawMessage) (string, error
 	// output pipe. Measured at 30s for a `sleep 30 &`, and unbounded for a dev
 	// server - all of it inside a turn the caller believes it has cancelled, and
 	// which closing the session now waits for.
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = bashWaitDelay
 	out, err := cmd.CombinedOutput()
 	res := string(out)
-	if err != nil {
+	switch {
+	case errors.Is(err, exec.ErrWaitDelay):
+		// The command itself finished; what ran out was the wait for a child it
+		// left holding the output pipe. Reporting that as an exit error would
+		// tell the model a command failed when it did not - and starting a
+		// server in the background is a thing people ask for.
+		res += "\n[the command finished; something it started in the background is " +
+			"still running and still holding its output]"
+	case err != nil:
 		res += fmt.Sprintf("\n[exit error: %v]", err)
 	}
 	if res == "" {

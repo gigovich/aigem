@@ -133,7 +133,7 @@ func TestResolveRejectsUnofferedDecision(t *testing.T) {
 	if err := l.Resolve(req.ID, DecisionDeny, "c"); err != nil {
 		t.Fatal(err)
 	}
-	if d := <-decided; d != tools.PathDeny {
+	if d := awaitValue(t, decided, "the path decision"); d != tools.PathDeny {
 		t.Fatalf("decision = %v, want PathDeny", d)
 	}
 }
@@ -309,7 +309,7 @@ func TestSlowSubscriberIsDroppedNotBlocking(t *testing.T) {
 		}
 		last = ev.Seq
 	}
-	if _, ok := <-slow; ok {
+	if _, ok := awaitValue2(t, slow, "the slow subscriber's channel to close"); ok {
 		t.Fatal("channel stayed open after the desync marker")
 	}
 }
@@ -695,7 +695,7 @@ func TestCloseReleasesATurnThatParksWhileItIsClosing(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	<-parked
+	awaitValue(t, parked, "the turn to park")
 
 	start := time.Now()
 	l.Close()
@@ -758,7 +758,6 @@ func TestCloseGivesUpOnATurnThatWillNotUnwind(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	prev := closeWait
 	closeWait = 100 * time.Millisecond
-	t.Cleanup(func() { closeWait = prev })
 
 	reg, err := tools.NewRegistry(t.TempDir())
 	if err != nil {
@@ -773,8 +772,15 @@ func TestCloseGivesUpOnATurnThatWillNotUnwind(t *testing.T) {
 	})
 
 	stuck := make(chan struct{})
-	// Released at the end so the goroutine does not outlive the test.
-	t.Cleanup(func() { close(stuck) })
+	// Registered after t.Setenv, so it runs before that restores the real state
+	// directory - cleanups are LIFO. A turn released after the restore finishes
+	// its save into the developer's own ~/.local/state/aigem, and the second
+	// Close is what waits for it.
+	t.Cleanup(func() {
+		closeWait = prev
+		close(stuck)
+		l.Close()
+	})
 	if err := l.Run("skill", "skill", func(context.Context, agent.Events) (string, error) {
 		<-stuck
 		return "done", nil
@@ -798,5 +804,37 @@ func TestCloseGivesUpOnATurnThatWillNotUnwind(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Close never gave up on a turn that never unwinds")
+	}
+}
+
+// testWait is how this package's tests wait on anything. A regression that
+// leaves a goroutine parked should report itself as the test that was waiting,
+// with the name of what it was waiting for - not as the whole package timing
+// out ten minutes later and taking every other result with it.
+const testWait = 10 * time.Second
+
+func awaitValue[T any](t *testing.T, c <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-c:
+		return v
+	case <-time.After(testWait):
+		t.Fatalf("timed out waiting for %s", what)
+		var zero T
+		return zero
+	}
+}
+
+// awaitValue2 is awaitValue for the comma-ok form, which a generic returning one
+// value cannot express.
+func awaitValue2[T any](t *testing.T, c <-chan T, what string) (T, bool) {
+	t.Helper()
+	select {
+	case v, ok := <-c:
+		return v, ok
+	case <-time.After(testWait):
+		t.Fatalf("timed out waiting for %s", what)
+		var zero T
+		return zero, false
 	}
 }

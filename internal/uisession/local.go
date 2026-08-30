@@ -250,6 +250,12 @@ func (l *Local) Command(name, args string) error {
 // Close ends the session: the running turn is cancelled, every parked approval
 // is refused so no tool call is left waiting forever, and every subscriber's
 // channel is closed.
+//
+// It then waits for the cancelled turn to unwind, because a turn is saved after
+// the event that says it ended - so a caller that closed on seeing that event
+// would otherwise race a write it has no way to know about. The wait is bounded
+// by closeWait and then abandoned: a turn parked on something no cancellation
+// reaches must not hold the process on its way out.
 func (l *Local) Close() {
 	l.mu.Lock()
 	first := !l.closed

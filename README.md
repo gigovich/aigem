@@ -53,9 +53,11 @@ aigem web                    # serve the browser UI on a loopback port
 ```
 
 The URL it prints carries a token; the page trades it for a cookie on first
-load. To reach the daemon from another device, put `tailscale serve` or another
-reverse proxy in front of the loopback port - or terminate that proxy yourself
-and say which name it answers to:
+load. Sign-ins survive a restart, so a restart does not revoke a leaked token -
+stop the daemon and start it with `aigem web --sign-out` for that. To reach the
+daemon from another device, put `tailscale serve` or another reverse proxy in
+front of the loopback port - or terminate that proxy yourself and say which name
+it answers to:
 
 ```sh
 aigem web --addr 0.0.0.0:7777 --origin https://name.example.ts.net

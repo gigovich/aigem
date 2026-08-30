@@ -68,7 +68,8 @@ func runWebCommand(args []string) error {
 	open := fs.Bool("open", false, "open the page in the default browser once it is serving")
 	signOut := fs.Bool("sign-out", false,
 		"forget every browser session before serving, so each one signs in again.\n"+
-			"Stop any running daemon first, or it will keep honouring them")
+			"Stop any running daemon first, or it will keep honouring them.\n"+
+			"Refuses to serve at all if the sessions cannot be forgotten")
 	var origins originList
 	fs.Var(&origins, "origin", "public origin this daemon is reached at, scheme and all;\n"+
 		"repeat for more than one. Required to bind an address the network can reach")

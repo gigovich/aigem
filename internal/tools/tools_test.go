@@ -331,6 +331,74 @@ func TestBashDoesNotWaitForABackgroundedChild(t *testing.T) {
 	}
 }
 
+// The other half of the same fix, and the half WaitDelay alone does not give:
+// the command runs in its own process group and the whole group is killed, so a
+// cancelled command does not leave work running. Without it the shell dies and
+// its children carry on doing whatever they were told to.
+func TestBashKillsWhatACancelledCommandLeftRunning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no bash, and no group-wide kill")
+	}
+	dir := t.TempDir()
+	r, err := NewRegistry(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := r.Get("bash")
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = tool.Run(ctx, json.RawMessage(`{"cmd":"(sleep 1; touch survived) & sleep 30"}`))
+	}()
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cancelled command never returned")
+	}
+	// Longer than the child's own sleep, so it has had its chance.
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(dir, "survived")); err == nil {
+		t.Error("a child of the cancelled command went on to do its work")
+	}
+}
+
+// A command that succeeds and leaves something running in the background is a
+// thing people ask for - `make web-dev` is exactly that shape. Bounding the wait
+// is right; telling the model the command failed is not.
+func TestASuccessfulCommandThatBackgroundsAChildIsNotAnError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no bash")
+	}
+	prev := bashWaitDelay
+	bashWaitDelay = 200 * time.Millisecond
+	t.Cleanup(func() { bashWaitDelay = prev })
+
+	r, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := r.Get("bash")
+	// The child inherits the pipe, so the wait runs out even though bash exited.
+	out, err := tool.Run(context.Background(), json.RawMessage(`{"cmd":"sleep 30 & echo started"}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(out, "started") {
+		t.Errorf("the command's own output is missing: %q", out)
+	}
+	if strings.Contains(out, "exit error") {
+		t.Errorf("a command that succeeded was reported as failing: %q", out)
+	}
+	if !strings.Contains(out, "still running") {
+		t.Errorf("nothing said why the output stopped: %q", out)
+	}
+}
+
 func TestReadFileInContextDedup(t *testing.T) {
 	dir := t.TempDir()
 	r, err := NewRegistry(dir)

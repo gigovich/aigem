@@ -109,10 +109,15 @@ const (
 	// phone this exists for is the device that leaves the tab in the background
 	// for weeks; reissuing is one request with a token the page still holds.
 	cookieTTL = 30 * 24 * time.Hour
-	// maxCookieSessions bounds the table. One operator holds a handful - a
-	// laptop, a phone, a tablet - and the cap is only here so that repeated
-	// exchanges cannot grow it without end. The one expiring soonest goes
-	// first, which is the one issued longest ago.
+	// maxCookieSessions bounds one daemon's table, and the file only where it is
+	// loaded. One operator holds a handful - a laptop, a phone, a tablet - and
+	// the cap is here so that repeated exchanges cannot grow it without end. The
+	// one expiring soonest goes first, which is the one issued longest ago.
+	//
+	// A file two daemons share can hold more than this between loads: an
+	// eviction is not written through, because the sessions this daemon would
+	// pick are not necessarily its own. Loading applies the cap again, so the
+	// growth is bounded by what is issued between restarts.
 	maxCookieSessions = 64
 	// renewWithin is how close to expiry a cookie has to be before the exchange
 	// replaces it rather than keeping it. It is what makes the month a sliding
@@ -141,6 +146,11 @@ func (s *Server) issueCookie() (string, error) {
 			dropped = append(dropped, k)
 		}
 	}
+	// The cap bounds this table, and only this table. A file two daemons share
+	// holds sessions this one did not issue and cannot recognise, so recording
+	// an eviction as a removal would delete a peer's live session, chosen by an
+	// expiry order that says nothing about who owns it. The file is bounded by
+	// expiry instead, and by the same cap when it is loaded.
 	for len(s.cookies) >= maxCookieSessions {
 		var oldest string
 		var at time.Time
@@ -150,7 +160,6 @@ func (s *Server) issueCookie() (string, error) {
 			}
 		}
 		delete(s.cookies, oldest)
-		dropped = append(dropped, oldest)
 	}
 	s.cookies[id] = now.Add(cookieTTL)
 	change := s.pendingLocked(cookieChange{
@@ -262,11 +271,17 @@ func (s *Server) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// The one being replaced goes now rather than lingering for the rest of its
 	// window: a renewal that left both live would grow the table by one per
-	// renewal, which is the accumulation the reuse above exists to stop. A
-	// failure to record that removal is not worth refusing the renewal over -
-	// the worst case is a restart honouring a cookie the browser has replaced.
+	// renewal, which is the accumulation the reuse above exists to stop.
+	//
+	// A failure to record that removal ends the renewal. Carrying on would hand
+	// the browser a cookie the daemon may not have recorded either, while the
+	// one it just replaced stays live on disk - so the page would be signed out
+	// by the next restart and a session nobody holds would outlive it. Refusing
+	// leaves the browser with the cookie it arrived with, which still works.
 	if err := s.revokeCookie(r); err != nil {
 		slog.Warn("could not record a replaced browser session", "err", err)
+		http.Error(w, "could not renew the session", http.StatusInternalServerError)
+		return
 	}
 	id, err := s.issueCookie()
 	if err != nil {
@@ -306,14 +321,13 @@ func (s *Server) revokeCookie(r *http.Request) error {
 		s.mu.Unlock()
 		return errors.New("the daemon is shutting down and cannot record the sign-out")
 	}
-	// Only a held session is worth a disk write: the cookie exchange runs this
-	// on every page load, and a request carrying a value the table never issued
-	// must not be able to make the daemon write at all.
-	_, held := s.cookies[c.Value]
-	if !held {
-		s.mu.Unlock()
-		return nil
-	}
+	// The removal is recorded whether or not this daemon holds the session. It
+	// only ever answers for what it loaded at startup and issued since, so a
+	// session a peer issued - or one this daemon dropped when a write failed -
+	// is in the file and not in this table, and returning early there is a
+	// sign-out that reports success and revokes nothing. The cost is one
+	// read-modify-write for a cookie value nobody issued, from a caller that has
+	// already passed the guard.
 	delete(s.cookies, c.Value)
 	change := s.pendingLocked(cookieChange{remove: []string{c.Value}})
 	s.mu.Unlock()
@@ -328,12 +342,11 @@ func (s *Server) revokeCookie(r *http.Request) error {
 // browser would drop its cookie, the file would keep the session, and the next
 // restart would honour it again with nothing left that could present it.
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
-	if err := s.revokeCookie(r); err != nil {
-		slog.Warn("could not record a sign-out", "err", err)
-		http.Error(w, "signed out here, but the daemon could not record it; "+
-			"the session may come back when it restarts", http.StatusInternalServerError)
-		return
-	}
+	err := s.revokeCookie(r)
+	// The cookie is cleared either way. This daemon has already dropped the
+	// session, so leaving the browser holding a value only this daemon's file
+	// still honours would be the two of them disagreeing in the direction the
+	// error does not describe.
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    "",
@@ -343,14 +356,23 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		Secure:   s.secureFor(r),
 		SameSite: http.SameSiteStrictMode,
 	})
+	if err != nil {
+		slog.Warn("could not record a sign-out", "err", err)
+		http.Error(w, "signed out here, but the daemon could not record it; "+
+			"the session may come back when it restarts", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // Guard wraps a handler so it answers only for a request that passed every
-// check. Every route goes through it except the page, which a browser fetches
-// before it can hold any credential, and /healthz, which is a liveness probe -
-// so a route added later must be wrapped here or it answers under weaker rules
-// than the ones this file sets.
+// check. A route added later must be wrapped here or it answers under weaker
+// rules than the ones this file sets.
+//
+// Three things are deliberately outside it: the page, which a browser fetches
+// before it can hold any credential; /healthz, which is a liveness probe; and
+// the mux's wrong-method fallbacks, which carry nothing but a status and an
+// Allow header.
 func (s *Server) Guard(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.guard(w, r) {

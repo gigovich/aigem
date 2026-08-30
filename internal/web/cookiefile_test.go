@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -60,6 +61,7 @@ func TestStoppingTheDaemonLeavesTheFileAlone(t *testing.T) {
 	second := exchange(t, srv)
 
 	_ = srv.Close()
+	before := readCookieFile(t, file)
 	if _, err := srv.issueCookie(); err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +71,13 @@ func TestStoppingTheDaemonLeavesTheFileAlone(t *testing.T) {
 		if _, ok := stored[c.Value]; !ok {
 			t.Errorf("a session issued before the shutdown is gone from the file: %v", stored)
 		}
+	}
+	// And the one issued after it is not there. Close empties the table and then
+	// keeps serving until the listener is shut, so a page reloading through a
+	// deploy would otherwise record a session nothing is going to honour.
+	if len(stored) != len(before) {
+		t.Errorf("the file holds %d sessions after a shutdown issue, held %d before",
+			len(stored), len(before))
 	}
 }
 
@@ -89,29 +98,6 @@ func TestAnExpiredSessionIsDroppedFromTheFile(t *testing.T) {
 
 	if _, ok := readCookieFile(t, file)[c.Value]; ok {
 		t.Error("an expired session is still in the file")
-	}
-}
-
-// The cap bounds the file as well as the table, and the eviction it makes is
-// written through - otherwise a restart would restore the sessions it dropped.
-func TestTheFileIsCappedWithTheTable(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "cookies.json")
-	srv := newTestServer(t, Config{CookieFile: file})
-	for range maxCookieSessions + 5 {
-		if _, err := srv.issueCookie(); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	stored := readCookieFile(t, file)
-	if len(stored) > maxCookieSessions {
-		t.Errorf("the file holds %d sessions, cap is %d", len(stored), maxCookieSessions)
-	}
-	srv.mu.Lock()
-	held := len(srv.cookies)
-	srv.mu.Unlock()
-	if len(stored) != held {
-		t.Errorf("the file holds %d sessions and the daemon %d", len(stored), held)
 	}
 }
 
@@ -301,14 +287,14 @@ func TestASignOutDuringShutdownSaysItCouldNotBeRecorded(t *testing.T) {
 	}
 }
 
-// A file this daemon cannot parse is one no browser can be signed out of and
-// none can be signed in to. The table in memory is the best account of who
-// still holds a session, so the update path repairs the file with it rather
-// than failing every mutation from then on.
-func TestAnUnparseableFileIsRepairedByTheNextChange(t *testing.T) {
+// A file that does not parse is the one failure a read-modify-write can never
+// get past, so it is started over. Started over from the change alone, though,
+// and never from the table in memory: an id in that table may be one a peer
+// revoked, and writing it back would undo the sign-out.
+func TestAnUnparseableFileIsStartedAgainFromTheChange(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "cookies.json")
 	srv := newTestServer(t, Config{CookieFile: file})
-	c := exchange(t, srv)
+	old := exchange(t, srv)
 
 	if err := os.WriteFile(file, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
@@ -319,9 +305,155 @@ func TestAnUnparseableFileIsRepairedByTheNextChange(t *testing.T) {
 	}
 
 	stored := readCookieFile(t, file)
-	for _, want := range []string{c.Value, next} {
-		if _, ok := stored[want]; !ok {
-			t.Errorf("the repaired file is missing a live session: %v", stored)
+	if _, ok := stored[next]; !ok {
+		t.Errorf("the change that repaired the file is not in it: %v", stored)
+	}
+	// The earlier session is gone from the file, and that is the point: it was
+	// unreadable from a broken file anyway, and rewriting the whole table is how
+	// a revoked session comes back.
+	if _, ok := stored[old.Value]; ok {
+		t.Error("the repair wrote back a session the change did not touch")
+	}
+	// It still works here until this daemon stops, which is all it was worth.
+	if !srv.cookieOK(withCookie(t, old)) {
+		t.Error("the repair dropped a live session from memory as well")
+	}
+}
+
+// A file this daemon cannot read - a permissions problem, a peer holding the
+// lock, a full disk - is still whatever it was. Overwriting it there destroys a
+// perfectly good file in answer to a problem that has nothing to do with its
+// contents.
+//
+// The file is made unreadable and left in a writable directory, because that is
+// the shape where the difference shows: the update fails and a rewrite would
+// succeed.
+func TestAFileThatCannotBeReadIsNotOverwritten(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a write-only file anyway")
+	}
+	dir := t.TempDir()
+	file := filepath.Join(dir, "cookies.json")
+	srv := newTestServer(t, Config{CookieFile: file})
+	first := exchange(t, srv)
+
+	before, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(file, 0o200); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := srv.issueCookie(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(file, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("the file was rewritten after a failure that had nothing to do with it:\n%s", after)
+	}
+	if _, ok := readCookieFile(t, file)[first.Value]; !ok {
+		t.Error("the session that was safely on disk is gone")
+	}
+}
+
+// The cap bounds the table, not the file two daemons share. Recording an
+// eviction as a removal meant one daemon deleting another's live sessions,
+// picked by an expiry order that has nothing to do with which daemon owns them.
+func TestTheCapDoesNotEvictFromTheFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	peer := map[string]time.Time{}
+	for i := range maxCookieSessions + 10 {
+		// Staggered, so the cap has an order to evict by rather than a tie.
+		peer[fmt.Sprintf("peer-%03d", i)] = time.Now().Add(cookieTTL + time.Duration(i)*time.Minute)
+	}
+	writeCookieFile(t, file, peer)
+
+	srv := newTestServer(t, Config{CookieFile: file})
+	// Loading is where the cap bounds what a shared file can grow to, now that
+	// eviction no longer writes through.
+	srv.mu.Lock()
+	held := len(srv.cookies)
+	srv.mu.Unlock()
+	if held != maxCookieSessions {
+		t.Errorf("the daemon loaded %d sessions from a file holding %d, cap is %d",
+			held, len(peer), maxCookieSessions)
+	}
+
+	mine := exchange(t, srv)
+	stored := readCookieFile(t, file)
+	if _, ok := stored[mine.Value]; !ok {
+		t.Error("the session this daemon issued is not in the file")
+	}
+	var gone int
+	for id := range peer {
+		if _, ok := stored[id]; !ok {
+			gone++
+		}
+	}
+	if gone != 0 {
+		t.Errorf("issuing one session removed %d of a peer's from the file", gone)
+	}
+}
+
+// A daemon answers for what it loaded at startup and issued since, so a session
+// a peer issued is in the file and not in this table. Returning early there was
+// a sign-out that reported success and revoked nothing.
+func TestSigningOutASessionThisDaemonNeverIssued(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "cookies.json")
+	first := newTestServer(t, Config{CookieFile: file})
+	second := newTestServer(t, Config{CookieFile: file})
+	// Issued after the first daemon read the file, so only the second knows it.
+	c := exchange(t, second)
+	first.mu.Lock()
+	_, known := first.cookies[c.Value]
+	first.mu.Unlock()
+	if known {
+		t.Fatal("the first daemon knows the session; this test proves nothing")
+	}
+
+	if err := first.revokeCookie(withCookie(t, c)); err != nil {
+		t.Fatalf("revokeCookie: %v", err)
+	}
+	if _, ok := readCookieFile(t, file)[c.Value]; ok {
+		t.Error("the sign-out reported success and left the session in the file")
+	}
+}
+
+// Carrying on past a failed removal hands the browser a cookie the daemon may
+// not have recorded, while the one it replaced stays live on disk: the page is
+// signed out by the next restart and a session nobody holds outlives it.
+func TestARenewalStopsWhenTheReplacementCannotBeRecorded(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory anyway")
+	}
+	dir := t.TempDir()
+	srv := newTestServer(t, Config{CookieFile: filepath.Join(dir, "cookies.json")})
+	c := exchange(t, srv)
+
+	// Inside the renewal window, so the exchange replaces rather than reuses.
+	srv.mu.Lock()
+	srv.cookies[c.Value] = time.Now().Add(renewWithin / 2)
+	srv.mu.Unlock()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	res := exchangeWith(t, srv, func(r *http.Request) { r.AddCookie(c) })
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Errorf("a renewal that could not be recorded answered %d, want 500", res.StatusCode)
+	}
+	for _, got := range res.Cookies() {
+		if got.Name == cookieName {
+			t.Errorf("the browser was handed a replacement cookie %q anyway", got.Value)
 		}
 	}
 }

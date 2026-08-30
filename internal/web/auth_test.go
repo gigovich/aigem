@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -621,6 +622,82 @@ func TestTheFailureTableIsCappedUnderAFlood(t *testing.T) {
 	}
 }
 
+// The limiter counts by peer address and nothing else. Honouring
+// X-Forwarded-For would let one caller claim a fresh bucket per request, which
+// is the exact opposite of a limit - and the header is written by whoever is
+// talking to us.
+func TestTheLimiterIgnoresAForwardedForHeader(t *testing.T) {
+	srv := newTestServer(t, Config{})
+	guess := func(forwarded string) int {
+		res := exchangeWith(t, srv, func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer wrong")
+			r.Header.Set("X-Forwarded-For", forwarded)
+		})
+		return res.StatusCode
+	}
+	for i := range authFailureBurst {
+		if got := guess(fmt.Sprintf("10.0.0.%d", i)); got != http.StatusUnauthorized {
+			t.Fatalf("guess %d answered %d, want 401", i, got)
+		}
+	}
+	if got := guess("10.0.0.99"); got != http.StatusTooManyRequests {
+		t.Errorf("a fresh X-Forwarded-For answered %d, want 429: it bought a new bucket", got)
+	}
+}
+
+// An empty credential must not compare equal to anything. New never leaves the
+// token empty, so this is the guard rather than the hole - but a constant-time
+// compare of two empty strings is equal, and that is what it stands in front of.
+func TestAnEmptyTokenIsNeverAccepted(t *testing.T) {
+	if tokenOK("", "") {
+		t.Error("an empty token matched an empty credential")
+	}
+	if tokenOK("secret", "") {
+		t.Error("an empty credential matched a real token")
+	}
+	if !tokenOK("secret", "secret") {
+		t.Error("the right token was refused")
+	}
+}
+
+// A Host header carries a port, so the branch that splits it has to strip the
+// root dot too. The other branch is the portless one, and testing only that
+// leaves half the function unpinned.
+func TestATrailingDotIsStrippedWithAPortToo(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"aigem.example.ts.net.:7777", "aigem.example.ts.net:7777"},
+		{"AIGEM.Example.TS.net.:7777", "aigem.example.ts.net:7777"},
+		{"aigem.example.ts.net.", "aigem.example.ts.net"},
+		{"127.0.0.1:7777", "127.0.0.1:7777"},
+		{"[::1]:7777", "[::1]:7777"},
+		// Not a root dot with a name in front of it.
+		{".", "."},
+		{"", ""},
+	} {
+		if got := normalizeHost(c.in); got != c.want {
+			t.Errorf("normalizeHost(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A bind that is neither loopback nor a wildcard has no local name to keep, so
+// with an origin stated it answers to that origin and nothing else - including
+// from the machine it runs on. It is a pure function, which is the only way to
+// check an address a test cannot bind.
+func TestARoutableBindKeepsOnlyTheStatedOrigin(t *testing.T) {
+	got, err := hostsFor(&net.TCPAddr{IP: net.IPv4(192, 168, 1, 5), Port: 7777},
+		[]string{"https://aigem.example.ts.net"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"aigem.example.ts.net"}; !slices.Equal(got.hosts, want) {
+		t.Errorf("hosts = %v, want %v", got.hosts, want)
+	}
+	if want := []string{"https://aigem.example.ts.net"}; !slices.Equal(got.origins, want) {
+		t.Errorf("origins = %v, want %v", got.origins, want)
+	}
+}
+
 // ---- the socket cap ----
 
 func TestOnlySoManySocketsAtOnce(t *testing.T) {
@@ -677,7 +754,7 @@ func TestTheSocketCapIsHeldByTheGuard(t *testing.T) {
 	// The handler blocks until hold closes, so releasing it has to come before
 	// anything waits on the goroutines sitting in it - the other order is a test
 	// that deadlocks on itself.
-	defer func() { close(hold); wg.Wait() }()
+	defer func() { close(hold); awaitGroup(t, &wg, "every blocked handshake") }()
 
 	handshake := srv.Guard(func(http.ResponseWriter, *http.Request) {
 		inside <- struct{}{}
@@ -886,5 +963,22 @@ func TestForgetSessionsRemovesThemAll(t *testing.T) {
 	}
 	if err := ForgetSessions(""); err != nil {
 		t.Errorf("ForgetSessions with no file: %v", err)
+	}
+}
+
+// testWait is how this package's tests wait on anything. A regression that
+// leaves a goroutine parked should report itself as the test that was waiting,
+// with the name of what it was waiting for - not as the whole package timing
+// out ten minutes later and taking every other result with it.
+const testWait = 10 * time.Second
+
+func awaitGroup(t *testing.T, wg *sync.WaitGroup, what string) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(testWait):
+		t.Fatalf("timed out waiting for %s", what)
 	}
 }

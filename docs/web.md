@@ -30,6 +30,10 @@ Sign-ins are kept in `$XDG_STATE_HOME/aigem/web-cookies.json` (0600), so
 restarting the daemon - deploying a new binary, say - does not sign out the
 phone whose token lives in a terminal on another machine.
 
+`--sign-out` refuses to serve at all when it cannot forget the sessions - an
+unwritable state directory, or none it can find. A revocation that quietly did
+not happen is the one answer worth refusing to start over.
+
 That cuts both ways, and it is the one thing to know about this design:
 **restarting is not how you revoke a leaked token.** A restart mints a new
 token and leaves every cookie working, and a cookie renews itself for as long
@@ -46,12 +50,13 @@ credential. The token in the URL is not sent anywhere, but the cookie it buys
 is - so a loopback daemon is only as private as the other things listening on
 that host.
 
-Everything except the page itself and `/healthz` needs a credential, and those
-two are outside the origin check as well: the page is what a browser fetches
-before it can hold any credential, and `/healthz` is a liveness probe. Both are
-served under any `Host`, so on a daemon bound where the network can reach, the
-bundle and a liveness bit are readable by anyone who can connect. Everything
-behind them - every `/api/` route - is not.
+Everything except the page, `/healthz` and the wrong-method 405s needs a
+credential, and those are outside the origin check as well: the page is what a
+browser fetches before it can hold any credential, `/healthz` is a liveness
+probe, and a 405 carries nothing but an `Allow` header. They are served under
+any `Host`, so on a daemon bound where the network can reach, the bundle and a
+liveness bit are readable by anyone who can connect. Everything behind them -
+every `/api/` route that does anything - is not.
 
 ## Release binaries have no UI
 
@@ -101,15 +106,22 @@ An internationalised name has to be given in the punycode form a browser sends
 (`https://xn--r8jz45g.jp`); the unicode spelling is refused at startup, because
 it would match nothing and every request would 403.
 
-With `--origin` the printed link is the public one. The address the daemon
-actually bound goes to stderr, which is the only way to learn it when the port
-was left to the kernel.
+With `--origin` the printed link is the public one, and the address the daemon
+actually bound goes to stderr - which is the only way to learn it when the port
+was left to the kernel. That line is the bound socket as the kernel reports it,
+so a `0.0.0.0` bind on a dual-stack host reads back as `[::]`, and it is left
+out when it would repeat the link.
 
 Repeat `--origin` for a daemon reached under more than one name. A stated origin
 **replaces** the derived allowlist rather than extending it - behind a proxy the
 bind address is not the name requests arrive under, and leaving it allowed only
-widens what a DNS rebinding attack may claim to be. Loopback names survive the
-replacement, so `curl` on the machine itself keeps working.
+widens what a DNS rebinding attack may claim to be.
+
+The loopback names survive that replacement, so `curl` and a browser on the
+machine itself keep working - but only the ones the socket actually answers on.
+A daemon bound to a loopback address or a wildcard keeps `127.0.0.1`, `[::1]`
+and `localhost` as they apply; one bound to a routable address keeps nothing,
+and answers to the stated origin alone, including from the machine it runs on.
 
 The scheme is part of the match: `https://name` and `http://name` are different
 origins, and a cookie issued under an `https` origin is marked `Secure` even
@@ -125,9 +137,9 @@ though the hop to the daemon is plain HTTP.
 | `/api/...`  | reserved; an unknown path here is a 404, never the page |
 | everything else | the application, which routes in the browser |
 
-A binary built without a bundle is the exception to the last two rows: it has no
-page to serve and no route to be wrong about, so it answers 501 everywhere but
-`/healthz` and the wrong-method 405s.
+A binary built without a bundle is the exception to the last row: it has no page
+to serve, so it answers 501 there. `/healthz`, the two `/api/auth/session`
+methods and the wrong-method 405s answer as they always do.
 
 Every response carries a content security policy, `X-Content-Type-Options:
 nosniff` and `Referrer-Policy: no-referrer` - including the page and the bundle,
