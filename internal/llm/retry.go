@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// streamer is the minimal LLM entrypoint the Retrying decorator wraps and re-exposes.
+type streamer interface {
+	Stream(ctx context.Context, messages []Message, tools []Tool, temperature float64,
+		onEvent func(StreamEvent)) (Message, error)
+}
+
 // isRefreshCollision reports whether an error is OpenAI's "refresh_token_reused":
 // several bot processes share one auth.json, and OpenAI's refresh tokens are
 // one-time use, so when a peer rotates the token first this process's snapshot is
@@ -212,4 +218,17 @@ func IsTransientErr(err error) bool {
 		}
 	}
 	return false
+}
+
+// sleepCtx sleeps for d unless ctx is cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
 }
