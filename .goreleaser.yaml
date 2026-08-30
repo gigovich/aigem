@@ -5,9 +5,6 @@ project_name: aigem
 before:
   hooks:
     - go mod tidy
-    # Release binaries carry the web UI; a plain `go build` does not, because
-    # `go install` has to keep working without a node toolchain.
-    - make web
 
 builds:
   - id: aigem
@@ -46,9 +43,6 @@ archives:
       - CHANGELOG.md
       - src: docs/*.md
         dst: docs
-      # docs/bots.md tells the reader to copy these out of the archive.
-      - src: deploy/systemd/*.service
-        dst: deploy/systemd
 
 checksum:
   name_template: checksums.txt

@@ -8,19 +8,10 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.dat
 # Every target the release builds, so a portability break shows up locally.
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs evals web web-check web-clean clean
+.PHONY: help build install run test race lint lint-windows vuln fmt fmt-check vet tidy tidy-check check check-all cross docs evals clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
-
-web: ## Build the web UI into internal/web/dist (needs node)
-	cd internal/web/ui && npm ci && npm run build
-
-web-check: ## Type-check, lint, test, and build the web UI (needs node)
-	cd internal/web/ui && npm ci && npm run check && npm run lint && npm test && npm run build
-
-web-clean: ## Remove the built web UI
-	find internal/web/dist -mindepth 1 ! -name .gitkeep -delete
 
 build: ## Build the binary into bin/
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) $(PKG)
@@ -70,7 +61,7 @@ cross: ## Build every released target
 
 check: fmt-check vet lint race cross ## The usual pre-PR set
 
-check-all: check lint-windows vuln tidy-check web-check ## Everything CI runs
+check-all: check lint-windows vuln tidy-check ## Everything CI runs
 
 docs: ## Serve the documentation site locally
 	mkdocs serve
@@ -82,4 +73,3 @@ evals: build ## Score subagent delegation against a live model (see evals/README
 
 clean: ## Remove build output
 	rm -rf bin dist site
-	find internal/web/dist -mindepth 1 ! -name .gitkeep -delete

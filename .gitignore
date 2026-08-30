@@ -7,10 +7,6 @@
 /dist/
 /site/
 
-# The built web UI: filled by `make web`, never committed - `go install` has to
-# work without a node toolchain.
-/internal/web/dist/*
-!/internal/web/dist/.gitkeep
 /internal/web/ui/node_modules/
 /internal/web/ui/*.tsbuildinfo
 
