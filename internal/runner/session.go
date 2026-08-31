@@ -9,11 +9,16 @@ import (
 	"github.com/gigovich/aigem/internal/uisession"
 )
 
-// retryAttempts is how many total tries one LLM call gets before the failure
-// reaches the session. A stream that already emitted text is not retried, so an
-// interruption mid-answer still surfaces - the deltas were delivered and a
-// second attempt would duplicate them.
-const retryAttempts = 3
+// RetryAttempts is how many total tries one LLM call gets before the failure
+// reaches the caller. Someone is waiting, so this rides out a brief provider
+// hiccup without turning a failure into a long silence. A stream that already
+// emitted text is not retried, so an interruption mid-answer still surfaces -
+// the deltas were delivered and a second attempt would duplicate them.
+//
+// Exported because the front-ends that do not build a session through this
+// package - the one-shot -p run and the REPL - wrap the same backend the same
+// way, and two constants would drift.
+const RetryAttempts = 3
 
 // DefaultCtxSize is the context window assumed for a model that declares none
 // and a caller that names none.
@@ -46,6 +51,11 @@ type Spec struct {
 	// the conversation before its first turn does.
 	System string
 	Title  string
+	// RebuildSystem reassembles the prompt when a fresh conversation starts, so
+	// an edit to AGENTS.md or CLAUDE.md takes effect without a restart. Leaving
+	// it nil pins the session to the prompt it was built with, which is what a
+	// caller wants only if it installs its own rebuilder afterwards.
+	RebuildSystem func() string
 
 	Temp      float64
 	MaxTokens int
@@ -77,6 +87,12 @@ type Session struct {
 	// tool has to be registered again against the result. It takes the registry
 	// rather than closing over one, so a caller cannot silently register a tool
 	// built from a catalog it has since replaced.
+	//
+	// It is only safe to call while no turn is running. It writes the session's
+	// tools registry, whose map is unguarded and is read from the turn goroutine
+	// as the model's tool definitions are assembled - concurrent map access
+	// there is a fatal runtime error that takes every conversation in the
+	// process with it, not an error this call can return.
 	RegisterSkillTool func(*skill.Registry)
 }
 
@@ -91,7 +107,7 @@ func NewSession(spec Spec) *Session {
 	// dropped stream) instead of surfacing them into the session. It wraps the
 	// Ref rather than the backend inside it, so a live model switch keeps the
 	// retries.
-	stream := llm.NewRetrying(spec.Backend, retryAttempts)
+	stream := llm.NewRetrying(spec.Backend, RetryAttempts)
 	if spec.OnRetry != nil {
 		stream.SetOnRetry(spec.OnRetry)
 	}
@@ -112,6 +128,8 @@ func NewSession(spec Spec) *Session {
 		MaxTokens: spec.MaxTokens,
 		CtxSize:   ctxSize,
 		Compact:   spec.Compact,
+
+		RebuildSystem: spec.RebuildSystem,
 		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
 			if spec.Agents != nil {
 				reg.Register(agent.NewTaskTool(stream, reg, spec.Temp, confirm, spec.Agents, spec.Project))

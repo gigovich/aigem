@@ -306,7 +306,7 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not load search config:", err)
 	}
-	env, notices := runner.Load(runner.Options{
+	env, notices, err := runner.Load(runner.Options{
 		Cwd:                *cwd,
 		Version:            version,
 		Search:             searchCfg,
@@ -314,6 +314,9 @@ func main() {
 		TrustProjectMCP:    *trustProjectMCP,
 		TrustProjectSkills: *trustProjectSkills,
 	})
+	if err != nil {
+		fatal(err)
+	}
 	defer env.Close() // also tears down stdio servers if a run path panics
 	// skillNotices are repeated inside the TUI, which runs on the alt screen and
 	// so never shows what was written to stderr before it started.
@@ -350,8 +353,14 @@ func main() {
 	reg.SetPathGrants(true)
 
 	// /new re-runs it so edits to AGENTS.md/CLAUDE.md/context.md take effect
-	// without a restart.
-	buildSystem := func() string { return env.SystemPrompt(reg) }
+	// without a restart. The instruction files it injected are marked in this
+	// session's registry, so read_file returns a note instead of re-emitting
+	// what is already in the prompt.
+	buildSystem := func() string {
+		sp, injected := env.SystemPrompt()
+		reg.MarkInContext(injected)
+		return sp
+	}
 	sysPrompt := buildSystem()
 
 	if *prompt != "" {
@@ -437,16 +446,12 @@ type llmStreamer interface {
 		onEvent func(llm.StreamEvent)) (llm.Message, error)
 }
 
-// cliRetryAttempts is how many total tries an interactive or one-shot LLM call
-// gets.
-const cliRetryAttempts = 3
-
 // retrying wraps the live backend so a transient provider failure (429/5xx, an
 // overloaded backend, a dropped stream) is retried instead of ending the run. It
 // wraps the Ref, not the backend inside it, so a model switch keeps the retries.
 // notice reports each backoff so the wait does not read as a hang.
 func retrying(client *llm.Ref, notice func(string)) llmStreamer {
-	r := llm.NewRetrying(client, cliRetryAttempts)
+	r := llm.NewRetrying(client, runner.RetryAttempts)
 	r.SetOnRetry(func(n llm.RetryNotice) {
 		reason := ""
 		if n.Err != nil {

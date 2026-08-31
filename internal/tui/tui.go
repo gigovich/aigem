@@ -508,6 +508,37 @@ func (m *Model) SetPendingSkills(cwd string, p *skill.PendingSkills) {
 	m.skillAskCwd, m.skillAsk = cwd, p
 }
 
+// sessionSpec is the terminal's half of building a conversation: which of New's
+// arguments is which field of the spec internal/runner is handed.
+//
+// It is a function rather than a literal inside New because a struct literal
+// that assigns the wrong argument to the right-typed field compiles, runs, and
+// is invisible - a session at temperature zero, with no subagents, or with the
+// hooks runner dropped, all look exactly like a session. Here it can be called
+// with values that tell each field apart.
+func sessionSpec(client *llm.Ref, reg *tools.Registry, temp float64, systemPrompt string,
+	ctxSize, maxTokens int, agents *agent.SubagentRegistry, project string,
+	skills *skill.Registry, hookRunner *hooks.Runner, sessionTitle string,
+	compactCfg agent.CompactConfig, modelReg *llm.Registry,
+	onRetry func(llm.RetryNotice)) runner.Spec {
+	return runner.Spec{
+		Tools:     reg,
+		Backend:   client,
+		Models:    modelReg,
+		Agents:    agents,
+		Skills:    skills,
+		Hooks:     hookRunner,
+		Project:   project,
+		System:    systemPrompt,
+		Title:     sessionTitle,
+		Temp:      temp,
+		MaxTokens: maxTokens,
+		CtxSize:   ctxSize,
+		Compact:   compactCfg,
+		OnRetry:   onRetry,
+	}
+}
+
 func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, systemPrompt string,
 	ctxSize, maxTokens int, agents *agent.SubagentRegistry, project string, skills *skill.Registry,
 	hookRunner *hooks.Runner, mcpMgr *mcp.Manager, sessionTitle string, compactCfg agent.CompactConfig,
@@ -522,27 +553,14 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 	// Built by internal/runner, which is what the browser daemon builds its
 	// sessions with too: the terminal must not be the one front-end whose
 	// conversation is assembled a slightly different way.
-	rs := runner.NewSession(runner.Spec{
-		Tools:     reg,
-		Backend:   client,
-		Models:    modelReg,
-		Agents:    agents,
-		Skills:    skills,
-		Hooks:     hookRunner,
-		Project:   project,
-		System:    systemPrompt,
-		Title:     sessionTitle,
-		Temp:      temp,
-		MaxTokens: maxTokens,
-		CtxSize:   ctxSize,
-		Compact:   compactCfg,
-		OnRetry: func(n llm.RetryNotice) {
+	rs := runner.NewSession(sessionSpec(client, reg, temp, systemPrompt, ctxSize, maxTokens,
+		agents, project, skills, hookRunner, sessionTitle, compactCfg, modelReg,
+		func(n llm.RetryNotice) {
 			select {
 			case events <- noticeMsg(formatRetry(n)):
 			case <-done:
 			}
-		},
-	})
+		}))
 	sess := rs.Local
 	ag := sess.Agent()
 	// One subscriber, translating the session's events into the messages this

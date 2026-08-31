@@ -12,6 +12,8 @@ package runner
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/gigovich/aigem/internal/agent"
@@ -25,7 +27,11 @@ import (
 
 // sessionStartTimeout bounds the SessionStart hook, so a slow one delays
 // startup rather than freezing it.
-const sessionStartTimeout = 10 * time.Second
+//
+// A variable so a test can shrink it: the behaviour that matters - Load
+// returning while the hook is still running - only appears once a hook outlives
+// it, and a test that waits ten real seconds is a test nobody runs.
+var sessionStartTimeout = 10 * time.Second
 
 // Options is what Load cannot work out for itself.
 type Options struct {
@@ -97,17 +103,30 @@ type Env struct {
 	hookContext string
 }
 
-// Load discovers the environment at opts.Cwd. It never fails: everything it
-// cannot do degrades to a Notice and a missing capability, because a project
-// with a broken hook config is still a project a person wants to work in.
+// Load discovers the environment at opts.Cwd.
+//
+// The only thing it refuses is a working directory it cannot resolve, and it
+// refuses that first, before anything below has run: a SessionStart hook
+// executes the person's own commands and the MCP servers are started, so a
+// startup that was always going to fail must not do either on its way out.
+// Everything else degrades to a Notice and a missing capability, because a
+// project with a broken hook config is still a project a person wants to work
+// in.
 //
 // The caller owns Close.
-func Load(opts Options) (*Env, []Notice) {
+func Load(opts Options) (*Env, []Notice, error) {
+	// The same failure tools.NewRegistry reports, raised where the CLI used to
+	// raise it: os.Getwd failing under a deleted working directory.
+	root, err := filepath.Abs(opts.Cwd)
+	if err != nil {
+		return nil, nil, fmt.Errorf("runner: resolve working directory %q: %w", opts.Cwd, err)
+	}
+
 	var notices []Notice
 	warn := func(text string) { notices = append(notices, Notice{Text: text}) }
 	warnInChat := func(text string) { notices = append(notices, Notice{Text: text, InChat: true}) }
 
-	e := &Env{Cwd: opts.Cwd, Search: opts.Search}
+	e := &Env{Cwd: root, Search: opts.Search}
 
 	e.Agents = agent.DefaultSubagents()
 	if dir, err := config.AgentsDir(); err == nil {
@@ -117,16 +136,16 @@ func Load(opts Options) (*Env, []Notice) {
 	}
 
 	if opts.TrustProjectSkills {
-		if err := skill.ApproveProject(opts.Cwd); err != nil {
+		if err := skill.ApproveProject(root); err != nil {
 			warn("could not approve project skills: " + err.Error())
 		}
 	}
-	skills, skillErrs := skill.Discover(opts.Cwd)
+	skills, skillErrs := skill.Discover(root)
 	e.Skills = skills
 	for _, err := range skillErrs {
 		warnInChat("skipped skill: " + err.Error())
 	}
-	pending, err := skill.Pending(opts.Cwd)
+	pending, err := skill.Pending(root)
 	if err != nil {
 		warnInChat("could not evaluate project skill trust: " + err.Error())
 	}
@@ -134,18 +153,18 @@ func Load(opts Options) (*Env, []Notice) {
 	// Skill dirs above the project root belong to no project, so they are
 	// neither loaded nor offered for approval. Saying so beats letting them
 	// disappear.
-	for _, dir := range skill.OutOfScopeAncestors(opts.Cwd) {
+	for _, dir := range skill.OutOfScopeAncestors(root) {
 		warnInChat("skills in " + dir + " are outside this project and were not loaded")
 	}
 
 	// Project conventions (AGENTS.md / CLAUDE.md / context.md / .claude/CLAUDE.md)
 	// are discovered by the harness and injected, not left for the model to find.
-	e.Project = config.ProjectInstructions(opts.Cwd)
+	e.Project = config.ProjectInstructions(root)
 
 	// MCP servers are dialled here and summarized in the prompt; their tools are
 	// registered per session by NewTools. A server that fails to come up is
 	// skipped with a warning rather than taking startup down with it.
-	mgr, mcpCfgErrs := mcp.NewWithTrust(opts.Cwd, opts.Version, opts.TrustProjectMCP)
+	mgr, mcpCfgErrs := mcp.NewWithTrust(root, opts.Version, opts.TrustProjectMCP)
 	e.MCP = mgr
 	for _, err := range mcpCfgErrs {
 		warn("mcp config: " + err.Error())
@@ -157,7 +176,7 @@ func Load(opts Options) (*Env, []Notice) {
 		}
 	}
 
-	runner, hookErrs := hooks.Load(opts.Cwd)
+	runner, hookErrs := hooks.Load(root)
 	e.Hooks = runner
 	for _, err := range hookErrs {
 		warn("hook config: " + err.Error())
@@ -174,7 +193,7 @@ func Load(opts Options) (*Env, []Notice) {
 	e.SessionTitle = dec.SessionTitle
 	e.SystemMessage = dec.SystemMessage
 
-	return e, notices
+	return e, notices, nil
 }
 
 // Close releases what Load started, which today is the MCP servers. A session
@@ -225,11 +244,13 @@ func (e *Env) NewTools() (*tools.Registry, error) {
 // restart. The SessionStart hook and the MCP servers are not re-run - only
 // their captured output is reused.
 //
-// reg is the session's own registry, and the reason this takes an argument at
-// all: the instruction files it just put in the prompt are now in that
-// session's context and read_file must not re-emit them, which is a fact about
-// one conversation rather than about the project.
-func (e *Env) SystemPrompt(reg *tools.Registry) string {
+// It returns the prompt and the instruction files it injected. Those files are
+// now in one session's context and that session's read_file must not re-emit
+// them, so the caller hands the paths to its own registry with MarkInContext -
+// which is a fact about one conversation rather than about the project, and
+// stays visible here rather than hiding in a closure that captured whichever
+// registry happened to exist when it was built.
+func (e *Env) SystemPrompt() (string, []string) {
 	sp := config.SystemPrompt()
 	now := time.Now()
 	sp += "\n\n# Current date and time\n\n" +
@@ -240,11 +261,10 @@ func (e *Env) SystemPrompt(reg *tools.Registry) string {
 		"weekday of a date, or whether something is past or future - calculate strictly from this value, " +
 		"never from your training cutoff, and never guess the current date. (This value is captured when " +
 		"the prompt is built and refreshed on /new; in a very long session the time of day may have drifted.)"
+	var injected []string
 	if proj := config.ProjectInstructions(e.Cwd); proj != "" {
 		sp += "\n\n" + proj
-		if reg != nil {
-			reg.MarkInContext(config.InstructionPaths(e.Cwd))
-		}
+		injected = config.InstructionPaths(e.Cwd)
 	}
 	// Every front-end registers the task tool, so the block always applies. It is
 	// appended rather than baked into the base prompt so a custom SYSTEM.md
@@ -266,5 +286,5 @@ func (e *Env) SystemPrompt(reg *tools.Registry) string {
 	if e.hookContext != "" {
 		sp += "\n\n" + e.hookContext
 	}
-	return sp
+	return sp, injected
 }
