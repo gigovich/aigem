@@ -377,6 +377,10 @@ func TestNewToolsRefusesAfterClose(t *testing.T) {
 // person asked for something durable, and silence would let them believe they
 // got it while every later start withholds the same capabilities again.
 func TestLoadReportsTrustThatCouldNotBePersisted(t *testing.T) {
+	// The whole fixture is a directory root is allowed to write anyway.
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions, so nothing here can fail to be persisted")
+	}
 	state, err := config.StateDir()
 	if err != nil {
 		t.Fatal(err)
@@ -501,10 +505,19 @@ func TestNoticesCarryNoPrefix(t *testing.T) {
 }
 
 // The SessionStart hook is the one thing in Load that runs a person's own
-// commands, and all three of its outputs are load-bearing.
+// commands, and all three of its outputs are load-bearing. So is what it is
+// told: a hook branches on the source it was started for.
 func TestLoadRunsTheSessionStartHook(t *testing.T) {
-	sessionStartHook(t, `{"systemMessage":"MSG","sessionTitle":"TITLE",`+
-		`"hookSpecificOutput":{"additionalContext":"HOOK CONTEXT"}}`)
+	script := filepath.Join(t.TempDir(), "hook.sh")
+	writeFile(t, script, "#!/bin/sh\n"+
+		`src=$(sed -n 's/.*"source":"\([^"]*\)".*/\1/p')`+"\n"+
+		`printf '{"systemMessage":"MSG","sessionTitle":"TITLE",`+
+		`"hookSpecificOutput":{"additionalContext":"HOOK CONTEXT src[%s]"}}' "$src"`+"\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalSettings(t, `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"`+
+		script+`"}]}]}}`)
 
 	env, _ := load(t, runner.Options{Cwd: project(t)})
 
@@ -517,6 +530,9 @@ func TestLoadRunsTheSessionStartHook(t *testing.T) {
 	p, _ := env.SystemPrompt()
 	if !strings.Contains(p, "HOOK CONTEXT") {
 		t.Fatalf("expected the hook's context in the system prompt, got %q", p)
+	}
+	if !strings.Contains(p, "src[startup]") {
+		t.Fatalf("the hook was not told which source it was started for, got %q", p)
 	}
 }
 

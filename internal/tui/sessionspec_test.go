@@ -110,8 +110,11 @@ func wiredModel(t *testing.T, project, title string, ctxSize int) Model {
 		t.Fatal(err)
 	}
 	skills, _ := skill.Discover(t.TempDir())
+	// The token cap is deliberately not DefaultCtxSize: with both 8192 the
+	// fallback assertion below could not tell the default from the cap having
+	// been assigned to the window.
 	m := New(llm.NewRef(llm.New("http://127.0.0.1:9", "m")), reg, 0.3, "m", "u", "SYSTEM",
-		ctxSize, 8192, agent.DefaultSubagents(), project, skills, nil, nil, title,
+		ctxSize, 4321, agent.DefaultSubagents(), project, skills, nil, nil, title,
 		agent.CompactConfig{}, nil)
 	t.Cleanup(m.local.Close)
 	return m

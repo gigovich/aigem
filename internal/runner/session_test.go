@@ -249,6 +249,8 @@ type fakeModel struct {
 	reqs []modelRequest
 	// status, when non-zero, is answered instead of a completion.
 	status int
+	// replies are scripted answers, consumed in order.
+	replies []string
 }
 
 type modelRequest struct {
@@ -259,6 +261,42 @@ type modelRequest struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	} `json:"messages"`
+}
+
+// sseText is one streamed answer that ends the turn.
+func sseText(text string) string {
+	body, err := json.Marshal(map[string]any{"choices": []any{map[string]any{
+		"delta": map[string]any{"content": text}, "finish_reason": "stop",
+	}}})
+	if err != nil {
+		panic(err)
+	}
+	return "data: " + string(body) + "\n\ndata: [DONE]\n\n"
+}
+
+// sseToolCall is one streamed answer that calls a tool, so the turn continues
+// with the result appended - which is the only way a test reaches the code that
+// runs between model rounds.
+func sseToolCall(name, args string) string {
+	body, err := json.Marshal(map[string]any{"choices": []any{map[string]any{
+		"delta": map[string]any{"tool_calls": []any{map[string]any{
+			"index": 0, "id": "call-1", "type": "function",
+			"function": map[string]any{"name": name, "arguments": args},
+		}}},
+		"finish_reason": "tool_calls",
+	}}})
+	if err != nil {
+		panic(err)
+	}
+	return "data: " + string(body) + "\n\ndata: [DONE]\n\n"
+}
+
+// script queues answers, consumed one per request. Once it runs out the model
+// falls back to a plain "ok", so a test only scripts the turns it cares about.
+func (f *fakeModel) script(bodies ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.replies = append(f.replies, bodies...)
 }
 
 func newFakeModel(t *testing.T) *fakeModel {
@@ -290,6 +328,10 @@ func newFakeModel(t *testing.T) *fakeModel {
 		f.mu.Lock()
 		f.reqs = append(f.reqs, req)
 		status := f.status
+		reply := sseText("ok")
+		if len(f.replies) > 0 {
+			reply, f.replies = f.replies[0], f.replies[1:]
+		}
 		f.mu.Unlock()
 
 		if status != 0 {
@@ -297,8 +339,7 @@ func newFakeModel(t *testing.T) *fakeModel {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"+
-			"data: [DONE]\n\n")
+		fmt.Fprint(w, reply)
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -704,16 +745,17 @@ func TestRetriesSurviveAModelSwitch(t *testing.T) {
 	}
 }
 
-// Switching model mid-conversation needs three of the things the session was
-// built with at once: the registry to resolve the reference, the shared backend
-// handle to swap the provider inside, and the token cap to open it with.
+// Switching model mid-conversation needs almost everything the session was
+// built with: the registry to resolve the reference, the shared backend handle
+// to swap the provider inside, the token cap to open it with, and the
+// compaction policy to carry onto the new model's window.
 func TestSwitchModelUsesWhatTheSessionWasBuiltWith(t *testing.T) {
 	model := newFakeModel(t)
 	cwd := project(t)
 	_, reg := newEnvAndTools(t, cwd)
-	// The provider declares a 100-token window and no cap of its own, so the
+	// The provider declares a 4000-token window and no cap of its own, so the
 	// window below comes from it and the cap can only come from the session.
-	models, warns := llm.NewRegistry(cwd, llm.LocalProvider(model.srv.URL, "switched-model", 100, 0))
+	models, warns := llm.NewRegistry(cwd, llm.LocalProvider(model.srv.URL, "switched-model", 4000, 0))
 	if len(warns) != 0 {
 		t.Fatalf("model registry warnings: %v", warns)
 	}
@@ -725,9 +767,17 @@ func TestSwitchModelUsesWhatTheSessionWasBuiltWith(t *testing.T) {
 		MaxTokens: 321,
 		CtxSize:   4096,
 		System:    "SYSTEM",
+		// A window nothing can fill, so anything compacted after the switch was
+		// compacted against the new model's, by the policy set here.
+		Compact: agent.CompactConfig{
+			Auto: true, CtxSize: 1 << 20, CompactAtPct: 10, EvictAtPct: 5, KeepTurns: 1,
+		},
 	})
 	t.Cleanup(s.Local.Close)
 	d := drive(t, s)
+
+	d.turn(strings.Repeat("filler text ", 200))
+	d.turn(strings.Repeat("more filler ", 200))
 
 	info, err := s.Local.SwitchModel("local/switched-model", false)
 	if err != nil {
@@ -736,11 +786,21 @@ func TestSwitchModelUsesWhatTheSessionWasBuiltWith(t *testing.T) {
 	if info.ID != "switched-model" {
 		t.Fatalf("switched to %q, want switched-model", info.ID)
 	}
-	if ev := waitFor(t, d.ch, uisession.KindSessionMeta); ev.Ctx != 100 {
-		t.Fatalf("context window after the switch = %d, want the new model's 100", ev.Ctx)
+	if ev := waitFor(t, d.ch, uisession.KindSessionMeta); ev.Ctx != 4000 {
+		t.Fatalf("context window after the switch = %d, want the new model's 4000", ev.Ctx)
 	}
 
-	d.turn("after the switch")
+	// The same conversation that fitted comfortably before the switch is now
+	// past the threshold, and only the policy the session was built with can
+	// notice.
+	if err := s.Local.Submit("and now the next turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForNotice(t, d, "compact",
+		"nothing compacted after the switch: the compaction policy did not follow the "+
+			"session onto the new model's window")
+	waitFor(t, d.ch, uisession.KindTurnEnd)
+
 	reqs := model.requests()
 	if len(reqs) == 0 {
 		t.Fatal("no request reached the provider after the switch")
@@ -753,6 +813,102 @@ func TestSwitchModelUsesWhatTheSessionWasBuiltWith(t *testing.T) {
 	// The provider declares no cap, so the only one left is the session's own.
 	if last.MaxTokens != 321 {
 		t.Fatalf("max_tokens sent = %d, want 321 - the cap the session was built with", last.MaxTokens)
+	}
+}
+
+// A subagent runs in its own context and cannot see the conversation, so the
+// project's conventions have to be handed to it explicitly. A session that
+// forgets them produces an agent that quietly ignores the repository's rules -
+// the symptom nobody diagnoses, because everything still works.
+func TestSpecProjectTextReachesASubagent(t *testing.T) {
+	model := newFakeModel(t)
+	env, reg := newEnvAndTools(t, project(t))
+	// Turn one delegates; the subagent then answers on its own.
+	model.script(sseToolCall(agent.TaskToolName,
+		`{"agent_type":"scout","prompt":"look around"}`))
+
+	s := runner.NewSession(runner.Spec{
+		Tools:   reg,
+		Backend: model.ref("m"),
+		Agents:  env.Agents,
+		Project: "PROJECT CONVENTIONS MARKER",
+		System:  "SYSTEM",
+		Temp:    0.71,
+	})
+	t.Cleanup(s.Local.Close)
+	drive(t, s).turn("delegate this")
+
+	reqs := model.requests()
+	if len(reqs) < 2 {
+		t.Fatalf("expected the subagent to make its own request, got %d in total", len(reqs))
+	}
+	var seen bool
+	for i := 1; i < len(reqs); i++ {
+		for _, m := range reqs[i].Messages {
+			if strings.Contains(m.Content, "PROJECT CONVENTIONS MARKER") {
+				seen = true
+			}
+		}
+	}
+	if !seen {
+		t.Fatalf("the subagent was never told the project's conventions: %+v", reqs[1].Messages)
+	}
+	// A subagent runs at the session's temperature, not at whatever zero value
+	// the delegation tool was built with.
+	if reqs[1].Temperature != 0.71 {
+		t.Fatalf("the subagent ran at temperature %v, want the session's 0.71", reqs[1].Temperature)
+	}
+}
+
+// Eviction is the cheap half of compaction: it drops the tool output the model
+// has already worked through and keeps the most recent verbatim, so a long
+// session stays inside the window without losing what it is holding. Both
+// halves of that are policy the session carries, and a session that carries
+// neither either sends everything or throws away what it still needs.
+func TestSpecEvictionSettingsReachTheAgent(t *testing.T) {
+	model := newFakeModel(t)
+	cwd := project(t)
+	// Three files big enough to dominate the conversation, and distinct enough
+	// to tell which survived.
+	for _, name := range []string{"one", "two", "three"} {
+		writeFile(t, filepath.Join(cwd, name+".txt"),
+			strings.Repeat("MARKER-"+name+" filler\n", 300))
+	}
+	_, reg := newEnvAndTools(t, cwd)
+	model.script(
+		sseToolCall("read_file", `{"path":"one.txt"}`), sseText("read one"),
+		sseToolCall("read_file", `{"path":"two.txt"}`), sseText("read two"),
+		sseToolCall("read_file", `{"path":"three.txt"}`), sseText("read three"),
+	)
+
+	s := runner.NewSession(runner.Spec{
+		Tools:   reg,
+		Backend: model.ref("m"),
+		System:  "SYSTEM",
+		// Summarization is out of reach at 90%, so only eviction can act.
+		Compact: agent.CompactConfig{
+			Auto: true, CtxSize: 20000, CompactAtPct: 90, EvictAtPct: 1, KeepTurns: 1, KeepTools: 1,
+		},
+	})
+	t.Cleanup(s.Local.Close)
+
+	d := drive(t, s)
+	d.turn("read one")
+	d.turn("read two")
+	d.turn("read three")
+	d.turn("and now the next turn")
+
+	reqs := model.requests()
+	var sent strings.Builder
+	for _, m := range reqs[len(reqs)-1].Messages {
+		sent.WriteString(m.Content)
+	}
+	if strings.Contains(sent.String(), "MARKER-one") {
+		t.Error("the oldest tool output was still sent: nothing was evicted")
+	}
+	if !strings.Contains(sent.String(), "MARKER-three") {
+		t.Error("the most recent tool output was evicted too: the keep-recent window " +
+			"did not reach the agent, and the model lost what it was working from")
 	}
 }
 
