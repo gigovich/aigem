@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -169,18 +171,14 @@ func TestNewSessionDefaultsTheContextWindow(t *testing.T) {
 // can see. Nothing else in the session reports it, so an unwired callback is a
 // silent multi-second hang.
 func TestNewSessionReportsProviderRetries(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	cwd := project(t)
-	_, reg := newEnvAndTools(t, cwd)
+	model := newFakeModel(t)
+	model.fail(http.StatusInternalServerError)
+	_, reg := newEnvAndTools(t, project(t))
 
 	notices := make(chan llm.RetryNotice, 4)
 	s := runner.NewSession(runner.Spec{
 		Tools:   reg,
-		Backend: llm.NewRef(llm.New(srv.URL, "t")),
+		Backend: model.ref("m"),
 		OnRetry: func(n llm.RetryNotice) {
 			select {
 			case notices <- n:
@@ -277,12 +275,16 @@ func newFakeModel(t *testing.T) *fakeModel {
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			// Answered as a failure, not as an empty success: a request this
+			// server could not record must not read to the session as a reply.
 			t.Errorf("reading the request body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		var req modelRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			t.Errorf("the session sent a body that is not a chat request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		f.mu.Lock()
@@ -303,6 +305,13 @@ func newFakeModel(t *testing.T) *fakeModel {
 }
 
 func (f *fakeModel) ref(model string) *llm.Ref { return llm.NewRef(llm.New(f.srv.URL, model)) }
+
+// fail makes every later request answer with status instead of a completion.
+func (f *fakeModel) fail(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status = status
+}
 
 func (f *fakeModel) requests() []modelRequest {
 	f.mu.Lock()
@@ -413,12 +422,21 @@ func TestRebuildSystemReplacesThePrompt(t *testing.T) {
 	}
 }
 
-// The hooks runner reaches the agent, not only the session: a UserPromptSubmit
-// hook that adds context has to be in what the model is asked.
+// The hooks runner has to reach two places: the agent, which fires the events,
+// and the session, which tells the runner which conversation they belong to. A
+// hook that echoes the session id back proves both at once - the second is
+// invisible from the agent's side, and a hook keyed on the id would write into
+// the wrong conversation's bucket without it.
 func TestSpecHooksReachTheTurn(t *testing.T) {
-	cfg := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"printf",` +
-		`"args":["%s","{\"hookSpecificOutput\":{\"additionalContext\":\"HOOK SAW IT\"}}"]}]}]}}`
-	globalSettings(t, cfg)
+	script := filepath.Join(t.TempDir(), "hook.sh")
+	writeFile(t, script, "#!/bin/sh\n"+
+		`id=$(sed -n 's/.*"session_id":"\([^"]*\)".*/\1/p')`+"\n"+
+		`printf '{"hookSpecificOutput":{"additionalContext":"HOOK SAW SID[%s]"}}' "$id"`+"\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalSettings(t, `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"`+
+		script+`"}]}]}}`)
 
 	model := newFakeModel(t)
 	env, reg := newEnvAndTools(t, project(t))
@@ -439,8 +457,13 @@ func TestSpecHooksReachTheTurn(t *testing.T) {
 	for _, m := range reqs[0].Messages {
 		all.WriteString(m.Content)
 	}
-	if !strings.Contains(all.String(), "HOOK SAW IT") {
-		t.Fatalf("the hook's context never reached the model: %+v", reqs[0].Messages)
+	sent := all.String()
+	if !strings.Contains(sent, "HOOK SAW SID[") {
+		t.Fatalf("the hook never ran: nothing it wrote reached the model: %+v", reqs[0].Messages)
+	}
+	if strings.Contains(sent, "HOOK SAW SID[]") {
+		t.Fatal("the hook ran without being told which conversation it was for: the session " +
+			"never handed the runner its id")
 	}
 }
 
@@ -487,10 +510,11 @@ func TestSpecArmsThePathGatedSkills(t *testing.T) {
 	}
 }
 
-// The compaction settings are what keep a conversation inside the context
-// window. A session built without them sends the whole history until the
-// provider refuses it, and the only sign is a failure much later.
-func TestSpecCompactionReachesTheAgent(t *testing.T) {
+// A context window the conversation does not fit in is cut back before the
+// request goes out. This is the backstop, gated on the window alone: it proves
+// the window reached the agent, and deliberately not that any of the
+// compaction policy did - see the test below for that.
+func TestSpecContextWindowReachesTheAgent(t *testing.T) {
 	model := newFakeModel(t)
 	_, reg := newEnvAndTools(t, project(t))
 
@@ -498,9 +522,7 @@ func TestSpecCompactionReachesTheAgent(t *testing.T) {
 		Tools:   reg,
 		Backend: model.ref("m"),
 		System:  "SYSTEM",
-		// A context window one turn cannot fit in, so the first turn is already
-		// over the threshold.
-		Compact: agent.CompactConfig{Auto: true, CtxSize: 100, CompactAtPct: 1, EvictAtPct: 1},
+		Compact: agent.CompactConfig{CtxSize: 100},
 	})
 	t.Cleanup(s.Local.Close)
 
@@ -509,23 +531,63 @@ func TestSpecCompactionReachesTheAgent(t *testing.T) {
 	if err := s.Local.Submit(strings.Repeat("filler text ", 200), nil); err != nil {
 		t.Fatal(err)
 	}
+	waitForNotice(t, d, "to fit the context window",
+		"the turn ended without the history being cut to fit: the session was built "+
+			"with a context window this conversation does not fit in")
+}
 
+// Auto-compaction is the policy: whether it runs at all, and at what share of
+// the window. It is a different code path from the backstop above, reached only
+// when Auto is on and the percentages are set, and it is what keeps a long
+// conversation alive rather than merely legal.
+func TestSpecAutoCompactionReachesTheAgent(t *testing.T) {
+	model := newFakeModel(t)
+	_, reg := newEnvAndTools(t, project(t))
+
+	s := runner.NewSession(runner.Spec{
+		Tools:   reg,
+		Backend: model.ref("m"),
+		System:  "SYSTEM",
+		// Sized so the last turn opens above CompactAtPct but below the 85% the
+		// backstop fires at, so only the policy can produce a notice. KeepTurns
+		// is 1 because summarization refuses to touch a conversation shorter
+		// than the verbatim tail it is told to keep.
+		Compact: agent.CompactConfig{
+			Auto: true, CtxSize: 4000, CompactAtPct: 10, EvictAtPct: 5, KeepTurns: 1, KeepTools: 1,
+		},
+	})
+	t.Cleanup(s.Local.Close)
+
+	d := drive(t, s)
+	d.turn(strings.Repeat("filler text ", 200))
+	d.turn(strings.Repeat("more filler ", 200))
+	if err := s.Local.Submit("and now the next turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForNotice(t, d, "compact",
+		"the turn ended with no compaction: the session was built with auto-compaction "+
+			"and a conversation already past the threshold")
+}
+
+// waitForNotice consumes events until a notice matches, failing on the turn
+// ending first rather than waiting for a deadline that would say less.
+func waitForNotice(t *testing.T, d *driver, substr, whenTurnEnds string) {
+	t.Helper()
 	deadline := time.After(30 * time.Second)
 	for {
 		select {
 		case ev, ok := <-d.ch:
 			if !ok {
-				t.Fatal("the session closed before the history was cut to fit")
+				t.Fatal("the session closed mid-turn")
 			}
-			if ev.Kind == uisession.KindNotice && strings.Contains(ev.Text, "to fit the context window") {
+			if ev.Kind == uisession.KindNotice && strings.Contains(ev.Text, substr) {
 				return
 			}
 			if ev.Kind == uisession.KindTurnEnd {
-				t.Fatal("the turn ended without the history being cut to fit: the session was " +
-					"built with a context window this conversation does not fit in")
+				t.Fatal(whenTurnEnds)
 			}
 		case <-deadline:
-			t.Fatal("timed out waiting for a compaction notice")
+			t.Fatalf("timed out waiting for a notice containing %q", substr)
 		}
 	}
 }
@@ -558,15 +620,15 @@ func TestNewSessionTakesOverTheRegistry(t *testing.T) {
 	}
 }
 
-// Switching model mid-conversation is the one operation that needs almost
-// everything the session was built with at once: the registry to resolve the
-// reference, the shared backend handle to swap the provider inside, the token
-// cap to open it with, and the compaction settings to carry over to the agent
-// it rebuilds.
+// Switching model mid-conversation needs three of the things the session was
+// built with at once: the registry to resolve the reference, the shared backend
+// handle to swap the provider inside, and the token cap to open it with.
 func TestSwitchModelUsesWhatTheSessionWasBuiltWith(t *testing.T) {
 	model := newFakeModel(t)
 	cwd := project(t)
 	_, reg := newEnvAndTools(t, cwd)
+	// The provider declares a 100-token window and no cap of its own, so the
+	// window below comes from it and the cap can only come from the session.
 	models, warns := llm.NewRegistry(cwd, llm.LocalProvider(model.srv.URL, "switched-model", 100, 0))
 	if len(warns) != 0 {
 		t.Fatalf("model registry warnings: %v", warns)
@@ -579,9 +641,6 @@ func TestSwitchModelUsesWhatTheSessionWasBuiltWith(t *testing.T) {
 		MaxTokens: 321,
 		CtxSize:   4096,
 		System:    "SYSTEM",
-		// Roomy before the switch, so anything cut afterwards was cut because
-		// the switch carried these settings onto the model's own window.
-		Compact: agent.CompactConfig{Auto: true, CtxSize: 1 << 20, CompactAtPct: 1, EvictAtPct: 1},
 	})
 	t.Cleanup(s.Local.Close)
 	d := drive(t, s)
@@ -593,27 +652,11 @@ func TestSwitchModelUsesWhatTheSessionWasBuiltWith(t *testing.T) {
 	if info.ID != "switched-model" {
 		t.Fatalf("switched to %q, want switched-model", info.ID)
 	}
-
-	// Long enough that the window has to be cut to fit, which is only true if
-	// the compaction settings survived the agent being rebuilt.
-	if err := s.Local.Submit(strings.Repeat("filler text ", 400), nil); err != nil {
-		t.Fatal(err)
+	if ev := waitFor(t, d.ch, uisession.KindSessionMeta); ev.Ctx != 100 {
+		t.Fatalf("context window after the switch = %d, want the new model's 100", ev.Ctx)
 	}
-	fitted := false
-	for !fitted {
-		ev, ok := <-d.ch
-		if !ok {
-			t.Fatal("the session closed mid-turn")
-		}
-		switch {
-		case ev.Kind == uisession.KindNotice && strings.Contains(ev.Text, "to fit the context window"):
-			fitted = true
-		case ev.Kind == uisession.KindTurnEnd:
-			t.Fatal("the rebuilt agent lost the compaction settings: nothing was cut to fit")
-		}
-	}
-	waitFor(t, d.ch, uisession.KindTurnEnd)
 
+	d.turn("after the switch")
 	reqs := model.requests()
 	if len(reqs) == 0 {
 		t.Fatal("no request reached the provider after the switch")
@@ -633,7 +676,7 @@ func TestSwitchModelUsesWhatTheSessionWasBuiltWith(t *testing.T) {
 // dead provider into minutes of silence. The count is the whole policy.
 func TestNewSessionRetriesExactlyTheConfiguredNumberOfTimes(t *testing.T) {
 	model := newFakeModel(t)
-	model.status = http.StatusInternalServerError
+	model.fail(http.StatusInternalServerError)
 	_, reg := newEnvAndTools(t, project(t))
 
 	s := runner.NewSession(runner.Spec{Tools: reg, Backend: model.ref("m")})
@@ -650,8 +693,11 @@ func TestNewSessionRetriesExactlyTheConfiguredNumberOfTimes(t *testing.T) {
 	// The backoff is 2s then 4s, so the turn takes about six seconds to give up.
 	waitForWithin(t, ch, uisession.KindTurnEnd, 40*time.Second)
 
-	if n := len(model.requests()); n != runner.RetryAttempts {
-		t.Fatalf("the provider was called %d times, want %d", n, runner.RetryAttempts)
+	// Compared to the literal, not to the constant that drives the code: a test
+	// that measures a value against its own source agrees with every value that
+	// source could take.
+	if n := len(model.requests()); n != 3 {
+		t.Fatalf("the provider was called %d times, want 3", n)
 	}
 }
 
@@ -664,5 +710,27 @@ func TestPolicyConstants(t *testing.T) {
 	}
 	if runner.RetryAttempts != 3 {
 		t.Fatalf("RetryAttempts = %d, want 3", runner.RetryAttempts)
+	}
+	// The bound a test injects its own value for, so nothing else sees the
+	// shipped one.
+	if got := runner.SessionStartTimeout(); got != 10*time.Second {
+		t.Fatalf("sessionStartTimeout = %s, want 10s", got)
+	}
+}
+
+// A session built for a window a model actually has must use it, not the
+// fallback: the fallback is only for a model that declares none.
+func TestSpecContextWindowIsUsedWhenGiven(t *testing.T) {
+	_, reg := newEnvAndTools(t, project(t))
+
+	s := runner.NewSession(runner.Spec{Tools: reg, Backend: deadBackend(), CtxSize: 262144})
+	t.Cleanup(s.Local.Close)
+
+	d := drive(t, s)
+	if err := s.Local.Submit("hi", nil); err != nil {
+		t.Fatal(err)
+	}
+	if ev := waitFor(t, d.ch, uisession.KindSessionMeta); ev.Ctx != 262144 {
+		t.Fatalf("context window = %d, want the 262144 the session was built with", ev.Ctx)
 	}
 }

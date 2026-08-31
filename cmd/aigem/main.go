@@ -313,6 +313,10 @@ func main() {
 		TrustProjectHooks:  *trustProject,
 		TrustProjectMCP:    *trustProjectMCP,
 		TrustProjectSkills: *trustProjectSkills,
+		// Printed as they are raised, not at the end: Load dials the MCP servers
+		// and runs the SessionStart hook, and a terminal that reports nothing
+		// until those finish reads as a hang.
+		Notify: func(n runner.Notice) { fmt.Fprintln(os.Stderr, "warning:", n.Text) },
 	})
 	if err != nil {
 		fatal(err)
@@ -322,7 +326,6 @@ func main() {
 	// so never shows what was written to stderr before it started.
 	var skillNotices []string
 	for _, n := range notices {
-		fmt.Fprintln(os.Stderr, "warning:", n.Text)
 		if n.InChat {
 			skillNotices = append(skillNotices, n.Text)
 		}

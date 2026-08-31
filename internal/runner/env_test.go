@@ -3,6 +3,8 @@ package runner_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,13 +67,24 @@ func writeFile(t *testing.T, path, body string) {
 
 // globalSettings writes the user-level settings file, whose hooks always run -
 // unlike a project's, which are gated on trust.
+//
+// The sandbox HOME belongs to the whole test binary, not to one test, so this
+// removes the file again. Leaving a hook behind makes every later Load in the
+// package run it, which is a twenty-fold swing in the package's running time
+// depending on the order the tests happen to be in.
 func globalSettings(t *testing.T, body string) {
 	t.Helper()
 	dir, err := config.AgentsDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(filepath.Dir(dir), "settings.json"), body)
+	path := filepath.Join(filepath.Dir(dir), "settings.json")
+	writeFile(t, path, body)
+	t.Cleanup(func() {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			t.Errorf("removing the global settings file: %v", err)
+		}
+	})
 }
 
 // sessionStartHook builds a global settings file whose SessionStart hook prints
@@ -141,7 +154,14 @@ func mcpProject(t *testing.T) string {
 		})
 	handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return srv }, nil)
 	srvHTTP := httptest.NewServer(handler)
+	// Cleanups run last-registered-first, so this pair unwinds as: the test's own
+	// Env.Close, then the client connections, then the server. Without the middle
+	// step a session the Env failed to reap holds the streamable-HTTP GET open
+	// and Server.Close waits for it forever - which turns a failing assertion
+	// into a hung package, and stops the test written against exactly that
+	// failure from ever running.
 	t.Cleanup(srvHTTP.Close)
+	t.Cleanup(srvHTTP.CloseClientConnections)
 
 	cwd := project(t)
 	writeFile(t, filepath.Join(cwd, ".mcp.json"),
@@ -268,6 +288,41 @@ func TestLoadReportsBrokenHookConfig(t *testing.T) {
 	}
 }
 
+// A --trust-project-* flag that cannot record its decision has to say so: the
+// person asked for something durable, and silence would let them believe they
+// got it while every later start withholds the same capabilities again.
+func TestLoadReportsTrustThatCouldNotBePersisted(t *testing.T) {
+	state, err := config.StateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Readable, so everything that only consults trust still works; unwritable,
+	// so recording a decision fails.
+	if err := os.Chmod(state, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(state, 0o700); err != nil {
+			t.Errorf("restoring the state directory: %v", err)
+		}
+	})
+
+	cwd := project(t)
+	writeSkill(t, cwd, "greet", "---\nname: greet\ndescription: say hi\n---\nHello.\n")
+	writeFile(t, filepath.Join(cwd, ".aigem", "settings.json"),
+		`{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"true"}]}]}}`)
+
+	_, notices := load(t, runner.Options{
+		Cwd: cwd, TrustProjectSkills: true, TrustProjectHooks: true,
+	})
+
+	mustNotice(t, notices, "could not approve project skills:", false)
+	mustNotice(t, notices, "could not persist project trust:", false)
+}
+
 // The out-of-scope notice is the entire reason that code exists: a skill
 // directory above the project root is loaded by nobody and offered for approval
 // by nobody, so saying so is all that stands between it and silence.
@@ -327,9 +382,7 @@ func TestLoadReportsAnMCPServerThatWillNotStart(t *testing.T) {
 
 	env, notices := load(t, runner.Options{Cwd: cwd, TrustProjectMCP: true})
 
-	if _, ok := findNotice(notices, "broken"); !ok {
-		t.Fatalf("expected a warning naming the server that failed, got %v", noticeTexts(notices))
-	}
+	mustNotice(t, notices, "broken", false)
 	if env.MCP == nil {
 		t.Fatal("a failed server must still leave a manager behind")
 	}
@@ -385,20 +438,23 @@ func TestLoadRunsTheSessionStartHook(t *testing.T) {
 // A hook that never returns must delay startup, not freeze it.
 func TestLoadBoundsTheSessionStartHook(t *testing.T) {
 	defer runner.SetSessionStartTimeout(200 * time.Millisecond)()
-	cfg := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"sleep","args":["60"]}]}]}}`
+	cfg := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"sleep","args":["5"]}]}]}}`
 	globalSettings(t, cfg)
 
+	// Resolved on this goroutine: t.TempDir after the test has finished panics,
+	// and on the failure path below the goroutine outlives the test.
+	cwd := project(t)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		env, _, err := runner.Load(runner.Options{Cwd: project(t)})
+		env, _, err := runner.Load(runner.Options{Cwd: cwd})
 		if err == nil {
 			env.Close()
 		}
 	}()
 	select {
 	case <-done:
-	case <-time.After(20 * time.Second):
+	case <-time.After(4 * time.Second):
 		t.Fatal("Load did not return while a SessionStart hook was still sleeping")
 	}
 }
@@ -406,12 +462,21 @@ func TestLoadBoundsTheSessionStartHook(t *testing.T) {
 // A working directory that cannot be resolved is a startup that was always
 // going to fail, and it must fail before the SessionStart hook has run anyone's
 // commands or a single MCP server has been started.
+//
+// Both markers are global, not project-local: a project-local one would be
+// withheld for lack of trust under any mutation that breaks the root, and its
+// absence would prove nothing. The control at the end is what makes an absent
+// marker mean something at all.
 func TestLoadRefusesAnUnresolvableWorkingDirectory(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "ran")
+	markers := t.TempDir()
+	hookRan := filepath.Join(markers, "hook-ran")
+	serverStarted := filepath.Join(markers, "server-started")
 	cfg := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch",` +
-		`"args":["` + marker + `"]}]}]}}`
+		`"args":["` + hookRan + `"]}]}]},` +
+		`"mcpServers":{"marker":{"command":"touch","args":["` + serverStarted + `"]}}}`
 	globalSettings(t, cfg)
 
+	good := t.TempDir()
 	gone := filepath.Join(t.TempDir(), "gone")
 	if err := os.Mkdir(gone, 0o755); err != nil {
 		t.Fatal(err)
@@ -426,8 +491,126 @@ func TestLoadRefusesAnUnresolvableWorkingDirectory(t *testing.T) {
 		env.Close()
 		t.Fatal("Load accepted a working directory that no longer exists")
 	}
-	if _, statErr := os.Stat(marker); statErr == nil {
-		t.Fatal("the SessionStart hook ran on a startup that was going to fail anyway")
+	if _, statErr := os.Stat(hookRan); statErr == nil {
+		t.Error("the SessionStart hook ran on a startup that was going to fail anyway")
+	}
+	if _, statErr := os.Stat(serverStarted); statErr == nil {
+		t.Error("an MCP server was started on a startup that was going to fail anyway")
+	}
+
+	// The control. An absent marker says nothing on its own - a fixture that
+	// never fires would leave one absent too - so the same configuration is
+	// shown to produce both when the working directory is fine.
+	t.Chdir(good)
+	load(t, runner.Options{Cwd: good})
+	if _, statErr := os.Stat(hookRan); statErr != nil {
+		t.Fatalf("the fixture never fires: the hook did not run for a good working "+
+			"directory either (%v)", statErr)
+	}
+	if _, statErr := os.Stat(serverStarted); statErr != nil {
+		t.Fatalf("the fixture never fires: no MCP server was started for a good working "+
+			"directory either (%v)", statErr)
+	}
+}
+
+// The root every discovery resolves from is stored resolved, so it does not
+// depend on the process working directory later moving.
+func TestLoadResolvesTheWorkingDirectory(t *testing.T) {
+	cwd := project(t)
+	t.Chdir(cwd)
+
+	env, _ := load(t, runner.Options{Cwd: "."})
+
+	if !filepath.IsAbs(env.Cwd) {
+		t.Fatalf("Env.Cwd = %q, want an absolute path", env.Cwd)
+	}
+}
+
+// The error names what could not be resolved and keeps the cause, because the
+// person reading it is looking at a shell that will not say why either.
+func TestLoadErrorNamesTheDirectoryAndKeepsTheCause(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	if err := os.Mkdir(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(gone)
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := runner.Load(runner.Options{Cwd: "."})
+	if err == nil {
+		t.Fatal("Load accepted a working directory that no longer exists")
+	}
+	if !strings.Contains(err.Error(), `"."`) {
+		t.Fatalf("the error does not name the directory: %v", err)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the error dropped its cause: %v", err)
+	}
+}
+
+// Notices are handed over in the order they were raised: the caller prints them
+// in that order, and a person reading a terminal reads a sequence.
+func TestNoticesKeepTheOrderTheyWereRaisedIn(t *testing.T) {
+	cwd := project(t)
+	writeSkill(t, cwd, "broken", "---\nname: [unterminated\n---\nnothing\n")
+	if err := skill.ApproveProject(cwd); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cwd, ".aigem", "settings.json"), "{not json")
+
+	_, notices := load(t, runner.Options{Cwd: cwd})
+
+	skipped, hookCfg := -1, -1
+	for i, n := range notices {
+		switch {
+		case strings.Contains(n.Text, "skipped skill:"):
+			skipped = i
+		case strings.Contains(n.Text, "hook config:"):
+			hookCfg = i
+		}
+	}
+	if skipped < 0 || hookCfg < 0 {
+		t.Fatalf("expected both notices, got %v", noticeTexts(notices))
+	}
+	// Skills are discovered before the hooks are read, and the list says so.
+	if skipped > hookCfg {
+		t.Fatalf("notices are out of discovery order: %v", noticeTexts(notices))
+	}
+}
+
+// Each Notify call arrives as its notice is raised, not in a batch at the end.
+// Load dials the MCP servers and runs the SessionStart hook, so a caller that
+// only hears from it at the end says nothing for as long as those take.
+func TestNotifyIsCalledAsNoticesAreRaised(t *testing.T) {
+	cwd := project(t)
+	writeFile(t, filepath.Join(cwd, ".aigem", "settings.json"), "{not json")
+	writeSkill(t, cwd, "broken", "---\nname: [unterminated\n---\nnothing\n")
+	if err := skill.ApproveProject(cwd); err != nil {
+		t.Fatal(err)
+	}
+
+	var streamed []runner.Notice
+	env, notices, err := runner.Load(runner.Options{
+		Cwd:    cwd,
+		Notify: func(n runner.Notice) { streamed = append(streamed, n) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(env.Close)
+
+	if len(streamed) != len(notices) {
+		t.Fatalf("Notify saw %d notices, the returned list has %d", len(streamed), len(notices))
+	}
+	for i := range notices {
+		if streamed[i] != notices[i] {
+			t.Fatalf("notice %d differs: streamed %+v, returned %+v", i, streamed[i], notices[i])
+		}
+	}
+	if len(streamed) == 0 {
+		t.Fatal("the fixture raised no notices at all")
 	}
 }
 
@@ -630,12 +813,23 @@ func TestSystemPromptReportsTheFilesItInjected(t *testing.T) {
 	}
 }
 
-// A project with no instruction files has nothing to mark, and a caller that
-// marks what it is given must not be handed the whole project.
-func TestSystemPromptInjectsNothingWithoutInstructionFiles(t *testing.T) {
-	env, _ := load(t, runner.Options{Cwd: project(t)})
+// A prompt that carried no instructions must report none, or the session marks
+// files as already-in-context that the model was never shown - and read_file
+// answers a note instead of the contents.
+func TestSystemPromptInjectsNothingWhenTheInstructionsAreEmpty(t *testing.T) {
+	// The interesting case is not an absent file but a present, empty one: the
+	// path exists, so only the prompt's own emptiness can say nothing was said.
+	cwd := project(t)
+	writeFile(t, filepath.Join(cwd, "AGENTS.md"), "")
+
+	env, _ := load(t, runner.Options{Cwd: cwd})
 	if _, injected := env.SystemPrompt(); len(injected) != 0 {
-		t.Fatalf("nothing was injected, but the prompt reported %v", injected)
+		t.Fatalf("an empty instruction file was reported as injected: %v", injected)
+	}
+
+	env, _ = load(t, runner.Options{Cwd: project(t)})
+	if _, injected := env.SystemPrompt(); len(injected) != 0 {
+		t.Fatalf("a project with no instruction files reported %v", injected)
 	}
 }
 

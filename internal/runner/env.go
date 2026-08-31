@@ -51,6 +51,16 @@ type Options struct {
 	TrustProjectHooks  bool
 	TrustProjectMCP    bool
 	TrustProjectSkills bool
+
+	// Notify, when set, is called with each Notice as it is raised rather than
+	// only at the end.
+	//
+	// Load dials the MCP servers and runs the SessionStart hook, either of which
+	// can take tens of seconds, and a terminal that says nothing until they
+	// finish reads as a hang - it used to report what it had found within a
+	// hundred milliseconds. The returned slice is unchanged, so a caller that
+	// only wants the list at the end can still ignore this.
+	Notify func(Notice)
 }
 
 // Notice is something Load could not do and the caller should say so.
@@ -123,8 +133,14 @@ func Load(opts Options) (*Env, []Notice, error) {
 	}
 
 	var notices []Notice
-	warn := func(text string) { notices = append(notices, Notice{Text: text}) }
-	warnInChat := func(text string) { notices = append(notices, Notice{Text: text, InChat: true}) }
+	raise := func(n Notice) {
+		notices = append(notices, n)
+		if opts.Notify != nil {
+			opts.Notify(n)
+		}
+	}
+	warn := func(text string) { raise(Notice{Text: text}) }
+	warnInChat := func(text string) { raise(Notice{Text: text, InChat: true}) }
 
 	e := &Env{Cwd: root, Search: opts.Search}
 
