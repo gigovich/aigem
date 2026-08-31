@@ -62,6 +62,9 @@ type Spec struct {
 	// CtxSize is the context window to fall back on for a model that declares
 	// none; zero picks DefaultCtxSize.
 	CtxSize int
+	// Compact configures compaction. A zero CtxSize in it is filled from the
+	// session's, because zero there switches auto-compaction off rather than
+	// selecting a default.
 	Compact agent.CompactConfig
 
 	// OnRetry reports a provider call being retried, so the wait reads as a wait
@@ -115,7 +118,27 @@ func NewSession(spec Spec) *Session {
 	if ctxSize <= 0 {
 		ctxSize = DefaultCtxSize
 	}
+	// The window the compaction settings work against is the session's, and a
+	// zero there does not mean "default" - it means auto-compaction is off
+	// entirely. Two fields from one intent must not be able to disagree: a
+	// caller that names no window would otherwise get a usage gauge reading the
+	// default while nothing ever compacts, until an unrelated model switch
+	// repaired it.
+	compact := spec.Compact
+	if compact.CtxSize <= 0 {
+		compact.CtxSize = ctxSize
+	}
 	reg := spec.Tools
+	// A registry belongs to one conversation. Registering the delegation, skill
+	// and todo tools into a second session's agent replaces them by name, so the
+	// first session's registry would drive the second session's agent and route
+	// its approval requests to the second session's clients. There is no error
+	// to return - NewSession has no failure mode a caller could act on - and the
+	// alternative is two people answering each other's questions.
+	if _, taken := reg.Get(agent.TodoToolName); taken {
+		panic("runner: this tools registry already belongs to a session; build one per " +
+			"conversation with Env.NewTools")
+	}
 
 	out := &Session{Tools: reg}
 	out.Local = uisession.New(uisession.Config{
@@ -127,7 +150,7 @@ func NewSession(spec Spec) *Session {
 		Backend:   spec.Backend,
 		MaxTokens: spec.MaxTokens,
 		CtxSize:   ctxSize,
-		Compact:   spec.Compact,
+		Compact:   compact,
 
 		RebuildSystem: spec.RebuildSystem,
 		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
@@ -143,7 +166,7 @@ func NewSession(spec Spec) *Session {
 			ag := agent.New(stream, reg, spec.Temp, confirm, spec.System)
 			reg.Register(agent.NewTodoTool(ag))
 			ag.SetHooks(spec.Hooks)
-			ag.SetCompaction(spec.Compact)
+			ag.SetCompaction(compact)
 			if spec.Skills != nil {
 				ag.WatchSkills(spec.Skills.Conditional())
 			}

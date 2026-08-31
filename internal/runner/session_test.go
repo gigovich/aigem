@@ -620,6 +620,90 @@ func TestNewSessionTakesOverTheRegistry(t *testing.T) {
 	}
 }
 
+// A registry belongs to one conversation. Building a second session on it
+// would rebind the delegation, skill and todo tools to the second agent, so the
+// first session's registry would drive the second session's turns and route its
+// approvals to the wrong clients - with nothing to see.
+func TestNewSessionRefusesARegistryThatAlreadyHasASession(t *testing.T) {
+	_, reg := newEnvAndTools(t, project(t))
+
+	first := runner.NewSession(runner.Spec{Tools: reg, Backend: deadBackend()})
+	t.Cleanup(first.Local.Close)
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a second session was built on the first session's registry")
+		}
+	}()
+	runner.NewSession(runner.Spec{Tools: reg, Backend: deadBackend()})
+}
+
+// A zero window in the compaction settings does not mean "use the default" - it
+// switches auto-compaction off entirely. A session that names one window must
+// not end up with the gauge reading it while nothing ever compacts.
+func TestCompactionInheritsTheSessionsContextWindow(t *testing.T) {
+	model := newFakeModel(t)
+	_, reg := newEnvAndTools(t, project(t))
+
+	s := runner.NewSession(runner.Spec{
+		Tools:   reg,
+		Backend: model.ref("m"),
+		System:  "SYSTEM",
+		CtxSize: 4000,
+		// Deliberately no CtxSize: the session's own is the only one there is.
+		Compact: agent.CompactConfig{Auto: true, CompactAtPct: 10, EvictAtPct: 5, KeepTurns: 1},
+	})
+	t.Cleanup(s.Local.Close)
+
+	d := drive(t, s)
+	d.turn(strings.Repeat("filler text ", 200))
+	d.turn(strings.Repeat("more filler ", 200))
+	if err := s.Local.Submit("and now the next turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForNotice(t, d, "compact",
+		"nothing compacted: the compaction settings named no window, and the session's "+
+			"was not filled in")
+}
+
+// The retry wrapper wraps the handle every caller shares, not the backend
+// inside it, so a conversation that switches model keeps riding out provider
+// failures. Wrapping the backend would leave the new one bare.
+func TestRetriesSurviveAModelSwitch(t *testing.T) {
+	model := newFakeModel(t)
+	cwd := project(t)
+	_, reg := newEnvAndTools(t, cwd)
+	models, warns := llm.NewRegistry(cwd, llm.LocalProvider(model.srv.URL, "switched-model", 8192, 0))
+	if len(warns) != 0 {
+		t.Fatalf("model registry warnings: %v", warns)
+	}
+
+	s := runner.NewSession(runner.Spec{
+		Tools:   reg,
+		Backend: model.ref("first-model"),
+		Models:  models,
+		System:  "SYSTEM",
+	})
+	t.Cleanup(s.Local.Close)
+	d := drive(t, s)
+
+	if _, err := s.Local.SwitchModel("local/switched-model", false); err != nil {
+		t.Fatalf("switching model: %v", err)
+	}
+	waitFor(t, d.ch, uisession.KindSessionMeta)
+
+	model.fail(http.StatusInternalServerError)
+	if err := s.Local.Submit("hi", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForWithin(t, d.ch, uisession.KindTurnEnd, 40*time.Second)
+
+	if n := len(model.requests()); n != 3 {
+		t.Fatalf("the model after the switch was called %d times, want 3 - the retries "+
+			"did not follow the switch", n)
+	}
+}
+
 // Switching model mid-conversation needs three of the things the session was
 // built with at once: the registry to resolve the reference, the shared backend
 // handle to swap the provider inside, and the token cap to open it with.

@@ -288,6 +288,91 @@ func TestLoadReportsBrokenHookConfig(t *testing.T) {
 	}
 }
 
+// A capability discovery withheld is raised where it is discovered, not left
+// for the caller to work out afterwards - and marked so a front-end that can
+// ask does that instead of printing.
+func TestWithheldCapabilitiesAreRaisedWhereTheyAreFound(t *testing.T) {
+	cwd := project(t)
+	writeSkill(t, cwd, "greet", "---\nname: greet\ndescription: say hi\n---\nHello.\n")
+	writeFile(t, filepath.Join(cwd, ".aigem", "settings.json"),
+		`{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"true"}]}]}}`)
+	writeFile(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"srv":{"command":"echo"}}}`)
+
+	_, notices := load(t, runner.Options{Cwd: cwd})
+
+	skills, ok := findNotice(notices, "project-local skills in ")
+	if !ok {
+		t.Fatalf("withheld skills were not reported: %v", noticeTexts(notices))
+	}
+	if !skills.Askable {
+		t.Error("a withheld skill is something a front-end can offer to approve")
+	}
+	if skills.InChat {
+		t.Error("the TUI asks about withheld skills with an overlay, not a chat line")
+	}
+	hooks, ok := findNotice(notices, "project-local hooks present but untrusted")
+	if !ok {
+		t.Fatalf("withheld hooks were not reported: %v", noticeTexts(notices))
+	}
+	if !hooks.Askable {
+		t.Error("withheld hooks are something a front-end can offer to approve")
+	}
+
+	// Position is the point: skills are discovered before the MCP servers are
+	// dialled, and the person waiting for them must not learn why last.
+	var skillsAt, mcpAt = -1, -1
+	for i, n := range notices {
+		switch {
+		case strings.Contains(n.Text, "project-local skills in "):
+			skillsAt = i
+		case strings.Contains(n.Text, "mcp config: "):
+			mcpAt = i
+		}
+	}
+	if mcpAt < 0 {
+		t.Fatalf("the fixture raised no MCP notice: %v", noticeTexts(notices))
+	}
+	if skillsAt > mcpAt {
+		t.Fatalf("the withheld-skills notice is raised after the MCP dial: %v", noticeTexts(notices))
+	}
+}
+
+// An approved project has nothing to offer, so nothing is asked.
+func TestNothingIsAskableWhenNothingIsWithheld(t *testing.T) {
+	cwd := project(t)
+	writeSkill(t, cwd, "greet", "---\nname: greet\ndescription: say hi\n---\nHello.\n")
+	if err := skill.ApproveProject(cwd); err != nil {
+		t.Fatal(err)
+	}
+
+	_, notices := load(t, runner.Options{Cwd: cwd})
+	for _, n := range notices {
+		if n.Askable {
+			t.Fatalf("nothing was withheld, but %q asks to be approved", n.Text)
+		}
+	}
+}
+
+// Close is the end of the environment, not a pause in it: the MCP manager goes
+// on listing tools it has torn down, so a registry built afterwards would carry
+// a full catalog whose every call fails.
+func TestNewToolsRefusesAfterClose(t *testing.T) {
+	env, _, err := runner.Load(runner.Options{Cwd: mcpProject(t), TrustProjectMCP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.NewTools(); err != nil {
+		t.Fatalf("NewTools before Close: %v", err)
+	}
+
+	env.Close()
+	env.Close() // twice is safe
+
+	if _, err := env.NewTools(); err == nil {
+		t.Fatal("NewTools handed out a registry from a closed environment")
+	}
+}
+
 // A --trust-project-* flag that cannot record its decision has to say so: the
 // person asked for something durable, and silence would let them believe they
 // got it while every later start withholds the same capabilities again.
@@ -580,9 +665,61 @@ func TestNoticesKeepTheOrderTheyWereRaisedIn(t *testing.T) {
 	}
 }
 
-// Each Notify call arrives as its notice is raised, not in a batch at the end.
-// Load dials the MCP servers and runs the SessionStart hook, so a caller that
-// only hears from it at the end says nothing for as long as those take.
+// The point of Notify is WHEN it is called. Load dials the MCP servers and runs
+// the SessionStart hook, either of which can take tens of seconds, so a
+// callback that only fires once Load returns leaves a terminal silent for all
+// of it - which is the regression this exists to prevent, and which an
+// assertion about the list alone would not see.
+func TestNotifyFiresBeforeLoadReturns(t *testing.T) {
+	defer runner.SetSessionStartTimeout(2 * time.Second)()
+	globalSettings(t, `{"hooks":{"SessionStart":[{"hooks":[`+
+		`{"type":"command","command":"sleep","args":["6"]}]}]}}`)
+
+	cwd := project(t)
+	// Raised during skill discovery, long before the hook runs.
+	writeSkill(t, cwd, "broken", "---\nname: [unterminated\n---\nnothing\n")
+	if err := skill.ApproveProject(cwd); err != nil {
+		t.Fatal(err)
+	}
+
+	first := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env, _, err := runner.Load(runner.Options{
+			Cwd: cwd,
+			Notify: func(runner.Notice) {
+				select {
+				case first <- struct{}{}:
+				default:
+				}
+			},
+		})
+		if err == nil {
+			env.Close()
+		}
+	}()
+
+	select {
+	case <-first:
+	case <-time.After(90 * time.Second):
+		t.Fatal("no notice arrived at all")
+	}
+	select {
+	case <-done:
+		t.Fatal("Load had already returned when the first notice arrived: the callback is " +
+			"batched at the end, and a caller printing from it stays silent until then")
+	default:
+	}
+
+	select {
+	case <-done:
+	case <-time.After(90 * time.Second):
+		t.Fatal("Load never returned")
+	}
+}
+
+// Every notice reaches Notify, in the order the returned list holds them.
 func TestNotifyIsCalledAsNoticesAreRaised(t *testing.T) {
 	cwd := project(t)
 	writeFile(t, filepath.Join(cwd, ".aigem", "settings.json"), "{not json")

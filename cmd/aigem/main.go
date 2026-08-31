@@ -236,6 +236,14 @@ func main() {
 	if *traceJSON != "" && *prompt == "" {
 		fatal(errors.New("--trace-json records a -p run; it has no effect on the TUI or --repl"))
 	}
+	// Resolved here for the same reason, even though only -p uses it: a name that
+	// does not exist is a run that was always going to fail, and refusing it
+	// later means refusing it after the SessionStart hook has run the person's
+	// own commands and every MCP server has been started.
+	capProfile, capProfileErr := tools.ResolveCapabilityProfile(*capProfileName)
+	if capProfileErr != nil && *prompt != "" {
+		fatal(capProfileErr)
+	}
 
 	// Resolve the model from the registry. A bare --model name configures the
 	// local provider (back-compat); a provider/id ref selects another provider;
@@ -306,6 +314,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not load search config:", err)
 	}
+	// The TUI asks about a withheld capability with an overlay, so printing the
+	// same thing would be asking twice; -p and --repl have nobody to ask and
+	// would otherwise lose a skill or a hook in silence.
+	canAsk := *prompt == "" && !*repl
 	env, notices, err := runner.Load(runner.Options{
 		Cwd:                *cwd,
 		Version:            version,
@@ -316,7 +328,12 @@ func main() {
 		// Printed as they are raised, not at the end: Load dials the MCP servers
 		// and runs the SessionStart hook, and a terminal that reports nothing
 		// until those finish reads as a hang.
-		Notify: func(n runner.Notice) { fmt.Fprintln(os.Stderr, "warning:", n.Text) },
+		Notify: func(n runner.Notice) {
+			if n.Askable && canAsk {
+				return
+			}
+			fmt.Fprintln(os.Stderr, "warning:", n.Text)
+		},
 	})
 	if err != nil {
 		fatal(err)
@@ -329,18 +346,6 @@ func main() {
 		if n.InChat {
 			skillNotices = append(skillNotices, n.Text)
 		}
-	}
-	// Discovery drops untrusted project-local skills silently, which is
-	// indistinguishable from the project having none. Interactive front-ends ask
-	// (the TUI overlay below); the rest at least say what was withheld.
-	if w := pendingSkillsWarning(env.Pending); w != "" && (*prompt != "" || *repl) {
-		fmt.Fprintln(os.Stderr, w)
-	}
-	// Non-interactive front-ends cannot prompt, so untrusted project hooks stay
-	// off; tell the user how to enable them.
-	if (*prompt != "" || *repl) && env.Hooks.HasUntrustedProjectHooks() {
-		fmt.Fprintln(os.Stderr, "warning: project-local hooks present but untrusted - skipping; "+
-			"pass --trust-project-hooks to run them.")
 	}
 	if env.SystemMessage != "" {
 		fmt.Fprintln(os.Stderr, env.SystemMessage)
@@ -367,10 +372,6 @@ func main() {
 	sysPrompt := buildSystem()
 
 	if *prompt != "" {
-		capProfile, err := tools.ResolveCapabilityProfile(*capProfileName)
-		if err != nil {
-			fatal(err)
-		}
 		reg = reg.Subset(capProfile.Allow)
 		turnBudget := agent.TurnBudget{
 			MaxModelRounds:       *maxModelRounds,
@@ -399,21 +400,6 @@ func main() {
 		env.Close() // defer is skipped by fatal's os.Exit; close before exiting
 		fatal(err)
 	}
-}
-
-// pendingSkillsWarning describes project-local skills that discovery withheld,
-// for the front-ends that have no one to ask. It returns "" when nothing is
-// pending. The names are already sanitized for display by skill.Pending.
-func pendingSkillsWarning(p *skill.PendingSkills) string {
-	if p == nil {
-		return ""
-	}
-	state := "untrusted"
-	if p.Invalidated {
-		state = "changed since you approved them"
-	}
-	return fmt.Sprintf("warning: project-local skills in %s %s - not loaded (%s); "+
-		"pass --trust-project-skills to enable them.", p.Dir, state, strings.Join(p.Names, ", "))
 }
 
 // replPathApprover asks on the terminal about a path outside the working

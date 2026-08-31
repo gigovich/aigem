@@ -288,14 +288,12 @@ func ProjectInstructions(cwd string) string {
 		return ""
 	}
 	var b strings.Builder
-	for _, f := range instructionFiles(abs) {
+	for _, f := range injectedInstructionFiles(abs) {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			continue
 		}
-		if content := strings.TrimSpace(string(data)); content != "" {
-			fmt.Fprintf(&b, "### %s\n\n%s\n\n", f, content)
-		}
+		fmt.Fprintf(&b, "### %s\n\n%s\n\n", f, strings.TrimSpace(string(data)))
 	}
 	out := strings.TrimSpace(b.String())
 	if out == "" {
@@ -310,12 +308,34 @@ func ProjectInstructions(cwd string) string {
 // InstructionPaths returns the paths of the instruction files that
 // ProjectInstructions injects, so the caller can mark them as already in
 // context (avoiding redundant read_file calls).
+//
+// A file that exists but contributed nothing - unreadable, or empty - is not
+// among them. Marking one would have read_file answer "already included in your
+// context in full" about text the model was never shown.
 func InstructionPaths(cwd string) []string {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
 		return nil
 	}
-	return instructionFiles(abs)
+	return injectedInstructionFiles(abs)
+}
+
+// injectedInstructionFiles is instructionFiles narrowed to the ones that
+// actually reach the prompt. The two must agree, which is why they are one
+// function rather than two lists that happen to match today.
+func injectedInstructionFiles(abs string) []string {
+	var out []string
+	for _, f := range instructionFiles(abs) {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(string(data)) == "" {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // instructionFiles returns the instruction files to load, in priority order,

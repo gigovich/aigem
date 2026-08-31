@@ -1,6 +1,7 @@
 package uisession
 
 import (
+	"errors"
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/auth"
 	"github.com/gigovich/aigem/internal/config"
@@ -19,6 +20,12 @@ func (l *Local) SwitchModel(ref string, persist bool) (llm.ModelInfo, error) {
 	models, backend, maxTokens := l.models, l.backend, l.maxTokens
 	l.mu.Unlock()
 
+	// Refused rather than dereferenced: a session built without a registry has
+	// no way to resolve a reference, and a nil-pointer panic here would take
+	// every other conversation in the process with it.
+	if models == nil {
+		return llm.ModelInfo{}, errors.New("this session was built without a model registry")
+	}
 	b, _, info, err := auth.OpenModel(models, ref, maxTokens)
 	if err != nil {
 		return llm.ModelInfo{}, err

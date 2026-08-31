@@ -123,3 +123,32 @@ func TestProjectInstructionsNoneReturnsEmpty(t *testing.T) {
 		t.Fatalf("expected empty result, got:\n%s", out)
 	}
 }
+
+// A file the prompt could not carry must not be reported as carried: the caller
+// marks these as already in the model's context, and read_file then answers
+// "already included in your context in full" about text nobody was shown.
+func TestInstructionPathsListsOnlyWhatWasInjected(t *testing.T) {
+	root := t.TempDir()
+	markGit(t, root)
+	write(t, filepath.Join(root, "AGENTS.md"), "ROOT BODY")
+	write(t, filepath.Join(root, "context.md"), "   \n\t\n")
+	claude := filepath.Join(root, ".claude", "CLAUDE.md")
+	write(t, claude, "UNREADABLE BODY")
+	if err := os.Chmod(claude, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(claude, 0o644) })
+
+	out := ProjectInstructions(root)
+	if !strings.Contains(out, "ROOT BODY") {
+		t.Fatalf("expected the readable file in the prompt, got:\n%s", out)
+	}
+	if strings.Contains(out, "UNREADABLE BODY") {
+		t.Fatalf("an unreadable file reached the prompt:\n%s", out)
+	}
+
+	paths := InstructionPaths(root)
+	if len(paths) != 1 || filepath.Base(paths[0]) != "AGENTS.md" {
+		t.Fatalf("InstructionPaths = %v, want only the file that was injected", paths)
+	}
+}

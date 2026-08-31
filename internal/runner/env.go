@@ -12,8 +12,11 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gigovich/aigem/internal/agent"
@@ -73,14 +76,27 @@ type Options struct {
 type Notice struct {
 	Text   string
 	InChat bool
+	// Askable marks a notice a front-end that can ask should answer with a
+	// question rather than a line of text: a withheld capability the person can
+	// approve on the spot. The TUI opens its trust overlay for these and does
+	// not print them; a front-end with nobody to ask prints them like any other,
+	// because the alternative is a capability that goes missing in silence.
+	Askable bool
 }
 
 // Env is one project's environment, shared by every session that runs in it.
 //
-// Sharing is deliberate for each of these: a skill registry is a read-only
-// catalog, a hooks runner is stateless between events, and one MCP manager per
-// project is what keeps two parallel sessions from starting two copies of every
-// stdio server. What is not shared is the tools registry - see NewTools.
+// Sharing is deliberate for the catalog and the servers: a skill registry is
+// read-only, and one MCP manager per project is what keeps two parallel
+// sessions from starting two copies of every stdio server. What is not shared
+// is the tools registry - see NewTools.
+//
+// Hooks is shared because loading it is cheap and its configuration is the
+// project's, but it is NOT stateless: it carries the id of the conversation its
+// hooks are being fired for, and uisession writes that as each turn begins. One
+// runner across two live sessions therefore hands every hook whichever
+// conversation started last. That is invisible while a process holds one
+// session, and is the first thing to split when the daemon holds several.
 type Env struct {
 	Cwd    string
 	Search search.Config
@@ -111,6 +127,13 @@ type Env struct {
 	// every system prompt built here. It is captured once: /new rebuilds the
 	// prompt but does not re-run the hook, so this is the output being reused.
 	hookContext string
+
+	// closed is set by Close. It is read by NewTools, which must not hand out a
+	// registry full of MCP tools whose servers have been torn down: the manager
+	// goes on listing them after it closes, so without this a session built
+	// after Close gets a full catalog and a prompt advertising it, and every
+	// call fails.
+	closed atomic.Bool
 }
 
 // Load discovers the environment at opts.Cwd.
@@ -166,6 +189,13 @@ func Load(opts Options) (*Env, []Notice, error) {
 		warnInChat("could not evaluate project skill trust: " + err.Error())
 	}
 	e.Pending = pending
+	// Raised here rather than by the caller after Load returns: discovery has
+	// just decided to withhold them, and everything below - the MCP dial, the
+	// SessionStart hook - can take tens of seconds. A person waiting for their
+	// skills to appear should not learn why last.
+	if w := pendingSkillsWarning(pending); w != "" {
+		raise(Notice{Text: w, Askable: true})
+	}
 	// Skill dirs above the project root belong to no project, so they are
 	// neither loaded nor offered for approval. Saying so beats letting them
 	// disappear.
@@ -202,6 +232,13 @@ func Load(opts Options) (*Env, []Notice, error) {
 			warn("could not persist project trust: " + err.Error())
 		}
 	}
+	if runner.HasUntrustedProjectHooks() {
+		raise(Notice{
+			Text: "project-local hooks present but untrusted - skipping; " +
+				"pass --trust-project-hooks to run them.",
+			Askable: true,
+		})
+	}
 	// SessionStart runs once, here, so its additionalContext can enrich the
 	// system prompt before the first model call.
 	dec := runner.RunBounded(hooks.EventSessionStart, hooks.Input{Source: "startup"}, sessionStartTimeout)
@@ -213,8 +250,9 @@ func Load(opts Options) (*Env, []Notice, error) {
 }
 
 // Close releases what Load started, which today is the MCP servers. A session
-// built from this Env must not outlive it.
+// built from this Env must not outlive it. Calling it twice is safe.
 func (e *Env) Close() {
+	e.closed.Store(true)
 	if e.MCP != nil {
 		e.MCP.Close()
 	}
@@ -229,6 +267,9 @@ func (e *Env) Close() {
 //
 // Persisted path grants are enabled by the session, not here.
 func (e *Env) NewTools() (*tools.Registry, error) {
+	if e.closed.Load() {
+		return nil, errors.New("runner: the environment is closed; its MCP servers are gone")
+	}
 	r, err := tools.NewRegistry(e.Cwd)
 	if err != nil {
 		return nil, err
@@ -303,4 +344,19 @@ func (e *Env) SystemPrompt() (string, []string) {
 		sp += "\n\n" + e.hookContext
 	}
 	return sp, injected
+}
+
+// pendingSkillsWarning describes project-local skills that discovery withheld.
+// It returns "" when nothing is pending. The names are already sanitized for
+// display by skill.Pending.
+func pendingSkillsWarning(p *skill.PendingSkills) string {
+	if p == nil {
+		return ""
+	}
+	state := "untrusted"
+	if p.Invalidated {
+		state = "changed since you approved them"
+	}
+	return fmt.Sprintf("project-local skills in %s %s - not loaded (%s); "+
+		"pass --trust-project-skills to enable them.", p.Dir, state, strings.Join(p.Names, ", "))
 }

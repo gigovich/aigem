@@ -1,4 +1,4 @@
-package main
+package runner
 
 import (
 	"strings"
@@ -13,10 +13,14 @@ func TestPendingSkillsWarning(t *testing.T) {
 	}
 
 	got := pendingSkillsWarning(&skill.PendingSkills{Dir: "/p", Names: []string{"gitea", "deploy"}})
-	for _, want := range []string{"warning:", "/p", "untrusted", "gitea", "deploy", "--trust-project-skills"} {
+	for _, want := range []string{"/p", "untrusted", "gitea", "deploy", "--trust-project-skills"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("warning %q is missing %q", got, want)
 		}
+	}
+	// The caller decides how it is presented, so the text carries no prefix.
+	if strings.HasPrefix(got, "warning") {
+		t.Errorf("the warning carries a presentation prefix: %q", got)
 	}
 	if strings.Contains(got, "\n") {
 		t.Errorf("the warning must be a single line: %q", got)
