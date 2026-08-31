@@ -536,6 +536,42 @@ func TestLoadRunsTheSessionStartHook(t *testing.T) {
 	}
 }
 
+// A hook is told the directory it is running for, and the hooks runner stores
+// that string exactly as it was handed one - it does not resolve it again. So
+// this is the one consumer for which passing the caller's relative path instead
+// of the resolved root is not the same thing: a person's hook would be handed
+// "." and have to guess what it meant.
+func TestLoadGivesHooksTheResolvedDirectory(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "hook.sh")
+	writeFile(t, script, "#!/bin/sh\n"+
+		`d=$(sed -n 's/.*"cwd":"\([^"]*\)".*/\1/p')`+"\n"+
+		`printf '{"hookSpecificOutput":{"additionalContext":"HOOK CWD[%s]"}}' "$d"`+"\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalSettings(t, `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"`+
+		script+`"}]}]}}`)
+
+	cwd := project(t)
+	t.Chdir(cwd)
+	env, _ := load(t, runner.Options{Cwd: "."})
+
+	p, _ := env.SystemPrompt()
+	const marker = "HOOK CWD["
+	i := strings.Index(p, marker)
+	if i < 0 {
+		t.Fatalf("the hook never reported its directory: %q", p)
+	}
+	rest := p[i+len(marker):]
+	end := strings.Index(rest, "]")
+	if end < 0 {
+		t.Fatalf("the hook's report is not terminated: %q", rest)
+	}
+	if got := rest[:end]; !filepath.IsAbs(got) {
+		t.Fatalf("the hook was handed %q, want the resolved project directory", got)
+	}
+}
+
 // A hook that never returns must delay startup, not freeze it.
 func TestLoadBoundsTheSessionStartHook(t *testing.T) {
 	defer runner.SetSessionStartTimeout(200 * time.Millisecond)()
