@@ -20,7 +20,7 @@ import (
 	"github.com/gigovich/aigem/internal/hooks"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/local"
-	"github.com/gigovich/aigem/internal/mcp"
+	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/search"
 	"github.com/gigovich/aigem/internal/skill"
 	"github.com/gigovich/aigem/internal/tools"
@@ -306,157 +306,52 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not load search config:", err)
 	}
-	// newRegistry builds the sandbox for one conversation. It is a function
-	// rather than a value because a registry is not shareable between sessions:
-	// the delegation and skill tools are registered into it bound to that
-	// session's confirmation function, so two conversations sharing one would
-	// have tool calls in the first asking the second's clients for approval.
-	newRegistry := func() (*tools.Registry, error) {
-		r, err := tools.NewRegistry(*cwd)
-		if err != nil {
-			return nil, err
-		}
-		// Directories the user has already approved for this project are read
-		// without asking again. Each front-end installs its own approver for the
-		// ones that are not yet granted; -p has no one to ask and keeps refusing.
-		r.SetPathGrants(true)
-		if st := search.NewTool(searchCfg); st != nil {
-			r.Register(st)
-		}
-		if bt := search.NewBrowseTool(searchCfg); bt != nil {
-			r.Register(bt)
-		}
-		if at := search.NewBrowserActionTool(searchCfg); at != nil {
-			r.Register(at)
-		}
-		return r, nil
-	}
-	reg, err := newRegistry()
-	if err != nil {
-		fatal(err)
-	}
-
-	agents := loadAgents()
-	if *trustProjectSkills {
-		if err := skill.ApproveProject(*cwd); err != nil {
-			fmt.Fprintln(os.Stderr, "warning: could not approve project skills:", err)
-		}
-	}
+	env, notices := runner.Load(runner.Options{
+		Cwd:                *cwd,
+		Version:            version,
+		Search:             searchCfg,
+		TrustProjectHooks:  *trustProject,
+		TrustProjectMCP:    *trustProjectMCP,
+		TrustProjectSkills: *trustProjectSkills,
+	})
+	defer env.Close() // also tears down stdio servers if a run path panics
 	// skillNotices are repeated inside the TUI, which runs on the alt screen and
 	// so never shows what was written to stderr before it started.
 	var skillNotices []string
-	skills, skillErrs := skill.Discover(*cwd)
-	for _, e := range skillErrs {
-		fmt.Fprintln(os.Stderr, "warning: skipped skill:", e)
-		skillNotices = append(skillNotices, "skipped skill: "+e.Error())
+	for _, n := range notices {
+		fmt.Fprintln(os.Stderr, "warning:", n.Text)
+		if n.InChat {
+			skillNotices = append(skillNotices, n.Text)
+		}
 	}
 	// Discovery drops untrusted project-local skills silently, which is
 	// indistinguishable from the project having none. Interactive front-ends ask
 	// (the TUI overlay below); the rest at least say what was withheld.
-	pendingSkills, err := skill.Pending(*cwd)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "warning: could not evaluate project skill trust:", err)
-		skillNotices = append(skillNotices, "could not evaluate project skill trust: "+err.Error())
-	}
-	if w := pendingSkillsWarning(pendingSkills); w != "" && (*prompt != "" || *repl) {
+	if w := pendingSkillsWarning(env.Pending); w != "" && (*prompt != "" || *repl) {
 		fmt.Fprintln(os.Stderr, w)
-	}
-	// Skill dirs above the project root belong to no project, so they are neither
-	// loaded nor offered for approval. Saying so beats letting them disappear.
-	for _, d := range skill.OutOfScopeAncestors(*cwd) {
-		w := "skills in " + d + " are outside this project and were not loaded"
-		fmt.Fprintln(os.Stderr, "warning:", w)
-		skillNotices = append(skillNotices, w)
-	}
-	// Project conventions (AGENTS.md / CLAUDE.md / context.md / .claude/CLAUDE.md)
-	// are discovered by the harness and injected, not left for the model to find.
-	// The full system prompt is assembled by buildSystem below; this snapshot is
-	// for consumers that need the project text directly (subagent task tool).
-	project := config.ProjectInstructions(*cwd)
-
-	// MCP servers: dial configured servers, register their tools (main agent
-	// only), and summarize them in the prompt. A failed server is skipped.
-	mcpMgr, mcpCfgWarns := mcp.NewWithTrust(*cwd, version, *trustProjectMCP)
-	defer mcpMgr.Close() // also tears down stdio servers if a run path panics
-	for _, w := range mcpCfgWarns {
-		fmt.Fprintln(os.Stderr, "warning: mcp config:", w)
-	}
-	if !mcpMgr.Empty() {
-		mcpMgr.Connect(context.Background())
-		for _, w := range mcpMgr.Warnings() {
-			fmt.Fprintln(os.Stderr, "warning:", w)
-		}
-		mcpMgr.RegisterTools(reg)
-	}
-
-	// Hooks from project/global settings. SessionStart runs once now (bounded, so
-	// a slow hook cannot freeze startup) so its additionalContext can enrich the
-	// system prompt before the first model call.
-	runner, hookWarns := hooks.Load(*cwd)
-	for _, w := range hookWarns {
-		fmt.Fprintln(os.Stderr, "warning: hook config:", w)
-	}
-	if *trustProject && runner.HasUntrustedProjectHooks() {
-		if err := runner.TrustProject(); err != nil {
-			fmt.Fprintln(os.Stderr, "warning: could not persist project trust:", err)
-		}
 	}
 	// Non-interactive front-ends cannot prompt, so untrusted project hooks stay
 	// off; tell the user how to enable them.
-	if (*prompt != "" || *repl) && runner.HasUntrustedProjectHooks() {
+	if (*prompt != "" || *repl) && env.Hooks.HasUntrustedProjectHooks() {
 		fmt.Fprintln(os.Stderr, "warning: project-local hooks present but untrusted - skipping; "+
 			"pass --trust-project-hooks to run them.")
 	}
-	dec := runner.RunBounded(hooks.EventSessionStart, hooks.Input{Source: "startup"}, 10*time.Second)
-	hookCtx := dec.Context // launch-time SessionStart context, reused verbatim on /new
-	if dec.SystemMessage != "" {
-		fmt.Fprintln(os.Stderr, dec.SystemMessage)
+	if env.SystemMessage != "" {
+		fmt.Fprintln(os.Stderr, env.SystemMessage)
 	}
 
-	// buildSystem assembles the full system prompt: base instructions, the current
-	// on-disk project conventions (re-read each call), the skill catalog, search
-	// and MCP availability, and the launch-time hook context. /new re-runs it so
-	// edits to AGENTS.md/CLAUDE.md/context.md take effect without a restart; the
-	// SessionStart hook and MCP servers are not re-run, only their captured output
-	// is reused.
-	buildSystem := func() string {
-		sp := config.SystemPrompt()
-		now := time.Now()
-		sp += "\n\n# Current date and time\n\n" +
-			"The current local date and time is " + now.Format("Monday, 2 January 2006, 15:04:05 MST") +
-			" (" + now.Format(time.RFC3339) + "). This is authoritative: it reflects the real clock at the " +
-			"start of this session, which your training data cannot tell you. Treat it as today's date. " +
-			"When you compute any date or duration - ages, deadlines, \"how many days ago\", \"how long until\", " +
-			"weekday of a date, or whether something is past or future - calculate strictly from this value, " +
-			"never from your training cutoff, and never guess the current date. (This value is captured when " +
-			"the prompt is built and refreshed on /new; in a very long session the time of day may have drifted.)"
-		if proj := config.ProjectInstructions(*cwd); proj != "" {
-			sp += "\n\n" + proj
-			// Those files are now in context; read_file should not re-emit them.
-			reg.MarkInContext(config.InstructionPaths(*cwd))
-		}
-		// Every front-end below registers the task tool, so the block always
-		// applies here. It is appended rather than baked into the base prompt so
-		// a custom SYSTEM.md cannot leave the tool present but unexplained.
-		if d := agent.DelegationPrompt(agents); d != "" {
-			sp += "\n\n" + d
-		}
-		if sk := skills.Prompt(); sk != "" {
-			sp += "\n\n" + sk
-		}
-		if s := search.Prompt(searchCfg); s != "" {
-			sp += "\n\n" + s
-		}
-		if !mcpMgr.Empty() {
-			if p := mcpMgr.Prompt(); p != "" {
-				sp += "\n\n" + p
-			}
-		}
-		if hookCtx != "" {
-			sp += "\n\n" + hookCtx
-		}
-		return sp
+	reg, err := env.NewTools()
+	if err != nil {
+		fatal(err)
 	}
+	// Directories the user has already approved for this project are read
+	// without asking again. Each front-end installs its own approver for the
+	// ones that are not yet granted; -p has no one to ask and keeps refusing.
+	reg.SetPathGrants(true)
+
+	// /new re-runs it so edits to AGENTS.md/CLAUDE.md/context.md take effect
+	// without a restart.
+	buildSystem := func() string { return env.SystemPrompt(reg) }
 	sysPrompt := buildSystem()
 
 	if *prompt != "" {
@@ -474,21 +369,22 @@ func main() {
 		runPrint(printRun{
 			client: ref, reg: reg, temp: *temp, prompt: *prompt, autoApprove: *yes,
 			capProfile: capProfile, turnBudget: turnBudget, sysPrompt: sysPrompt,
-			agents: agents, project: project, skills: skills, hooks: runner,
+			agents: env.Agents, project: env.Project, skills: env.Skills, hooks: env.Hooks,
 			compactCfg: compactCfg, tracePath: *traceJSON,
 		})
 		return
 	}
 	if *repl {
-		runREPL(ref, reg, *temp, sysPrompt, agents, project, skills, runner, compactCfg)
+		runREPL(ref, reg, *temp, sysPrompt, env.Agents, env.Project, env.Skills, env.Hooks, compactCfg)
 		return
 	}
-	m := tui.New(ref, reg, *temp, modelLabel, urlLabel, sysPrompt, *ctxSize, *maxTokens, agents, project, skills, runner, mcpMgr, dec.SessionTitle, compactCfg, modelReg)
+	m := tui.New(ref, reg, *temp, modelLabel, urlLabel, sysPrompt, *ctxSize, *maxTokens,
+		env.Agents, env.Project, env.Skills, env.Hooks, env.MCP, env.SessionTitle, compactCfg, modelReg)
 	m.SetSystemRebuilder(buildSystem)
 	m.SetStartupNotices(skillNotices)
-	m.SetPendingSkills(*cwd, pendingSkills)
+	m.SetPendingSkills(*cwd, env.Pending)
 	if err := tui.Run(m); err != nil {
-		mcpMgr.Close() // defer is skipped by fatal's os.Exit; close before exiting
+		env.Close() // defer is skipped by fatal's os.Exit; close before exiting
 		fatal(err)
 	}
 }
@@ -506,18 +402,6 @@ func pendingSkillsWarning(p *skill.PendingSkills) string {
 	}
 	return fmt.Sprintf("warning: project-local skills in %s %s - not loaded (%s); "+
 		"pass --trust-project-skills to enable them.", p.Dir, state, strings.Join(p.Names, ", "))
-}
-
-// loadAgents returns the built-in subagents plus any custom definitions found
-// in the user's config directory.
-func loadAgents() *agent.SubagentRegistry {
-	agents := agent.DefaultSubagents()
-	if dir, err := config.AgentsDir(); err == nil {
-		if err := agent.LoadSubagentsInto(agents, dir); err != nil {
-			fmt.Fprintln(os.Stderr, "warning: could not load custom agents:", err)
-		}
-	}
-	return agents
 }
 
 // replPathApprover asks on the terminal about a path outside the working

@@ -32,6 +32,7 @@ import (
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/local"
 	"github.com/gigovich/aigem/internal/mcp"
+	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/session"
 	"github.com/gigovich/aigem/internal/skill"
 	"github.com/gigovich/aigem/internal/tools"
@@ -509,67 +510,40 @@ func (m *Model) SetPendingSkills(cwd string, p *skill.PendingSkills) {
 
 func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, systemPrompt string,
 	ctxSize, maxTokens int, agents *agent.SubagentRegistry, project string, skills *skill.Registry,
-	runner *hooks.Runner, mcpMgr *mcp.Manager, sessionTitle string, compactCfg agent.CompactConfig,
+	hookRunner *hooks.Runner, mcpMgr *mcp.Manager, sessionTitle string, compactCfg agent.CompactConfig,
 	modelReg *llm.Registry) Model {
 	// Buffered generously: parallel subagents can burst many events at once.
 	events := make(chan tea.Msg, 256)
 	done := make(chan struct{})
 
-	// Ride out transient provider failures (429/5xx, an overloaded backend, a
-	// dropped stream) instead of surfacing them into the session. It wraps the
-	// Ref rather than the backend inside it, so a live /model switch keeps the
-	// retries. A stream that already emitted text is not retried, so an
-	// interruption mid-answer still surfaces - the deltas were delivered and a
-	// second attempt would duplicate them.
-	stream := llm.NewRetrying(client, retryAttempts)
-	stream.SetOnRetry(func(n llm.RetryNotice) {
-		select {
-		case events <- noticeMsg(formatRetry(n)):
-		case <-done:
-		}
-	})
 	if ctxSize <= 0 {
-		ctxSize = 8192
+		ctxSize = runner.DefaultCtxSize
 	}
-	// The session builds the agent, because the confirmation function it is
-	// constructed with belongs to the session: it is what parks a tool call on
-	// the approval queue that every attached front-end can answer.
-	var regSkillTool func(*skill.Registry)
-	sess := uisession.New(uisession.Config{
+	// Built by internal/runner, which is what the browser daemon builds its
+	// sessions with too: the terminal must not be the one front-end whose
+	// conversation is assembled a slightly different way.
+	rs := runner.NewSession(runner.Spec{
 		Tools:     reg,
-		Hooks:     runner,
-		Title:     sessionTitle,
-		ModelRef:  func() string { return client.Model().Ref() },
-		Models:    modelReg,
 		Backend:   client,
+		Models:    modelReg,
+		Agents:    agents,
+		Skills:    skills,
+		Hooks:     hookRunner,
+		Project:   project,
+		System:    systemPrompt,
+		Title:     sessionTitle,
+		Temp:      temp,
 		MaxTokens: maxTokens,
 		CtxSize:   ctxSize,
 		Compact:   compactCfg,
-		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
-			if agents != nil {
-				reg.Register(agent.NewTaskTool(stream, reg, temp, confirm, agents, project))
+		OnRetry: func(n llm.RetryNotice) {
+			select {
+			case events <- noticeMsg(formatRetry(n)):
+			case <-done:
 			}
-			// Kept as a closure: a project whose only skills are untrusted has none
-			// to advertise at launch, so the tool is registered again once they are
-			// approved. It takes the registry rather than closing over one, so the
-			// caller cannot silently register a tool against a registry it has since
-			// replaced.
-			regSkillTool = func(sk *skill.Registry) {
-				if st := agent.NewSkillTool(sk, stream, reg, temp, confirm); st != nil {
-					reg.Register(st)
-				}
-			}
-			regSkillTool(skills)
-			ag := agent.New(stream, reg, temp, confirm, systemPrompt)
-			reg.Register(agent.NewTodoTool(ag))
-			ag.SetHooks(runner)
-			ag.SetCompaction(compactCfg)
-			if skills != nil {
-				ag.WatchSkills(skills.Conditional())
-			}
-			return ag
 		},
 	})
+	sess := rs.Local
 	ag := sess.Agent()
 	// One subscriber, translating the session's events into the messages this
 	// model already knows how to render. Nothing else reads the stream, so the
@@ -636,9 +610,9 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		searchPrompted: searchOn,
 		mcpMgr:         mcpMgr,
 		commands:       uisession.Commands(skills, mcpMgr),
-		hooks:          runner,
-		trustAsk:       runner != nil && runner.HasUntrustedProjectHooks(),
-		regSkillTool:   regSkillTool,
+		hooks:          hookRunner,
+		trustAsk:       hookRunner != nil && hookRunner.HasUntrustedProjectHooks(),
+		regSkillTool:   rs.RegisterSkillTool,
 	}
 }
 
@@ -4039,11 +4013,6 @@ func truncate(s string, n int) string {
 	}
 	return s
 }
-
-// retryAttempts is how many total tries an interactive LLM call gets before the
-// error reaches the user. Someone is waiting, so this rides out a brief provider
-// hiccup without turning a failure into a long silence.
-const retryAttempts = 3
 
 // formatRetry renders a pending retry as a one-line notice. The provider's error
 // body is long and JSON, so only its first line is shown, trimmed.
