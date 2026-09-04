@@ -25,6 +25,10 @@ import (
 	"github.com/gigovich/aigem/internal/store"
 )
 
+// defaultAddr is where the daemon binds when the operator names no address: a
+// loopback port the kernel picks, which is the shape that needs no --origin.
+const defaultAddr = "127.0.0.1:0"
+
 // Config configures the daemon.
 type Config struct {
 	// Addr is the listen address. It defaults to a loopback port chosen by the
@@ -92,7 +96,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	addr := cfg.Addr
 	if addr == "" {
-		addr = "127.0.0.1:0"
+		addr = defaultAddr
 	}
 	token := cfg.Token
 	if token == "" {
@@ -103,7 +107,7 @@ func New(cfg Config) (*Server, error) {
 		token = t
 	}
 	// Before the listener, so a refusal to serve does not leave a port bound.
-	if err := checkBind(addr, cfg.Origins); err != nil {
+	if err := CheckBind(addr, cfg.Origins); err != nil {
 		return nil, err
 	}
 	ln, err := net.Listen("tcp", addr)
@@ -322,6 +326,34 @@ type allowlist struct {
 	// public are the configured origins alone, in the order given, without the
 	// loopback entries. The first is the address worth printing.
 	public []string
+}
+
+// CheckBind reports whether a daemon could be asked to serve on this address
+// under these origins. It touches nothing: no port is bound, no credential is
+// generated, and no state is read.
+//
+// It exists so that a caller with expensive work to do first can find out that
+// the daemon is going to refuse before doing it. `aigem web` loads the project
+// - which runs the person's SessionStart hook and starts their MCP servers -
+// and a typo in --addr that ends in a refusal must not have done that on its
+// way to the error message.
+//
+// It is not the whole of what New checks. The port may be taken, and an address
+// may resolve somewhere the string does not say; both need the listener. What
+// it does catch is every refusal that comes from what the operator typed, which
+// is the one worth catching early.
+func CheckBind(addr string, origins []string) error {
+	if addr == "" {
+		addr = defaultAddr
+	}
+	// Before the address, so a malformed origin is reported even on a loopback
+	// bind - where the address itself is never the problem.
+	for _, o := range origins {
+		if _, err := normalizeOrigin(o); err != nil {
+			return err
+		}
+	}
+	return checkBind(addr, origins)
 }
 
 // checkBind refuses an address the network can reach without being told the

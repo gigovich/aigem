@@ -319,3 +319,38 @@ func TestTheEmbeddedBundleIsServed(t *testing.T) {
 		t.Errorf("bundle Cache-Control = %q, want it cached forever", got)
 	}
 }
+
+// `aigem web` loads the project before it builds the daemon, and loading one
+// runs the person's SessionStart hook and starts their MCP servers. A refusal
+// that comes from what the operator typed has to be available before any of
+// that happens, or a typo in --addr executes their hooks on its way to an error
+// message.
+func TestCheckBindRefusesWhatNewWouldRefuseWithoutTouchingAnything(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		addr    string
+		origins []string
+		wantErr bool
+	}{
+		{"the default", "", nil, false},
+		{"a loopback port", "127.0.0.1:0", nil, false},
+		{"reachable with an origin", "0.0.0.0:0", []string{"https://aigem.example.ts.net"}, false},
+		{"reachable without one", "0.0.0.0:0", nil, true},
+		{"an origin with a path", "127.0.0.1:0", []string{"https://name/app"}, true},
+		{"an origin with no scheme", "127.0.0.1:0", []string{"aigem.example.ts.net"}, true},
+	} {
+		err := CheckBind(tc.addr, tc.origins)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: CheckBind = %v, want an error: %v", tc.name, err, tc.wantErr)
+		}
+		// And New agrees, so the early check cannot drift away from the real
+		// one into refusing something the daemon would have served.
+		srv, newErr := New(withBackend(Config{Addr: tc.addr, Origins: tc.origins}))
+		if srv != nil {
+			_ = srv.Close()
+		}
+		if (newErr != nil) != tc.wantErr {
+			t.Errorf("%s: New = %v, want an error: %v", tc.name, newErr, tc.wantErr)
+		}
+	}
+}

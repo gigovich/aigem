@@ -111,6 +111,13 @@ func runWebCommand(args []string) error {
 		}
 	}
 
+	// Before the environment: loading it runs the person's SessionStart hook and
+	// starts their MCP servers, and a daemon that is going to refuse what the
+	// operator typed must not do either on its way to saying so.
+	if err := web.CheckBind(*addr, origins); err != nil {
+		return err
+	}
+
 	// The environment is loaded once and shared by every conversation the
 	// daemon opens: the skills, the subagents, the hooks configuration and the
 	// MCP servers belong to the project, and one set of stdio servers per
