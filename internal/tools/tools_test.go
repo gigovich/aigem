@@ -3,10 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -217,6 +220,38 @@ func TestGrantedDirIsReadWithoutAsking(t *testing.T) {
 	}
 	if asks != 2 {
 		t.Fatalf("asks = %d, want the write to ask despite the grant", asks)
+	}
+}
+
+func TestSubsetHasIndependentPathPolicy(t *testing.T) {
+	parent, outside := outsideFixture(t)
+	parent.SetPathGrants(true)
+	parent.SetPathApprover(func(string, PathIntent) PathDecision { return PathAllowDir })
+	if _, err := run(t, parent, "read_file", map[string]any{"path": outside}); err != nil {
+		t.Fatal(err)
+	}
+
+	sub := parent.Subset([]string{"read_file"})
+	sub.SetPathGrants(false)
+	if _, err := run(t, sub, "read_file", map[string]any{"path": outside}); err == nil {
+		t.Fatal("subset inherited the parent path grant")
+	}
+
+	asked := 0
+	sub.SetPathApprover(func(string, PathIntent) PathDecision {
+		asked++
+		return PathAllowOnce
+	})
+	if _, err := run(t, sub, "read_file", map[string]any{"path": outside}); err != nil {
+		t.Fatalf("subset approver was not used: %v", err)
+	}
+	if asked != 1 {
+		t.Fatalf("subset approver calls = %d, want 1", asked)
+	}
+
+	// The subset's policy must not change the parent policy in either direction.
+	if _, err := run(t, parent, "read_file", map[string]any{"path": outside}); err != nil {
+		t.Fatalf("parent grant was changed by subset: %v", err)
 	}
 }
 
@@ -606,6 +641,89 @@ func TestASubsetTakesTheHookItWasBuiltWith(t *testing.T) {
 			"if this is now true, botrun's ordering comment is wrong")
 	}
 }
+
+func TestRegistryConcurrentStructuralAccess(t *testing.T) {
+	reg, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := reg.Get("read_file")
+	if !ok {
+		t.Fatal("read_file is not registered")
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			name := fmt.Sprintf("dynamic-%d", i)
+			reg.Register(tool)
+			reg.Register(&namedTool{name: name})
+			reg.Get(name)
+			reg.Definitions()
+			reg.Names()
+			reg.Unregister(name)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+}
+
+func TestRegistryConcurrentContextAndFileChange(t *testing.T) {
+	reg, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(reg.Root(), "context.txt")
+	if err := os.WriteFile(path, []byte("context"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int64
+	reg.OnFileChange(func(FileChange) { calls.Add(1) })
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 100; i++ {
+			reg.MarkInContext([]string{path})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		readTool, ok := reg.Get("read_file")
+		if !ok {
+			return
+		}
+		for i := 0; i < 100; i++ {
+			_, _ = readTool.Run(context.Background(), json.RawMessage(`{"path":"context.txt"}`))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 100; i++ {
+			reg.reportFileChange(FileChange{Path: path})
+		}
+	}()
+	close(start)
+	wg.Wait()
+	if calls.Load() != 100 {
+		t.Fatalf("callback calls = %d, want 100", calls.Load())
+	}
+}
+
+type namedTool struct{ name string }
+
+func (t *namedTool) Name() string                                         { return t.name }
+func (t *namedTool) Description() string                                  { return "test tool" }
+func (t *namedTool) Schema() json.RawMessage                              { return json.RawMessage(`{"type":"object"}`) }
+func (t *namedTool) NeedsConfirm() bool                                   { return false }
+func (t *namedTool) Run(context.Context, json.RawMessage) (string, error) { return "", nil }
 
 func TestRelToShortensAgainstTheRootAndLeavesEscapesAlone(t *testing.T) {
 	root := "/home/dev/project"

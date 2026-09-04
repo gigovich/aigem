@@ -100,9 +100,12 @@ type Config struct {
 	// Ring bounds the retained event history; zero picks a default.
 	Ring int
 
-	// Hooks is told the session id as conversations start and end, so a hook can
-	// attribute what it sees.
-	Hooks *hooks.Runner
+	// Hooks is bound to this session's identity. NewHooks is used by Reset to
+	// create the next session's bound runner without mutating a shared runner.
+	Hooks          *hooks.Runner
+	NewHooks       func(id string) *hooks.Runner
+	SessionID      string
+	TranscriptPath string
 	// Title names the conversation before its first turn does; a SessionStart
 	// hook is the only thing that supplies one.
 	Title string
@@ -157,9 +160,11 @@ type Local struct {
 	title string
 	start time.Time
 
-	hooks         *hooks.Runner
-	modelRef      func() string
-	rebuildSystem func() string
+	hooks          *hooks.Runner
+	newHooks       func(id string) *hooks.Runner
+	transcriptPath string
+	modelRef       func() string
+	rebuildSystem  func() string
 
 	models     *llm.Registry
 	backend    *llm.Ref
@@ -177,8 +182,9 @@ type Local struct {
 
 	journal *journal
 
-	done   chan struct{}
-	closed bool
+	done        chan struct{}
+	closed      bool
+	metaEmitted bool
 }
 
 // New builds a session. The registry's path approver and file-change hook are
@@ -199,9 +205,18 @@ func New(cfg Config) *Local {
 		commands:   map[string]CommandFunc{},
 		done:       make(chan struct{}),
 
-		title:         cfg.Title,
-		hooks:         cfg.Hooks,
-		modelRef:      cfg.ModelRef,
+		title:          cfg.Title,
+		hooks:          cfg.Hooks,
+		newHooks:       cfg.NewHooks,
+		transcriptPath: cfg.TranscriptPath,
+		modelRef:       cfg.ModelRef,
+		id:             cfg.SessionID,
+		start: func() time.Time {
+			if cfg.SessionID != "" {
+				return time.Now()
+			}
+			return time.Time{}
+		}(),
 		rebuildSystem: cfg.RebuildSystem,
 
 		models:     cfg.Models,
@@ -227,6 +242,13 @@ func New(cfg Config) *Local {
 // Agent exposes the running agent. It exists for the front-end work that has
 // not moved here yet; new code should prefer a method on the session.
 func (l *Local) Agent() *agent.Agent { return l.ag }
+
+// AutoMode reports whether reversible tool calls are approved automatically.
+func (l *Local) AutoMode() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.autoMode
+}
 
 // Handle registers a command handler, letting a front-end contribute commands
 // without this package importing it.
@@ -269,8 +291,12 @@ func (l *Local) Close() {
 	}
 	subs := l.subs
 	l.subs = map[string]*subscriber{}
+	hookRunner, sessionID := l.hooks, l.id
 	l.mu.Unlock()
 
+	if first && hookRunner != nil && sessionID != "" {
+		hookRunner.RunBounded(hooks.EventSessionEnd, hooks.Input{Source: "exit"}, 5*time.Second)
+	}
 	if first {
 		close(l.done)
 	}
@@ -605,6 +631,34 @@ func (l *Local) Running() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.running
+}
+
+// Reconfigure changes what the session offers the model - its tools and the
+// prompt that describes them - between turns, and rebuilds the system prompt
+// afterwards so the model is told about the change.
+//
+// It refuses with ErrBusy while a turn is running and holds the session lock
+// for the whole call, so a turn can neither be under way nor start underneath:
+// the tool definitions are assembled from the registry on the turn goroutine,
+// and a schema that changes halfway through describes tools the model was
+// never shown.
+//
+// fn must not call back into the session: the lock it would need is held here.
+// The agent it is handed is nil for a session built without one.
+func (l *Local) Reconfigure(fn func(*agent.Agent)) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return ErrClosed
+	}
+	if l.running {
+		return ErrBusy
+	}
+	fn(l.ag)
+	if l.ag != nil && l.rebuildSystem != nil {
+		l.ag.SetSystem(l.rebuildSystem())
+	}
+	return nil
 }
 
 func (l *Local) recordFileChange(c tools.FileChange) {

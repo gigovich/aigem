@@ -60,7 +60,14 @@ type hookOutput struct {
 // RunBounded is Run with an overall deadline, used for fire-and-forget
 // lifecycle events (SessionEnd, Notification) so a slow hook cannot stall quit.
 func (r *Runner) RunBounded(event string, in Input, timeout time.Duration) Decision {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return r.RunBoundedContext(context.Background(), event, in, timeout)
+}
+
+// RunBoundedContext runs a bounded lifecycle hook using parent as its
+// cancellation context. The timeout remains an upper bound even when parent
+// has no deadline of its own.
+func (r *Runner) RunBoundedContext(parent context.Context, event string, in Input, timeout time.Duration) Decision {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	return r.Run(ctx, event, in)
 }

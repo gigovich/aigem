@@ -108,6 +108,11 @@ type Runner struct {
 	cwd            string
 	sessionID      string
 	transcriptPath string
+
+	// parent supplies shared trust state to session-bound runners. Hook
+	// configuration itself is immutable after Load; identity is the only state
+	// that differs between live sessions.
+	parent *Runner
 }
 
 // Load merges hooks from every existing settings source under cwd, returning the
@@ -178,7 +183,17 @@ func Load(cwd string) (*Runner, []error) {
 func (r *Runner) HasUntrustedProjectHooks() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.hasProject && !r.trusted
+	return r.hasProject && !r.isTrusted()
+}
+
+func (r *Runner) isTrusted() bool {
+	if r.parent != nil {
+		r.parent.mu.RLock()
+		trusted := r.parent.trusted
+		r.parent.mu.RUnlock()
+		return trusted
+	}
+	return r.trusted
 }
 
 // ProjectDir returns the directory whose project-local hooks require trust.
@@ -187,6 +202,9 @@ func (r *Runner) ProjectDir() string { return r.dir }
 // TrustProject persists the project dir as trusted and enables its hooks for
 // this session.
 func (r *Runner) TrustProject() error {
+	if r.parent != nil {
+		return r.parent.TrustProject()
+	}
 	r.mu.RLock()
 	dir, fingerprint := r.dir, r.fingerprint
 	r.mu.RUnlock()
@@ -226,7 +244,28 @@ func validate(path, event string, matchers []Matcher) []error {
 	return warns
 }
 
+// ForSession returns a session-bound view of this runner. The hook definitions
+// remain shared and read-only, while identity and cwd belong to one session.
+// The returned runner can safely be used concurrently with other views.
+func (r *Runner) ForSession(id, transcriptPath, cwd string) *Runner {
+	r.mu.RLock()
+	if cwd == "" {
+		cwd = r.cwd
+	}
+	view := &Runner{
+		base: r.base, project: r.project, disabled: r.disabled,
+		projectDisabled: r.projectDisabled, debug: r.debug,
+		hasProject: r.hasProject, trusted: r.trusted, fingerprint: r.fingerprint,
+		dir: r.dir, cwd: cwd, sessionID: id, transcriptPath: transcriptPath,
+		parent: r,
+	}
+	r.mu.RUnlock()
+	return view
+}
+
 // SetSession records the session id and transcript path included in hook input.
+//
+// Deprecated: use ForSession when more than one session can be alive.
 func (r *Runner) SetSession(id, transcriptPath string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -240,8 +279,9 @@ func (r *Runner) matching(event, toolName string, scoped map[string][]Matcher) [
 	r.mu.RLock()
 	disabled := r.disabled
 	base := r.base[event]
+	trusted := r.isTrusted()
 	var proj []Matcher
-	if r.trusted && !r.projectDisabled {
+	if trusted && !r.projectDisabled {
 		proj = r.project[event]
 	}
 	r.mu.RUnlock()

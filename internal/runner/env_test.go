@@ -33,7 +33,7 @@ func project(t *testing.T) string {
 // checked, which is the shape every test here wants.
 func load(t *testing.T, opts runner.Options) (*runner.Env, []runner.Notice) {
 	t.Helper()
-	env, notices, err := runner.Load(opts)
+	env, notices, err := runner.Load(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("load %+v: %v", opts, err)
 	}
@@ -357,7 +357,7 @@ func TestNothingIsAskableWhenNothingIsWithheld(t *testing.T) {
 // on listing tools it has torn down, so a registry built afterwards would carry
 // a full catalog whose every call fails.
 func TestNewToolsRefusesAfterClose(t *testing.T) {
-	env, _, err := runner.Load(runner.Options{Cwd: mcpProject(t), TrustProjectMCP: true})
+	env, _, err := runner.Load(context.Background(), runner.Options{Cwd: mcpProject(t), TrustProjectMCP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +584,7 @@ func TestLoadBoundsTheSessionStartHook(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		env, _, err := runner.Load(runner.Options{Cwd: cwd})
+		env, _, err := runner.Load(context.Background(), runner.Options{Cwd: cwd})
 		if err == nil {
 			env.Close()
 		}
@@ -593,6 +593,92 @@ func TestLoadBoundsTheSessionStartHook(t *testing.T) {
 	case <-done:
 	case <-time.After(4 * time.Second):
 		t.Fatal("Load did not return while a SessionStart hook was still sleeping")
+	}
+}
+
+func TestLoadCancellationStopsSessionStartHook(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	script := filepath.Join(t.TempDir(), "hook.sh")
+	writeFile(t, script, "#!/bin/sh\n"+
+		"touch "+marker+"\n"+
+		"sleep 30\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalSettings(t, `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"`+script+`"}]}]}}`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cwd := project(t)
+	type result struct {
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		_, _, err := runner.Load(ctx, runner.Options{Cwd: cwd})
+		resultCh <- result{err: err}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("SessionStart hook did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case got := <-resultCh:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("Load error = %v, want context.Canceled", got.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Load did not stop after context cancellation")
+	}
+}
+
+func TestLoadCancellationStopsMCPStartup(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	script := filepath.Join(t.TempDir(), "mcp.sh")
+	writeFile(t, script, "#!/bin/sh\n"+
+		"touch "+marker+"\n"+
+		"sleep 30\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := project(t)
+	writeFile(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"slow":{"command":"`+script+`"}}}`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		_, _, err := runner.Load(ctx, runner.Options{Cwd: cwd, TrustProjectMCP: true})
+		resultCh <- result{err: err}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("MCP server did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case got := <-resultCh:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("Load error = %v, want context.Canceled", got.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Load did not stop after context cancellation")
 	}
 }
 
@@ -623,7 +709,7 @@ func TestLoadRefusesAnUnresolvableWorkingDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env, _, err := runner.Load(runner.Options{Cwd: "."})
+	env, _, err := runner.Load(context.Background(), runner.Options{Cwd: "."})
 	if err == nil {
 		env.Close()
 		t.Fatal("Load accepted a working directory that no longer exists")
@@ -675,7 +761,7 @@ func TestLoadErrorNamesTheDirectoryAndKeepsTheCause(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := runner.Load(runner.Options{Cwd: "."})
+	_, _, err := runner.Load(context.Background(), runner.Options{Cwd: "."})
 	if err == nil {
 		t.Fatal("Load accepted a working directory that no longer exists")
 	}
@@ -738,7 +824,7 @@ func TestNotifyFiresBeforeLoadReturns(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		env, _, err := runner.Load(runner.Options{
+		env, _, err := runner.Load(context.Background(), runner.Options{
 			Cwd: cwd,
 			Notify: func(runner.Notice) {
 				select {
@@ -781,7 +867,7 @@ func TestNotifyIsCalledAsNoticesAreRaised(t *testing.T) {
 	}
 
 	var streamed []runner.Notice
-	env, notices, err := runner.Load(runner.Options{
+	env, notices, err := runner.Load(context.Background(), runner.Options{
 		Cwd:    cwd,
 		Notify: func(n runner.Notice) { streamed = append(streamed, n) },
 	})
@@ -830,6 +916,113 @@ func TestNewToolsGivesEachSessionItsOwnRegistry(t *testing.T) {
 
 // The MCP tools go into every registry, not just the first: a second session
 // has to reach the servers the manager already dialled.
+func TestLoadUsesSeparateProjectRuntimesForDifferentTrustRoots(t *testing.T) {
+	firstRoot := project(t)
+	secondRoot := project(t)
+	if err := os.Mkdir(filepath.Join(firstRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(secondRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	first, firstNotices, err := runner.Load(context.Background(), runner.Options{Cwd: firstRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, secondNotices, err := runner.Load(context.Background(), runner.Options{Cwd: secondRoot})
+	if err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(first.Close)
+	t.Cleanup(second.Close)
+	if len(firstNotices) != 0 || len(secondNotices) != 0 {
+		t.Fatalf("unexpected notices: first=%v second=%v", noticeTexts(firstNotices), noticeTexts(secondNotices))
+	}
+	if first.MCP == second.MCP {
+		t.Fatal("different trust roots shared an MCP manager")
+	}
+	if first.Agents == second.Agents {
+		t.Fatal("different trust roots shared an agent registry")
+	}
+}
+
+func TestLoadKeepsWorktreeEnvironmentStateSeparate(t *testing.T) {
+	root := project(t)
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	one := filepath.Join(root, "one")
+	two := filepath.Join(root, "two")
+	if err := os.MkdirAll(one, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(two, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, one, "one-only", "---\nname: one-only\ndescription: one worktree\n---\nOne.\n")
+	writeSkill(t, two, "two-only", "---\nname: two-only\ndescription: two worktree\n---\nTwo.\n")
+	writeFile(t, filepath.Join(one, ".claude", "CLAUDE.md"), "ONE INSTRUCTIONS\n")
+	writeFile(t, filepath.Join(two, ".claude", "CLAUDE.md"), "TWO INSTRUCTIONS\n")
+	first, firstNotices := load(t, runner.Options{Cwd: one})
+	second, secondNotices := load(t, runner.Options{Cwd: two})
+	if len(firstNotices) == 0 || len(secondNotices) == 0 {
+		t.Fatalf("expected pending-skill notices: first=%v second=%v", noticeTexts(firstNotices), noticeTexts(secondNotices))
+	}
+	if first.Cwd == second.Cwd {
+		t.Fatalf("worktree environments have the same cwd: %q", first.Cwd)
+	}
+	if first.MCP != second.MCP {
+		t.Fatal("worktrees in one project did not share the project runtime")
+	}
+	if first.Pending == nil || len(first.Pending.Names) != 1 || first.Pending.Names[0] != "one-only" {
+		t.Fatalf("first worktree pending skills = %+v, want only one-only", first.Pending)
+	}
+	if second.Pending == nil || len(second.Pending.Names) != 1 || second.Pending.Names[0] != "two-only" {
+		t.Fatalf("second worktree pending skills = %+v, want only two-only", second.Pending)
+	}
+	firstPrompt, _ := first.SystemPrompt()
+	secondPrompt, _ := second.SystemPrompt()
+	if !strings.Contains(firstPrompt, "ONE INSTRUCTIONS") || strings.Contains(firstPrompt, "TWO INSTRUCTIONS") {
+		t.Fatalf("first worktree instructions mixed: %q", firstPrompt)
+	}
+	if !strings.Contains(secondPrompt, "TWO INSTRUCTIONS") || strings.Contains(secondPrompt, "ONE INSTRUCTIONS") {
+		t.Fatalf("second worktree instructions mixed: %q", secondPrompt)
+	}
+}
+
+func TestLoadSharesProjectRuntimeAcrossEnvironments(t *testing.T) {
+	cwd := mcpProject(t)
+	first, notices := load(t, runner.Options{Cwd: cwd, TrustProjectMCP: true})
+	if len(notices) != 0 {
+		t.Fatalf("first load notices: %v", noticeTexts(notices))
+	}
+	second, notices := load(t, runner.Options{Cwd: cwd, TrustProjectMCP: true})
+	if len(notices) != 0 {
+		t.Fatalf("second load notices: %v", noticeTexts(notices))
+	}
+	if first.MCP != second.MCP {
+		t.Fatal("same project created more than one MCP manager")
+	}
+	if first.Agents != second.Agents {
+		t.Fatal("same project did not share its agent registry")
+	}
+
+	first.Close()
+	reg, err := second.NewTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := reg.Get("mcp__srv__echo")
+	if !ok {
+		t.Fatalf("shared MCP tool missing: %v", reg.Names())
+	}
+	if _, err := tool.Run(context.Background(), json.RawMessage(`{"text":"still alive"}`)); err != nil {
+		t.Fatalf("first environment closed the shared MCP manager: %v", err)
+	}
+}
+
 func TestNewToolsRegistersMCPToolsInEveryRegistry(t *testing.T) {
 	env, notices := load(t, runner.Options{Cwd: mcpProject(t), TrustProjectMCP: true})
 	if len(notices) != 0 {
@@ -882,7 +1075,7 @@ func TestLoadIdentifiesThisClientToMCPServers(t *testing.T) {
 
 // Close is the only thing that reaps what Load dialled.
 func TestCloseShutsTheMCPServersDown(t *testing.T) {
-	env, _, err := runner.Load(runner.Options{Cwd: mcpProject(t), TrustProjectMCP: true})
+	env, _, err := runner.Load(context.Background(), runner.Options{Cwd: mcpProject(t), TrustProjectMCP: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,9 +1,13 @@
 package runner
 
 import (
+	"errors"
+	"time"
+
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/hooks"
 	"github.com/gigovich/aigem/internal/llm"
+	"github.com/gigovich/aigem/internal/session"
 	"github.com/gigovich/aigem/internal/skill"
 	"github.com/gigovich/aigem/internal/tools"
 	"github.com/gigovich/aigem/internal/uisession"
@@ -24,6 +28,57 @@ const RetryAttempts = 3
 // and a caller that names none.
 const DefaultCtxSize = 8192
 
+// Mode selects the safety policy for a session.
+type Mode string
+
+const (
+	// ModeInteractive is the zero-value mode. It is intended for a person who
+	// can answer approval requests.
+	ModeInteractive Mode = "interactive"
+	// ModeAutonomous runs without persisted path grants and approves reversible
+	// tools automatically.
+	ModeAutonomous Mode = "autonomous"
+)
+
+// AutoMode reports whether the mode enables automatic approval of reversible
+// tool calls. Unknown modes fail closed to the interactive policy.
+func (m Mode) AutoMode() bool { return m == ModeAutonomous }
+
+// PathGrants reports whether persisted directory grants may be consulted.
+// Autonomous sessions never inherit approvals made by an interactive session.
+func (m Mode) PathGrants() bool { return m != ModeAutonomous }
+
+// CapabilitySubset returns the tool names exposed to an autonomous session.
+// Interactive and unknown modes retain the complete registry. The returned slice
+// is independent so callers cannot mutate the profile shared by other sessions.
+func (m Mode) CapabilitySubset() []string {
+	if m != ModeAutonomous {
+		return nil
+	}
+	profile, err := tools.ResolveCapabilityProfile("")
+	if err != nil {
+		// The default is a package constant and is validated by tools' tests. A
+		// failure here indicates an internal programming error, not user input.
+		panic("runner: default capability profile unavailable: " + err.Error())
+	}
+	return append([]string(nil), profile.Allow...)
+}
+
+// TurnBudget returns the runaway-protection policy for a mode. Interactive and
+// unknown modes remain unbounded; autonomous turns use finite conservative
+// defaults so a missing approval or a looping model cannot run forever.
+func (m Mode) TurnBudget() agent.TurnBudget {
+	if m != ModeAutonomous {
+		return agent.TurnBudget{}
+	}
+	return agent.TurnBudget{
+		MaxModelRounds:       agent.DefaultBudgetMaxModelRounds,
+		MaxToolCalls:         agent.DefaultBudgetMaxToolCalls,
+		MaxRepeatedToolCalls: agent.DefaultBudgetMaxRepeatedToolCalls,
+		MaxDuration:          agent.DefaultBudgetMaxDuration,
+	}
+}
+
 // Spec is one conversation: the parts that are not shared with the other
 // sessions in the same Env.
 //
@@ -31,6 +86,9 @@ const DefaultCtxSize = 8192
 // session's confirmation function, and the Ref is what a live model switch
 // swaps the provider inside, so two sessions sharing one would switch together.
 type Spec struct {
+	// Mode selects the session policy. Its zero value is interactive.
+	Mode Mode
+
 	// Tools is this session's sandbox, from Env.NewTools.
 	Tools *tools.Registry
 	// Backend is the handle every model call goes through. Models resolves a
@@ -71,6 +129,12 @@ type Spec struct {
 	// rather than as a hang. It is called from the goroutine running the turn,
 	// and must not block indefinitely.
 	OnRetry func(llm.RetryNotice)
+
+	// SessionID and TranscriptPath bind hooks to this conversation. An empty id
+	// is replaced with a fresh id by NewSession.
+	SessionID      string
+	TranscriptPath string
+	Cwd            string
 }
 
 // Session is a conversation and the sandbox it runs in.
@@ -82,21 +146,47 @@ type Session struct {
 	// Tools is Spec.Tools, carried along so a caller holding the session does
 	// not have to hold the registry separately.
 	Tools *tools.Registry
-	// RegisterSkillTool registers the skill tool against a skill registry,
-	// replacing whatever was registered at construction.
+	// registerSkillTool points the session's skill tool at a catalog, replacing
+	// whatever was registered at construction and unregistering the tool when
+	// the catalog has nothing left to advertise.
 	//
-	// It exists because a project whose only skills are untrusted has none to
-	// advertise at launch: approving them mid-session re-runs discovery, and the
-	// tool has to be registered again against the result. It takes the registry
-	// rather than closing over one, so a caller cannot silently register a tool
-	// built from a catalog it has since replaced.
-	//
-	// It is only safe to call while no turn is running. It writes the session's
-	// tools registry, whose map is unguarded and is read from the turn goroutine
-	// as the model's tool definitions are assembled - concurrent map access
-	// there is a fatal runtime error that takes every conversation in the
-	// process with it, not an error this call can return.
-	RegisterSkillTool func(*skill.Registry)
+	// It is unexported because calling it is only safe between turns: it writes
+	// the session's tools registry, which the turn goroutine reads as it
+	// assembles the model's tool definitions, and a schema that changes halfway
+	// through a turn describes tools the model was never shown. SetSkills is
+	// that call with the synchronisation it needs.
+	registerSkillTool func(*skill.Registry)
+}
+
+// SetSkills points this session's skill tool at sk and tells the model about
+// it: the tool is registered against the new catalog (or unregistered when the
+// catalog advertises nothing), the path-gated skills are re-armed, and the
+// system prompt is reassembled so the listing matches the tool.
+//
+// It exists because a project whose only skills are untrusted has none to
+// advertise at launch: approving them mid-session re-runs discovery, and every
+// session already built has to be brought to the result. It takes the catalog
+// rather than closing over one, so a caller cannot silently register a tool
+// built from a set it has since replaced.
+//
+// A turn in progress refuses the change with uisession.ErrBusy rather than
+// racing it, and a closed session with uisession.ErrClosed.
+func (s *Session) SetSkills(sk *skill.Registry) error {
+	if s == nil || s.Local == nil {
+		return errors.New("runner: no session to give the skills to")
+	}
+	return s.Local.Reconfigure(func(ag *agent.Agent) {
+		if s.registerSkillTool != nil {
+			s.registerSkillTool(sk)
+		}
+		if ag != nil {
+			var conditional []*skill.Skill
+			if sk != nil {
+				conditional = sk.Conditional()
+			}
+			ag.WatchSkills(conditional)
+		}
+	})
 }
 
 // NewSession builds a conversation from spec.
@@ -129,6 +219,12 @@ func NewSession(spec Spec) *Session {
 		compact.CtxSize = ctxSize
 	}
 	reg := spec.Tools
+	if reg == nil {
+		panic("runner: session requires a tools registry")
+	}
+	if subset := spec.Mode.CapabilitySubset(); subset != nil {
+		reg = reg.Subset(subset)
+	}
 	// A registry belongs to one conversation. Registering the delegation, skill
 	// and todo tools into a second session's agent replaces them by name, so the
 	// first session's registry would drive the second session's agent and route
@@ -140,32 +236,67 @@ func NewSession(spec Spec) *Session {
 			"conversation with Env.NewTools")
 	}
 
+	if spec.SessionID == "" {
+		spec.SessionID = session.NewID(time.Now())
+	}
+	boundHooks := spec.Hooks
+	if spec.Hooks != nil {
+		boundHooks = spec.Hooks.ForSession(spec.SessionID, spec.TranscriptPath, spec.Cwd)
+	}
+	if boundHooks != nil {
+		start := boundHooks.RunBounded(hooks.EventSessionStart,
+			hooks.Input{Source: "startup"}, sessionStartTimeout)
+		if spec.Title == "" {
+			spec.Title = start.SessionTitle
+		}
+		if start.Context != "" {
+			spec.System += "\n\n" + start.Context
+		}
+	}
+
+	var newHooks func(id string) *hooks.Runner
+	if spec.Hooks != nil {
+		newHooks = func(id string) *hooks.Runner {
+			return spec.Hooks.ForSession(id, spec.TranscriptPath, spec.Cwd)
+		}
+	}
 	out := &Session{Tools: reg}
 	out.Local = uisession.New(uisession.Config{
-		Tools:     reg,
-		Hooks:     spec.Hooks,
-		Title:     spec.Title,
-		ModelRef:  func() string { return spec.Backend.Model().Ref() },
-		Models:    spec.Models,
-		Backend:   spec.Backend,
-		MaxTokens: spec.MaxTokens,
-		CtxSize:   ctxSize,
-		Compact:   compact,
+		Tools:          reg,
+		AutoMode:       spec.Mode.AutoMode(),
+		Hooks:          boundHooks,
+		NewHooks:       newHooks,
+		SessionID:      spec.SessionID,
+		TranscriptPath: spec.TranscriptPath,
+		Title:          spec.Title,
+		ModelRef:       func() string { return spec.Backend.Model().Ref() },
+		Models:         spec.Models,
+		Backend:        spec.Backend,
+		MaxTokens:      spec.MaxTokens,
+		CtxSize:        ctxSize,
+		Compact:        compact,
 
 		RebuildSystem: spec.RebuildSystem,
 		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
 			if spec.Agents != nil {
 				reg.Register(agent.NewTaskTool(stream, reg, spec.Temp, confirm, spec.Agents, spec.Project))
 			}
-			out.RegisterSkillTool = func(sk *skill.Registry) {
-				if st := agent.NewSkillTool(sk, stream, reg, spec.Temp, confirm); st != nil {
-					reg.Register(st)
+			out.registerSkillTool = func(sk *skill.Registry) {
+				st := agent.NewSkillTool(sk, stream, reg, spec.Temp, confirm)
+				if st == nil {
+					// The new catalog advertises nothing, so leaving the tool
+					// registered would offer the model an empty enum built from
+					// a set that is gone.
+					reg.Unregister(agent.SkillToolName)
+					return
 				}
+				reg.Register(st)
 			}
-			out.RegisterSkillTool(spec.Skills)
+			out.registerSkillTool(spec.Skills)
 			ag := agent.New(stream, reg, spec.Temp, confirm, spec.System)
 			reg.Register(agent.NewTodoTool(ag))
-			ag.SetHooks(spec.Hooks)
+			ag.SetTurnBudget(spec.Mode.TurnBudget())
+			ag.SetHooks(boundHooks)
 			ag.SetCompaction(compact)
 			if spec.Skills != nil {
 				ag.WatchSkills(spec.Skills.Conditional())
@@ -173,5 +304,9 @@ func NewSession(spec Spec) *Session {
 			return ag
 		},
 	})
+	// Local defaults to the interactive policy for compatibility with existing
+	// front-ends; apply the session mode after construction so autonomous runs
+	// cannot inherit persisted grants.
+	reg.SetPathGrants(spec.Mode.PathGrants())
 	return out
 }

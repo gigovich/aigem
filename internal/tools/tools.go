@@ -45,6 +45,7 @@ type FileChange struct {
 // Registry holds the available tools and the sandbox root.
 type Registry struct {
 	root         string
+	mu           *sync.RWMutex // shared with subsets for structural state
 	tools        map[string]Tool
 	order        []string
 	inContext    map[string]bool  // canonical paths whose contents are already in context
@@ -98,6 +99,13 @@ func (r *Registry) SetPathGrants(enabled bool) {
 	r.pathMu.Unlock()
 }
 
+// PathGrants reports whether persisted per-project directory grants are enabled.
+func (r *Registry) PathGrants() bool {
+	r.pathMu.RLock()
+	defer r.pathMu.RUnlock()
+	return r.pathGrants
+}
+
 func (r *Registry) pathPolicy() (PathApprover, bool) {
 	r.pathMu.RLock()
 	defer r.pathMu.RUnlock()
@@ -113,7 +121,7 @@ func NewRegistry(root string) (*Registry, error) {
 	if real, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = real
 	}
-	r := &Registry{root: abs, tools: map[string]Tool{}, inContext: map[string]bool{}, mcp: map[string]bool{}}
+	r := &Registry{root: abs, mu: &sync.RWMutex{}, tools: map[string]Tool{}, inContext: map[string]bool{}, mcp: map[string]bool{}}
 	r.add(&readFile{r})
 	r.add(&writeFile{r})
 	r.add(&editFile{r})
@@ -152,11 +160,20 @@ func RelTo(root, path string) string {
 // OnFileChange registers a hook fired after write_file or edit_file mutates a
 // file, letting the front-end track per-session artifacts. Subsets inherit it,
 // so subagent edits are reported too.
-func (r *Registry) OnFileChange(fn func(FileChange)) { r.onFileChange = fn }
+func (r *Registry) OnFileChange(fn func(FileChange)) {
+	r.mu.Lock()
+	r.onFileChange = fn
+	r.mu.Unlock()
+}
 
 func (r *Registry) reportFileChange(c FileChange) {
-	if r.onFileChange != nil {
-		r.onFileChange(c)
+	r.mu.RLock()
+	fn := r.onFileChange
+	r.mu.RUnlock()
+	// Call external code without holding the registry lock: callbacks may call
+	// back into the registry or block on a user-facing event.
+	if fn != nil {
+		fn(c)
 	}
 }
 
@@ -168,6 +185,8 @@ func (r *Registry) add(t Tool) {
 // Register adds (or replaces) a tool after construction, e.g. the delegation
 // tool wired up once its dependencies exist.
 func (r *Registry) Register(t Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, exists := r.tools[t.Name()]; !exists {
 		r.order = append(r.order, t.Name())
 	}
@@ -176,6 +195,8 @@ func (r *Registry) Register(t Tool) {
 
 // Unregister removes a dynamically configured tool from the registry.
 func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, exists := r.tools[name]; !exists {
 		return
 	}
@@ -193,27 +214,60 @@ func (r *Registry) Unregister(name string) {
 // agent only: Subset drops them, so subagents (and forked skills) keep the
 // built-in toolset.
 func (r *Registry) RegisterMCP(t Tool) {
-	r.Register(t)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[t.Name()]; !exists {
+		r.order = append(r.order, t.Name())
+	}
+	r.tools[t.Name()] = t
 	r.mcp[t.Name()] = true
 }
 
 // Subset returns a registry exposing only the named tools, sharing this
 // registry's sandbox root. Unknown names and MCP-sourced tools are skipped.
 func (r *Registry) Subset(names []string) *Registry {
-	sub := &Registry{root: r.root, tools: map[string]Tool{}, inContext: r.inContext,
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	sub := &Registry{root: r.root, mu: r.mu, tools: map[string]Tool{}, inContext: r.inContext,
 		mcp: map[string]bool{}, onFileChange: r.onFileChange}
 	for _, n := range names {
 		if r.mcp[n] {
 			continue
 		}
 		if t, ok := r.tools[n]; ok {
-			sub.add(t)
+			sub.add(bindRegistry(t, sub))
 		}
 	}
 	return sub
 }
 
+// bindRegistry gives built-in tools the subset's path policy. Custom tools are
+// left untouched: they own their own execution policy and do not expose the
+// Registry implementation to this package.
+func bindRegistry(t Tool, r *Registry) Tool {
+	switch t := t.(type) {
+	case *readFile:
+		return &readFile{r: r}
+	case *writeFile:
+		return &writeFile{r: r}
+	case *editFile:
+		return &editFile{r: r}
+	case *listDir:
+		return &listDir{r: r}
+	case *bashTool:
+		return &bashTool{r: r}
+	case *grepTool:
+		return &grepTool{r: r}
+	case *fuzzyFind:
+		return &fuzzyFind{r: r}
+	default:
+		return t
+	}
+}
+
 func (r *Registry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
 	return t, ok
 }
@@ -221,19 +275,28 @@ func (r *Registry) Get(name string) (Tool, bool) {
 // MarkInContext records files whose full contents are already in the model's
 // context (e.g. injected project instructions), so read_file returns a short
 // note instead of re-emitting them. Paths are canonicalized to match resolve.
-// Subsets share these tool instances, so subagents honor it too.
+// Subsets share this marking map, so subagents honor it too.
 func (r *Registry) MarkInContext(paths []string) {
+	resolved := make([]string, 0, len(paths))
 	for _, p := range paths {
 		if real, err := filepath.EvalSymlinks(p); err == nil {
-			r.inContext[real] = true
+			resolved = append(resolved, real)
 		}
 	}
+	r.mu.Lock()
+	for _, real := range resolved {
+		r.inContext[real] = true
+	}
+	r.mu.Unlock()
 }
 
 // inContextNote returns a stand-in message if canonical path p is already in
 // context, else "".
 func (r *Registry) inContextNote(p, display string) string {
-	if r.inContext[p] {
+	r.mu.RLock()
+	inContext := r.inContext[p]
+	r.mu.RUnlock()
+	if inContext {
 		return fmt.Sprintf("(%s is a project instruction file already included in your context in "+
 			"full - see the project conventions above. Not re-read.)", display)
 	}
@@ -242,6 +305,8 @@ func (r *Registry) inContextNote(p, display string) string {
 
 // Names returns the registered tool names in order.
 func (r *Registry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]string, len(r.order))
 	copy(out, r.order)
 	return out
@@ -249,6 +314,8 @@ func (r *Registry) Names() []string {
 
 // Definitions returns the tool list in OpenAI format for a chat request.
 func (r *Registry) Definitions() []llm.Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	defs := make([]llm.Tool, 0, len(r.order))
 	for _, name := range r.order {
 		t := r.tools[name]

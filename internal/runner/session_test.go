@@ -36,6 +36,78 @@ func newEnvAndTools(t *testing.T, cwd string) (*runner.Env, *tools.Registry) {
 	return env, reg
 }
 
+func TestSessionModeDefaultsToInteractive(t *testing.T) {
+	if got := (runner.Mode("")).AutoMode(); got {
+		t.Fatal("zero mode enabled autonomous approvals")
+	}
+	if got := (runner.Mode("")).PathGrants(); !got {
+		t.Fatal("zero mode disabled persisted path grants")
+	}
+}
+
+func TestAutonomousSessionDerivesSafetyPolicy(t *testing.T) {
+	_, reg := newEnvAndTools(t, project(t))
+	s := runner.NewSession(runner.Spec{
+		Mode:    runner.ModeAutonomous,
+		Tools:   reg,
+		Backend: deadBackend(),
+	})
+	t.Cleanup(s.Local.Close)
+
+	if !s.Local.AutoMode() {
+		t.Fatal("autonomous mode did not enable automatic approval")
+	}
+	if s.Tools.PathGrants() {
+		t.Fatal("autonomous mode inherited persisted path grants")
+	}
+	for _, name := range []string{"read_file", "write_file", "edit_file", "bash"} {
+		_, allowed := s.Tools.Get(name)
+		want := name != "bash"
+		if allowed != want {
+			t.Fatalf("autonomous capability %q allowed = %v, want %v", name, allowed, want)
+		}
+	}
+	if reg == s.Tools {
+		t.Fatal("autonomous mode did not create a capability subset")
+	}
+}
+
+func TestModeDerivesAutonomousCapabilityAndBudget(t *testing.T) {
+	if got := (runner.Mode("")).CapabilitySubset(); got != nil {
+		t.Fatalf("interactive capability subset = %v, want nil", got)
+	}
+	if got := (runner.Mode("")).TurnBudget(); got != (agent.TurnBudget{}) {
+		t.Fatalf("interactive turn budget = %+v, want zero", got)
+	}
+
+	got := runner.ModeAutonomous.CapabilitySubset()
+	if len(got) == 0 {
+		t.Fatal("autonomous capability subset is empty")
+	}
+	if got := runner.ModeAutonomous.TurnBudget(); got != (agent.TurnBudget{
+		MaxModelRounds:       agent.DefaultBudgetMaxModelRounds,
+		MaxToolCalls:         agent.DefaultBudgetMaxToolCalls,
+		MaxRepeatedToolCalls: agent.DefaultBudgetMaxRepeatedToolCalls,
+		MaxDuration:          agent.DefaultBudgetMaxDuration,
+	}) {
+		t.Fatalf("autonomous turn budget = %+v, want shipped defaults", got)
+	}
+}
+
+func TestUnknownSessionModeUsesInteractivePolicy(t *testing.T) {
+	_, reg := newEnvAndTools(t, project(t))
+	s := runner.NewSession(runner.Spec{
+		Mode:    runner.Mode("future-mode"),
+		Tools:   reg,
+		Backend: deadBackend(),
+	})
+	t.Cleanup(s.Local.Close)
+
+	if s.Local.AutoMode() || !reg.PathGrants() {
+		t.Fatal("unknown mode did not fail closed to interactive policy")
+	}
+}
+
 func TestNewSessionRegistersTheAgentsOwnTools(t *testing.T) {
 	cwd := project(t)
 	env, reg := newEnvAndTools(t, cwd)
@@ -106,8 +178,8 @@ func TestNewSessionRegistersTheSkillToolAtConstruction(t *testing.T) {
 
 // A project whose only skills are untrusted has none to advertise at launch.
 // Approving them mid-session re-runs discovery, and the tool has to be
-// registered against the result - that is the whole reason the hook exists.
-func TestRegisterSkillToolPicksUpSkillsApprovedMidSession(t *testing.T) {
+// registered against the result - that is the whole reason SetSkills exists.
+func TestSetSkillsPicksUpSkillsApprovedMidSession(t *testing.T) {
 	cwd := project(t)
 	writeSkill(t, cwd, "greet", "---\nname: greet\ndescription: say hi nicely\n---\nSay hello.\n")
 	env, reg := newEnvAndTools(t, cwd)
@@ -123,9 +195,6 @@ func TestRegisterSkillToolPicksUpSkillsApprovedMidSession(t *testing.T) {
 	if _, ok := reg.Get(agent.SkillToolName); ok {
 		t.Fatal("withheld skills must not produce a skill tool")
 	}
-	if s.RegisterSkillTool == nil {
-		t.Fatal("no way to register the skill tool once the skills are approved")
-	}
 
 	if err := skill.ApproveProject(cwd); err != nil {
 		t.Fatal(err)
@@ -134,7 +203,9 @@ func TestRegisterSkillToolPicksUpSkillsApprovedMidSession(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("discovery after approval: %v", errs)
 	}
-	s.RegisterSkillTool(approved)
+	if err := s.SetSkills(approved); err != nil {
+		t.Fatal(err)
+	}
 
 	tool, ok := reg.Get(agent.SkillToolName)
 	if !ok {

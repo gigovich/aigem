@@ -423,10 +423,10 @@ type Model struct {
 	searchPrompted bool // web_search was advertised in the system prompt
 	mcpMgr         *mcp.Manager
 	hooks          *hooks.Runner
-	trustAsk       bool                  // project-local hooks await a trust decision
-	skillAsk       *skill.PendingSkills  // project-local skills await a trust decision
-	skillAskCwd    string                // cwd the pending skills were resolved from
-	regSkillTool   func(*skill.Registry) // (re-)registers the skill tool once skills are approved
+	trustAsk       bool                 // project-local hooks await a trust decision
+	skillAsk       *skill.PendingSkills // project-local skills await a trust decision
+	skillAskCwd    string               // cwd the pending skills were resolved from
+	session        *runner.Session      // the conversation, for the changes only it can apply
 	picker         *resumePicker
 	browser        *skillBrowser
 	agentBr        *agentBrowser
@@ -630,7 +630,7 @@ func New(client *llm.Ref, reg *tools.Registry, temp float64, modelName, url, sys
 		commands:       uisession.Commands(skills, mcpMgr),
 		hooks:          hookRunner,
 		trustAsk:       hookRunner != nil && hookRunner.HasUntrustedProjectHooks(),
-		regSkillTool:   rs.RegisterSkillTool,
+		session:        rs,
 	}
 }
 
@@ -1737,48 +1737,29 @@ func (m *Model) handleSkillTrustKey(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 // adoptProjectSkills approves the project's current skill definitions and makes
-// the newly visible skills usable without a restart. The registry is swapped in
-// place because the skill tool and the system-prompt builder hold that same
-// pointer; everything else cached off the old set is rebuilt here.
+// the newly visible skills usable without a restart. The catalog, the session's
+// skill tool and its system prompt are brought to the new set together by
+// internal/runner; what is left here is the terminal's own cache of it, the
+// command menu.
+//
 // It returns the project-local skills that actually loaded, which is what the
 // user should be told about rather than the names the prompt listed: approval
 // re-fingerprints the files, so an edit in between can leave the set empty.
-//
-// Swapping the registry is only safe while no turn is running - the skill tool
-// reads it from the agent goroutine and neither side is locked. The prompt owns
-// the keyboard until it is dismissed, so nothing can have been submitted yet.
 func (m *Model) adoptProjectSkills() ([]string, error) {
 	cwd := m.skillAskCwd
 	if cwd == "" {
 		cwd = m.reg.Root()
 	}
-	if err := skill.ApproveProject(cwd); err != nil {
+	res, err := runner.ApproveSkills(cwd, m.skills, m.session)
+	if err != nil {
 		return nil, err
 	}
-	found, errs := skill.Discover(cwd)
-	for _, e := range errs {
-		m.blocks = append(m.blocks, block{kind: bkNotice, text: "skipped skill: " + e.Error()})
+	for _, n := range res.Notices {
+		m.blocks = append(m.blocks, block{kind: bkNotice, text: n.Text})
 	}
-	if m.skills == nil {
-		m.skills = found
-	} else {
-		m.skills.Replace(found)
-	}
-	if m.regSkillTool != nil {
-		m.regSkillTool(m.skills)
-	}
-	m.agent.WatchSkills(m.skills.Conditional())
+	m.skills = res.Catalog
 	m.commands = uisession.Commands(m.skills, m.mcpMgr)
-	// The launch-time system prompt listed only the trusted skills, so without
-	// this the model still cannot see the ones just approved.
-	m.local.RebuildSystem()
-	var loaded []string
-	for _, s := range m.skills.List() {
-		if s.ProjectLocal {
-			loaded = append(loaded, skill.DisplaySafe(s.Name))
-		}
-	}
-	return loaded, nil
+	return res.Loaded, nil
 }
 
 // skillTrustNameLines lays the skill names out over at most maxLines lines and

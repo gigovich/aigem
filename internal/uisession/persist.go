@@ -3,6 +3,7 @@ package uisession
 import (
 	"time"
 
+	"github.com/gigovich/aigem/internal/hooks"
 	"github.com/gigovich/aigem/internal/session"
 	"github.com/gigovich/aigem/internal/tools"
 )
@@ -11,16 +12,15 @@ import (
 // conversation someone opened and walked away from is not worth a file, and the
 // id is derived from the moment work actually started.
 func (l *Local) beginLocked(title string) {
-	if l.id != "" {
+	if l.metaEmitted {
 		return
 	}
-	l.start = time.Now()
-	l.id = session.NewID(l.start)
+	if l.id == "" {
+		l.start = time.Now()
+		l.id = session.NewID(l.start)
+	}
 	if l.title == "" { // a SessionStart hook may have named it already
 		l.title = title
-	}
-	if l.hooks != nil {
-		l.hooks.SetSession(l.id, "")
 	}
 	l.ag.SetSessionID(l.id)
 	// Events emitted before the id existed - a client attaching, its presence -
@@ -32,6 +32,7 @@ func (l *Local) beginLocked(title string) {
 		}
 	}
 	l.emitLocked(l.metaEventLocked())
+	l.metaEmitted = true
 }
 
 // Meta describes the conversation: its id, its title, and when it started. The
@@ -96,10 +97,8 @@ func (l *Local) Load(id string) (*session.Session, error) {
 	l.ag.SetMessages(s.Messages)
 	l.ag.SetSessionID(s.ID)
 	l.id, l.title, l.start = s.ID, s.Title, s.Created
+	l.metaEmitted = true
 	l.reopenJournalLocked()
-	if l.hooks != nil {
-		l.hooks.SetSession(l.id, "")
-	}
 	l.emitLocked(l.metaEventLocked())
 	return s, nil
 }
@@ -112,24 +111,54 @@ func (l *Local) Reset() error {
 	err := l.Save()
 
 	l.mu.Lock()
+	oldHooks, oldID := l.hooks, l.id
+	newHooks := l.newHooks
+	l.mu.Unlock()
+	if oldHooks != nil && oldID != "" {
+		oldHooks.RunBounded(hooks.EventSessionEnd, hooks.Input{Source: "reset"}, 5*time.Second)
+	}
+	newID := ""
+	var boundHooks *hooks.Runner
+	var start hooks.Decision
+	if newHooks != nil {
+		newID = session.NewID(time.Now())
+		boundHooks = newHooks(newID)
+		if boundHooks != nil {
+			start = boundHooks.RunBounded(hooks.EventSessionStart,
+				hooks.Input{Source: "startup"}, 10*time.Second)
+		}
+	}
+
+	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.ag != nil {
 		l.ag.Reset()
+		l.ag.SetHooks(boundHooks)
 		if l.rebuildSystem != nil {
-			l.ag.SetSystem(l.rebuildSystem())
+			prompt := l.rebuildSystem()
+			if start.Context != "" {
+				prompt += "\n\n" + start.Context
+			}
+			l.ag.SetSystem(prompt)
 		}
 	}
 	l.toolPolicy = map[string]string{}
 	l.artifacts = map[string]tools.FileChange{}
-	l.journal.close()
+	if l.journal != nil {
+		l.journal.close()
+	}
 	l.journal = nil
 	// The retained history belongs to the conversation just ended. Leaving it
 	// would have beginLocked replay it into the next one's journal, so a fresh
 	// conversation would open with the previous one's transcript above it.
 	l.ring = nil
-	l.id, l.title, l.start = "", "", time.Time{}
-	if l.hooks != nil {
-		l.hooks.SetSession("", "")
+	l.seq = 0
+	if newHooks != nil {
+		l.hooks = boundHooks
+		l.id, l.title, l.start = newID, start.SessionTitle, time.Now()
+		l.metaEmitted = false
+	} else {
+		l.id, l.title, l.start = "", "", time.Time{}
 	}
 	l.emitLocked(l.metaEventLocked())
 	return err
@@ -141,7 +170,9 @@ func (l *Local) Reset() error {
 // already uses, and a client asking for everything after it would get the wrong
 // half of two conversations.
 func (l *Local) reopenJournalLocked() {
-	l.journal.close()
+	if l.journal != nil {
+		l.journal.close()
+	}
 	l.journal = nil
 	// The in-memory history describes the conversation just replaced, so it is
 	// dropped rather than spliced onto the one being resumed.

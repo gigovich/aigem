@@ -22,6 +22,21 @@ const connectTimeout = 15 * time.Second
 
 // serverConn is one configured MCP server and, once connected, its session and
 // enumerated capabilities.
+type commandTransport struct {
+	command string
+	args    []string
+	env     []string
+}
+
+// Connect creates the command with the caller's context. The SDK transport
+// itself does not attach the context to the subprocess, so doing that here is
+// what makes cancellation during the MCP handshake reap the child.
+func (t *commandTransport) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+	cmd := exec.CommandContext(ctx, t.command, t.args...)
+	cmd.Env = t.env
+	return (&mcpsdk.CommandTransport{Command: cmd}).Connect(ctx)
+}
+
 type serverConn struct {
 	name      string
 	cfg       ServerConfig
@@ -118,7 +133,7 @@ func transportFor(name string, cfg ServerConfig) (mcpsdk.Transport, error) {
 		for k, v := range cfg.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
-		return &mcpsdk.CommandTransport{Command: cmd}, nil
+		return &commandTransport{command: cmd.Path, args: cmd.Args[1:], env: cmd.Env}, nil
 	default:
 		return nil, fmt.Errorf("server config has neither a command (stdio) nor url (http)")
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -157,6 +158,56 @@ func TestRunSessionTitle(t *testing.T) {
 	dec := r.Run(context.Background(), EventSessionStart, Input{Source: "startup"})
 	if dec.SessionTitle != "My Session" {
 		t.Fatalf("sessionTitle not parsed, got %q", dec.SessionTitle)
+	}
+}
+
+func TestForSessionKeepsConcurrentIdentities(t *testing.T) {
+	matchers := []Matcher{{Matcher: "*", Hooks: []Hook{
+		cmdHook(`python3 -c 'import json,sys; x=json.load(sys.stdin); print(json.dumps({"hookSpecificOutput":{"additionalContext":"%s|%s|%s" % (x["session_id"],x["transcript_path"],x["cwd"])}}))'`),
+	}}}
+	r := &Runner{base: map[string][]Matcher{
+		EventSessionStart:     matchers,
+		EventUserPromptSubmit: matchers,
+		EventSessionEnd:       matchers,
+	}}
+	one := r.ForSession("one", "/tmp/one.jsonl", "/one")
+	two := r.ForSession("two", "/tmp/two.jsonl", "/two")
+
+	// Both views stay alive while their events are interleaved. This is also a
+	// negative control for the old shared SetSession design: that design would
+	// make at least one of these calls observe the other view's identity.
+	type result struct {
+		want, got string
+	}
+	results := make(chan result, 48)
+	var wg sync.WaitGroup
+	for _, item := range []struct {
+		runner *Runner
+		want   string
+	}{
+		{one, "one|/tmp/one.jsonl|/one"},
+		{two, "two|/tmp/two.jsonl|/two"},
+	} {
+		wg.Add(1)
+		go func(item struct {
+			runner *Runner
+			want   string
+		}) {
+			defer wg.Done()
+			for i := 0; i < 8; i++ {
+				for _, event := range []string{EventSessionStart, EventUserPromptSubmit, EventSessionEnd} {
+					dec := item.runner.Run(context.Background(), event, Input{})
+					results <- result{want: item.want, got: dec.Context}
+				}
+			}
+		}(item)
+	}
+	wg.Wait()
+	close(results)
+	for got := range results {
+		if got.got != got.want {
+			t.Fatalf("hook identity changed between live sessions: got %q, want %q", got.got, got.want)
+		}
 	}
 }
 

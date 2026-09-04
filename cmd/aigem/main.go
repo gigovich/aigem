@@ -264,17 +264,8 @@ func main() {
 	for _, w := range modelWarns {
 		fmt.Fprintln(os.Stderr, "warning: models config:", w)
 	}
-	// No --model flag: prefer the last model the user selected (if it still
-	// resolves and is usable), else fall back to an authenticated default.
 	if selectionRef == "" {
-		if pref := config.LoadPrefs().Model; pref != "" && modelUsable(modelReg, pref) {
-			selectionRef = pref
-		}
-	}
-	if selectionRef == "" {
-		if def, ok := modelReg.DefaultPreferring(auth.IsAuthenticated); ok {
-			selectionRef = def.Ref()
-		}
+		selectionRef = preferredModelRef(modelReg)
 	}
 	// If the resolved selection is the local model, in -p mode make sure it is
 	// set up and serving before we try to open it (interactive front-ends defer
@@ -318,7 +309,7 @@ func main() {
 	// same thing would be asking twice; -p and --repl have nobody to ask and
 	// would otherwise lose a skill or a hook in silence.
 	canAsk := *prompt == "" && !*repl
-	env, notices, err := runner.Load(runner.Options{
+	env, notices, err := runner.Load(context.Background(), runner.Options{
 		Cwd:                *cwd,
 		Version:            version,
 		Search:             searchCfg,
@@ -630,6 +621,20 @@ func firstLine(s string) string {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
+}
+
+// preferredModelRef is the model to run when none was named: the last one the
+// user selected, if it still resolves and is usable, else an authenticated
+// default. Empty when nothing qualifies, which is a startup with no provider
+// signed in.
+func preferredModelRef(reg *llm.Registry) string {
+	if pref := config.LoadPrefs().Model; pref != "" && modelUsable(reg, pref) {
+		return pref
+	}
+	if def, ok := reg.DefaultPreferring(auth.IsAuthenticated); ok {
+		return def.Ref()
+	}
+	return ""
 }
 
 // modelUsable reports whether ref resolves in the registry and can be opened now

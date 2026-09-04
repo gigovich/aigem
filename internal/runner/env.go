@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -91,12 +92,9 @@ type Notice struct {
 // sessions from starting two copies of every stdio server. What is not shared
 // is the tools registry - see NewTools.
 //
-// Hooks is shared because loading it is cheap and its configuration is the
-// project's, but it is NOT stateless: it carries the id of the conversation its
-// hooks are being fired for, and uisession writes that as each turn begins. One
-// runner across two live sessions therefore hands every hook whichever
-// conversation started last. That is invisible while a process holds one
-// session, and is the first thing to split when the daemon holds several.
+// Hooks configuration is loaded per environment. Session-bound hook runners
+// are derived from it by NewSession, so one conversation cannot overwrite the
+// identity used by another conversation.
 type Env struct {
 	Cwd    string
 	Search search.Config
@@ -105,6 +103,16 @@ type Env struct {
 	Skills *skill.Registry
 	Hooks  *hooks.Runner
 	MCP    *mcp.Manager
+	// runtime is shared by environments for the same project root.
+	runtime *ProjectRuntime
+
+	// sessions are the live conversations built from this environment that
+	// asked to be kept in step with it, through Attach. Approving the project's
+	// skills changes what a session offers the model, and a session that heard
+	// about it from nowhere would go on advertising the catalog it launched
+	// with.
+	sessMu   sync.Mutex
+	sessions []*Session
 
 	// Project is the project instruction files as they read at load time, for
 	// the consumers that want the text itself rather than the assembled prompt -
@@ -147,12 +155,15 @@ type Env struct {
 // in.
 //
 // The caller owns Close.
-func Load(opts Options) (*Env, []Notice, error) {
+func Load(ctx context.Context, opts Options) (*Env, []Notice, error) {
 	// The same failure tools.NewRegistry reports, raised where the CLI used to
 	// raise it: os.Getwd failing under a deleted working directory.
 	root, err := filepath.Abs(opts.Cwd)
 	if err != nil {
 		return nil, nil, fmt.Errorf("runner: resolve working directory %q: %w", opts.Cwd, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 
 	var notices []Notice
@@ -166,13 +177,6 @@ func Load(opts Options) (*Env, []Notice, error) {
 	warnInChat := func(text string) { raise(Notice{Text: text, InChat: true}) }
 
 	e := &Env{Cwd: root, Search: opts.Search}
-
-	e.Agents = agent.DefaultSubagents()
-	if dir, err := config.AgentsDir(); err == nil {
-		if err := agent.LoadSubagentsInto(e.Agents, dir); err != nil {
-			warn("could not load custom agents: " + err.Error())
-		}
-	}
 
 	if opts.TrustProjectSkills {
 		if err := skill.ApproveProject(root); err != nil {
@@ -207,21 +211,34 @@ func Load(opts Options) (*Env, []Notice, error) {
 	// are discovered by the harness and injected, not left for the model to find.
 	e.Project = config.ProjectInstructions(root)
 
-	// MCP servers are dialled here and summarized in the prompt; their tools are
-	// registered per session by NewTools. A server that fails to come up is
-	// skipped with a warning rather than taking startup down with it.
-	mgr, mcpCfgErrs := mcp.NewWithTrust(root, opts.Version, opts.TrustProjectMCP)
-	e.MCP = mgr
-	for _, err := range mcpCfgErrs {
-		warn("mcp config: " + err.Error())
+	runtime, runtimeWarnings, err := acquireProjectRuntime(ctx, config.ProjectDir(root), opts.Version, opts.Search, opts.TrustProjectMCP)
+	if err != nil {
+		return nil, notices, err
 	}
-	if !mgr.Empty() {
-		mgr.Connect(context.Background())
-		for _, w := range mgr.Warnings() {
-			warn(w)
+	e.runtime = runtime
+	defer func() {
+		if ctx.Err() != nil {
+			e.Close()
+		}
+	}()
+	e.Agents = runtime.Agents
+	e.MCP = runtime.MCP
+	e.runtime = runtime
+	for _, err := range runtimeWarnings {
+		text := err.Error()
+		switch {
+		case strings.HasPrefix(text, "mcp server"):
+			warn(text)
+		case strings.HasPrefix(text, "could not load custom agents"):
+			warn(text)
+		default:
+			warn("mcp config: " + text)
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, notices, err
+	}
 	runner, hookErrs := hooks.Load(root)
 	e.Hooks = runner
 	for _, err := range hookErrs {
@@ -239,9 +256,13 @@ func Load(opts Options) (*Env, []Notice, error) {
 			Askable: true,
 		})
 	}
-	// SessionStart runs once, here, so its additionalContext can enrich the
-	// system prompt before the first model call.
-	dec := runner.RunBounded(hooks.EventSessionStart, hooks.Input{Source: "startup"}, sessionStartTimeout)
+	// Keep the launch-time result for legacy CLI/TUI callers that build their
+	// session directly from Env. Browser sessions re-run this hook through their
+	// session-bound runner in NewSession.
+	dec := runner.RunBoundedContext(ctx, hooks.EventSessionStart, hooks.Input{Source: "startup"}, sessionStartTimeout)
+	if err := ctx.Err(); err != nil {
+		return nil, notices, err
+	}
 	e.hookContext = dec.Context
 	e.SessionTitle = dec.SessionTitle
 	e.SystemMessage = dec.SystemMessage
@@ -252,10 +273,10 @@ func Load(opts Options) (*Env, []Notice, error) {
 // Close releases what Load started, which today is the MCP servers. A session
 // built from this Env must not outlive it. Calling it twice is safe.
 func (e *Env) Close() {
-	e.closed.Store(true)
-	if e.MCP != nil {
-		e.MCP.Close()
+	if e == nil || e.closed.Swap(true) {
+		return
 	}
+	releaseProjectRuntime(e.runtime)
 }
 
 // NewTools builds the sandbox for one conversation.
