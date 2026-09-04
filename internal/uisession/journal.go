@@ -145,3 +145,14 @@ func (l *Local) journalled(ev Event) Event {
 	stored.Text = ev.Text[:journalTextCap]
 	return stored
 }
+
+// ReadJournal returns the events recorded for a session after since, for a
+// caller that has no live session to replay from.
+//
+// A run whose daemon has since restarted is the case it exists for: the
+// conversation is over, the ring buffer went with the process, and the timeline
+// a page still wants to render is only on disk. A session that never reached
+// its first turn has no journal, and a caller gets the underlying not-exist
+// error rather than an empty timeline, because "nothing was recorded" and
+// "nothing happened" are answers a caller may want to tell apart.
+func ReadJournal(id string, since uint64) ([]Event, error) { return readJournal(id, since) }

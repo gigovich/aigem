@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gigovich/aigem/internal/config"
+	"github.com/gigovich/aigem/internal/runner"
+	"github.com/gigovich/aigem/internal/search"
 	"github.com/gigovich/aigem/internal/web"
 )
 
@@ -84,13 +87,15 @@ func runWebCommand(args []string) error {
 		return fmt.Errorf("%w\n\n%s", err, webUsage)
 	}
 
-	// A failure to find the state directory costs the browser sessions their
-	// persistence, not the daemon its start: the operator locked out of the UI
-	// would be locked out by the one thing the UI is for.
-	cookies := ""
+	// A failure to find the state directory costs the browser sessions and the
+	// run table their persistence, not the daemon its start: the operator
+	// locked out of the UI would be locked out by the one thing the UI is for.
+	cookies, stateDir := "", ""
 	if dir, err := config.StateDir(); err != nil {
-		fmt.Fprintf(os.Stderr, "note: browser sign-ins will not survive a restart: %v\n", err)
+		fmt.Fprintf(os.Stderr, "note: browser sign-ins and the list of runs will not "+
+			"survive a restart: %v\n", err)
 	} else {
+		stateDir = dir
 		cookies = filepath.Join(dir, "web-cookies.json")
 	}
 
@@ -106,12 +111,55 @@ func runWebCommand(args []string) error {
 		}
 	}
 
+	// The environment is loaded once and shared by every conversation the
+	// daemon opens: the skills, the subagents, the hooks configuration and the
+	// MCP servers belong to the project, and one set of stdio servers per
+	// browser tab is not a thing anyone wants.
+	//
+	// A daemon has nobody to ask about a withheld capability, so the
+	// --trust-project-* decisions are not made here: a project's local hooks,
+	// MCP servers and skills stay withheld until a person approves them.
+	searchCfg, err := search.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not load search config:", err)
+	}
+	//
+	// The directory is the one the daemon was started in: an empty Cwd resolves
+	// to it, and there is no flag for another because the project a browser
+	// session works in is a phase-2 choice.
+	env, _, err := runner.Load(context.Background(), runner.Options{
+		Version: versionString(),
+		Search:  searchCfg,
+		// Raised as they happen rather than collected: Load dials the MCP
+		// servers and runs the SessionStart hook, and a terminal that says
+		// nothing until those finish reads as a hang.
+		Notify: func(n runner.Notice) {
+			fmt.Fprintln(os.Stderr, "warning:", n.Text)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	// Closed after the runs below, so that a session's SessionEnd hook still
+	// has the environment it runs in.
+	defer env.Close()
+	if env.SystemMessage != "" {
+		fmt.Fprintln(os.Stderr, env.SystemMessage)
+	}
+
+	rt := &webRuntime{env: env, models: defaultModelRegistry()}
+	runs, err := rt.newRuns(stateDir)
+	if err != nil {
+		return err
+	}
+	defer runs.Close()
+
 	srv, err := web.New(web.Config{
 		Addr:       *addr,
 		Origins:    origins,
 		Assets:     web.Assets(),
 		CookieFile: cookies,
-		Backend:    newWebBackend(versionString()),
+		Backend:    newWebBackend(versionString(), rt.models, runs),
 	})
 	if err != nil {
 		return err
@@ -151,9 +199,14 @@ func runWebCommand(args []string) error {
 		// below kills the process rather than being swallowed.
 		signal.Stop(sig)
 		fmt.Fprintln(os.Stderr, "\nstopping")
+		// The daemon's connections first, then the conversations behind them,
+		// then the environment they ran in: a session being saved must not be
+		// racing a client that is still submitting, and its SessionEnd hook
+		// needs the environment to still be there.
 		if err := srv.Close(); err != nil {
 			return err
 		}
+		runs.Close()
 		// Serve's error is the one worth reporting, so give it a moment to
 		// surface rather than exiting on the signal alone.
 		select {

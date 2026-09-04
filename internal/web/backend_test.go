@@ -2,14 +2,18 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeBackend stands in for the agent. Every HTTP and websocket test in this
@@ -21,6 +25,28 @@ type fakeBackend struct {
 	// is a state the router has to have an answer for, on the socket as well as
 	// on the route.
 	err error
+
+	mu sync.Mutex
+	// runs is the table, and order keeps the order they were opened in, which
+	// is the order a list is served in.
+	runs  map[string]*fakeRun
+	order []string
+	next  int
+	// applied records every operation that reached the backend, so a test can
+	// tell "the router refused it" from "the router passed it on".
+	applied []RunOp
+	// The errors a test arms. Each stands for a state the router has to have an
+	// answer for and cannot otherwise be driven into.
+	openErr, watchErr, eventsErr, opErr, listErr error
+}
+
+// fakeRun is one conversation in the fake: its record, everything that has
+// happened in it, and whoever is currently watching.
+type fakeRun struct {
+	run    Run
+	events []RunEvent
+	arts   []Artifact
+	subs   map[*fakeStream]struct{}
 }
 
 func (b *fakeBackend) Meta(context.Context) (Meta, error) {
@@ -29,6 +55,205 @@ func (b *fakeBackend) Meta(context.Context) (Meta, error) {
 	}
 	return b.meta, nil
 }
+
+func (b *fakeBackend) Runs(context.Context) ([]Run, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.listErr != nil {
+		return nil, b.listErr
+	}
+	out := make([]Run, 0, len(b.order))
+	for _, id := range b.order {
+		out = append(out, b.runs[id].run)
+	}
+	return out, nil
+}
+
+func (b *fakeBackend) OpenRun(_ context.Context, req NewRun) (Run, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.openErr != nil {
+		return Run{}, b.openErr
+	}
+	if req.Mode != "" && req.Mode != "interactive" {
+		return Run{}, Refuse(errors.New("unsupported run mode " + req.Mode))
+	}
+	b.next++
+	id := "RUN-" + strconv.Itoa(b.next)
+	run := Run{
+		ID: id, Mode: "interactive", Title: req.Title, Model: req.Model,
+		Root: req.Root, Status: "open", Live: true,
+		Created: time.Unix(int64(b.next), 0).UTC(),
+		Updated: time.Unix(int64(b.next), 0).UTC(),
+	}
+	b.addLocked(&fakeRun{run: run})
+	return run, nil
+}
+
+// addLocked puts a run in the table. It is also how a test seeds one.
+func (b *fakeBackend) addLocked(fr *fakeRun) {
+	if fr.subs == nil {
+		fr.subs = map[*fakeStream]struct{}{}
+	}
+	if b.runs == nil {
+		b.runs = map[string]*fakeRun{}
+	}
+	b.runs[fr.run.ID] = fr
+	b.order = append(b.order, fr.run.ID)
+}
+
+// seed adds a run a test did not open through the API.
+func (b *fakeBackend) seed(run Run, events ...RunEvent) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.addLocked(&fakeRun{run: run, events: events})
+}
+
+func (b *fakeBackend) Run(_ context.Context, id string) (Run, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	fr := b.runs[id]
+	if fr == nil {
+		return Run{}, ErrNoRun
+	}
+	return fr.run, nil
+}
+
+func (b *fakeBackend) CloseRun(_ context.Context, id string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	fr := b.runs[id]
+	if fr == nil {
+		return ErrNoRun
+	}
+	fr.run.Status, fr.run.Live, fr.run.Running = "closed", false, false
+	for s := range fr.subs {
+		s.finish()
+	}
+	fr.subs = map[*fakeStream]struct{}{}
+	return nil
+}
+
+func (b *fakeBackend) RunEvents(_ context.Context, id string, since uint64, limit int) (
+	[]RunEvent, error,
+) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.eventsErr != nil {
+		return nil, b.eventsErr
+	}
+	fr := b.runs[id]
+	if fr == nil {
+		return nil, ErrNoRun
+	}
+	var out []RunEvent
+	for _, ev := range fr.events {
+		if ev.Seq > since {
+			out = append(out, ev)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (b *fakeBackend) WatchRun(_ context.Context, id string, _ RunClient, since uint64) (
+	RunStream, error,
+) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.watchErr != nil {
+		return nil, b.watchErr
+	}
+	fr := b.runs[id]
+	if fr == nil {
+		return nil, ErrNoRun
+	}
+	if !fr.run.Live {
+		return nil, ErrRunClosed
+	}
+	// Buffered past what any test sends, so the backlog and the live events go
+	// in without a reader having to be there yet - which is what the session
+	// itself does with a subscriber's queue.
+	s := &fakeStream{b: b, run: fr, ch: make(chan RunEvent, 64)}
+	for _, ev := range fr.events {
+		if ev.Seq > since {
+			s.ch <- ev
+		}
+	}
+	fr.subs[s] = struct{}{}
+	return s, nil
+}
+
+func (b *fakeBackend) RunArtifacts(_ context.Context, id string) ([]Artifact, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	fr := b.runs[id]
+	if fr == nil {
+		return nil, ErrNoRun
+	}
+	return fr.arts, nil
+}
+
+func (b *fakeBackend) ApplyRunOp(_ context.Context, id string, op RunOp) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	fr := b.runs[id]
+	if fr == nil {
+		return ErrNoRun
+	}
+	if b.opErr != nil {
+		return b.opErr
+	}
+	b.applied = append(b.applied, op)
+	return nil
+}
+
+// ops reports what reached the backend.
+func (b *fakeBackend) ops() []RunOp {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]RunOp(nil), b.applied...)
+}
+
+// emit is the session happening: it records an event and hands it to whoever is
+// watching. The sequence is assigned here, as the session assigns it.
+func (b *fakeBackend) emit(id string, payload string) RunEvent {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	fr := b.runs[id]
+	ev := RunEvent{Seq: uint64(len(fr.events)) + 1}
+	ev.Data = json.RawMessage(`{"seq":` + strconv.FormatUint(ev.Seq, 10) + `,` + payload + `}`)
+	fr.events = append(fr.events, ev)
+	for s := range fr.subs {
+		s.ch <- ev
+	}
+	return ev
+}
+
+// fakeStream is one client's attachment. Close is idempotent, as the interface
+// promises, so a handler may defer it and still close early.
+type fakeStream struct {
+	b    *fakeBackend
+	run  *fakeRun
+	ch   chan RunEvent
+	once sync.Once
+}
+
+func (s *fakeStream) Events() <-chan RunEvent { return s.ch }
+
+func (s *fakeStream) Close() {
+	s.b.mu.Lock()
+	delete(s.run.subs, s)
+	s.b.mu.Unlock()
+	s.finish()
+}
+
+// finish closes the channel once, whether the client detached or the run ended
+// under it. It is called with the backend's lock held by one caller and without
+// it by the other, so it takes none.
+func (s *fakeStream) finish() { s.once.Do(func() { close(s.ch) }) }
 
 // withBackend fills in a fake for the tests that are about something else. A
 // test that cares which backend it gets says so.

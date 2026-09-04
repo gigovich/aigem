@@ -17,6 +17,7 @@ import "net/http"
 // daemon runs would need a lock.
 var features = map[string]bool{
 	"controlSocket": true,
+	"runs":          true,
 }
 
 // metaResponse is what /api/meta answers, and what hello carries. The two are

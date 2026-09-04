@@ -43,14 +43,21 @@ type readWriter struct {
 // with its cookie.
 func dialControl(t *testing.T, srv *Server) *controlClient {
 	t.Helper()
+	return dialWS(t, srv, "/api/socket")
+}
+
+// dialWS opens any of this daemon's sockets. The run stream speaks a different
+// vocabulary but the same transport, so the reading half is shared.
+func dialWS(t *testing.T, srv *Server, path string) *controlClient {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testWait)
 	defer cancel()
 	d := ws.Dialer{Header: ws.HandshakeHeaderHTTP(http.Header{
 		"Authorization": []string{"Bearer " + srv.Token()},
 	})}
-	conn, br, _, err := d.Dial(ctx, "ws://"+srv.Addr().String()+"/api/socket")
+	conn, br, _, err := d.Dial(ctx, "ws://"+srv.Addr().String()+path)
 	if err != nil {
-		t.Fatalf("dial /api/socket: %v", err)
+		t.Fatalf("dial %s: %v", path, err)
 	}
 	c := &controlClient{t: t, conn: conn, read: conn}
 	if br != nil {
@@ -64,9 +71,10 @@ func dialControl(t *testing.T, srv *Server) *controlClient {
 
 func (c *controlClient) close() { _ = c.conn.Close() }
 
-// next returns the next message, decoded far enough to see the envelope and
-// keep the payload.
-func (c *controlClient) next() controlFrame {
+// nextRaw returns the next message as it arrived. The run stream's frames are
+// the session's own events, and a test that decoded them would be asserting on
+// a shape this package deliberately does not have.
+func (c *controlClient) nextRaw() []byte {
 	c.t.Helper()
 	if err := c.conn.SetReadDeadline(time.Now().Add(testWait)); err != nil {
 		c.t.Fatal(err)
@@ -75,6 +83,14 @@ func (c *controlClient) next() controlFrame {
 	if err != nil {
 		c.t.Fatalf("read: %v", err)
 	}
+	return data
+}
+
+// next returns the next message, decoded far enough to see the envelope and
+// keep the payload.
+func (c *controlClient) next() controlFrame {
+	c.t.Helper()
+	data := c.nextRaw()
 	var f controlFrame
 	if err := json.Unmarshal(data, &f); err != nil {
 		c.t.Fatalf("decode %s: %v", data, err)
@@ -107,6 +123,13 @@ func (c *controlClient) send(v any) {
 	if err != nil {
 		c.t.Fatal(err)
 	}
+	c.sendRaw(b)
+}
+
+// sendRaw writes bytes that are not necessarily a document, for the callers
+// about what happens to a frame the server cannot decode.
+func (c *controlClient) sendRaw(b []byte) {
+	c.t.Helper()
 	if err := wsutil.WriteClientText(c.conn, b); err != nil {
 		c.t.Fatalf("write: %v", err)
 	}
@@ -789,6 +812,7 @@ func TestHelloIsNeverNewerThanTheRevItClaims(t *testing.T) {
 // mutatingBackend publishes on its way to answering, which is what pins the
 // order of subscribe and Meta.
 type mutatingBackend struct {
+	fakeBackend
 	hub *hub
 	at  atomic.Uint64
 }

@@ -137,6 +137,13 @@ though the hop to the daemon is plain HTTP.
 | `DELETE /api/auth/session` | signs this browser out, on the daemon as well as in the browser |
 | `GET /api/meta` | version, default model, `ui`, the feature map, and the revision it is at |
 | `GET /api/socket` | the control stream: what changed elsewhere in the daemon |
+| `GET /api/runs` | the conversations this daemon knows about, oldest first |
+| `POST /api/runs` | opens one, and answers with the record |
+| `GET /api/runs/{id}` | one record |
+| `DELETE /api/runs/{id}` | saves the conversation and ends its session |
+| `GET /api/runs/{id}/events` | a page of the timeline, `?since=&limit=` |
+| `GET /api/runs/{id}/socket` | the run stream, `?since=` |
+| `GET /api/runs/{id}/artifacts` | the files the run changed, both sides |
 | `/api/...`  | reserved; an unknown path here is a 404, never the page |
 | everything else | the application, which routes in the browser |
 
@@ -189,6 +196,78 @@ frame at 64 KiB and one message at 256 KiB. A browser answers the ping itself,
 so a page has nothing to do to stay connected. The daemon holds 64 websockets at
 once across every tab; the 65th handshake is refused with a 503 and a
 `Retry-After`, which is a retry rather than an error to show.
+
+## Runs
+
+A run is one conversation. It is the same session the terminal opens - one
+event stream, one approval queue, one journal - reached over HTTP instead of
+over a keyboard, so a browser and a terminal looking at the same run see the
+same thing rather than two renderings that drifted.
+
+A record outlives the daemon; a session does not. `status` is `open` while there
+is a session and `closed` once there is not, and `live` is the field a page
+reads before it opens a socket. A restarted daemon finds every run closed: the
+record and the timeline are still there to read, and nothing is left claiming a
+session that went with the process.
+
+`DELETE` is that transition and not a deletion. It saves the conversation and
+ends the session, and the record and the journal stay, because a run somebody is
+done with is one they can still look back at. Doing it twice is not an error:
+two tabs pressing the same button is the ordinary case.
+
+Statuses a client has to tell apart: `404` is a run that does not exist, `409`
+is one whose session is gone - reads still work, the socket does not - and `410`
+on the timeline means the history no longer reaches the point asked for, which
+is answered by reloading rather than by retrying. A `400` carries a sentence
+meant to be shown; a `500` does not, and what it was is in the daemon's log.
+
+`?since=` and `?limit=` are non-negative whole numbers. Every cursor on this API
+is one: opaque to the client, compared only for equality and order. A timeline
+is read in pages, and a client that gets a full one asks again from the last
+sequence it saw - the same loop it uses to catch up after a disconnect.
+
+## The run stream
+
+`GET /api/runs/{id}/socket?since=<seq>` is one websocket per open run per tab.
+It is the opposite of the control stream in both directions: it replays, and it
+takes mutations.
+
+Down it come the session's own events, in order and exactly as the session wrote
+them. `since` is the last sequence the client holds; the backlog is spliced in
+front of the live events, so there is no window in which an event is neither
+replayed nor delivered. A client that falls too far behind is sent a `desync`
+event carrying the last sequence it did get, and catches up over
+`/api/runs/{id}/events?since=`.
+
+Up go the client's operations, one JSON document per frame:
+
+```json
+{"op":"submit","text":"...","images":[{"media_type":"image/png","data":"..."}]}
+{"op":"interrupt"}
+{"op":"resolve","id":"a1","decision":"once","label":"web"}
+{"op":"command","name":"new","args":""}
+{"op":"step_mode","on":true}
+{"op":"switch_model","ref":"openai/gpt-5.6-sol","persist":true}
+{"op":"ping"}
+```
+
+`step_mode` is the toggle a person sees, and `on` means "ask me about every tool
+call" - the inverse of the session's auto mode. The run's current setting is the
+`step` field of its record.
+
+An operation that is applied is answered with nothing; the conversation's own
+events are the acknowledgement. One that is refused comes back as
+`{"kind":"client_error","op":"...","error":"..."}` and the socket stays open: an
+approval somebody else answered first is the normal outcome of two people
+answering at once, not a failure in the conversation, and it must not appear in
+the timeline as one. `ping` is answered with silence.
+
+The connection's own contract - the pings, the timeouts, the frame and message
+caps, the 64-socket ceiling - is the control stream's, above. The frame cap is
+the one that bites here: a browser sends a message as a single frame, so a
+submit may carry 64 KiB. That is ample for typed text and not enough for a
+pasted screenshot, so `images` is on the wire and a large one is not yet
+something this op can carry.
 
 Every response carries a content security policy, `X-Content-Type-Options:
 nosniff` and `Referrer-Policy: no-referrer` - including the page and the bundle,
