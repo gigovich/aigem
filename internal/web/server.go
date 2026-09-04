@@ -602,3 +602,15 @@ func writeJSON(w http.ResponseWriter, v any) {
 	// but the connection, which the client sees as a short read.
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// writeJSONStatus answers with a status other than 200.
+//
+// It exists because the header has to be set before WriteHeader: net/http
+// snapshots the header block when the status goes out, and a Content-Type set
+// after it is silently dropped - which is how a 201 ends up announcing itself
+// as text/plain while every 200 on the same route is JSON.
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}

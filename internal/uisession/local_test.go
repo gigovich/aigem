@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -836,5 +837,30 @@ func awaitValue2[T any](t *testing.T, c <-chan T, what string) (T, bool) {
 		t.Fatalf("timed out waiting for %s", what)
 		var zero T
 		return zero, false
+	}
+}
+
+// since comes off a URL, so the largest one a client can send has to be an
+// ordinary "you are past the end" rather than arithmetic that wraps to zero and
+// reports the whole retained history as a gap.
+func TestAResumePointPastEveryEventIsNotAGap(t *testing.T) {
+	s := New(Config{NewAgent: func(agent.ConfirmFunc) *agent.Agent { return nil }})
+	t.Cleanup(s.Close)
+	for range 5 {
+		s.Notice("something happened")
+	}
+
+	for _, since := range []uint64{math.MaxUint64, math.MaxUint64 - 1, s.Seq()} {
+		got, err := s.Replay(since)
+		if err != nil {
+			t.Errorf("Replay(%d) = %v, want an empty timeline", since, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("Replay(%d) returned %d events, want none", since, len(got))
+		}
+	}
+	// And the ordinary case still replays.
+	if got, err := s.Replay(0); err != nil || len(got) != 5 {
+		t.Fatalf("Replay(0) = %d events, %v; want all five", len(got), err)
 	}
 }

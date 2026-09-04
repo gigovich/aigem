@@ -354,3 +354,37 @@ func TestTheRunRoutesNeedACredential(t *testing.T) {
 		}
 	}
 }
+
+// The page cap is what stops one request from serialising an entire journal.
+// Absent, zero and past it all mean the same thing: as much as the daemon will
+// give, which is one page.
+func TestAPageIsCappedWhateverTheClientAsksFor(t *testing.T) {
+	b := &fakeBackend{}
+	srv := newTestServer(t, Config{Backend: b})
+	run := decode[Run](t, api(t, srv, http.MethodPost, "/api/runs", `{}`))
+	for range maxEventPage + 5 {
+		b.emit(run.ID, `"kind":"content"`)
+	}
+	for _, q := range []string{"", "?limit=0", "?limit=999999"} {
+		page := decode[[]json.RawMessage](t, api(t, srv, http.MethodGet,
+			"/api/runs/"+run.ID+"/events"+q, ""))
+		if len(page) != maxEventPage {
+			t.Errorf("limit %q gave %d events, want the cap of %d", q, len(page), maxEventPage)
+		}
+	}
+	// And a smaller one is honoured, so the cap is a ceiling and not the answer.
+	if page := decode[[]json.RawMessage](t, api(t, srv, http.MethodGet,
+		"/api/runs/"+run.ID+"/events?limit=3", "")); len(page) != 3 {
+		t.Errorf("limit=3 gave %d events, want 3", len(page))
+	}
+}
+
+// A page reads the feature map rather than the version string, so a route that
+// exists and is not named there is a screen the UI hides for no reason.
+func TestTheFeatureMapNamesTheRunsApi(t *testing.T) {
+	srv := newTestServer(t, Config{})
+	meta := decode[metaResponse](t, api(t, srv, http.MethodGet, "/api/meta", ""))
+	if !meta.Features["runs"] {
+		t.Errorf("features = %v, want runs among them", meta.Features)
+	}
+}

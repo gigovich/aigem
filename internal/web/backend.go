@@ -148,8 +148,13 @@ type NewRun struct {
 	// Model is a reference in the "provider/id" form the wire uses; empty takes
 	// the daemon's default.
 	Model string `json:"model,omitempty"`
-	// Root is the directory the run works in; empty takes the daemon's.
-	Root string `json:"root,omitempty"`
+	// There is deliberately no Root here. A run works in the directory the
+	// daemon was started in, and the Root a record reports is that directory.
+	// Letting a request name one would be the API's first way to reach outside
+	// what the operator pointed the daemon at, and it would have to arrive with
+	// the project model that decides which directories are allowed - which is
+	// phase 2. A field that is on the wire, documented, and ignored is a worse
+	// answer than no field.
 }
 
 // RunEvent is one step of a run's timeline on its way to a client.
@@ -213,9 +218,22 @@ type Image struct {
 
 // Artifact is one file a run changed, with the content on both sides so the
 // page can render the diff without reading the working tree itself.
+//
+// The content is not promised. A run that appended a line to a very large file
+// holds both versions of it, and a route that serialised every one of them
+// would be several copies of an unbounded amount of memory per request. Past
+// the backend's budget the sides are left out and Truncated says so, with the
+// real sizes still reported - a page can then say how big the change is and
+// offer to fetch it, rather than being handed a diff it cannot draw.
 type Artifact struct {
 	Path    string `json:"path"`
 	Old     string `json:"old,omitempty"`
 	New     string `json:"new,omitempty"`
 	Created bool   `json:"created,omitempty"`
+	// OldBytes and NewBytes are the true sizes of the two sides, whether or not
+	// the content came with them.
+	OldBytes int `json:"oldBytes,omitempty"`
+	NewBytes int `json:"newBytes,omitempty"`
+	// Truncated marks an entry whose content was left out.
+	Truncated bool `json:"truncated,omitempty"`
 }

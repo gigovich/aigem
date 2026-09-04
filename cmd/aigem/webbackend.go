@@ -48,6 +48,17 @@ func (b *webBackend) Meta(_ context.Context) (web.Meta, error) {
 	}, nil
 }
 
+const (
+	// maxArtifactSide is the largest change this route carries the content of.
+	// A quarter of a megabyte is a very large source file and a small fraction
+	// of what a generated one can be.
+	maxArtifactSide = 256 << 10
+	// maxArtifactBody is the budget for the contents in one response. A run
+	// that touched a hundred files is a real run; a hundred files' worth of
+	// content in one JSON document is not a page anyone can render.
+	maxArtifactBody = 4 << 20
+)
+
 // The run half of the backend: the registry's answers, translated into the
 // shapes internal/web marshals and the errors it maps to status codes.
 
@@ -65,7 +76,6 @@ func (b *webBackend) OpenRun(ctx context.Context, req web.NewRun) (web.Run, erro
 		Mode:  runner.Mode(req.Mode),
 		Title: req.Title,
 		Model: req.Model,
-		Root:  req.Root,
 	})
 	if err != nil {
 		return web.Run{}, webRunError(err)
@@ -132,9 +142,26 @@ func (b *webBackend) RunArtifacts(_ context.Context, id string) ([]web.Artifact,
 	}
 	sort.Strings(paths)
 	out := make([]web.Artifact, 0, len(paths))
+	budget := maxArtifactBody
 	for _, p := range paths {
 		c := arts[p]
-		out = append(out, web.Artifact{Path: c.Path, Old: c.Old, New: c.New, Created: c.Created})
+		a := web.Artifact{
+			Path: c.Path, Created: c.Created,
+			OldBytes: len(c.Old), NewBytes: len(c.New),
+		}
+		// A file the agent changed can be any size, and both versions of it are
+		// already in memory; putting them in a response copies them again, and
+		// the encoder buffers the whole array before a byte goes out. The list
+		// of what changed is always complete - it is only the content that is
+		// rationed.
+		switch size := len(c.Old) + len(c.New); {
+		case size > maxArtifactSide, size > budget:
+			a.Truncated = true
+		default:
+			budget -= size
+			a.Old, a.New = c.Old, c.New
+		}
+		out = append(out, a)
 	}
 	return out, nil
 }
@@ -230,7 +257,11 @@ func webRunError(err error) error {
 		return nil
 	case errors.Is(err, runner.ErrNoRun):
 		return web.ErrNoRun
-	case errors.Is(err, runner.ErrRunClosed):
+	case errors.Is(err, runner.ErrRunClosed), errors.Is(err, uisession.ErrClosed):
+		// The second is the same answer arriving from further in: the table
+		// handed out a session that was closed underneath it between the lookup
+		// and the call. A client keys on the status code, and "session closed"
+		// as a 400 is a refusal it cannot act on.
 		return web.ErrRunClosed
 	case errors.Is(err, uisession.ErrTruncated):
 		return web.ErrHistoryGone

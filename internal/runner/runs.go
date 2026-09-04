@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gigovich/aigem/internal/llm"
+	"github.com/gigovich/aigem/internal/session"
 	"github.com/gigovich/aigem/internal/store"
 	"github.com/gigovich/aigem/internal/tools"
 	"github.com/gigovich/aigem/internal/uisession"
@@ -41,7 +42,20 @@ var (
 	ErrRunsClosed = errors.New("runner: the run registry is closed")
 	// ErrRunMode is returned for a mode this build does not open runs in.
 	ErrRunMode = errors.New("runner: unsupported run mode")
+	// ErrTooManyRuns is returned once the daemon is holding as many live
+	// conversations as it will.
+	ErrTooManyRuns = errors.New("runner: too many conversations are open")
 )
+
+// maxLiveRuns is how many conversations one daemon holds at once.
+//
+// A run is not cheap: a tools registry, a model handle, an event ring, and
+// whatever the model's context holds. Nothing about the API stops a client
+// looping on POST, and without a ceiling that loop is an out-of-memory with no
+// backstop. The number is chosen the way the socket cap was - far past what a
+// person opens and far short of what hurts - and a run that is closed gives its
+// place back.
+const maxLiveRuns = 32
 
 // RunStatus is the durable state of a run. It is deliberately coarse: whether
 // there is a session to talk to is what a client has to know before it opens a
@@ -107,8 +121,6 @@ type RunRequest struct {
 	// Model is the reference to open, in the "provider/id" form the wire uses.
 	// Empty takes the daemon's default.
 	Model string
-	// Root is the directory the run works in. Empty takes the daemon's.
-	Root string
 }
 
 // Opened is what OpenRun built. It is reported rather than assumed, because
@@ -148,6 +160,15 @@ type RunsConfig struct {
 type Runs struct {
 	open OpenRun
 	now  func() time.Time
+
+	// once makes Close idempotent, and makes a second caller wait for the first
+	// rather than return while the conversations are still being saved.
+	once sync.Once
+	// opening counts the Creates that are past the closed check and still
+	// building a session. Close waits on it, because a session built after the
+	// shutdown has walked the table would otherwise be saved and closed after
+	// the daemon has torn down the environment its SessionEnd hook runs in.
+	opening sync.WaitGroup
 
 	mu   sync.Mutex
 	file *store.File[[]Run]
@@ -257,12 +278,27 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 		r.mu.Unlock()
 		return RunView{}, ErrRunsClosed
 	}
+	if n := r.liveLocked(); n >= maxLiveRuns {
+		r.mu.Unlock()
+		return RunView{}, fmt.Errorf("%w: %d are open, and %d is the limit; close one first",
+			ErrTooManyRuns, n, maxLiveRuns)
+	}
 	r.next++
 	id := runIDPrefix + strconv.Itoa(r.next)
+	// Registered under the lock, next to the check it depends on: Close sets
+	// closed under this lock and then waits, so nothing can join after the wait
+	// has started.
+	r.opening.Add(1)
 	r.mu.Unlock()
+	defer r.opening.Done()
 
 	sess, opened, err := r.open(ctx, req)
 	if err != nil {
+		// Whatever it allocated before failing is still the caller's to give
+		// back. Today's Open returns a zero Opened on every error, but Release
+		// is documented as called once per run and this path is the one that
+		// would call it never.
+		release(opened.Release)
 		return RunView{}, err
 	}
 	if sess == nil || sess.Local == nil {
@@ -447,7 +483,12 @@ func (r *Runs) Apply(id string, op RunOp) error {
 	l := sess.Local
 	switch op.Op {
 	case OpSubmit:
-		return l.Submit(op.Text, op.Images)
+		if err := l.Submit(op.Text, op.Images); err != nil {
+			return err
+		}
+		// The first message is where a conversation gets its id and its name.
+		r.sync(id, sess)
+		return nil
 	case OpInterrupt:
 		l.Interrupt()
 		return nil
@@ -502,17 +543,31 @@ func (r *Runs) CloseRun(id string) error {
 	// Detached under the lock, so a second caller finds nothing to close rather
 	// than racing this one into a double Close.
 	lr.sess, lr.release = nil, nil
-	if sess != nil {
-		// The id is only known once the session has had a turn, so it is read
-		// here rather than at creation: without it the journal cannot be found
-		// again after a restart.
-		if sid := sess.Local.Meta().ID; sid != "" {
-			lr.rec.SessionID = sid
-		}
-		lr.rec.Status = RunClosed
-		lr.rec.Updated = r.now()
-		r.saveLocked()
+	r.mu.Unlock()
+
+	if sess == nil {
+		return nil
 	}
+	// Read with no lock of this registry's held. Meta takes the session's own
+	// mutex, which a journal read or a journal write holds for as long as the
+	// disk takes, and holding the table's across that would stall a list of
+	// every other run behind one conversation.
+	meta := sess.Local.Meta()
+
+	r.mu.Lock()
+	// What the session knows about itself is only true once it has had a turn:
+	// the id names the journal, and the title is whatever the conversation
+	// called itself. Without copying them back, a closed run is a record that
+	// cannot be found again and has no name.
+	if meta.ID != "" {
+		lr.rec.SessionID = meta.ID
+	}
+	if meta.Title != "" {
+		lr.rec.Title = meta.Title
+	}
+	lr.rec.Status = RunClosed
+	lr.rec.Updated = r.now()
+	r.saveLocked()
 	r.mu.Unlock()
 
 	closeSession(sess, rel)
@@ -526,41 +581,113 @@ func (r *Runs) CloseRun(id string) error {
 // until the sessions have finished unwinding, so a caller that returns from
 // here can say the conversations are saved rather than that they were asked to
 // save.
-func (r *Runs) Close() {
+func (r *Runs) Close() { r.once.Do(r.shutdown) }
+
+func (r *Runs) shutdown() {
 	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
-		return
-	}
 	r.closed = true
-	var sessions []*Session
-	var releases []func()
-	changed := false
+	r.mu.Unlock()
+
+	// A Create that is past the check above is still building a session, and
+	// will find the registry closed and close what it built. Waiting for it
+	// here is what makes this function's promise true: without it that session
+	// is saved and its SessionEnd hook run after the caller has gone on to tear
+	// down the environment the hook needs - and after the process is free to
+	// exit in the middle of the save.
+	r.opening.Wait()
+
+	r.mu.Lock()
+	rows := make([]*liveRun, 0, len(r.order))
 	for _, id := range r.order {
-		lr := r.byID[id]
-		if lr == nil || lr.sess == nil {
-			continue
+		if lr := r.byID[id]; lr != nil && lr.sess != nil {
+			rows = append(rows, lr)
 		}
-		if sid := lr.sess.Local.Meta().ID; sid != "" {
-			lr.rec.SessionID = sid
+	}
+	// Detached under the lock, so a CloseRun racing this one finds nothing left
+	// to close rather than closing the same session twice.
+	sessions := make([]*Session, len(rows))
+	releases := make([]func(), len(rows))
+	for i, lr := range rows {
+		sessions[i], releases[i] = lr.sess, lr.release
+		lr.sess, lr.release = nil, nil
+	}
+	r.mu.Unlock()
+
+	// Meta outside the lock, for the reason CloseRun gives.
+	metas := make([]session.Meta, len(sessions))
+	for i, s := range sessions {
+		metas[i] = s.Local.Meta()
+	}
+
+	r.mu.Lock()
+	for i, lr := range rows {
+		if metas[i].ID != "" {
+			lr.rec.SessionID = metas[i].ID
+		}
+		if metas[i].Title != "" {
+			lr.rec.Title = metas[i].Title
 		}
 		lr.rec.Status = RunClosed
 		lr.rec.Updated = r.now()
-		changed = true
-		sessions = append(sessions, lr.sess)
-		releases = append(releases, lr.release)
-		// Detached under the lock, so a CloseRun racing this one finds nothing
-		// left to close rather than closing the same session twice.
-		lr.sess, lr.release = nil, nil
 	}
-	if changed {
+	if len(rows) > 0 {
 		r.saveLocked()
 	}
 	r.mu.Unlock()
 
+	// Together rather than one after another. Closing one conversation runs its
+	// SessionEnd hook and waits for a turn to unwind, each bounded at five
+	// seconds; done in sequence, ten open runs is a Ctrl-C that appears to hang
+	// for a minute and a half.
+	var wg sync.WaitGroup
 	for i := range sessions {
-		closeSession(sessions[i], releases[i])
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			closeSession(sessions[i], releases[i])
+		}()
 	}
+	wg.Wait()
+}
+
+// liveLocked counts the conversations with a session attached.
+func (r *Runs) liveLocked() int {
+	n := 0
+	for _, lr := range r.byID {
+		if lr.sess != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// sync copies back what a session only knows about itself once it has had a
+// turn. It is called after a submit, so that a daemon killed without a chance
+// to close its runs leaves records that can still be found and still have a
+// name - which closing them is otherwise the only thing that does.
+//
+// It writes the table only when something actually changed, so the ordinary
+// message costs a comparison.
+func (r *Runs) sync(id string, sess *Session) {
+	meta := sess.Local.Meta()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	lr := r.byID[id]
+	if lr == nil {
+		return
+	}
+	changed := false
+	if meta.ID != "" && lr.rec.SessionID != meta.ID {
+		lr.rec.SessionID, changed = meta.ID, true
+	}
+	if meta.Title != "" && lr.rec.Title != meta.Title {
+		lr.rec.Title, changed = meta.Title, true
+	}
+	if !changed {
+		return
+	}
+	lr.rec.Updated = r.now()
+	r.saveLocked()
 }
 
 // row reads one record and its session under the lock, so that everything after
@@ -625,15 +752,18 @@ func view(rec Run, sess *Session) RunView {
 	return v
 }
 
-// closeSession saves the conversation, ends it, and releases whatever was
-// allocated alongside it - in that order, because Close runs the SessionEnd
-// hook and waits for a turn to unwind, and the environment the hook runs in has
-// to still be there.
+// closeSession ends the conversation and releases whatever was allocated
+// alongside it, in that order: Close runs the SessionEnd hook and waits for a
+// turn to unwind, and the environment the hook runs in has to still be there.
+//
+// It does not save. The session persists itself at the end of every turn, which
+// is the only moment there is anything new to write, and Close cancels a
+// running turn and waits for that save to happen. Saving from here as well
+// would read the agent's messages while the turn goroutine is still writing
+// them - a data race, and one that only appears when a person closes a run
+// mid-answer, which is exactly when the conversation is worth keeping.
 func closeSession(sess *Session, rel func()) {
 	if sess != nil && sess.Local != nil {
-		if err := sess.Local.Save(); err != nil {
-			slog.Error("a run's conversation could not be saved", "err", err)
-		}
 		sess.Local.Close()
 	}
 	release(rel)

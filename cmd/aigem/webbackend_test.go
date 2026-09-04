@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -219,9 +221,16 @@ func TestArtifactsAreSortedByPath(t *testing.T) {
 	run := openTestRun(t, b)
 
 	sess := built.get(t)
-	for _, p := range []string{"/w/z.go", "/w/a.go", "/w/m.go"} {
+	// Enough of them, in reverse, that Go's map ordering cannot hand this test
+	// a pass: three paths come out sorted about one run in six.
+	var want []string
+	for i := 9; i >= 0; i-- {
+		p := fmt.Sprintf("/w/%d.go", i)
 		sess.RecordFileChange(p, "before", "after", false)
+		want = append(want, p)
 	}
+	sort.Strings(want)
+
 	arts, err := b.RunArtifacts(context.Background(), run.ID)
 	if err != nil {
 		t.Fatalf("RunArtifacts: %v", err)
@@ -230,11 +239,136 @@ func TestArtifactsAreSortedByPath(t *testing.T) {
 	for _, a := range arts {
 		paths = append(paths, a.Path)
 	}
-	if strings.Join(paths, ",") != "/w/a.go,/w/m.go,/w/z.go" {
-		t.Errorf("paths = %v, want them sorted", paths)
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Errorf("paths = %v, want %v", paths, want)
 	}
 	if arts[0].Old != "before" || arts[0].New != "after" {
 		t.Errorf("artifact = %+v, want both sides of the change", arts[0])
+	}
+	if arts[0].OldBytes != len("before") || arts[0].NewBytes != len("after") {
+		t.Errorf("artifact = %+v, want the sizes of both sides", arts[0])
+	}
+}
+
+// A run that changed a very large file holds both versions of it. Serialising
+// them would copy an unbounded amount of memory per request, and the list of
+// what changed is what the page actually needs.
+func TestAVeryLargeChangeIsListedWithoutItsContent(t *testing.T) {
+	runs, built := testRuns(t)
+	b := newWebBackend("1.2.3-test", nil, runs)
+	run := openTestRun(t, b)
+
+	sess := built.get(t)
+	huge := strings.Repeat("x", maxArtifactSide+1)
+	sess.RecordFileChange("/w/generated.go", "", huge, true)
+	sess.RecordFileChange("/w/small.go", "before", "after", false)
+
+	arts, err := b.RunArtifacts(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("RunArtifacts: %v", err)
+	}
+	if len(arts) != 2 {
+		t.Fatalf("got %d artifacts, want both files listed", len(arts))
+	}
+	big, small := arts[0], arts[1]
+	if big.Path != "/w/generated.go" || small.Path != "/w/small.go" {
+		t.Fatalf("artifacts = %+v, want them sorted by path", arts)
+	}
+	if !big.Truncated || big.New != "" {
+		t.Errorf("the large change = %+v, want it listed without its content", big)
+	}
+	if big.NewBytes != len(huge) {
+		t.Errorf("NewBytes = %d, want the real size %d", big.NewBytes, len(huge))
+	}
+	// And the file next to it is unaffected: the budget rations content, it
+	// does not switch it off.
+	if small.Truncated || small.New != "after" {
+		t.Errorf("the small change = %+v, want its content", small)
+	}
+}
+
+// Every operation carries fields that only differ by name, and this is the
+// translation between two structs full of them. A mapping that put the model
+// reference where the approval id goes would compile and run.
+func TestTheAdapterTranslatesEachOperation(t *testing.T) {
+	runs, built := testRuns(t)
+	b := newWebBackend("1.2.3-test", nil, runs)
+	run := openTestRun(t, b)
+	ctx := context.Background()
+
+	if err := b.ApplyRunOp(ctx, run.ID, web.RunOp{Op: "submit", Text: "the message"}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	evs, err := runs.Events(run.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var said bool
+	for _, ev := range evs {
+		if ev.Kind == uisession.KindUserMessage && ev.Text == "the message" {
+			said = true
+		}
+	}
+	if !said {
+		t.Errorf("no user message carrying the submitted text: %+v", evs)
+	}
+
+	var gotArgs string
+	built.get(t).Handle("rename", func(args string) error {
+		gotArgs = args
+		return nil
+	})
+	if err := b.ApplyRunOp(ctx, run.ID, web.RunOp{
+		Op: "command", Name: "rename", Args: "the widget factory",
+	}); err != nil {
+		t.Fatalf("command: %v", err)
+	}
+	if gotArgs != "the widget factory" {
+		t.Errorf("the handler was given %q, want the argument line", gotArgs)
+	}
+
+	// step_mode is the one op whose meaning is inverted on the way through.
+	if err := b.ApplyRunOp(ctx, run.ID, web.RunOp{Op: "step_mode", On: false}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Run(ctx, run.ID); got.Step {
+		t.Error("step mode reads as on after it was turned off")
+	}
+
+	// resolve carries the decision and who made it, and an approval nobody is
+	// waiting on is the ordinary refusal rather than something else.
+	err = b.ApplyRunOp(ctx, run.ID, web.RunOp{
+		Op: "resolve", ID: "a1", Decision: "once", Label: "web",
+	})
+	var refusal *web.Refusal
+	if !errors.As(err, &refusal) || !strings.Contains(refusal.Reason, "already decided") {
+		t.Errorf("resolve = %v, want a refusal saying the approval was decided", err)
+	}
+
+	// switch_model resolves the ref, and a failed switch leaves the record.
+	before, _ := b.Run(ctx, run.ID)
+	if err := b.ApplyRunOp(ctx, run.ID, web.RunOp{
+		Op: "switch_model", Ref: "nowhere/nothing",
+	}); err == nil {
+		t.Error("switching to a model that does not resolve succeeded")
+	}
+	if after, _ := b.Run(ctx, run.ID); after.Model != before.Model {
+		t.Errorf("model = %q after a failed switch, want %q", after.Model, before.Model)
+	}
+}
+
+// A session closed underneath the table answers from further in than the
+// registry does, and a client keys on the status code: "session closed" as a
+// 400 refusal is not something a page can act on.
+func TestASessionClosedUnderTheTableIsStillAClosedRun(t *testing.T) {
+	runs, built := testRuns(t)
+	b := newWebBackend("1.2.3-test", nil, runs)
+	run := openTestRun(t, b)
+
+	built.get(t).Close()
+	_, err := b.WatchRun(context.Background(), run.ID, web.RunClient{Kind: "web"}, 0)
+	if !errors.Is(err, web.ErrRunClosed) {
+		t.Fatalf("WatchRun on a closed session = %v, want ErrRunClosed", err)
 	}
 }
 

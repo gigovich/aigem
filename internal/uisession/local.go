@@ -394,7 +394,13 @@ func (l *Local) Replay(since uint64) ([]Event, error) {
 
 func (l *Local) replayLocked(since uint64) ([]Event, error) {
 	first := l.firstSeqLocked()
-	if first > since+1 {
+	// Written this way round rather than as "first > since+1", because since
+	// comes off a URL: the largest cursor a client can send wraps that addition
+	// to zero, and every retained ring then reads as a gap. The answer to that
+	// one request would be a spurious "reload", and - for a session that has a
+	// journal - a full read and parse of it with this session's own lock held,
+	// which stalls every emit and every approval in the conversation.
+	if first > 0 && since < first-1 {
 		// Beyond what is held in memory, the journal is the record. Only a session
 		// that never reached its first turn has none.
 		if l.id != "" {

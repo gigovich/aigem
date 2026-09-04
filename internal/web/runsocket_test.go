@@ -384,3 +384,37 @@ func TestASubmitPastTheFrameBoundEndsTheSocket(t *testing.T) {
 		t.Errorf("%d operations reached the backend, want the one inside the bound", n)
 	}
 }
+
+// A tab that goes away has to take its subscription with it. Left attached, the
+// session goes on publishing to a reader that will never come back: a
+// subscriber and a goroutine per disconnect, and a presence line that shows
+// people who are not there.
+func TestADisconnectingClientDetachesFromTheRun(t *testing.T) {
+	b := &fakeBackend{}
+	srv := newTestServer(t, Config{Backend: b})
+	id := openRun(t, srv)
+
+	c := dialRunSocket(t, srv, id, "?kind=phone&label=the%20kitchen%20one")
+	// Attached, and attached as who it said it was: presence is built out of
+	// this, so a router that dropped the identity would show an unnamed tab.
+	waitFor(t, func() bool { return len(b.watchers(id)) == 1 })
+	if got := b.watchers(id)[0]; got.Kind != "phone" || got.Label != "the kitchen one" {
+		t.Errorf("watcher = %+v, want the kind and label it dialled with", got)
+	}
+
+	c.close()
+	waitFor(t, func() bool { return len(b.watchers(id)) == 0 })
+}
+
+// A client that asks to resume from a point the run no longer holds cannot
+// retry its way out of it, and the socket route has to say so with the same
+// status the timeline does - it is the other half of the same recovery.
+func TestASocketResumingPastTheHistoryIsGone(t *testing.T) {
+	b := &fakeBackend{watchErr: ErrHistoryGone}
+	srv := newTestServer(t, Config{Backend: b})
+	b.seed(Run{ID: "RUN-1", Status: "open", Live: true})
+	res := handshake(t, srv, "/api/runs/RUN-1/socket?since=90")
+	if res.StatusCode != http.StatusGone {
+		t.Fatalf("status = %d, want 410", res.StatusCode)
+	}
+}

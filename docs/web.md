@@ -138,7 +138,7 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/meta` | version, default model, `ui`, the feature map, and the revision it is at |
 | `GET /api/socket` | the control stream: what changed elsewhere in the daemon |
 | `GET /api/runs` | the conversations this daemon knows about, oldest first |
-| `POST /api/runs` | opens one, and answers with the record |
+| `POST /api/runs` | opens one; answers 201 with the record |
 | `GET /api/runs/{id}` | one record |
 | `DELETE /api/runs/{id}` | saves the conversation and ends its session |
 | `GET /api/runs/{id}/events` | a page of the timeline, `?since=&limit=` |
@@ -210,6 +210,15 @@ reads before it opens a socket. A restarted daemon finds every run closed: the
 record and the timeline are still there to read, and nothing is left claiming a
 session that went with the process.
 
+A conversation names itself on its first message, and the record catches up
+then - so a run listed after a restart carries the name it gave itself and the
+id its journal is under.
+
+One daemon holds 32 open runs. The 33rd `POST` is refused with the reason, and
+closing one gives its place back: a run is a tools registry, a model handle and
+an event ring, and a client looping on create would otherwise be an
+out-of-memory with nothing in the way of it.
+
 `DELETE` is that transition and not a deletion. It saves the conversation and
 ends the session, and the record and the journal stay, because a run somebody is
 done with is one they can still look back at. Doing it twice is not an error:
@@ -217,14 +226,35 @@ two tabs pressing the same button is the ordinary case.
 
 Statuses a client has to tell apart: `404` is a run that does not exist, `409`
 is one whose session is gone - reads still work, the socket does not - and `410`
-on the timeline means the history no longer reaches the point asked for, which
-is answered by reloading rather than by retrying. A `400` carries a sentence
-meant to be shown; a `500` does not, and what it was is in the daemon's log.
+means the history no longer reaches the point asked for, which is answered by
+reloading rather than by retrying. `410` comes from the timeline *and* from the
+socket: opening one with a `since` the run no longer holds is refused before the
+upgrade, so a page's socket-open path has to handle it. A `400` carries a
+sentence meant to be shown - it is written for a person, and a front-end must
+render it as text, never as markup. A `500` carries nothing; what it was is in
+the daemon's log.
 
 `?since=` and `?limit=` are non-negative whole numbers. Every cursor on this API
 is one: opaque to the client, compared only for equality and order. A timeline
-is read in pages, and a client that gets a full one asks again from the last
-sequence it saw - the same loop it uses to catch up after a disconnect.
+is read in pages of at most 2000 events - an absent `limit`, a zero one and one
+past the cap all mean a full page - and a client that gets a full one asks again
+from the last sequence it saw, the same loop it uses to catch up after a
+disconnect. There is no "more" marker: a page that came back full is the signal
+to ask again.
+
+A create body is capped at 16 KiB, and anything past that is a `400`.
+
+`GET /api/runs/{id}/artifacts` lists every file the run changed. The content of
+both sides comes with it, but only up to a budget - a run that appended a line
+to a generated file holds both copies of it, and a response carrying them would
+be several more. Past that, `truncated` is set and the content is left out;
+`oldBytes` and `newBytes` are the real sizes either way, so a page can always
+say how big a change is.
+
+Booleans that are false are absent rather than present-and-false, the way Go's
+`omitempty` writes them - `running`, `waiting`, `step` and `seq` all behave that
+way. `live` is the exception and is always there, because it is the field a page
+reads before it decides whether to open a socket.
 
 ## The run stream
 
@@ -232,12 +262,16 @@ sequence it saw - the same loop it uses to catch up after a disconnect.
 It is the opposite of the control stream in both directions: it replays, and it
 takes mutations.
 
-Down it come the session's own events, in order and exactly as the session wrote
-them. `since` is the last sequence the client holds; the backlog is spliced in
-front of the live events, so there is no window in which an event is neither
-replayed nor delivered. A client that falls too far behind is sent a `desync`
-event carrying the last sequence it did get, and catches up over
-`/api/runs/{id}/events?since=`.
+`?since=` is the last sequence the client holds; the backlog is spliced in front
+of the live events, so there is no window in which an event is neither replayed
+nor delivered. `?kind=` and `?label=` say who is attaching - they are what the
+presence event shows the other tabs, and `kind` defaults to `web`.
+
+Down come the session's own events, in order and exactly as the session wrote
+them. A client that falls too far behind is sent a `desync` event carrying the
+last sequence it did get, and then **the socket ends**: recovery is to refetch
+over `/api/runs/{id}/events?since=<that sequence>` and dial again, not to keep
+waiting on a stream that has already closed.
 
 Up go the client's operations, one JSON document per frame:
 
@@ -253,7 +287,15 @@ Up go the client's operations, one JSON document per frame:
 
 `step_mode` is the toggle a person sees, and `on` means "ask me about every tool
 call" - the inverse of the session's auto mode. The run's current setting is the
-`step` field of its record.
+`step` field of its record, absent when it is off.
+
+`command` runs a slash command inside the conversation. The daemon registers
+none yet - every one of them comes back refused as unknown - and the catalog a
+palette would offer arrives with `/api/commands`.
+
+`switch_model` with `"persist":true` is the one operation whose effect leaves
+the run: it writes the operator's saved model preference, which the next session
+started anywhere - including the terminal - will use.
 
 An operation that is applied is answered with nothing; the conversation's own
 events are the acknowledgement. One that is refused comes back as

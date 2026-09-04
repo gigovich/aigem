@@ -51,8 +51,7 @@ func (s *Server) handleOpenRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.hub.publish("run.updated", run)
-	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, run)
+	writeJSONStatus(w, http.StatusCreated, run)
 }
 
 // handleRun reports one conversation.

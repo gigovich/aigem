@@ -62,6 +62,13 @@ func (b *fakeBackend) Runs(context.Context) ([]Run, error) {
 	if b.listErr != nil {
 		return nil, b.listErr
 	}
+	if len(b.order) == 0 {
+		// A nil slice, deliberately: it is what a backend built on a Go map or
+		// a filtered loop hands back, it encodes as null, and the router's job
+		// is to turn it into an array. A fake that helpfully returned an empty
+		// slice would make the test for that pass on its own.
+		return nil, nil
+	}
 	out := make([]Run, 0, len(b.order))
 	for _, id := range b.order {
 		out = append(out, b.runs[id].run)
@@ -82,7 +89,7 @@ func (b *fakeBackend) OpenRun(_ context.Context, req NewRun) (Run, error) {
 	id := "RUN-" + strconv.Itoa(b.next)
 	run := Run{
 		ID: id, Mode: "interactive", Title: req.Title, Model: req.Model,
-		Root: req.Root, Status: "open", Live: true,
+		Status: "open", Live: true,
 		Created: time.Unix(int64(b.next), 0).UTC(),
 		Updated: time.Unix(int64(b.next), 0).UTC(),
 	}
@@ -158,7 +165,7 @@ func (b *fakeBackend) RunEvents(_ context.Context, id string, since uint64, limi
 	return out, nil
 }
 
-func (b *fakeBackend) WatchRun(_ context.Context, id string, _ RunClient, since uint64) (
+func (b *fakeBackend) WatchRun(_ context.Context, id string, c RunClient, since uint64) (
 	RunStream, error,
 ) {
 	b.mu.Lock()
@@ -176,7 +183,7 @@ func (b *fakeBackend) WatchRun(_ context.Context, id string, _ RunClient, since 
 	// Buffered past what any test sends, so the backlog and the live events go
 	// in without a reader having to be there yet - which is what the session
 	// itself does with a subscriber's queue.
-	s := &fakeStream{b: b, run: fr, ch: make(chan RunEvent, 64)}
+	s := &fakeStream{b: b, run: fr, client: c, ch: make(chan RunEvent, 64)}
 	for _, ev := range fr.events {
 		if ev.Seq > since {
 			s.ch <- ev
@@ -210,6 +217,22 @@ func (b *fakeBackend) ApplyRunOp(_ context.Context, id string, op RunOp) error {
 	return nil
 }
 
+// watchers reports who is currently attached to a run, which is also how a
+// test sees whether a disconnecting client detached.
+func (b *fakeBackend) watchers(id string) []RunClient {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	fr := b.runs[id]
+	if fr == nil {
+		return nil
+	}
+	out := make([]RunClient, 0, len(fr.subs))
+	for s := range fr.subs {
+		out = append(out, s.client)
+	}
+	return out
+}
+
 // ops reports what reached the backend.
 func (b *fakeBackend) ops() []RunOp {
 	b.mu.Lock()
@@ -235,10 +258,14 @@ func (b *fakeBackend) emit(id string, payload string) RunEvent {
 // fakeStream is one client's attachment. Close is idempotent, as the interface
 // promises, so a handler may defer it and still close early.
 type fakeStream struct {
-	b    *fakeBackend
-	run  *fakeRun
-	ch   chan RunEvent
-	once sync.Once
+	b   *fakeBackend
+	run *fakeRun
+	// client is who attached. Presence in the UI is built out of it, so a
+	// router that dropped it on the way to the backend has to fail a test
+	// rather than quietly show every tab as an unnamed one.
+	client RunClient
+	ch     chan RunEvent
+	once   sync.Once
 }
 
 func (s *fakeStream) Events() <-chan RunEvent { return s.ch }
