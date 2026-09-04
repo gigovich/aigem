@@ -11,8 +11,9 @@ aigem web --open                 # open it in the default browser too
 ```
 
 This is the first phase of the rewrite: the daemon, the application shell and
-the build integration are in place; the screens are not. `/healthz` reports
-whether the binary carries a UI at all.
+the build integration are in place; the screens are not. `/healthz` says only
+that the process is up; `GET /api/meta`, behind the credential, is where a page
+reads the version, the default model and which features this build serves.
 
 ## Signing in
 
@@ -131,15 +132,63 @@ though the hop to the daemon is plain HTTP.
 
 | Path        | |
 | ----------- | --------------------------------------------------------------- |
-| `/healthz`  | `{"ok":true,"ui":true}`, unauthenticated; `ui` is false with no bundle |
+| `/healthz`  | `{"ok":true}`, unauthenticated: a liveness probe and nothing else |
 | `POST /api/auth/session` | trades the token for a cookie, or renews one close to expiry |
 | `DELETE /api/auth/session` | signs this browser out, on the daemon as well as in the browser |
+| `GET /api/meta` | version, default model, `ui`, the feature map, and the revision it is at |
+| `GET /api/socket` | the control stream: what changed elsewhere in the daemon |
 | `/api/...`  | reserved; an unknown path here is a 404, never the page |
 | everything else | the application, which routes in the browser |
 
 A binary built without a bundle is the exception to the last row: it has no page
-to serve, so it answers 501 there. `/healthz`, the two `/api/auth/session`
-methods and the wrong-method 405s answer as they always do.
+to serve, so it answers 501 there. `/healthz`, the API routes above and the
+wrong-method 405s answer as they always do.
+
+## The control stream
+
+`GET /api/socket` is one websocket per tab, and it only reads. Every mutation
+goes over HTTP, where a status code and an error body mean something.
+
+The daemon keeps one revision counter for the whole process. Every published
+change takes the next number, and every frame carries the number that connection
+is at once it has been read:
+
+```json
+{"type":"hello","rev":12,
+ "data":{"version":"...","defaultModel":"...","rev":12,"ui":true,"features":{...}}}
+{"type":"run.updated","rev":13,"data":{"id":"..."}}
+```
+
+`hello` arrives first and is the client's base - byte for byte the document
+`/api/meta` serves, so a page that has just reconnected does not have to ask
+again. Its `rev` is the same number as the envelope's, which is the point: every
+snapshot says which revision it is current as of, or a page that refetched after
+a gap could mark itself up to date at a revision the answer predates.
+
+There is no replay. A client that sees a `rev` more than one past the last it
+handled has missed something and refetches the collection it cares about. A
+frame that is not a change - the refusal of an op this stream will not carry -
+repeats the revision that client is already at, so a client's own mistake never
+reads as a gap. A delta that arrives with no `data` carries nothing the client
+can apply - the daemon had nothing to say, or could not encode what it had - so
+treat it as a gap and refetch.
+
+A client that stops reading is disconnected rather than skipped past, because a
+skip is only ever noticed by a message that arrives after it, and the burst that
+fills a queue is the burst that then ends. Its recovery is a reconnect, which
+re-bases it.
+
+The only thing a client may send up is `{"op":"ping"}`. Anything else comes back
+as `{"type":"client_error", ...}` and the socket stays open - except a message
+past the size limit below, which ends it. A binary frame is discarded in
+silence.
+
+The connection's own contract: the daemon sends a protocol ping every 30
+seconds, hangs up after 90 seconds without a frame from the client, and caps one
+frame at 64 KiB and one message at 256 KiB. A browser answers the ping itself,
+so a page has nothing to do to stay connected. The daemon holds 64 websockets at
+once across every tab; the 65th handshake is refused with a 503 and a
+`Retry-After`, which is a retry rather than an error to show.
 
 Every response carries a content security policy, `X-Content-Type-Options:
 nosniff` and `Referrer-Policy: no-referrer` - including the page and the bundle,

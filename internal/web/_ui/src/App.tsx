@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
 import { signIn } from '@/lib/auth'
 
-type Health = { ok: boolean; ui: boolean }
+type Meta = { version: string; ui: boolean }
 
 /**
  * The build spine, and nothing more: it proves the bundle is embedded, served,
  * signed in and talking to the daemon. The application shell replaces this in
  * the next phase.
+ *
+ * It asks /api/meta rather than /healthz on purpose: /healthz needs no
+ * credential, so a spine built on it would go green with the sign-in broken.
  */
 export default function App() {
   const [status, setStatus] = useState('connecting…')
@@ -14,9 +17,9 @@ export default function App() {
   useEffect(() => {
     const abort = new AbortController()
     signIn(abort.signal)
-      .then(() => fetch('/healthz', { signal: abort.signal }))
-      .then((res) => (res.ok ? (res.json() as Promise<Health>) : Promise.reject(new Error(res.statusText))))
-      .then((body) => setStatus(body.ok ? 'daemon reachable' : 'daemon unhealthy'))
+      .then(() => fetch('/api/meta', { signal: abort.signal }))
+      .then((res) => (res.ok ? (res.json() as Promise<Meta>) : Promise.reject(new Error(res.statusText))))
+      .then((body) => setStatus(`daemon reachable: ${body.version}`))
       .catch((err: Error) => {
         if (err.name === 'AbortError') return
         // The sign-in says why on its own; anything else got as far as the

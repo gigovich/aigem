@@ -22,7 +22,7 @@ import (
 // real name got a 403 that reads as a broken server rather than as a missing
 // flag. Now it refuses to start and says which flag.
 func TestANonLoopbackBindNeedsAnOrigin(t *testing.T) {
-	_, err := New(Config{Addr: "0.0.0.0:0"})
+	_, err := New(withBackend(Config{Addr: "0.0.0.0:0"}))
 	if err == nil {
 		t.Fatal("serving on a wildcard address without an origin was accepted")
 	}
@@ -34,7 +34,7 @@ func TestANonLoopbackBindNeedsAnOrigin(t *testing.T) {
 // The other half of the same decision: with the name stated, the bind the rule
 // exists to refuse is the one it now allows.
 func TestAStatedOriginUnlocksARoutableBind(t *testing.T) {
-	srv, err := New(Config{Addr: "0.0.0.0:0", Origins: []string{"https://aigem.example.ts.net"}})
+	srv, err := New(withBackend(Config{Addr: "0.0.0.0:0", Origins: []string{"https://aigem.example.ts.net"}}))
 	if err != nil {
 		t.Fatalf("a wildcard bind with an origin was refused: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestBadOriginsAreRefusedAtStartup(t *testing.T) {
 		"https://aigem.example.ts.net/ui", // a URL, not an origin
 		"https://user:pw@aigem.example.ts.net",
 	} {
-		srv, err := New(Config{Addr: "127.0.0.1:0", Origins: []string{origin}})
+		srv, err := New(withBackend(Config{Addr: "127.0.0.1:0", Origins: []string{origin}}))
 		if err == nil {
 			_ = srv.Close()
 			t.Errorf("origin %q was accepted", origin)
@@ -150,7 +150,7 @@ func TestARefusedOriginReleasesThePort(t *testing.T) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	if _, err := New(Config{Addr: addr, Origins: []string{"nonsense"}}); err == nil {
+	if _, err := New(withBackend(Config{Addr: addr, Origins: []string{"nonsense"}})); err == nil {
 		t.Fatal("a bad origin was accepted")
 	}
 	again, err := net.Listen("tcp", addr)
@@ -240,7 +240,7 @@ func TestAHostIsMatchedTheWayAResolverWouldRead(t *testing.T) {
 // one lookup for the operator; accepting it is a daemon that 403s every request
 // with no way to tell why.
 func TestAUnicodeOriginIsRefusedWithTheFix(t *testing.T) {
-	srv, err := New(Config{Addr: "127.0.0.1:0", Origins: []string{"https://例え.jp"}})
+	srv, err := New(withBackend(Config{Addr: "127.0.0.1:0", Origins: []string{"https://例え.jp"}}))
 	if err == nil {
 		_ = srv.Close()
 		t.Fatal("a unicode origin was accepted")
@@ -249,7 +249,7 @@ func TestAUnicodeOriginIsRefusedWithTheFix(t *testing.T) {
 		t.Errorf("error = %v, want it to name the form that works", err)
 	}
 	// And the punycode form is accepted.
-	ok, err := New(Config{Addr: "127.0.0.1:0", Origins: []string{"https://xn--r8jz45g.jp"}})
+	ok, err := New(withBackend(Config{Addr: "127.0.0.1:0", Origins: []string{"https://xn--r8jz45g.jp"}}))
 	if err != nil {
 		t.Fatalf("the punycode form was refused: %v", err)
 	}

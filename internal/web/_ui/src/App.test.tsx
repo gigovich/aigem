@@ -7,7 +7,7 @@ afterEach(() => {
 })
 
 // The page signs in first and asks after: /api/auth/session answers 204 with no
-// body, /healthz answers the JSON.
+// body, and the route it asks next answers the JSON.
 const answer = (body: unknown, init?: ResponseInit) =>
   vi.fn((path: string) =>
     Promise.resolve(
@@ -17,10 +17,33 @@ const answer = (body: unknown, init?: ResponseInit) =>
     ),
   )
 
-test('reports the daemon as reachable once /healthz answers', async () => {
-  vi.stubGlobal('fetch', answer({ ok: true, ui: true }))
+// The version has to come out of the answer, or the spine goes green against a
+// daemon that said nothing at all.
+test('reports the daemon as reachable once the meta route answers', async () => {
+  vi.stubGlobal('fetch', answer({ version: '1.2.3-test' }))
   render(<App />)
-  expect(await screen.findByRole('status')).toHaveTextContent('daemon reachable')
+  expect(await screen.findByRole('status')).toHaveTextContent('daemon reachable: 1.2.3-test')
+})
+
+// It asks a route the credential is required for on purpose: /healthz needs
+// none, so a spine built on that one reports a reachable daemon while the
+// sign-in is broken.
+test('asks a route the sign-in is required for', async () => {
+  const fetched: string[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((path: string) => {
+      fetched.push(path)
+      return Promise.resolve(
+        path === '/api/auth/session'
+          ? new Response(null, { status: 204 })
+          : new Response(JSON.stringify({ version: '1.2.3-test' }), { status: 200 }),
+      )
+    }),
+  )
+  render(<App />)
+  await screen.findByText(/daemon reachable/)
+  expect(fetched).toEqual(['/api/auth/session', '/api/meta'])
 })
 
 // A refused sign-in is not an unreachable daemon, and telling the operator the

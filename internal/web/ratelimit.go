@@ -198,10 +198,15 @@ func clientAddr(r *http.Request) string {
 	return host
 }
 
-// sockets counts open websockets against maxSockets.
+// sockets counts open websockets against maxSockets, and lets shutdown wait for
+// them to give their slots back.
 type sockets struct {
 	mu   sync.Mutex
 	open int
+	// drained is non-nil only while someone is waiting for the count to reach
+	// zero, and release closes it on the way past. A channel rather than a
+	// sync.Cond because the wait is bounded: see drain.
+	drained chan struct{}
 }
 
 func (s *sockets) acquire() bool {
@@ -219,6 +224,42 @@ func (s *sockets) release() {
 	defer s.mu.Unlock()
 	if s.open > 0 {
 		s.open--
+	}
+	if s.open == 0 && s.drained != nil {
+		close(s.drained)
+		s.drained = nil
+	}
+}
+
+// drain waits for every slot to come back, and reports whether they did.
+//
+// The caller has already closed the connections, so the handlers holding these
+// slots are on their way out and this returns almost at once. The timeout is
+// there because "almost" is not "certainly": a frame that began writing just as
+// the connection was closed finishes on its own write deadline, and a shutdown
+// that hung on one would be worse than a shutdown that says so and goes.
+//
+// Calling it again after it has returned true is free, which is what keeps
+// Server.Close safe to call twice.
+func (s *sockets) drain(timeout time.Duration) bool {
+	s.mu.Lock()
+	if s.open == 0 {
+		s.mu.Unlock()
+		return true
+	}
+	if s.drained == nil {
+		s.drained = make(chan struct{})
+	}
+	wait := s.drained
+	s.mu.Unlock()
+
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-wait:
+		return true
+	case <-t.C:
+		return false
 	}
 }
 

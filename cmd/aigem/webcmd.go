@@ -111,6 +111,7 @@ func runWebCommand(args []string) error {
 		Origins:    origins,
 		Assets:     web.Assets(),
 		CookieFile: cookies,
+		Backend:    newWebBackend(versionString()),
 	})
 	if err != nil {
 		return err

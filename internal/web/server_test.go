@@ -14,7 +14,7 @@ import (
 
 func newTestServer(t *testing.T, cfg Config) *Server {
 	t.Helper()
-	srv, err := New(cfg)
+	srv, err := New(withBackend(cfg))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -23,43 +23,35 @@ func newTestServer(t *testing.T, cfg Config) *Server {
 	return srv
 }
 
-// The answer describes this server, not the binary: a caller can build a daemon
-// with no assets out of a binary that carries them, and the page it serves is
-// then a 501.
-func TestHealthzReportsThisServersUIState(t *testing.T) {
-	health := func(t *testing.T, cfg Config) struct {
-		OK bool `json:"ok"`
-		UI bool `json:"ui"`
-	} {
-		t.Helper()
+// A liveness probe and nothing else. Everything it used to carry - the version,
+// whether this build has a UI - moved to /api/meta behind Guard, and this test
+// is what keeps it from creeping back: an unauthenticated caller learns that
+// the process is up, and no more than that.
+func TestHealthzSaysOnlyThatTheDaemonIsUp(t *testing.T) {
+	for _, cfg := range []Config{{}, {Assets: spaHandler(testDist())}} {
 		srv := newTestServer(t, cfg)
 		res, err := http.Get(srv.Base() + "healthz")
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = res.Body.Close() }()
+		body, err := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if res.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want 200", res.StatusCode)
 		}
-		var got struct {
-			OK bool `json:"ok"`
-			UI bool `json:"ui"`
+		var got map[string]any
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
 		}
-		if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
-			t.Fatalf("decode: %v", err)
+		if ok, _ := got["ok"].(bool); !ok {
+			t.Errorf("ok = %v", got["ok"])
 		}
-		if !got.OK {
-			t.Error("ok = false")
+		if len(got) != 1 {
+			t.Errorf("/healthz answered %s; it says whether the process is up and nothing else", body)
 		}
-		return got
-	}
-
-	if got := health(t, Config{}); got.UI {
-		t.Error("a server built with no assets reported ui = true")
-	}
-	withUI := Config{Assets: spaHandler(testDist())}
-	if got := health(t, withUI); !got.UI {
-		t.Error("a server built with assets reported ui = false")
 	}
 }
 
@@ -69,7 +61,7 @@ func TestHealthzReportsThisServersUIState(t *testing.T) {
 // instead, or the refusal reads as a bug.
 func TestNonLoopbackBindIsRefused(t *testing.T) {
 	for _, addr := range []string{"0.0.0.0:0", "192.0.2.10:8080", "[2001:db8::1]:8080"} {
-		_, err := New(Config{Addr: addr})
+		_, err := New(withBackend(Config{Addr: addr}))
 		if err == nil {
 			t.Errorf("New(%q) succeeded, want a refusal", addr)
 			continue
@@ -84,7 +76,7 @@ func TestLoopbackBindsAreAccepted(t *testing.T) {
 	// Mixed case included: hostnames are case-insensitive to the resolver, so
 	// refusing "Localhost" would be a usability wart, not a control.
 	for _, addr := range []string{"127.0.0.1:0", "localhost:0", "Localhost:0", "[::1]:0"} {
-		srv, err := New(Config{Addr: addr})
+		srv, err := New(withBackend(Config{Addr: addr}))
 		if err != nil {
 			t.Errorf("New(%q) = %v, want it to bind", addr, err)
 			continue
@@ -201,7 +193,7 @@ func TestThePageIsServedWithoutACredential(t *testing.T) {
 // and then abandoned would hold its port for the life of the process. Closed
 // twice, because the command path closes on a signal and again from a defer.
 func TestCloseReleasesThePortAndCanBeCalledTwice(t *testing.T) {
-	srv, err := New(Config{})
+	srv, err := New(withBackend(Config{}))
 	if err != nil {
 		t.Fatal(err)
 	}

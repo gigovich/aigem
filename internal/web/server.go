@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -43,6 +44,9 @@ type Config struct {
 	// Assets serves the built UI. A daemon without one still serves /healthz and
 	// answers every page with a 501 that says which build step is missing.
 	Assets http.Handler
+	// Backend is what the API is served out of. Everything under /api that is
+	// not the sign-in exchange goes to it. It is required: see ErrNoBackend.
+	Backend Backend
 }
 
 // Server is a running daemon.
@@ -51,11 +55,22 @@ type Server struct {
 	allowed allowlist
 	assets  http.Handler
 	hasUI   bool
+	backend Backend
 	ln      net.Listener
-	http    *http.Server
+	// mux owns every route. It is a field rather than a local in New so that the
+	// route files added as the API grows register on the server they belong to,
+	// instead of each one being handed a mux by a constructor that has to know
+	// about all of them.
+	mux  *http.ServeMux
+	http *http.Server
 
 	failures *limiter
 	sockets  sockets
+	// hub carries state deltas to the connected pages and owns the daemon's
+	// revision counter; conns is every websocket net/http has handed over, so
+	// that Close can reach connections the http.Server no longer knows about.
+	hub   *hub
+	conns hijacked
 
 	mu sync.Mutex
 	// cookies are the live browser sessions and when each expires. They are
@@ -70,6 +85,11 @@ type Server struct {
 // Serve is called, but Addr, Token and URL are usable as soon as this returns,
 // so the caller can print the link before the first request arrives.
 func New(cfg Config) (*Server, error) {
+	// Before anything with a cost: a nil backend is a wiring mistake, and every
+	// later step here either binds a port or generates a credential.
+	if cfg.Backend == nil {
+		return nil, ErrNoBackend
+	}
 	addr := cfg.Addr
 	if addr == "" {
 		addr = "127.0.0.1:0"
@@ -104,42 +124,39 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
-	// hasUI is read before the fallback below replaces a nil handler, so it
-	// reports whether this daemon was given a UI rather than whether it has
-	// something to answer with - which is always.
 	cookies := cookieStoreFor(cfg.CookieFile)
 	s := &Server{
-		token:       token,
-		allowed:     allowed,
-		assets:      cfg.Assets,
+		token:   token,
+		allowed: allowed,
+		assets:  cfg.Assets,
+		// Read before the fallback below replaces a nil handler, so it reports
+		// whether this daemon was given a UI rather than whether it has
+		// something to answer with - which is always.
 		hasUI:       cfg.Assets != nil,
+		backend:     cfg.Backend,
 		failures:    newLimiter(),
 		cookies:     loadCookies(cookies),
 		cookieStore: cookies,
+		mux:         http.NewServeMux(),
+		hub:         newHub(),
+		conns:       hijacked{conns: make(map[*wsConn]struct{})},
 	}
 	if s.assets == nil {
 		s.assets = noAssets()
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.handleHealth)
-	// The catch-all below matches every method, so the mux never reports a method
-	// mismatch on its own. A more specific pattern has to say so.
-	mux.HandleFunc("/healthz", methodNotAllowed("GET, HEAD"))
-	// The exchange is guarded like every other route, so it accepts either
-	// credential: a page with a cookie about to lapse renews it the same way it
-	// got one, and a page with only the URL token gets its first.
-	mux.HandleFunc("POST /api/auth/session", s.Guard(s.handleAuthSession))
-	mux.HandleFunc("DELETE /api/auth/session", s.Guard(s.handleAuthLogout))
-	mux.HandleFunc("/api/auth/session", methodNotAllowed("POST, DELETE"))
-	mux.Handle("/", s.assets)
+	s.routes()
 
 	s.ln = ln
 	s.http = &http.Server{
 		// One wrapper rather than a call per handler: the page and the bundle are
 		// the responses the policy exists for, and they are served by
 		// http.FileServerFS, which will never call anything of ours. Every route
-		// added later is covered by construction.
-		Handler: withSecurityHeaders(mux),
+		// added later is covered by construction - as far as the connection is
+		// ours. A websocket handshake the upgrade itself refuses is answered on
+		// a hijacked connection by a library that writes the whole response, so
+		// a route that upgrades checks what it can before handing over: see
+		// handleControlSocket.
+		Handler: withSecurityHeaders(s.mux),
 		// net/http answers "OPTIONS *" itself, without ever calling Handler, so
 		// that one response would leave without the policy.
 		DisableGeneralOptionsHandler: true,
@@ -153,6 +170,41 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
+// routes registers everything this daemon answers. The catch-all is last and
+// serves the page, so any path not named here is a screen the UI routes in the
+// browser - except under /api/, which the assets handler 404s rather than
+// answering a JSON client with HTML.
+//
+// Nothing here applies the security headers: they wrap the whole mux in New, so
+// a route added without thinking about them is still covered.
+func (s *Server) routes() {
+	s.mux.HandleFunc("GET /healthz", s.handleHealth)
+	// The catch-all below matches every method, so the mux never reports a method
+	// mismatch on its own. A more specific pattern has to say so.
+	s.mux.HandleFunc("/healthz", methodNotAllowed("GET, HEAD"))
+	// The exchange is guarded like every other route, so it accepts either
+	// credential: a page with a cookie about to lapse renews it the same way it
+	// got one, and a page with only the URL token gets its first.
+	s.api("POST /api/auth/session", s.handleAuthSession)
+	s.api("DELETE /api/auth/session", s.handleAuthLogout)
+	s.mux.HandleFunc("/api/auth/session", methodNotAllowed("POST, DELETE"))
+	s.api("GET /api/meta", s.handleMeta)
+	s.mux.HandleFunc("/api/meta", methodNotAllowed("GET, HEAD"))
+	s.api("GET /api/socket", s.handleControlSocket)
+	s.mux.HandleFunc("/api/socket", methodNotAllowed("GET, HEAD"))
+	s.mux.Handle("/", s.assets)
+}
+
+// api registers a route that needs a credential. Registering an API handler
+// through it rather than through s.mux is the discipline the package keeps, so
+// that a route left open is a visible line in routes() rather than a missing
+// wrapper somewhere in a file of handlers. It is a convention and not a lock:
+// s.mux is still reachable, and the 405 fallback above is the one deliberate
+// use of it under /api/.
+func (s *Server) api(pattern string, h http.HandlerFunc) {
+	s.mux.HandleFunc(pattern, s.Guard(h))
+}
+
 // Serve runs until Close. A closed server is not an error.
 func (s *Server) Serve() error {
 	err := s.http.Serve(s.ln)
@@ -163,6 +215,10 @@ func (s *Server) Serve() error {
 }
 
 // Close stops the daemon. Calling it twice is safe.
+//
+// It blocks until the websockets it closed have given their socket-cap slots
+// back, up to wsDrainTimeout, so that a caller which returns from here can say
+// the daemon's connections are gone rather than that they were asked to go.
 func (s *Server) Close() error {
 	s.mu.Lock()
 	// The table goes with the process. The file is deliberately left alone:
@@ -172,12 +228,28 @@ func (s *Server) Close() error {
 	s.cookies = map[string]time.Time{}
 	s.mu.Unlock()
 
+	// Before http.Close, which does not know about them: a hijacked connection
+	// is no longer the http.Server's, so nothing else would ever end the
+	// goroutines behind it or give back the socket-cap slot it holds.
+	s.conns.closeAll()
+
 	err := s.http.Close()
 	// http.Server only knows about listeners Serve registered, so a Server that
 	// was built and then abandoned - an error on a later step, a test that never
 	// serves - would otherwise hold the port for the life of the process.
 	if lerr := s.ln.Close(); lerr != nil && err == nil && !errors.Is(lerr, net.ErrClosed) {
 		err = lerr
+	}
+
+	// The slot is released by Guard, after the handler it wrapped has returned,
+	// so waiting for the count to reach zero is how every socket that was open
+	// when Close started becomes a fact rather than something a test polls for.
+	// A handshake that had passed Guard but not yet reached the registry is not
+	// covered by that and does not need to be: the registry refuses it, and the
+	// handler closes what it accepted and unwinds.
+	if !s.sockets.drain(wsDrainTimeout) {
+		slog.Warn("a websocket did not release its slot before the daemon stopped waiting",
+			"after", wsDrainTimeout)
 	}
 	return err
 }
@@ -214,13 +286,15 @@ func (s *Server) Base() string {
 }
 
 // handleHealth answers without a credential: it is a liveness probe, and the
-// caller that needs it most is the one that has not signed in yet. It reports
-// nothing an unauthenticated caller could not learn by asking for the page.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	// This server's own state, not the binary's: a caller can build one with no
-	// assets out of a binary that has them, and answering from the embedded FS
-	// would promise a UI that this daemon serves 501 for.
-	writeJSON(w, map[string]any{"ok": true, "ui": s.hasUI})
+// caller that needs it most is the one that has not signed in yet.
+//
+// It says nothing else. Everything a page wants to know about the daemon - the
+// version, the default model, which features this build serves, whether it
+// carries a UI at all - moved to /api/meta when that route arrived, because it
+// is a description of the machine and there is no caller entitled to it before
+// signing in.
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 // allowlist is what this daemon answers to. The two lists are checked against
