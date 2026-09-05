@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gobwas/ws/wsutil"
 )
 
 // openRun starts a run through the API and returns its id, which is how a page
@@ -52,8 +55,13 @@ func runError(t *testing.T, raw []byte) wsError {
 	if err := json.Unmarshal(raw, &e); err != nil {
 		t.Fatalf("decode %s: %v", raw, err)
 	}
-	if e.Kind != kindClientError {
-		t.Fatalf("frame = %s, want a %s", raw, kindClientError)
+	// The literal, deliberately, and not the constant: the whole point of this
+	// name is that it does not collide with "error", which is a real event
+	// kind. Asserting against the constant would let a rename to "error" pass
+	// while putting every client mistake into the timeline as something that
+	// happened in the conversation.
+	if e.Kind != "client_error" {
+		t.Fatalf("frame = %s, want a client_error", raw)
 	}
 	return e
 }
@@ -207,12 +215,34 @@ func TestPingIsAnsweredWithSilence(t *testing.T) {
 	c := dialRunSocket(t, srv, id, "")
 
 	c.send(map[string]any{"op": "ping"})
+	// The answer to a ping is the next thing that actually happens. Reading one
+	// frame and finding the event is not enough on its own - a reply the daemon
+	// should not have sent would be sitting in front of it - so the event has
+	// to be the *first* frame after the ping.
 	ev := b.emit(id, `"kind":"notice"`)
 	if got := c.nextRaw(); !bytes.Equal(got, ev.Data) {
 		t.Fatalf("after a ping the stream gave %s, want the next event %s", got, ev.Data)
 	}
 	if ops := b.ops(); len(ops) != 0 {
 		t.Fatalf("ping reached the backend as %+v", ops)
+	}
+	// And nothing follows it either.
+	c.expectSilence()
+}
+
+// expectSilence fails if the daemon has anything more to say soon.
+func (c *controlClient) expectSilence() {
+	c.t.Helper()
+	if err := c.conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		c.t.Fatal(err)
+	}
+	data, err := wsutil.ReadServerText(c.read)
+	if err == nil {
+		c.t.Fatalf("the daemon sent an unexpected frame: %s", data)
+	}
+	var timeout net.Error
+	if !errors.As(err, &timeout) || !timeout.Timeout() {
+		c.t.Fatalf("the connection ended rather than going quiet: %v", err)
 	}
 }
 
@@ -228,6 +258,22 @@ func TestAnOperationWithoutALabelIsAttributedToTheClientKind(t *testing.T) {
 	waitFor(t, func() bool { return len(b.ops()) == 1 })
 	if got := b.ops()[0].Label; got != "phone" {
 		t.Errorf("label = %q, want the client kind it dialled with", got)
+	}
+
+	// A client that names no kind is still somebody, and "web" is who.
+	plain := dialRunSocket(t, srv, id, "")
+	waitFor(t, func() bool {
+		for _, w := range b.watchers(id) {
+			if w.Kind == "web" {
+				return true
+			}
+		}
+		return false
+	})
+	plain.send(map[string]any{"op": "resolve", "id": "a2", "decision": "once"})
+	waitFor(t, func() bool { return len(b.ops()) == 2 })
+	if got := b.ops()[1].Label; got != "web" {
+		t.Errorf("label = %q, want the default client kind", got)
 	}
 }
 

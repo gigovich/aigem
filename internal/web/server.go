@@ -364,12 +364,17 @@ func CheckBind(addr string, origins []string) error {
 // the proxy's name, and the 403 that follows reads as a broken server rather
 // than as a missing flag.
 func checkBind(addr string, origins []string) error {
-	if len(origins) > 0 {
-		return nil
-	}
+	// Before the origins are consulted: an address that is not one is a refusal
+	// whatever else was given, and leaving it until after the short-circuit
+	// below meant `--addr localhost --origin https://x` got as far as
+	// net.Listen - which, for the caller that checks early, is after it has run
+	// the operator's SessionStart hook.
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("web: listen address %q: %w", addr, err)
+	}
+	if len(origins) > 0 {
+		return nil
 	}
 	if isLoopbackHost(host) {
 		return nil

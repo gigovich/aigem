@@ -180,8 +180,13 @@ type Runs struct {
 	// next is the highest run number handed out. It survives a restart through
 	// the table, so a restarted daemon does not reuse an id its journal still
 	// holds a timeline for.
-	next   int
-	closed bool
+	next int
+	// pending counts the Creates that are building a session and have no row
+	// yet. Without it the ceiling below counts only what has finished arriving,
+	// and a client issuing its POSTs in parallel walks straight past it - the
+	// window being exactly the MCP dial and the SessionStart hook.
+	pending int
+	closed  bool
 }
 
 // liveRun is one row: the record, and the session while there is one.
@@ -278,19 +283,26 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 		r.mu.Unlock()
 		return RunView{}, ErrRunsClosed
 	}
-	if n := r.liveLocked(); n >= maxLiveRuns {
+	if n := r.liveLocked() + r.pending; n >= maxLiveRuns {
 		r.mu.Unlock()
 		return RunView{}, fmt.Errorf("%w: %d are open, and %d is the limit; close one first",
 			ErrTooManyRuns, n, maxLiveRuns)
 	}
 	r.next++
 	id := runIDPrefix + strconv.Itoa(r.next)
-	// Registered under the lock, next to the check it depends on: Close sets
-	// closed under this lock and then waits, so nothing can join after the wait
-	// has started.
+	// Both registered under the lock, next to the check they belong to: Close
+	// sets closed under this lock and then waits, so nothing can join after the
+	// wait has started, and the ceiling counts this run from the moment it is
+	// allowed rather than from the moment it finishes.
+	r.pending++
 	r.opening.Add(1)
 	r.mu.Unlock()
-	defer r.opening.Done()
+	defer func() {
+		r.mu.Lock()
+		r.pending--
+		r.mu.Unlock()
+		r.opening.Done()
+	}()
 
 	sess, opened, err := r.open(ctx, req)
 	if err != nil {
@@ -594,7 +606,16 @@ func (r *Runs) shutdown() {
 	// is saved and its SessionEnd hook run after the caller has gone on to tear
 	// down the environment the hook needs - and after the process is free to
 	// exit in the middle of the save.
-	r.opening.Wait()
+	//
+	// Bounded, because what it waits on is somebody else's code: Open dials a
+	// provider and may refresh a credential over the network, and a Ctrl-C must
+	// not be able to hang on a server that has stopped answering. Past the
+	// bound the shutdown goes on and says so, which is the same trade
+	// uisession.Close makes with a turn that will not unwind.
+	if !waitFor(&r.opening, openWait) {
+		slog.Warn("a run was still being opened when the daemon stopped waiting for it",
+			"after", openWait)
+	}
 
 	r.mu.Lock()
 	rows := make([]*liveRun, 0, len(r.order))
@@ -648,6 +669,28 @@ func (r *Runs) shutdown() {
 		}()
 	}
 	wg.Wait()
+}
+
+// openWait bounds how long a shutdown waits for a run that is still being
+// opened. It is a backstop rather than a duration anything is expected to take.
+const openWait = 30 * time.Second
+
+// waitFor waits on wg for at most d, and reports whether it finished. The
+// goroutine outlives a timeout, which is what the bound is for: the process is
+// on its way out and work that will not finish should not decide when it gets
+// there.
+func waitFor(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // liveLocked counts the conversations with a session attached.
@@ -756,15 +799,19 @@ func view(rec Run, sess *Session) RunView {
 // alongside it, in that order: Close runs the SessionEnd hook and waits for a
 // turn to unwind, and the environment the hook runs in has to still be there.
 //
-// It does not save. The session persists itself at the end of every turn, which
-// is the only moment there is anything new to write, and Close cancels a
-// running turn and waits for that save to happen. Saving from here as well
-// would read the agent's messages while the turn goroutine is still writing
-// them - a data race, and one that only appears when a person closes a run
-// mid-answer, which is exactly when the conversation is worth keeping.
+// It saves after closing, never before. The session persists itself at the end
+// of every turn, so the messages are already safe; what a turn does not write
+// is metadata changed between turns, and switching model is exactly that - a
+// conversation resumed in the terminal would come back on the model it was
+// switched away from. Close cancels a running turn and waits for it, so by the
+// time this save reads the agent nothing is writing it. Saving first, as this
+// did, read those messages while the turn goroutine was still producing them.
 func closeSession(sess *Session, rel func()) {
 	if sess != nil && sess.Local != nil {
 		sess.Local.Close()
+		if err := sess.Local.Save(); err != nil {
+			slog.Error("a run's conversation could not be saved", "err", err)
+		}
 	}
 	release(rel)
 }

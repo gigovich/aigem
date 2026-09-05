@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"sync"
@@ -335,6 +337,28 @@ func TestTheAdapterTranslatesEachOperation(t *testing.T) {
 		t.Error("step mode reads as on after it was turned off")
 	}
 
+	// An attached image travels with the message, in the shape the model APIs
+	// take. It is a field the wire has and nothing else would notice missing.
+	if err := b.ApplyRunOp(ctx, run.ID, web.RunOp{
+		Op: "submit", Text: "what is this",
+		Images: []web.Image{{MediaType: "image/png", Data: "aGVsbG8="}},
+	}); err != nil {
+		t.Fatalf("submit with an image: %v", err)
+	}
+	evs, err = runs.Events(run.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var withImage bool
+	for _, ev := range evs {
+		if ev.Kind == uisession.KindUserMessage && ev.Text == "what is this" && ev.Images == 1 {
+			withImage = true
+		}
+	}
+	if !withImage {
+		t.Errorf("the message did not carry its image: %+v", evs)
+	}
+
 	// resolve carries the decision and who made it, and an approval nobody is
 	// waiting on is the ordinary refusal rather than something else.
 	err = b.ApplyRunOp(ctx, run.ID, web.RunOp{
@@ -395,4 +419,238 @@ func (s *lastSession) get(t *testing.T) *uisession.Local {
 		t.Fatal("no session has been opened yet")
 	}
 	return s.l
+}
+
+// A run that touched a hundred files is a real run; a hundred files' worth of
+// content in one document is not a page anyone can render. Every file is still
+// listed, with its real size, whether or not its content came along.
+func TestTheArtifactBudgetIsSpentAcrossTheWholeResponse(t *testing.T) {
+	runs, built := testRuns(t)
+	b := newWebBackend("1.2.3-test", nil, runs)
+	run := openTestRun(t, b)
+
+	// Each is well inside the per-change cap, and together they are several
+	// times the response budget.
+	const each = maxArtifactSide / 2
+	files := (maxArtifactBody / each) + 8
+	body := strings.Repeat("y", each)
+	sess := built.get(t)
+	for i := range files {
+		sess.RecordFileChange(fmt.Sprintf("/w/%03d.go", i), "", body, true)
+	}
+
+	arts, err := b.RunArtifacts(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("RunArtifacts: %v", err)
+	}
+	if len(arts) != files {
+		t.Fatalf("got %d artifacts, want all %d listed", len(arts), files)
+	}
+	total, truncated := 0, 0
+	for _, a := range arts {
+		total += len(a.Old) + len(a.New)
+		if a.Truncated {
+			truncated++
+			if a.Old != "" || a.New != "" {
+				t.Errorf("%s is marked truncated and still carries content", a.Path)
+			}
+		}
+		if a.NewBytes != each {
+			t.Errorf("%s reports %d bytes, want the real %d", a.Path, a.NewBytes, each)
+		}
+	}
+	if total > maxArtifactBody {
+		t.Errorf("the response carries %d bytes of content, and the budget is %d",
+			total, maxArtifactBody)
+	}
+	if truncated == 0 {
+		t.Error("nothing was truncated; the budget was never reached")
+	}
+}
+
+// The label is who answered an approval, and it is what the other clients are
+// shown instead of a failure. A translation that dropped it would make every
+// answer anonymous.
+func TestTheAdapterCarriesWhoAnsweredAnApproval(t *testing.T) {
+	cwd := t.TempDir()
+	env, _, err := runner.Load(context.Background(), runner.Options{Cwd: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(env.Close)
+
+	model := newAskingModel(t)
+	var built *uisession.Local
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			reg, err := env.NewTools()
+			if err != nil {
+				return nil, runner.Opened{}, err
+			}
+			s := runner.NewSession(runner.Spec{
+				Mode: req.Mode, Tools: reg, Backend: llm.NewRef(llm.New(model.URL, "m")),
+			})
+			built = s.Local
+			return s, runner.Opened{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	b := newWebBackend("1.2.3-test", nil, runs)
+	run := openTestRun(t, b)
+	stream, err := b.WatchRun(context.Background(), run.ID, web.RunClient{Kind: "web"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if err := b.ApplyRunOp(context.Background(), run.ID, web.RunOp{
+		Op: "submit", Text: "write it",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the approval the tool call parks on, then answer it as a named
+	// client.
+	var id string
+	deadline := time.Now().Add(30 * time.Second)
+	for id == "" && time.Now().Before(deadline) {
+		id, _ = built.Pending()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("the turn never parked on an approval")
+	}
+	if err := b.ApplyRunOp(context.Background(), run.ID, web.RunOp{
+		Op: "resolve", ID: id, Decision: "deny", Label: "the kitchen tablet",
+	}); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	for ev := range stream.Events() {
+		var decoded uisession.Event
+		if err := json.Unmarshal(ev.Data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Kind != uisession.KindApprovalResolved {
+			continue
+		}
+		if decoded.By != "the kitchen tablet" {
+			t.Errorf("the answer is attributed to %q, want the client that gave it", decoded.By)
+		}
+		if decoded.Decision != uisession.DecisionDeny {
+			t.Errorf("decision = %q, want the one that was sent", decoded.Decision)
+		}
+		return
+	}
+	t.Fatal("no approval_resolved event arrived")
+}
+
+// newAskingModel answers with a tool call that has to be approved, so a test can
+// reach the approval queue.
+func newAskingModel(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1",`+
+			`"type":"function","function":{"name":"write_file",`+
+			`"arguments":"{\"path\":\"notes.md\",\"content\":\"hi\"}"}}]},`+
+			`"finish_reason":"tool_calls"}]}`+"\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Who is watching is carried through the adapter into the session, and comes
+// back to every client on the presence event. Swapping the two fields, or
+// dropping them, makes every tab anonymous - and presence is what tells
+// "thinking" apart from "waiting for somebody who walked away".
+func TestTheAdapterCarriesWhoIsWatching(t *testing.T) {
+	runs, _ := testRuns(t)
+	b := newWebBackend("1.2.3-test", nil, runs)
+	run := openTestRun(t, b)
+
+	stream, err := b.WatchRun(context.Background(), run.ID,
+		web.RunClient{Kind: "phone", Label: "the kitchen one"}, 0)
+	if err != nil {
+		t.Fatalf("WatchRun: %v", err)
+	}
+	defer stream.Close()
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev, ok := <-stream.Events():
+			if !ok {
+				t.Fatal("the stream ended before presence arrived")
+			}
+			var decoded uisession.Event
+			if err := json.Unmarshal(ev.Data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Kind != uisession.KindPresence {
+				continue
+			}
+			if len(decoded.Clients) != 1 {
+				t.Fatalf("presence lists %d clients, want the one that attached", len(decoded.Clients))
+			}
+			got := decoded.Clients[0]
+			if got.Kind != "phone" || got.Label != "the kitchen one" {
+				t.Fatalf("presence shows %+v, want the kind and label that were given", got)
+			}
+			return
+		case <-deadline:
+			t.Fatal("presence never arrived")
+		}
+	}
+}
+
+// A resuming client says where it got to, and the adapter has to hand that on:
+// a second attachment that replayed from zero would redraw the whole
+// conversation over one the page already has.
+func TestTheAdapterResumesFromTheCursorItWasGiven(t *testing.T) {
+	runs, _ := testRuns(t)
+	b := newWebBackend("1.2.3-test", nil, runs)
+	run := openTestRun(t, b)
+	ctx := context.Background()
+
+	// One attachment, detached again, so the run has a timeline to resume into.
+	first, err := b.WatchRun(ctx, run.ID, web.RunClient{Kind: "web"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last uint64
+	for ev := range first.Events() {
+		last = ev.Seq
+		if last >= 1 {
+			break
+		}
+	}
+	first.Close()
+	if last == 0 {
+		t.Fatal("nothing was emitted to resume from")
+	}
+
+	resumed, err := b.WatchRun(ctx, run.ID, web.RunClient{Kind: "web"}, last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	select {
+	case ev, ok := <-resumed.Events():
+		if !ok {
+			t.Fatal("the resumed stream closed at once")
+		}
+		if ev.Seq <= last {
+			t.Errorf("resuming after %d replayed event %d", last, ev.Seq)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("nothing arrived on the resumed stream")
+	}
 }

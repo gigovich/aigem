@@ -338,6 +338,12 @@ func TestCheckBindRefusesWhatNewWouldRefuseWithoutTouchingAnything(t *testing.T)
 		{"reachable without one", "0.0.0.0:0", nil, true},
 		{"an origin with a path", "127.0.0.1:0", []string{"https://name/app"}, true},
 		{"an origin with no scheme", "127.0.0.1:0", []string{"aigem.example.ts.net"}, true},
+		// An address with no port is not one, whatever else was given. It used
+		// to pass the early check whenever an origin was named, and then fail
+		// at the listener - past everything this check exists to run before.
+		{"no port, with an origin", "localhost", []string{"https://aigem.example.ts.net"}, true},
+		{"no port, without one", "localhost", nil, true},
+		{"not an address at all", "not-an-address", []string{"https://x.example"}, true},
 	} {
 		err := CheckBind(tc.addr, tc.origins)
 		if (err != nil) != tc.wantErr {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -43,9 +44,12 @@ func newRunsRecording(t *testing.T, path string, opened, released *atomic.Int64,
 	runs, err := runner.NewRuns(runner.RunsConfig{
 		Store: file,
 		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
-			_, reg := newEnvAndTools(t, cwd)
+			env, reg := newEnvAndTools(t, cwd)
 			s := runner.NewSession(runner.Spec{
 				Mode: req.Mode, Tools: reg, Backend: deadBackend(), Title: req.Title,
+				// As the daemon builds one: the hooks runner is what gives a
+				// conversation started over a fresh identity.
+				Hooks: env.Hooks,
 			})
 			if opened != nil {
 				opened.Add(1)
@@ -106,7 +110,10 @@ func TestARunIsListedUnderTheIdItWasGiven(t *testing.T) {
 func TestRunsAreListedOldestFirst(t *testing.T) {
 	runs := newRuns(t, "", nil, nil)
 	var want []string
-	for range 3 {
+	// Enough that a map walk cannot come out in creation order by luck: with
+	// three, Go's small-map rotation hands the right answer about one run in
+	// three.
+	for range 10 {
 		want = append(want, create(t, runs, runner.RunRequest{}).ID)
 	}
 	var got []string
@@ -812,5 +819,574 @@ func waitForKind(t *testing.T, events <-chan uisession.Event, kind uisession.Kin
 		case <-deadline:
 			t.Fatalf("%s never arrived", kind)
 		}
+	}
+}
+
+// A daemon that is killed never closes its runs. What the table holds at that
+// moment is all the next one gets, so the record has to learn the session's id
+// and name when the conversation gets them - not when somebody closes it.
+//
+// The second registry is opened over the same file with the first still live,
+// which is what a crash looks like from the next daemon's side.
+func TestARecordLearnsItsSessionWithoutAnythingBeingClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.json")
+	runs := newRuns(t, path, nil, nil)
+	v := create(t, runs, runner.RunRequest{})
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "name this"}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// Nothing has been closed. Everything below reads the file.
+	after := newRuns(t, path, nil, nil)
+	got, err := after.Get(v.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.SessionID == "" {
+		t.Error("the record does not name the session; its journal cannot be found again")
+	}
+	if got.Title == "" {
+		t.Error("the record has no title; the run lists as untitled forever")
+	}
+}
+
+// The ordinary message must not rewrite the table. It is the one operation that
+// happens over and over, and the whole table is rewritten atomically each time.
+func TestASecondMessageDoesNotRewriteTheTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.json")
+	runs := newRuns(t, path, nil, nil)
+	v := create(t, runs, runner.RunRequest{})
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	first := modTime(t, path)
+
+	// Far enough apart that a write cannot land inside the filesystem's
+	// timestamp resolution.
+	time.Sleep(20 * time.Millisecond)
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if again := modTime(t, path); !again.Equal(first) {
+		t.Errorf("the table was rewritten for a message that changed nothing about it")
+	}
+}
+
+func modTime(t *testing.T, path string) time.Time {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.ModTime()
+}
+
+// A run is closed when the record says so, not only when the live session is
+// gone. A client filtering on status would otherwise see every run this daemon
+// ever held as open.
+func TestAClosedRunSaysSoInTheRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.json")
+	runs := newRuns(t, path, nil, nil)
+	a := create(t, runs, runner.RunRequest{})
+	b := create(t, runs, runner.RunRequest{})
+
+	if err := runs.CloseRun(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := runs.Get(a.ID); got.Status != runner.RunClosed {
+		t.Errorf("status after CloseRun = %q, want %q", got.Status, runner.RunClosed)
+	}
+	runs.Close()
+	if got, _ := runs.Get(b.ID); got.Status != runner.RunClosed {
+		t.Errorf("status after Close = %q, want %q", got.Status, runner.RunClosed)
+	}
+	// And on disk, which is what the next daemon reads before it corrects
+	// anything.
+	table, err := store.New[[]runner.Run](path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range table {
+		if rec.Status != runner.RunClosed {
+			t.Errorf("%s is %q on disk after a shutdown, want %q",
+				rec.ID, rec.Status, runner.RunClosed)
+		}
+	}
+}
+
+// Whatever Open allocated before failing is still the caller's to give back.
+func TestAFailedOpenReleasesWhatItAllocated(t *testing.T) {
+	var released atomic.Int64
+	fail := errors.New("the provider is not signed in")
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(context.Context, runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			return nil, runner.Opened{Release: func() { released.Add(1) }}, fail
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+	if _, err := runs.Create(context.Background(), runner.RunRequest{}); !errors.Is(err, fail) {
+		t.Fatalf("Create = %v, want the failure Open reported", err)
+	}
+	if released.Load() != 1 {
+		t.Errorf("release ran %d times after a failed open, want once", released.Load())
+	}
+}
+
+// An Open that reports success without a session is a wiring mistake, and the
+// run must not join the table on the strength of it.
+func TestAnOpenThatBuiltNoSessionIsRefusedAndReleased(t *testing.T) {
+	var released atomic.Int64
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(context.Context, runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			return nil, runner.Opened{Release: func() { released.Add(1) }}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+	if _, err := runs.Create(context.Background(), runner.RunRequest{}); err == nil {
+		t.Fatal("a run with no session was accepted")
+	}
+	if released.Load() != 1 {
+		t.Errorf("release ran %d times, want once", released.Load())
+	}
+	if list := runs.List(); len(list) != 0 {
+		t.Errorf("the table holds %+v, want nothing", list)
+	}
+}
+
+// The ceiling has to count the runs being built as well as the ones that have
+// arrived. A page opening several tabs at once, or any client issuing its POSTs
+// in parallel, walks straight past a check that only counts finished ones - and
+// the window is the whole of however long opening a session takes.
+func TestTheCeilingHoldsAgainstCreatesInFlight(t *testing.T) {
+	cwd := project(t)
+	release := make(chan struct{})
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			// Every open is still in flight until the test lets them all go, so
+			// nothing has reached the table while the checks are being made.
+			<-release
+			_, reg := newEnvAndTools(t, cwd)
+			return runner.NewSession(runner.Spec{
+				Mode: req.Mode, Tools: reg, Backend: deadBackend(),
+			}), runner.Opened{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	const tries = 60
+	var wg sync.WaitGroup
+	errs := make([]error, tries)
+	for i := range tries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = runs.Create(context.Background(), runner.RunRequest{})
+		}()
+	}
+	// Let them all get past the check before any of them finishes.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	var made, refused int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			made++
+		case errors.Is(err, runner.ErrTooManyRuns):
+			refused++
+		default:
+			t.Fatalf("Create = %v, want either a run or ErrTooManyRuns", err)
+		}
+	}
+	if made > 32 {
+		t.Errorf("%d runs were opened at once, and the limit is 32", made)
+	}
+	if refused == 0 {
+		t.Fatal("nothing was refused; the test never reached the ceiling")
+	}
+	if live := len(runs.List()); live > 32 {
+		t.Errorf("the table holds %d live runs, and the limit is 32", live)
+	}
+}
+
+// A second Close must not return while the first is still working. The caller
+// that returns from it goes on to tear down the environment those sessions
+// need, and "somebody else is already doing it" is not the same answer as "it
+// is done".
+func TestASecondCloseWaitsForTheFirst(t *testing.T) {
+	cwd := project(t)
+	var finished atomic.Int64
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			s := runner.NewSession(runner.Spec{Mode: req.Mode, Tools: reg, Backend: deadBackend()})
+			return s, runner.Opened{Release: func() {
+				// Slow enough that a caller which returned early would be seen
+				// doing so, rather than the test depending on scheduling.
+				time.Sleep(200 * time.Millisecond)
+				finished.Store(time.Now().UnixNano())
+			}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runs.Create(context.Background(), runner.RunRequest{}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	returned := make([]int64, 4)
+	for i := range returned {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runs.Close()
+			returned[i] = time.Now().UnixNano()
+		}()
+	}
+	wg.Wait()
+
+	done := finished.Load()
+	if done == 0 {
+		t.Fatal("the shutdown never released the run")
+	}
+	for i, at := range returned {
+		if at < done {
+			t.Errorf("Close %d returned %v before the shutdown finished",
+				i, time.Duration(done-at))
+		}
+	}
+}
+
+// The live half of a view is what a page draws while the conversation is
+// running, and every field of it is read off a different part of the session. A
+// view that dropped one would show a run that never seems to be doing anything.
+func TestAViewReportsWhatOnlyTheLiveSessionKnows(t *testing.T) {
+	built := &lastSession{}
+	runs := newRunsRecording(t, "", nil, nil, built)
+	v := create(t, runs, runner.RunRequest{Title: "opened as"})
+
+	// Before anything has happened: the record's own title, and no sequence.
+	if v.Title != "opened as" {
+		t.Errorf("title = %q, want the one it was created with", v.Title)
+	}
+	if v.Seq != 0 || v.Waiting {
+		t.Errorf("a fresh run = %+v, want nothing emitted and nobody waiting", v)
+	}
+
+	// A client attaching is an event, so the sequence has to move.
+	_, detach, err := runs.Subscribe(v.ID, uisession.Client{Kind: "web"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detach()
+	got, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Seq == 0 {
+		t.Error("the view reports no sequence after the session emitted an event")
+	}
+	if got.SessionID == "" {
+		t.Error("the view does not name the session")
+	}
+	if got.Title != "opened as" {
+		t.Errorf("title = %q; a session that has not named itself must not blank the record",
+			got.Title)
+	}
+
+	_ = built
+}
+
+// A run parked on an approval is the state the whole interface is built around:
+// it is what the status bar counts and what tells "thinking" apart from
+// "waiting for somebody who walked away".
+func TestAViewSaysWhenARunIsWaitingOnAnApproval(t *testing.T) {
+	cwd := project(t)
+	model := newFakeModel(t)
+	// A tool that asks: reading is not gated, writing is.
+	model.script(sseToolCall("write_file", `{"path":"notes.md","content":"hello"}`))
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			return runner.NewSession(runner.Spec{
+				Mode: req.Mode, Tools: reg, Backend: model.ref("m"),
+			}), runner.Opened{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	v := create(t, runs, runner.RunRequest{})
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "read it"}); err != nil {
+		t.Fatal(err)
+	}
+	// The turn parks on the approval the tool call needs, and stays there:
+	// nobody answers it.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		got, err := runs.Get(v.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Waiting {
+			if !got.Running {
+				t.Error("a run parked on an approval reports no turn in flight")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the run never reported waiting on an approval: %+v", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// Opened.Title is what the record is named with, and the session's own name
+// takes over only once it has one. A view that copied the session's name
+// unconditionally would blank the record for every run whose conversation has
+// not named itself.
+func TestARecordKeepsTheNameItWasOpenedWithUntilTheSessionHasOne(t *testing.T) {
+	cwd := project(t)
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			// Deliberately not given to the session: the record is named, the
+			// conversation is not.
+			s := runner.NewSession(runner.Spec{Mode: req.Mode, Tools: reg, Backend: deadBackend()})
+			return s, runner.Opened{Title: "named by the request"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	v := create(t, runs, runner.RunRequest{})
+	if v.Title != "named by the request" {
+		t.Fatalf("title = %q, want the one the run was opened with", v.Title)
+	}
+	got, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "named by the request" {
+		t.Errorf("title = %q after a read, want the one the run was opened with", got.Title)
+	}
+}
+
+// A conversation that starts over takes a new id, and the journal follows it.
+// A view still reporting the old one would send a reader to the timeline of a
+// conversation that is no longer there.
+func TestAViewFollowsTheSessionToANewIdentity(t *testing.T) {
+	built := &lastSession{}
+	runs := newRunsRecording(t, "", nil, nil, built)
+	v := create(t, runs, runner.RunRequest{})
+	before, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := built.get(t).Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	after, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.SessionID == "" || after.SessionID == before.SessionID {
+		t.Errorf("session id = %q after the conversation started over, want a new one (was %q)",
+			after.SessionID, before.SessionID)
+	}
+}
+
+// The model a run switched to is what the record has to say afterwards, and it
+// has to survive the daemon: a page that lists the old one is showing a fact
+// that stopped being true.
+func TestASuccessfulModelSwitchIsRecordedAndPersisted(t *testing.T) {
+	cwd := project(t)
+	model := newFakeModel(t)
+	models := testModelRegistry(t, cwd, model)
+	path := filepath.Join(t.TempDir(), "runs.json")
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Store: store.New[[]runner.Run](path),
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			s := runner.NewSession(runner.Spec{
+				Mode: req.Mode, Tools: reg, Backend: model.ref("first"), Models: models,
+			})
+			return s, runner.Opened{Model: "local/first"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	v := create(t, runs, runner.RunRequest{})
+	if v.Model != "local/first" {
+		t.Fatalf("model = %q, want the one the run was opened with", v.Model)
+	}
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSwitchModel, Ref: "local/second"}); err != nil {
+		t.Fatalf("switch_model: %v", err)
+	}
+	got, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != "local/second" {
+		t.Errorf("model = %q after the switch, want local/second", got.Model)
+	}
+	// And on disk, without anything being closed.
+	table, err := store.New[[]runner.Run](path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(table) != 1 || table[0].Model != "local/second" {
+		t.Errorf("the table records %+v, want the model it switched to", table)
+	}
+}
+
+// testModelRegistry offers two models on one fake endpoint, so a switch has
+// somewhere to switch to.
+func testModelRegistry(t *testing.T, cwd string, model *fakeModel) *llm.Registry {
+	t.Helper()
+	reg, warns := llm.NewRegistry(cwd, llm.Provider{
+		ID: llm.LocalProviderID, BaseURL: model.srv.URL,
+		API: llm.APICompletions, Auth: llm.AuthNone,
+		Models: []llm.ModelInfo{
+			{ID: "first", Provider: llm.LocalProviderID, ContextWindow: 8192},
+			{ID: "second", Provider: llm.LocalProviderID, ContextWindow: 8192},
+		},
+	})
+	for _, w := range warns {
+		t.Logf("models config: %s", w)
+	}
+	return reg
+}
+
+// A conversation ends where its environment does. Releasing first would run the
+// SessionEnd hook against an environment already torn down.
+func TestAReleaseHappensAfterTheSessionHasEnded(t *testing.T) {
+	cwd := project(t)
+	var order []string
+	var mu sync.Mutex
+	note := func(what string) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, what)
+	}
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			s := runner.NewSession(runner.Spec{Mode: req.Mode, Tools: reg, Backend: deadBackend()})
+			// Closing the session is what ends the stream, so a subscriber is
+			// how the test sees when that happened.
+			events, _, err := s.Local.Subscribe(uisession.Client{}, 0)
+			if err != nil {
+				return nil, runner.Opened{}, err
+			}
+			go func() {
+				for range events {
+				}
+				note("session closed")
+			}()
+			return s, runner.Opened{Release: func() { note("released") }}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	v := create(t, runs, runner.RunRequest{})
+	if err := runs.CloseRun(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "session closed" || order[1] != "released" {
+		t.Errorf("order = %v, want the session to end before what it ran in is released", order)
+	}
+}
+
+// Two runs must never be handed the same id: the journal is keyed by it, and a
+// second run answering to a first one's URL would show its conversation.
+func TestAFailedOpenDoesNotReturnItsIdToThePool(t *testing.T) {
+	cwd := project(t)
+	var fail atomic.Bool
+	fail.Store(true)
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			if fail.Load() {
+				return nil, runner.Opened{}, errors.New("not signed in")
+			}
+			_, reg := newEnvAndTools(t, cwd)
+			return runner.NewSession(runner.Spec{
+				Mode: req.Mode, Tools: reg, Backend: deadBackend(),
+			}), runner.Opened{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	if _, err := runs.Create(context.Background(), runner.RunRequest{}); err == nil {
+		t.Fatal("the failing open succeeded")
+	}
+	fail.Store(false)
+	first := create(t, runs, runner.RunRequest{}).ID
+	second := create(t, runs, runner.RunRequest{}).ID
+	if first == second {
+		t.Fatalf("two runs were handed %q", first)
+	}
+	if first == "RUN-1" {
+		t.Errorf("id = %q, which the failed open had already been given", first)
+	}
+}
+
+// A table with two rows under one id leaves one of them unreachable, and a row
+// with no id is unreachable already. Neither is something a daemon wrote, and
+// both are corrected rather than carried.
+func TestATableWithUnreachableRowsIsCorrected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.json")
+	file := store.New[[]runner.Run](path)
+	now := time.Now()
+	if err := file.Save([]runner.Run{
+		{ID: "RUN-1", Title: "the one that stays", Status: runner.RunClosed, Created: now},
+		{ID: "RUN-1", Title: "the shadow", Status: runner.RunClosed, Created: now},
+		{ID: "", Title: "unreachable", Status: runner.RunClosed, Created: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runs := newRuns(t, path, nil, nil)
+	list := runs.List()
+	if len(list) != 1 {
+		t.Fatalf("the table holds %+v, want the one reachable row", list)
+	}
+	if list[0].Title != "the one that stays" {
+		t.Errorf("kept %q, want the first row under the id", list[0].Title)
+	}
+	table, err := file.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(table) != 1 {
+		t.Errorf("the file still holds %d rows, want the correction written back", len(table))
 	}
 }

@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -338,20 +339,57 @@ func TestACreateBodyWithMoreThanOneDocumentIsRefused(t *testing.T) {
 }
 
 // The whole API is closed by default. This is the run half of that promise.
+//
+// Every method as well as every path: the mux matches method-qualified
+// patterns, so a route registered on the server's bare mux rather than through
+// s.api is only reachable - and only detectable - by the method it was
+// registered under. Probing GET alone would have left "open a run" and "close a
+// run" answerable by anyone who could reach the port.
 func TestTheRunRoutesNeedACredential(t *testing.T) {
-	srv := newTestServer(t, Config{})
-	for _, path := range []string{
-		"/api/runs", "/api/runs/RUN-1", "/api/runs/RUN-1/events",
-		"/api/runs/RUN-1/artifacts", "/api/runs/RUN-1/socket",
+	b := &fakeBackend{}
+	srv := newTestServer(t, Config{Backend: b})
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/runs"},
+		{http.MethodPost, "/api/runs"},
+		{http.MethodGet, "/api/runs/RUN-1"},
+		{http.MethodDelete, "/api/runs/RUN-1"},
+		{http.MethodGet, "/api/runs/RUN-1/events"},
+		{http.MethodGet, "/api/runs/RUN-1/artifacts"},
+		{http.MethodGet, "/api/runs/RUN-1/socket"},
 	} {
-		res, err := http.Get(srv.Base() + strings.TrimPrefix(path, "/"))
+		req, err := http.NewRequest(tc.method, srv.Base()+strings.TrimPrefix(tc.path, "/"),
+			strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
 		_ = res.Body.Close()
 		if res.StatusCode != http.StatusUnauthorized {
-			t.Errorf("%s = %d with no credential, want 401", path, res.StatusCode)
+			t.Errorf("%s %s = %d with no credential, want 401",
+				tc.method, tc.path, res.StatusCode)
 		}
+	}
+	// And nothing happened: a mutation that answered 401 after doing the work
+	// would pass every status assertion above.
+	if runs, _ := b.Runs(context.Background()); len(runs) != 0 {
+		t.Errorf("an unauthenticated request opened %d runs", len(runs))
+	}
+}
+
+// The 201 is the one answer on this API written with an explicit status, which
+// is the one place a Content-Type can be set after net/http has already
+// snapshotted the header block and be silently dropped.
+func TestOpeningARunAnswersJSON(t *testing.T) {
+	srv := newTestServer(t, Config{})
+	res := api(t, srv, http.MethodPost, "/api/runs", `{}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", res.StatusCode)
+	}
+	if got := res.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
 	}
 }
 
