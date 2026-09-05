@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/session"
@@ -594,6 +595,99 @@ func TestAClosedRunServesTheTimelineFromItsJournal(t *testing.T) {
 	if err != nil || len(rest) != 0 {
 		t.Errorf("Events past the end = %d, %v; want an empty page", len(rest), err)
 	}
+}
+
+// An oversized tool result is only ever shown as its head, and the whole of it
+// is on disk under the seq of the event that was trimmed. Fetching it has to
+// work while the run is live and after the daemon that produced it is gone,
+// because those are the two states a page opens a run in.
+func TestABlobIsFetchableWhileLiveAndAfterARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.json")
+	built := &lastSession{}
+	first := newRunsRecording(t, path, nil, nil, built)
+	v := create(t, first, runner.RunRequest{})
+
+	events, detach, err := first.Subscribe(v.ID, uisession.Client{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detach()
+
+	// A turn driven from a closure, which is how a skill or a command runs one:
+	// what matters here is a tool result the journal has to trim.
+	big := strings.Repeat("x", 8<<10)
+	err = built.get(t).Run("grep", "grep", func(_ context.Context, ev agent.Events) (string, error) {
+		ev.OnToolEnd("call-1", "grep", big, nil)
+		return "done", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, events, uisession.KindTurnEnd)
+
+	seq := trimmedToolResult(t, first, v.ID, len(big))
+	body, err := first.Blob(v.ID, seq)
+	if err != nil {
+		t.Fatalf("Blob on a live run: %v", err)
+	}
+	if body != big {
+		t.Fatalf("the blob is %d bytes, want %d", len(body), len(big))
+	}
+	// A seq that was never trimmed has nothing stored, and says so rather than
+	// answering with an empty body.
+	if _, err := first.Blob(v.ID, seq+1000); !errors.Is(err, runner.ErrNoBlob) {
+		t.Errorf("Blob for an unstored seq = %v, want ErrNoBlob", err)
+	}
+	if _, err := first.Blob("no-such-run", seq); !errors.Is(err, runner.ErrNoRun) {
+		t.Errorf("Blob for an unknown run = %v, want ErrNoRun", err)
+	}
+	first.Close()
+
+	// A different registry over the same table: no session, nothing but the
+	// record and what was written beside the journal.
+	second := newRuns(t, path, nil, nil)
+	body, err = second.Blob(v.ID, seq)
+	if err != nil {
+		t.Fatalf("Blob after a restart: %v", err)
+	}
+	if body != big {
+		t.Fatalf("the blob after a restart is %d bytes, want %d", len(body), len(big))
+	}
+}
+
+// A run that never had a turn has a session id - it is stamped when the session
+// is built - but no journal, because that is written from the first turn. There
+// is nothing to read, and the answer is a missing body rather than the raw
+// not-exist error from somewhere inside the state directory.
+func TestABlobIsRefusedForARunThatHasNotHadATurn(t *testing.T) {
+	runs := newRuns(t, "", nil, nil)
+	v := create(t, runs, runner.RunRequest{})
+	if _, err := runs.Blob(v.ID, 1); !errors.Is(err, runner.ErrNoBlob) {
+		t.Fatalf("Blob before the first turn = %v, want ErrNoBlob", err)
+	}
+}
+
+// trimmedToolResult finds the seq of the tool result the journal trimmed, and
+// fails the test unless the run actually recorded one - a Blob that returned
+// the right bytes for the wrong reason would otherwise pass.
+func trimmedToolResult(t *testing.T, runs *runner.Runs, id string, full int) uint64 {
+	t.Helper()
+	evs, err := runs.Events(id, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		if ev.Kind != uisession.KindToolEnd {
+			continue
+		}
+		if !ev.Blob || ev.Bytes != full || len(ev.Text) >= full {
+			t.Fatalf("tool result = %d bytes blob=%v bytes=%d, want a trimmed head "+
+				"promising a stored body of %d", len(ev.Text), ev.Blob, ev.Bytes, full)
+		}
+		return ev.Seq
+	}
+	t.Fatalf("no tool result in the timeline: %+v", evs)
+	return 0
 }
 
 // Every operation carries fields that only differ by name. A mapping that put

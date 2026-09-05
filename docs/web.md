@@ -143,6 +143,7 @@ though the hop to the daemon is plain HTTP.
 | `DELETE /api/runs/{id}` | saves the conversation and ends its session |
 | `GET /api/runs/{id}/events` | a page of the timeline, `?since=&limit=` |
 | `GET /api/runs/{id}/socket` | the run stream, `?since=` |
+| `GET /api/runs/{id}/blobs/{seq}` | the whole body of a tool result the timeline trimmed |
 | `GET /api/runs/{id}/artifacts` | the files the run changed, both sides |
 | `/api/...`  | reserved; an unknown path here is a 404, never the page, in every build |
 | everything else | the application, which routes in the browser |
@@ -235,7 +236,9 @@ two tabs pressing the same button is the ordinary case.
 
 Statuses a client has to tell apart:
 
-- `404` - no such run.
+- `404` - no such run, or, on a blob, an event with no stored body. The two are
+  told apart by the text: the first says the run is gone and the page reloads
+  it, the second says to go on showing the head it already has.
 - `409` - the run has no live session. Its timeline still reads; its artifacts
   and its socket do not, because both live with the session rather than in the
   journal.
@@ -266,6 +269,20 @@ uses to catch up after a disconnect. There is no "more" marker: a page that came
 back full is the signal to ask again.
 
 A create body is capped at 16 KiB, and anything past that is a `400`.
+
+A tool result over 2 KiB reaches a timeline as its head. The event then carries
+`bytes`, the true length, and `blob`, which says the whole of it was kept and
+can be fetched - `GET /api/runs/{id}/blobs/{seq}`, under the seq of the event
+that was trimmed. `blob` is set from the write that kept it and never ahead of
+it, so an event that admits it was trimmed without promising a body is the
+honest answer to a state directory that could not be written, and a page renders
+the head rather than offering a fetch that would 404. The `{seq}` is the same
+non-negative whole number every other cursor here is.
+
+That route is the one whose success body is not JSON: it answers `text/plain;
+charset=utf-8` with the tool's own output and nothing around it. It carries the
+same security headers as every other response, and a front-end must render it as
+text, never as markup.
 
 `GET /api/runs/{id}/artifacts` lists every file the run changed. The content of
 both sides comes with it, but only up to a budget - a run that appended a line

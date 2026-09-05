@@ -206,6 +206,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/runs/{id}/events", methodNotAllowed("GET, HEAD"))
 	s.api("GET /api/runs/{id}/socket", s.handleRunSocket)
 	s.mux.HandleFunc("/api/runs/{id}/socket", methodNotAllowed("GET, HEAD"))
+	s.api("GET /api/runs/{id}/blobs/{seq}", s.handleRunBlob)
+	s.mux.HandleFunc("/api/runs/{id}/blobs/{seq}", methodNotAllowed("GET, HEAD"))
 	s.api("GET /api/runs/{id}/artifacts", s.handleRunArtifacts)
 	s.mux.HandleFunc("/api/runs/{id}/artifacts", methodNotAllowed("GET, HEAD"))
 	s.mux.Handle("/", s.assets)

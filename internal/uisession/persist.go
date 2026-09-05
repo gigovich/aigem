@@ -1,6 +1,8 @@
 package uisession
 
 import (
+	"errors"
+	"io/fs"
 	"time"
 
 	"github.com/gigovich/aigem/internal/hooks"
@@ -168,7 +170,16 @@ func (l *Local) Reset() error {
 // sequence up where it left off. Numbering restarts at 1 in every process, so
 // appending without this would write a second event under a number the file
 // already uses, and a client asking for everything after it would get the wrong
-// half of two conversations.
+// half of two conversations. Since an oversized tool result is also stored under
+// its seq, it would write over that conversation's body as well - a stored event
+// still saying it has one, over bytes from a different turn.
+//
+// Which is why a journal that cannot be read through is not appended to at all.
+// "Not there" is the ordinary case and numbering from zero is right for it; any
+// other failure means the file exists, holds numbers this process cannot see,
+// and is one this process must not add to. A session that gives up its journal
+// still replays from memory for as long as it is running; one that renumbers
+// over an unread journal damages the record on disk.
 func (l *Local) reopenJournalLocked() {
 	if l.journal != nil {
 		l.journal.close()
@@ -177,9 +188,15 @@ func (l *Local) reopenJournalLocked() {
 	// The in-memory history describes the conversation just replaced, so it is
 	// dropped rather than spliced onto the one being resumed.
 	l.ring = nil
-	if prior, err := ReadJournal(l.id, 0); err == nil && len(prior) > 0 {
-		if last := prior[len(prior)-1].Seq; last > l.seq {
-			l.seq = last
+	prior, err := ReadJournal(l.id, 0)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	// The highest, not the last: a journal that a previous process already wrote
+	// out of order must not hand back a number still in use.
+	for _, ev := range prior {
+		if ev.Seq > l.seq {
+			l.seq = ev.Seq
 		}
 	}
 	if j, err := openJournal(l.id); err == nil {

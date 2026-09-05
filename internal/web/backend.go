@@ -39,6 +39,9 @@ type Backend interface {
 	// RunEvents returns the timeline after since, at most limit events, oldest
 	// first. A gap that can no longer be filled is ErrHistoryGone.
 	RunEvents(ctx context.Context, id string, since uint64, limit int) ([]RunEvent, error)
+	// RunBlob returns the whole body of a tool result whose timeline form was
+	// trimmed, for the event at seq. An event with no stored body is ErrNoBlob.
+	RunBlob(ctx context.Context, id string, seq uint64) (string, error)
 	// WatchRun attaches a client to a live run, resuming after since. The
 	// caller owns the stream and closes it.
 	WatchRun(ctx context.Context, id string, c RunClient, since uint64) (RunStream, error)
@@ -84,6 +87,14 @@ var ErrNoRun = errors.New("web: no such run")
 // when it has none - it was closed, or it belongs to a daemon that has since
 // restarted. Its timeline is still readable.
 var ErrRunClosed = errors.New("web: this run has no live session")
+
+// ErrNoBlob is returned when an event has no stored body to serve: it was
+// journalled whole, it is not a tool result, or the write that would have kept
+// it failed - in which case the event never claimed to have one.
+//
+// It is a 404 and not a 409, because what the client asked for is a document
+// that does not exist rather than an operation on a run in the wrong state.
+var ErrNoBlob = errors.New("web: no stored body for that event")
 
 // ErrHistoryGone is returned when a client asks to resume from a point the run
 // no longer holds. It is not an error the client can retry: it reloads.

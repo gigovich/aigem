@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/uisession"
@@ -213,6 +214,91 @@ func TestARunStreamIsSafeToCloseTwice(t *testing.T) {
 	stream.Close()
 	// And the channel is closed, so a pump reading it ends rather than parking.
 	for range stream.Events() {
+	}
+}
+
+// The wire's answer for an oversized tool result: the timeline carries the head
+// and this carries the whole of it. What the adapter adds is the translation of
+// "nothing was stored for that event" into the sentinel the router turns into a
+// 404, which is not the same as the daemon failing.
+func TestABlobCrossesTheSeamAndAMissingOneIsTheWebSentinel(t *testing.T) {
+	runs, built := testRuns(t)
+	b := newWebBackend("1.2.3-test", nil, runs)
+	run := openTestRun(t, b)
+
+	sess := built.get(t)
+	events, detach, err := sess.Subscribe(uisession.Client{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detach()
+	big := strings.Repeat("x", 8<<10)
+	err = sess.Run("grep", "grep", func(_ context.Context, ev agent.Events) (string, error) {
+		ev.OnToolEnd("call-1", "grep", big, nil)
+		return "done", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForKind(t, events, uisession.KindTurnEnd)
+
+	seq := trimmedToolResultSeq(t, b, run.ID, len(big))
+	body, err := b.RunBlob(context.Background(), run.ID, seq)
+	if err != nil {
+		t.Fatalf("RunBlob: %v", err)
+	}
+	if body != big {
+		t.Fatalf("the blob is %d bytes, want %d", len(body), len(big))
+	}
+	if _, err := b.RunBlob(context.Background(), run.ID, seq+1000); !errors.Is(err, web.ErrNoBlob) {
+		t.Errorf("RunBlob for an unstored seq = %v, want web.ErrNoBlob", err)
+	}
+	if _, err := b.RunBlob(context.Background(), "no-such-run", seq); !errors.Is(err, web.ErrNoRun) {
+		t.Errorf("RunBlob for an unknown run = %v, want web.ErrNoRun", err)
+	}
+}
+
+// trimmedToolResultSeq finds the event whose stored form promises a body, so
+// the fetch above cannot pass against a timeline that was never trimmed.
+func trimmedToolResultSeq(t *testing.T, b *webBackend, id string, full int) uint64 {
+	t.Helper()
+	events, err := b.RunEvents(context.Background(), id, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range events {
+		var ev uisession.Event
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev.Kind != uisession.KindToolEnd {
+			continue
+		}
+		if !ev.Blob || ev.Bytes != full || len(ev.Text) >= full {
+			t.Fatalf("tool result = %d bytes blob=%v bytes=%d, want a trimmed head "+
+				"promising a stored body of %d", len(ev.Text), ev.Blob, ev.Bytes, full)
+		}
+		return ev.Seq
+	}
+	t.Fatal("no tool result in the timeline")
+	return 0
+}
+
+// waitForKind reads the stream until the named event arrives.
+func waitForKind(t *testing.T, events <-chan uisession.Event, kind uisession.Kind) {
+	t.Helper()
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatalf("the stream closed before %s arrived", kind)
+			}
+			if ev.Kind == kind {
+				return
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s never arrived", kind)
+		}
 	}
 }
 

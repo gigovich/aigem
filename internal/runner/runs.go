@@ -45,6 +45,12 @@ var (
 	// ErrTooManyRuns is returned once the daemon is holding as many live
 	// conversations as it will.
 	ErrTooManyRuns = errors.New("runner: too many conversations are open")
+	// ErrNoBlob is returned when nothing was stored beside the journal for that
+	// event: the result was short enough to be journalled whole, the event is
+	// not a tool result at all, the run never had a turn and so has no journal
+	// directory, or the write that would have kept the body failed - in which
+	// case the event says so rather than promising one.
+	ErrNoBlob = errors.New("runner: no stored body for that event")
 )
 
 // maxLiveRuns is how many conversations one daemon holds at once.
@@ -72,9 +78,11 @@ const (
 
 // Run is the durable half of a run: what survives a restart.
 //
-// SessionID is the id the journal is keyed by, and it is empty until the
-// session's first turn - a conversation opened and walked away from is not
-// worth a file. A record that never got one has no timeline to read back.
+// SessionID is the id the journal is keyed by. It is stamped from the session
+// the run was opened with, so a record has one from the start - but the journal
+// itself is only written from the first turn, because a conversation opened and
+// walked away from is not worth a file. Reading back a run that never had one
+// is an empty timeline, not an error.
 type Run struct {
 	ID        string    `json:"id"`
 	SessionID string    `json:"sessionId,omitempty"`
@@ -441,6 +449,8 @@ func (r *Runs) Events(id string, since uint64, limit int) ([]uisession.Event, er
 	case sess != nil:
 		evs, err = sess.Local.Replay(since)
 	case rec.SessionID != "":
+		// The sess == nil arm, so there is no live id to prefer: the record is
+		// what sessionID would return.
 		evs, err = uisession.ReadJournal(rec.SessionID, since)
 		if errors.Is(err, fs.ErrNotExist) {
 			// The record outlived its journal - a state directory cleared, a
@@ -456,6 +466,38 @@ func (r *Runs) Events(id string, since uint64, limit int) ([]uisession.Event, er
 		evs = evs[:limit]
 	}
 	return evs, nil
+}
+
+// Blob returns the whole body of a tool result whose journalled form was
+// trimmed, for the event at seq.
+//
+// It reads the journal's sidecar rather than the session, so a closed run and a
+// run whose daemon has since restarted answer it too - which is the point: what
+// a timeline shows for an oversized result is its head, and the whole of it is
+// only ever on disk. An event that carries no stored body is ErrNoBlob, and a
+// client that asked for one it was not promised gets the same answer as one
+// that asked for a seq that never existed.
+func (r *Runs) Blob(id string, seq uint64) (string, error) {
+	rec, sess, err := r.row(id)
+	if err != nil {
+		return "", err
+	}
+	var m session.Meta
+	if sess != nil && sess.Local != nil {
+		m = sess.Local.Meta()
+	}
+	sid := sessionID(rec, m)
+	if sid == "" {
+		return "", ErrNoBlob
+	}
+	body, err := uisession.ReadBlob(sid, seq)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", ErrNoBlob
+	}
+	if err != nil {
+		return "", err
+	}
+	return body, nil
 }
 
 // Subscribe attaches a client to a live run and returns its event channel plus
@@ -851,18 +893,35 @@ func view(rec Run, sess *Session) RunView {
 	_, pending := sess.Local.Pending()
 	v.Waiting = pending != nil
 	v.Seq = sess.Local.Seq()
-	// A session names itself on its first turn, so the record written at
-	// creation is behind until then. A title it has not been given is left
-	// alone rather than copied over: the record's is what the run was opened
-	// with, and blanking it here would lose it.
+	// One snapshot, not two: a reset landing between them would give a view the
+	// new conversation's id over the old one's name.
 	m := sess.Local.Meta()
-	if m.ID != "" {
-		v.SessionID = m.ID
-	}
+	v.SessionID = sessionID(rec, m)
+	// A title a session has not been given is left alone rather than copied
+	// over: the record's is what the run was opened with, and blanking it here
+	// would lose it.
 	if m.Title != "" {
 		v.Title = m.Title
 	}
 	return v
+}
+
+// sessionID is which id the journal for this run is keyed by: the live
+// session's where it has one, and the record's otherwise. It takes the meta the
+// caller has already read, so a caller that needs the title too reads the
+// session once.
+//
+// The two agree for the whole of an ordinary run - the record is stamped from
+// the session at creation, and a session is given its id when it is built. They
+// come apart only for a session that takes a new identity mid-run, which
+// uisession.Reset and uisession.Load do and no daemon path reaches today. It is
+// one function because a reader and a timeline disagreeing about which journal
+// a run has is the kind of bug that only shows up in that one case.
+func sessionID(rec Run, m session.Meta) string {
+	if m.ID != "" {
+		return m.ID
+	}
+	return rec.SessionID
 }
 
 // closeSession ends the conversation and releases whatever was allocated

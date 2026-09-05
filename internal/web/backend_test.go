@@ -36,7 +36,7 @@ type fakeBackend struct {
 	applied []RunOp
 	// The errors a test arms. Each stands for a state the router has to have an
 	// answer for and cannot otherwise be driven into.
-	openErr, watchErr, eventsErr, opErr, listErr error
+	openErr, watchErr, eventsErr, opErr, listErr, blobErr error
 	// srv is where a change is announced, as the real registry announces one.
 	// It is filled in after New, because the daemon is served out of the
 	// backend and so cannot exist before it.
@@ -61,7 +61,10 @@ type fakeRun struct {
 	run    Run
 	events []RunEvent
 	arts   []Artifact
-	subs   map[*fakeStream]struct{}
+	// blobs is the whole body kept for an oversized tool result, by the seq of
+	// the event whose timeline form was trimmed.
+	blobs map[uint64]string
+	subs  map[*fakeStream]struct{}
 }
 
 func (b *fakeBackend) Meta(context.Context) (Meta, error) {
@@ -213,6 +216,23 @@ func (b *fakeBackend) WatchRun(_ context.Context, id string, c RunClient, since 
 	}
 	fr.subs[s] = struct{}{}
 	return s, nil
+}
+
+func (b *fakeBackend) RunBlob(_ context.Context, id string, seq uint64) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.blobErr != nil {
+		return "", b.blobErr
+	}
+	fr := b.runs[id]
+	if fr == nil {
+		return "", ErrNoRun
+	}
+	body, ok := fr.blobs[seq]
+	if !ok {
+		return "", ErrNoBlob
+	}
+	return body, nil
 }
 
 func (b *fakeBackend) RunArtifacts(_ context.Context, id string) ([]Artifact, error) {

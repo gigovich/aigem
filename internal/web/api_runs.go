@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -112,6 +113,34 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, events)
 }
 
+// handleRunBlob serves the whole body of a tool result the timeline shows only
+// the head of.
+//
+// It is the one route here whose success is not JSON. What it returns is a
+// tool's own output - a diff, a build log, a page of grep - which is an opaque
+// document rather than a structure: there is no field to add to it later, and
+// nothing for a client to read out of it that the event did not already carry
+// in bytes and blob. Served as text it is also what a person can open in a tab.
+//
+// Handing a browser a tool's own output is safe because the wrapper puts the
+// security headers on every response: nosniff is what stops this being pulled
+// in cross-origin as a script or a stylesheet, and the content policy stops
+// anything in it running if it is opened directly.
+func (s *Server) handleRunBlob(w http.ResponseWriter, r *http.Request) {
+	seq, ok := pathCursor(w, r, "seq")
+	if !ok {
+		return
+	}
+	body, err := s.backend.RunBlob(r.Context(), r.PathValue("id"), seq)
+	if err != nil {
+		writeRunError(w, "reading a stored tool result", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	_, _ = io.WriteString(w, body)
+}
+
 // handleRunArtifacts reports the files a run changed.
 func (s *Server) handleRunArtifacts(w http.ResponseWriter, r *http.Request) {
 	arts, err := s.backend.RunArtifacts(r.Context(), r.PathValue("id"))
@@ -148,6 +177,19 @@ func cursor(w http.ResponseWriter, r *http.Request, name string) (uint64, bool) 
 		return 0, true
 	}
 	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		http.Error(w, name+" must be a non-negative whole number", http.StatusBadRequest)
+		return 0, false
+	}
+	return n, true
+}
+
+// pathCursor reads a cursor that arrives as a path segment rather than as a
+// query parameter. It is the same rule and the same sentence as cursor: a
+// client that mistypes a sequence should not have to learn which half of the
+// URL it was in to recognise the answer.
+func pathCursor(w http.ResponseWriter, r *http.Request, name string) (uint64, bool) {
+	n, err := strconv.ParseUint(r.PathValue(name), 10, 64)
 	if err != nil {
 		http.Error(w, name+" must be a non-negative whole number", http.StatusBadRequest)
 		return 0, false
@@ -197,6 +239,8 @@ func writeRunError(w http.ResponseWriter, doing string, err error) {
 	switch {
 	case errors.Is(err, ErrNoRun):
 		http.Error(w, "no such run", http.StatusNotFound)
+	case errors.Is(err, ErrNoBlob):
+		http.Error(w, "that event has no stored body", http.StatusNotFound)
 	case errors.Is(err, ErrRunClosed):
 		http.Error(w, "this run has no live session", http.StatusConflict)
 	case errors.Is(err, ErrHistoryGone):

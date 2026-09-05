@@ -286,6 +286,98 @@ func TestArtifactsAreServedForARunAndAreAnArrayWhenThereAreNone(t *testing.T) {
 	}
 }
 
+// The timeline shows an oversized tool result as its head; the whole of it is
+// what this route serves, as the text it is rather than as a JSON string with
+// every newline escaped.
+func TestABlobIsServedAsTheTextItIs(t *testing.T) {
+	b := &fakeBackend{}
+	srv := newTestServer(t, Config{Backend: b})
+	body := "line one\nline two\n"
+	b.seed(Run{ID: "RUN-1", Status: "open", Live: true})
+	b.mu.Lock()
+	b.runs["RUN-1"].blobs = map[uint64]string{7: body}
+	b.mu.Unlock()
+
+	res := api(t, srv, http.MethodGet, "/api/runs/RUN-1/blobs/7", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if got := res.Header.Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", got)
+	}
+	// The one route that hands a browser a tool's own output has to keep the
+	// headers that stop it being sniffed into something executable.
+	if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if res.Header.Get("Content-Security-Policy") == "" {
+		t.Error("a served blob carries no content policy")
+	}
+	if got := readBody(t, res); got != body {
+		t.Errorf("body = %q, want %q", got, body)
+	}
+}
+
+// An event that was never trimmed has no stored body, and a run that does not
+// exist has no events at all. Both are a document that is not there, so both
+// are a 404 - but they are different sentences, because they are what tells a
+// client to reload the run from one that says to go on rendering the head.
+func TestABlobThatWasNeverStoredIs404(t *testing.T) {
+	b := &fakeBackend{}
+	srv := newTestServer(t, Config{Backend: b})
+	b.seed(Run{ID: "RUN-1", Status: "open", Live: true})
+	for _, tc := range []struct{ path, says string }{
+		{"/api/runs/RUN-1/blobs/7", "that event has no stored body"},
+		{"/api/runs/RUN-nope/blobs/7", "no such run"},
+	} {
+		res := api(t, srv, http.MethodGet, tc.path, "")
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", tc.path, res.StatusCode)
+		}
+		if got := strings.TrimSpace(readBody(t, res)); got != tc.says {
+			t.Errorf("GET %s said %q, want %q", tc.path, got, tc.says)
+		}
+	}
+}
+
+// A seq is the same non-negative whole number every other cursor on this API
+// is, and one that is not is the client's mistake rather than a lookup for a
+// path element that could be anything.
+func TestABlobSeqThatIsNotANumberIsRefused(t *testing.T) {
+	b := &fakeBackend{}
+	srv := newTestServer(t, Config{Backend: b})
+	b.seed(Run{ID: "RUN-1", Status: "open", Live: true})
+	// ".." is deliberately absent: a client normalises it out of the path before
+	// the request leaves, so it is not a shape this handler can be reached with.
+	for _, seq := range []string{"-1", "seven", "1e3", "0x7", "18446744073709551616"} {
+		res := api(t, srv, http.MethodGet, "/api/runs/RUN-1/blobs/"+seq, "")
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("GET .../blobs/%s = %d, want 400", seq, res.StatusCode)
+		}
+	}
+}
+
+// A failure the backend did not classify is the daemon's own, and it must not
+// arrive as a 404 that tells the page the body was never kept.
+//
+// This pins the router alone. What the shipped adapter does with an error it
+// has not classified is answer a *Refusal - a 400 whose text is meant to be
+// read - and that is webRunError's deliberate choice, argued where it is made.
+// Both are answers the router has to have; only the second is what a running
+// daemon produces.
+func TestABlobTheDaemonCouldNotReadIs500(t *testing.T) {
+	b := &fakeBackend{blobErr: errNope}
+	srv := newTestServer(t, Config{Backend: b})
+	b.seed(Run{ID: "RUN-1", Status: "open", Live: true})
+	res := api(t, srv, http.MethodGet, "/api/runs/RUN-1/blobs/7", "")
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", res.StatusCode)
+	}
+	if strings.Contains(readBody(t, res), errNope.Error()) {
+		t.Error("the daemon's own failure was quoted to the browser")
+	}
+}
+
 // A run whose session is gone still answers reads. It is the difference between
 // a closed conversation a person can look back at and one that has
 // disappeared. What it refuses is the socket, which runsocket_test.go pins.
@@ -308,6 +400,7 @@ func TestTheRunRoutesRefuseOtherMethods(t *testing.T) {
 		{http.MethodPost, "/api/runs/RUN-1", "GET, HEAD, DELETE"},
 		{http.MethodPost, "/api/runs/RUN-1/events", "GET, HEAD"},
 		{http.MethodPost, "/api/runs/RUN-1/artifacts", "GET, HEAD"},
+		{http.MethodPost, "/api/runs/RUN-1/blobs/7", "GET, HEAD"},
 		{http.MethodPost, "/api/runs/RUN-1/socket", "GET, HEAD"},
 	} {
 		res := api(t, srv, tc.method, tc.path, "")
@@ -358,6 +451,7 @@ func TestTheRunRoutesNeedACredential(t *testing.T) {
 		{http.MethodDelete, "/api/runs/RUN-1"},
 		{http.MethodGet, "/api/runs/RUN-1/events"},
 		{http.MethodGet, "/api/runs/RUN-1/artifacts"},
+		{http.MethodGet, "/api/runs/RUN-1/blobs/7"},
 		{http.MethodGet, "/api/runs/RUN-1/socket"},
 	} {
 		req, err := http.NewRequest(tc.method, srv.Base()+strings.TrimPrefix(tc.path, "/"),

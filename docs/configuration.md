@@ -13,6 +13,7 @@ aigem honors the XDG base directories.
 | `~/.config/aigem/skills/`                 | global skills                                       |
 | `~/.local/state/aigem/auth.json`          | credentials (`0600`)                                |
 | `~/.local/state/aigem/sessions/`          | saved conversations (`0600` in a `0700` directory)  |
+| `~/.local/state/aigem/journal/<id>/`      | one conversation's timeline, plus `blobs/` (`0700`) |
 | `~/.local/state/aigem/web-cookies.json`   | browser sign-ins for `aigem web` (`0600`)           |
 | `~/.local/state/aigem/path-grants.json`   | approved read paths outside a working directory     |
 | `~/.local/state/aigem/project-trust.json` | approved project hooks, skills, and MCP targets     |
@@ -22,6 +23,11 @@ aigem honors the XDG base directories.
 | `~/.local/state/aigem/search.json`        | web-search backend and its API key (`0600`)         |
 | `~/.local/state/aigem/mcp-oauth/`         | MCP OAuth tokens, one file per server (`0600`)      |
 | `~/.local/state/aigem/browser-profile/`   | the isolated Chrome profile for browser search      |
+
+A journal is never pruned. `blobs/` holds the whole of each tool result over
+2 KiB that it managed to write - a little over 48 KiB at most, which is where
+the agent clips one before the model sees it. Removing the directory for a
+conversation you are done with costs its timeline and nothing else.
 
 On macOS the config directory is `~/Library/Application Support/aigem`.
 
@@ -44,7 +50,6 @@ want the disk space back.
 - `~/.local/state/aigem/browser-profile/<botname>/` - only the per-bot
   subdirectories; the parent directory is still used by the interactive
   browser tool
-- `~/.local/state/aigem/journal/<id>/blobs/`
 
 ## System prompt
 

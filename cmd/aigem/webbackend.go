@@ -117,6 +117,14 @@ func (b *webBackend) RunEvents(_ context.Context, id string, since uint64, limit
 	return out, nil
 }
 
+func (b *webBackend) RunBlob(_ context.Context, id string, seq uint64) (string, error) {
+	body, err := b.runs.Blob(id, seq)
+	if err != nil {
+		return "", webRunError(err)
+	}
+	return body, nil
+}
+
 func (b *webBackend) WatchRun(_ context.Context, id string, c web.RunClient, since uint64) (
 	web.RunStream, error,
 ) {
@@ -258,6 +266,8 @@ func webRunError(err error) error {
 		return nil
 	case errors.Is(err, runner.ErrNoRun):
 		return web.ErrNoRun
+	case errors.Is(err, runner.ErrNoBlob):
+		return web.ErrNoBlob
 	case errors.Is(err, runner.ErrRunClosed), errors.Is(err, uisession.ErrClosed):
 		// The second is the same answer arriving from further in: the table
 		// handed out a session that was closed underneath it between the lookup
