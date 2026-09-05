@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -288,8 +289,7 @@ func TestArtifactsAreServedForARunAndAreAnArrayWhenThereAreNone(t *testing.T) {
 func TestAClosedRunStillServesItsTimeline(t *testing.T) {
 	b := &fakeBackend{}
 	srv := newTestServer(t, Config{Backend: b})
-	b.seed(Run{ID: "RUN-1", Status: "closed"},
-		RunEvent{Seq: 1, Data: json.RawMessage(`{"seq":1,"kind":"turn_end"}`)})
+	b.seed(Run{ID: "RUN-1", Status: "closed"}, RunEvent(`{"seq":1,"kind":"turn_end"}`))
 
 	events := decode[[]json.RawMessage](t, api(t, srv, http.MethodGet,
 		"/api/runs/RUN-1/events", ""))
@@ -424,5 +424,33 @@ func TestTheFeatureMapNamesTheRunsApi(t *testing.T) {
 	meta := decode[metaResponse](t, api(t, srv, http.MethodGet, "/api/meta", ""))
 	if !meta.Features["runs"] {
 		t.Errorf("features = %v, want runs among them", meta.Features)
+	}
+}
+
+// A capacity ceiling is the one refusal on this API a client should retry
+// rather than correct: nothing about the request is wrong, and closing a run
+// makes room. It is answered the way the socket cap already answers, so a page
+// has one shape for "not now" rather than two.
+func TestARunTheDaemonHasNoRoomForIsARetry(t *testing.T) {
+	b := &fakeBackend{openErr: Refuse(errors.New("32 are open, and 32 is the limit"))}
+	srv := newTestServer(t, Config{Backend: b})
+	// A plain refusal is the client's mistake: 400, no Retry-After.
+	res := api(t, srv, http.MethodPost, "/api/runs", `{}`)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a refusal = %d, want 400", res.StatusCode)
+	}
+
+	b.mu.Lock()
+	b.openErr = fmt.Errorf("%w: 32 are open, and 32 is the limit", ErrBusy)
+	b.mu.Unlock()
+	res = api(t, srv, http.MethodPost, "/api/runs", `{}`)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("at capacity = %d, want 503", res.StatusCode)
+	}
+	if res.Header.Get("Retry-After") == "" {
+		t.Error("the refusal does not say to retry")
+	}
+	if body := readBody(t, res); !strings.Contains(body, "32 is the limit") {
+		t.Errorf("body = %q, want what it said about the limit", body)
 	}
 }

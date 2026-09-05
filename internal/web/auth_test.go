@@ -139,25 +139,34 @@ func TestBadOriginsAreRefusedAtStartup(t *testing.T) {
 	}
 }
 
-// A refused origin must not leave the port bound: the operator fixes the flag
-// and starts again, and a leaked listener makes the second attempt fail with a
-// message about the address instead.
-func TestARefusedOriginReleasesThePort(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+// A refused origin must not cost the operator the port: they fix the flag and
+// start again, and a second attempt failing with a message about the address
+// instead is the confusion this whole flag exists to prevent.
+//
+// It used to be checked by looking for a leaked listener afterwards. The
+// refusal now happens before anything is bound at all, which is the stronger
+// property and is what this checks: the port is held by somebody else for the
+// whole test, and New still fails on the origin rather than on the address.
+func TestARefusedOriginNeverBindsThePort(t *testing.T) {
+	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	defer func() { _ = held.Close() }()
+	addr := held.Addr().String()
 
-	if _, err := New(withBackend(Config{Addr: addr, Origins: []string{"nonsense"}})); err == nil {
+	_, err = New(withBackend(Config{Addr: addr, Origins: []string{"nonsense"}}))
+	if err == nil {
 		t.Fatal("a bad origin was accepted")
 	}
-	again, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Fatalf("the port is still held after the refusal: %v", err)
+	if !strings.Contains(err.Error(), "nonsense") {
+		t.Fatalf("error = %v, want the origin named back; a message about the address "+
+			"would mean the bind was attempted first", err)
 	}
-	_ = again.Close()
+	// And the listener that was already there is untouched.
+	if _, port, perr := net.SplitHostPort(held.Addr().String()); perr != nil || port == "" {
+		t.Fatalf("the held listener did not survive: %v", perr)
+	}
 }
 
 // The bind address used to stay on the allowlist even when an origin replaced

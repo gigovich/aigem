@@ -177,7 +177,7 @@ func (l *Local) reopenJournalLocked() {
 	// The in-memory history describes the conversation just replaced, so it is
 	// dropped rather than spliced onto the one being resumed.
 	l.ring = nil
-	if prior, err := readJournal(l.id, 0); err == nil && len(prior) > 0 {
+	if prior, err := ReadJournal(l.id, 0); err == nil && len(prior) > 0 {
 		if last := prior[len(prior)-1].Seq; last > l.seq {
 			l.seq = last
 		}

@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/auth"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/store"
+	"github.com/gigovich/aigem/internal/web"
 )
 
 // The daemon's half of a run: how one conversation is assembled from the
@@ -52,8 +54,8 @@ type webRuntime struct {
 // newRuns builds the daemon's run table. stateDir is where the table is kept;
 // an empty one keeps the runs in memory, which is what a daemon that could not
 // find its state directory falls back to.
-func (rt *webRuntime) newRuns(stateDir string) (*runner.Runs, error) {
-	cfg := runner.RunsConfig{Open: rt.openRun}
+func (rt *webRuntime) newRuns(stateDir string, notify func(runner.RunView)) (*runner.Runs, error) {
+	cfg := runner.RunsConfig{Open: rt.openRun, Notify: notify}
 	if stateDir != "" {
 		cfg.Store = store.New[[]runner.Run](filepath.Join(stateDir, webRunTableName))
 	}
@@ -144,7 +146,34 @@ func (rt *webRuntime) openRun(_ context.Context, req runner.RunRequest) (
 	return sess, runner.Opened{
 		Model:   info.Ref(),
 		Root:    rt.env.Cwd,
-		Title:   sess.Local.Meta().Title,
 		Release: func() { rt.env.Detach(sess) },
 	}, nil
+}
+
+// runNotifier carries a run's changes to the connected pages.
+//
+// It exists because of an ordering the wiring cannot avoid: the registry is
+// built before the daemon, since the daemon is served out of it. The server is
+// filled in as soon as there is one, and a change published before that is
+// dropped rather than queued - there is no page connected to hear it, because
+// nothing is serving yet.
+type runNotifier struct {
+	mu  sync.Mutex
+	srv *web.Server
+}
+
+func (n *runNotifier) to(srv *web.Server) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.srv = srv
+}
+
+func (n *runNotifier) publish(v runner.RunView) {
+	n.mu.Lock()
+	srv := n.srv
+	n.mu.Unlock()
+	if srv == nil {
+		return
+	}
+	srv.Publish("run.updated", webRun(v))
 }

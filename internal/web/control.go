@@ -36,7 +36,13 @@ const (
 	// large is a run event on its own socket or a collection the client fetches.
 	controlBuffer = 32
 
-	controlHello       = "hello"
+	controlHello = "hello"
+	// controlClientError names the frame that is not a state delta, on this
+	// stream and on the run stream. It is deliberately not "error": that is a
+	// real event kind on the run stream, and naming it the same made every
+	// client mistake look like something that happened in the conversation -
+	// putting "approval already decided" into the timeline as a failure at
+	// exactly the moment the design says it must not be one.
 	controlClientError = "client_error"
 )
 

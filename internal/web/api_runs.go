@@ -50,7 +50,10 @@ func (s *Server) handleOpenRun(w http.ResponseWriter, r *http.Request) {
 		writeRunError(w, "opening a run", err)
 		return
 	}
-	s.hub.publish("run.updated", run)
+	// Nothing is published here. Every change to a run is announced by whoever
+	// made it, through Server.Publish, because most of them do not happen
+	// during a request - and a route that also published would put two messages
+	// on the stream for the one thing that happened.
 	writeJSONStatus(w, http.StatusCreated, run)
 }
 
@@ -80,7 +83,6 @@ func (s *Server) handleCloseRun(w http.ResponseWriter, r *http.Request) {
 		writeRunError(w, "reading a closed run", err)
 		return
 	}
-	s.hub.publish("run.updated", run)
 	writeJSON(w, run)
 }
 
@@ -103,13 +105,10 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 		writeRunError(w, "reading a run's events", err)
 		return
 	}
-	// The payloads are already encoded, so the array is assembled rather than
-	// handed to an encoder that would decode and re-encode every event.
-	out := make([]json.RawMessage, 0, len(events))
-	for _, ev := range events {
-		out = append(out, ev.Data)
+	if events == nil {
+		events = []RunEvent{}
 	}
-	writeJSON(w, out)
+	writeJSON(w, events)
 }
 
 // handleRunArtifacts reports the files a run changed.
@@ -190,6 +189,11 @@ func writeRunError(w http.ResponseWriter, doing string, err error) {
 	case errors.Is(err, ErrHistoryGone):
 		http.Error(w, "the run's history no longer reaches that point; reload it",
 			http.StatusGone)
+	case errors.Is(err, ErrBusy):
+		// The message rather than a fixed sentence: it says how much is open and
+		// what the limit is, which is what turns "try later" into "close one".
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 	case errors.As(err, &refusal):
 		http.Error(w, refusal.Reason, http.StatusBadRequest)
 	default:

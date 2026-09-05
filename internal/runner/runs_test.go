@@ -58,7 +58,7 @@ func newRunsRecording(t *testing.T, path string, opened, released *atomic.Int64,
 				built.set(s.Local)
 			}
 			return s, runner.Opened{
-				Model: "test/model", Root: cwd, Title: req.Title,
+				Model: "test/model", Root: cwd,
 				Release: func() {
 					if released != nil {
 						released.Add(1)
@@ -1155,36 +1155,31 @@ func TestAViewSaysWhenARunIsWaitingOnAnApproval(t *testing.T) {
 	}
 }
 
-// Opened.Title is what the record is named with, and the session's own name
-// takes over only once it has one. A view that copied the session's name
-// unconditionally would blank the record for every run whose conversation has
-// not named itself.
-func TestARecordKeepsTheNameItWasOpenedWithUntilTheSessionHasOne(t *testing.T) {
-	cwd := project(t)
-	runs, err := runner.NewRuns(runner.RunsConfig{
-		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
-			_, reg := newEnvAndTools(t, cwd)
-			// Deliberately not given to the session: the record is named, the
-			// conversation is not.
-			s := runner.NewSession(runner.Spec{Mode: req.Mode, Tools: reg, Backend: deadBackend()})
-			return s, runner.Opened{Title: "named by the request"}, nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(runs.Close)
-
-	v := create(t, runs, runner.RunRequest{})
-	if v.Title != "named by the request" {
+// The record's title is the last name the conversation had. A conversation
+// started over has none until it is used again, and a view that copied that
+// emptiness would blank a run in the list for no reason a person could see.
+func TestARecordKeepsItsNameWhenTheConversationStartsOver(t *testing.T) {
+	built := &lastSession{}
+	runs := newRunsRecording(t, "", nil, nil, built)
+	v := create(t, runs, runner.RunRequest{Title: "the first thing"})
+	if v.Title != "the first thing" {
 		t.Fatalf("title = %q, want the one the run was opened with", v.Title)
+	}
+
+	// Reset gives the conversation a fresh identity and no name.
+	sess := built.get(t)
+	if err := sess.Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if name := sess.Meta().Title; name != "" {
+		t.Fatalf("the conversation named itself %q; this test needs it nameless", name)
 	}
 	got, err := runs.Get(v.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Title != "named by the request" {
-		t.Errorf("title = %q after a read, want the one the run was opened with", got.Title)
+	if got.Title != "the first thing" {
+		t.Errorf("title = %q after the conversation started over, want the name it had", got.Title)
 	}
 }
 
@@ -1388,5 +1383,162 @@ func TestATableWithUnreachableRowsIsCorrected(t *testing.T) {
 	}
 	if len(table) != 1 {
 		t.Errorf("the file still holds %d rows, want the correction written back", len(table))
+	}
+}
+
+// Most of what changes about a run does not happen during an HTTP request. A
+// conversation takes its name on the first message, which arrives up a socket,
+// and a daemon that only announced what its own routes did would leave every
+// other tab showing an untitled run until something else moved.
+func TestEveryChangeToARecordIsAnnounced(t *testing.T) {
+	cwd := project(t)
+	model := newFakeModel(t)
+	models := testModelRegistry(t, cwd, model)
+
+	var mu sync.Mutex
+	var seen []runner.RunView
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Notify: func(v runner.RunView) {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, v)
+		},
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			env, reg := newEnvAndTools(t, cwd)
+			return runner.NewSession(runner.Spec{
+				Mode: req.Mode, Tools: reg, Backend: model.ref("first"),
+				Models: models, Hooks: env.Hooks,
+			}), runner.Opened{Model: "local/first"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	// The last announcement is what a page would have applied. Asserting on it
+	// rather than on a running total keeps this about "was this change
+	// announced" rather than about how many times anything fired.
+	last := func() (runner.RunView, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(seen) == 0 {
+			return runner.RunView{}, 0
+		}
+		return seen[len(seen)-1], len(seen)
+	}
+
+	v, err := runs.Create(context.Background(), runner.RunRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := last()
+	if got.ID != v.ID {
+		t.Fatalf("opening a run announced %+v, want the run itself", got)
+	}
+
+	// The first message is where the conversation gets its name.
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "name it"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = last()
+	if got.Title == "" || got.ID != v.ID {
+		t.Fatalf("the first message announced %+v, want the run with the name it took", got)
+	}
+
+	waitIdle(t, runs, v.ID)
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSwitchModel, Ref: "local/second"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = last()
+	if got.Model != "local/second" {
+		t.Fatalf("a model switch announced %+v, want the new model", got)
+	}
+
+	if err := runs.CloseRun(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = last()
+	if got.ID != v.ID || got.Live || got.Status != runner.RunClosed {
+		t.Fatalf("closing announced %+v, want a record with no session", got)
+	}
+
+	// A second message on a run whose record has not changed says nothing: the
+	// name and the id are already there, and a page must not be made to refetch
+	// the collection on every keystroke-sized action.
+	second, err := runs.Create(context.Background(), runner.RunRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runs.Apply(second.ID, runner.RunOp{Op: runner.OpSubmit, Text: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	_, before := last()
+	if err := runs.Apply(second.ID, runner.RunOp{Op: runner.OpSubmit, Text: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, after := last(); after != before {
+		t.Errorf("a message that changed nothing announced %d changes", after-before)
+	}
+}
+
+// waitIdle blocks until the run has no turn in flight.
+func waitIdle(t *testing.T, runs *runner.Runs, id string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := runs.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Running {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the turn never ended")
+}
+
+// Switching model under a running turn is refused: the turn already started
+// against the model being replaced, and the switch would read the agent's
+// messages while the turn is writing them.
+func TestAModelSwitchIsRefusedWhileATurnIsRunning(t *testing.T) {
+	cwd := project(t)
+	model := newSlowModel(t)
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			return runner.NewSession(runner.Spec{
+				Mode: req.Mode, Tools: reg, Backend: model.ref("m"),
+			}), runner.Opened{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	v := create(t, runs, runner.RunRequest{})
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "take a while"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		got, err := runs.Get(v.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the turn never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := runs.Apply(v.ID, runner.RunOp{
+		Op: runner.OpSwitchModel, Ref: "local/whatever",
+	}); !errors.Is(err, uisession.ErrBusy) {
+		t.Fatalf("switch_model mid-turn = %v, want ErrBusy", err)
 	}
 }

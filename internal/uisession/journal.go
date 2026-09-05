@@ -92,10 +92,16 @@ func (j *journal) close() {
 	j.open = false
 }
 
-// readJournal returns the events recorded for a session after since. It is how
-// a client that was away longer than the retained history catches up, and how a
-// resumed conversation gets its timeline back.
-func readJournal(id string, since uint64) ([]Event, error) {
+// ReadJournal returns the events recorded for a session after since. It is how
+// a client that was away longer than the retained history catches up, how a
+// resumed conversation gets its timeline back, and how a caller with no live
+// session at all reads one - a run whose daemon has since restarted, whose
+// conversation is over and whose timeline is only on disk.
+//
+// A session that never reached its first turn has no journal, and a caller gets
+// the underlying not-exist error rather than an empty timeline: "nothing was
+// recorded" and "nothing happened" are answers a caller may want to tell apart.
+func ReadJournal(id string, since uint64) ([]Event, error) {
 	dir, err := journalDir(id)
 	if err != nil {
 		return nil, err
@@ -145,14 +151,3 @@ func (l *Local) journalled(ev Event) Event {
 	stored.Text = ev.Text[:journalTextCap]
 	return stored
 }
-
-// ReadJournal returns the events recorded for a session after since, for a
-// caller that has no live session to replay from.
-//
-// A run whose daemon has since restarted is the case it exists for: the
-// conversation is over, the ring buffer went with the process, and the timeline
-// a page still wants to render is only on disk. A session that never reached
-// its first turn has no journal, and a caller gets the underlying not-exist
-// error rather than an empty timeline, because "nothing was recorded" and
-// "nothing happened" are answers a caller may want to tell apart.
-func ReadJournal(id string, since uint64) ([]Event, error) { return readJournal(id, since) }

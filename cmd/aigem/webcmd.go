@@ -118,22 +118,24 @@ func runWebCommand(args []string) error {
 		return err
 	}
 
+	// The web tools, if the operator has configured a provider for them.
+	searchCfg, err := search.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not load search config:", err)
+	}
+
 	// The environment is loaded once and shared by every conversation the
 	// daemon opens: the skills, the subagents, the hooks configuration and the
 	// MCP servers belong to the project, and one set of stdio servers per
 	// browser tab is not a thing anyone wants.
 	//
-	// A daemon has nobody to ask about a withheld capability, so the
-	// --trust-project-* decisions are not made here: a project's local hooks,
-	// MCP servers and skills stay withheld until a person approves them.
-	searchCfg, err := search.Load()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "warning: could not load search config:", err)
-	}
-	//
 	// The directory is the one the daemon was started in: an empty Cwd resolves
 	// to it, and there is no flag for another because the project a browser
 	// session works in is a phase-2 choice.
+	//
+	// A daemon has nobody to ask about a withheld capability, so the
+	// --trust-project-* decisions are not made here: a project's local hooks,
+	// MCP servers and skills stay withheld until a person approves them.
 	env, _, err := runner.Load(context.Background(), runner.Options{
 		Version: versionString(),
 		Search:  searchCfg,
@@ -155,7 +157,12 @@ func runWebCommand(args []string) error {
 	}
 
 	rt := &webRuntime{env: env, models: defaultModelRegistry()}
-	runs, err := rt.newRuns(stateDir)
+	// The daemon it publishes to does not exist yet, so the notifier is filled
+	// in below rather than at construction. Nothing can be missed in between:
+	// the registry is empty until a request arrives, and no request can arrive
+	// until Serve.
+	var announce runNotifier
+	runs, err := rt.newRuns(stateDir, announce.publish)
 	if err != nil {
 		return err
 	}
@@ -172,6 +179,7 @@ func runWebCommand(args []string) error {
 		return err
 	}
 	defer func() { _ = srv.Close() }()
+	announce.to(srv)
 
 	// The one place the token is meant to be published: this terminal.
 	url := srv.SignInURL()

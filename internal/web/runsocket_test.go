@@ -85,7 +85,7 @@ func TestAWholeTurnReachesTheClientInOrderAndVerbatim(t *testing.T) {
 		`"kind":"approval_resolved","id":"a1","decision":"once"`,
 		`"kind":"turn_end"`,
 	} {
-		want = append(want, b.emit(id, payload).Data)
+		want = append(want, b.emit(id, payload))
 	}
 	for i, w := range want {
 		if got := c.nextRaw(); !bytes.Equal(got, w) {
@@ -105,7 +105,7 @@ func TestASecondConnectionResumesTheIdenticalTimeline(t *testing.T) {
 	first := dialRunSocket(t, srv, id, "")
 	var all [][]byte
 	for _, payload := range []string{`"kind":"user_message"`, `"kind":"turn_start"`, `"kind":"turn_end"`} {
-		all = append(all, b.emit(id, payload).Data)
+		all = append(all, b.emit(id, payload))
 	}
 	for range all {
 		first.nextRaw()
@@ -131,8 +131,8 @@ func TestAnApprovalIsSeenByBothClientsAndAnsweredOnce(t *testing.T) {
 
 	ask := b.emit(id, `"kind":"approval_request","id":"a1"`)
 	for _, c := range []*controlClient{one, two} {
-		if got := c.nextRaw(); !bytes.Equal(got, ask.Data) {
-			t.Fatalf("client saw %s, want the approval %s", got, ask.Data)
+		if got := c.nextRaw(); !bytes.Equal(got, ask) {
+			t.Fatalf("client saw %s, want the approval %s", got, ask)
 		}
 	}
 
@@ -146,8 +146,8 @@ func TestAnApprovalIsSeenByBothClientsAndAnsweredOnce(t *testing.T) {
 	// the conversation.
 	resolved := b.emit(id, `"kind":"approval_resolved","id":"a1"`)
 	for _, c := range []*controlClient{one, two} {
-		if got := c.nextRaw(); !bytes.Equal(got, resolved.Data) {
-			t.Fatalf("client got %s, want the event %s", got, resolved.Data)
+		if got := c.nextRaw(); !bytes.Equal(got, resolved) {
+			t.Fatalf("client got %s, want the event %s", got, resolved)
 		}
 	}
 
@@ -178,8 +178,8 @@ func TestAnUnknownOpIsAnsweredRatherThanFatal(t *testing.T) {
 	}
 	// Still usable afterwards.
 	ev := b.emit(id, `"kind":"notice"`)
-	if got := c.nextRaw(); !bytes.Equal(got, ev.Data) {
-		t.Fatalf("after a bad op the stream gave %s, want %s", got, ev.Data)
+	if got := c.nextRaw(); !bytes.Equal(got, ev) {
+		t.Fatalf("after a bad op the stream gave %s, want %s", got, ev)
 	}
 	if ops := b.ops(); len(ops) != 0 {
 		t.Fatalf("the backend was given %+v, want nothing", ops)
@@ -220,8 +220,8 @@ func TestPingIsAnsweredWithSilence(t *testing.T) {
 	// should not have sent would be sitting in front of it - so the event has
 	// to be the *first* frame after the ping.
 	ev := b.emit(id, `"kind":"notice"`)
-	if got := c.nextRaw(); !bytes.Equal(got, ev.Data) {
-		t.Fatalf("after a ping the stream gave %s, want the next event %s", got, ev.Data)
+	if got := c.nextRaw(); !bytes.Equal(got, ev) {
+		t.Fatalf("after a ping the stream gave %s, want the next event %s", got, ev)
 	}
 	if ops := b.ops(); len(ops) != 0 {
 		t.Fatalf("ping reached the backend as %+v", ops)

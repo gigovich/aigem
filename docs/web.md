@@ -214,25 +214,44 @@ A conversation names itself on its first message, and the record catches up
 then - so a run listed after a restart carries the name it gave itself and the
 id its journal is under.
 
-One daemon holds 32 open runs. The 33rd `POST` is refused with the reason, and
-closing one gives its place back: a run is a tools registry, a model handle and
-an event ring, and a client looping on create would otherwise be an
-out-of-memory with nothing in the way of it.
+One daemon holds 32 open runs. The 33rd `POST` is answered `503` with a
+`Retry-After` and a body saying how many are open, and closing one gives its
+place back: a run is a tools registry, a model handle and an event ring, and a
+client looping on create would otherwise be an out-of-memory with nothing in the
+way of it. The record of a closed run is not counted and is never removed.
+
+Every change to a run - opened, named by its conversation, switched model,
+closed - is announced on the control stream as `run.updated`, carrying the
+record. Most of them do not happen during a request: a conversation takes its
+name on its first message, which arrives up the run socket, so a page that
+listened only for the answers to its own requests would show that run as
+untitled until something else moved.
 
 `DELETE` is that transition and not a deletion. It saves the conversation and
 ends the session, and the record and the journal stay, because a run somebody is
 done with is one they can still look back at. Doing it twice is not an error:
 two tabs pressing the same button is the ordinary case.
 
-Statuses a client has to tell apart: `404` is a run that does not exist, `409`
-is one whose session is gone - reads still work, the socket does not - and `410`
-means the history no longer reaches the point asked for, which is answered by
-reloading rather than by retrying. `410` comes from the timeline *and* from the
-socket: opening one with a `since` the run no longer holds is refused before the
-upgrade, so a page's socket-open path has to handle it. A `400` carries a
-sentence meant to be shown - it is written for a person, and a front-end must
-render it as text, never as markup. A `500` carries nothing; what it was is in
-the daemon's log.
+Statuses a client has to tell apart:
+
+- `404` - no such run.
+- `409` - the run has no live session. Its timeline still reads; its artifacts
+  and its socket do not, because both live with the session rather than in the
+  journal.
+- `410` - the history no longer reaches the point asked for. Answered by
+  reloading, not by retrying.
+- `503` with a `Retry-After` - the daemon is holding as many runs as it will.
+  The one refusal here that is worth retrying: nothing about the request is
+  wrong, and closing a run makes room.
+- `400` - a sentence meant to be shown. It is written for a person, and a
+  front-end must render it as text, never as markup.
+- `500` - carries nothing. What it was is in the daemon's log.
+
+A browser cannot read the status of a failed websocket handshake: the
+`WebSocket` API reports only that it failed. So a page whose socket will not
+open finds out why over HTTP - `GET /api/runs/{id}` for a `404` or a `409`, and
+`GET /api/runs/{id}/events?since=` for the `410`, which is the request it would
+have made anyway.
 
 `?since=` and `?limit=` are non-negative whole numbers. Every cursor on this API
 is one: opaque to the client, compared only for equality and order. A timeline
@@ -262,10 +281,13 @@ reads before it decides whether to open a socket.
 It is the opposite of the control stream in both directions: it replays, and it
 takes mutations.
 
-`?since=` is the last sequence the client holds; the backlog is spliced in front
-of the live events, so there is no window in which an event is neither replayed
-nor delivered. `?kind=` and `?label=` say who is attaching - they are what the
-presence event shows the other tabs, and `kind` defaults to `web`.
+`?since=` is the last sequence the client holds - the `seq` field of the last
+event it applied; the backlog is spliced in front of the live events, so there
+is no window in which an event is neither replayed nor delivered. `?kind=` and
+`?label=` say who is attaching - they are what the presence event shows the
+other tabs, and `kind` defaults to `web`. A `since` the run no longer reaches is
+refused with a `410`, which a browser sees only as a failed handshake: see
+above.
 
 Down come the session's own events, in order and exactly as the session wrote
 them. A client that falls too far behind is sent a `desync` event carrying the
@@ -295,7 +317,9 @@ palette would offer arrives with `/api/commands`.
 
 `switch_model` with `"persist":true` is the one operation whose effect leaves
 the run: it writes the operator's saved model preference, which the next session
-started anywhere - including the terminal - will use.
+started anywhere - including the terminal - will use. It is refused while a turn
+is running: the turn already started against the model being replaced, so
+switching under it changes nothing about the answer being produced.
 
 An operation that is applied is answered with nothing; the conversation's own
 events are the acknowledgement. One that is refused comes back as

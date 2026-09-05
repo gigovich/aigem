@@ -87,6 +87,14 @@ var ErrRunClosed = errors.New("web: this run has no live session")
 // no longer holds. It is not an error the client can retry: it reloads.
 var ErrHistoryGone = errors.New("web: the run's history no longer reaches that point")
 
+// ErrBusy is returned when the daemon is already holding as much as it will.
+//
+// It is the one refusal on this API that a client should retry rather than
+// correct: nothing about the request is wrong, and closing something makes room.
+// It is answered the way the socket cap already answers - a 503 with a
+// Retry-After - so a page has one shape for "not now" rather than two.
+var ErrBusy = errors.New("web: the daemon is at capacity")
+
 // Refusal is an error whose text is meant to be shown.
 //
 // It is how a backend says "this is the client's mistake, and the reason is
@@ -157,17 +165,16 @@ type NewRun struct {
 	// answer than no field.
 }
 
-// RunEvent is one step of a run's timeline on its way to a client.
+// RunEvent is one step of a run's timeline on its way to a client: the event as
+// the session encoded it, and nothing else.
 //
-// The payload is already encoded, and this package neither decodes nor
-// describes it: the event vocabulary belongs to the session, a second copy of
-// it here would be a second thing to keep in step, and the transport's whole
-// job is to deliver the bytes in order. Seq is carried alongside because
-// resuming, and telling a client where it got to, are the transport's job.
-type RunEvent struct {
-	Seq  uint64
-	Data json.RawMessage
-}
+// This package neither decodes it nor describes it. The event vocabulary
+// belongs to the session, a second copy of it here would be a second thing to
+// keep in step, and the transport's whole job is to deliver the bytes in order.
+// The sequence a client resumes from is inside those bytes, where the session
+// wrote it; carrying it alongside as well would be a second copy of that too,
+// and one nothing here reads.
+type RunEvent = json.RawMessage
 
 // RunClient identifies an attached front-end, for the presence the other
 // clients of the same run are shown.

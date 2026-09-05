@@ -67,7 +67,7 @@ func testRuns(t *testing.T) (*runner.Runs, *lastSession) {
 				Backend: llm.NewRef(llm.New("http://127.0.0.1:9", "t")),
 			})
 			built.set(s.Local)
-			return s, runner.Opened{Model: "test/model", Root: env.Cwd, Title: req.Title}, nil
+			return s, runner.Opened{Model: "test/model", Root: env.Cwd}, nil
 		},
 	})
 	if err != nil {
@@ -176,11 +176,11 @@ func TestEventsCrossTheSeamAsTheirOwnEncoding(t *testing.T) {
 			t.Fatal("the stream closed before it said anything")
 		}
 		var decoded uisession.Event
-		if err := json.Unmarshal(ev.Data, &decoded); err != nil {
+		if err := json.Unmarshal(ev, &decoded); err != nil {
 			t.Fatalf("the frame is not an event: %v", err)
 		}
-		if decoded.Seq != ev.Seq {
-			t.Errorf("frame seq = %d but the payload says %d", ev.Seq, decoded.Seq)
+		if decoded.Seq == 0 {
+			t.Error("the event carries no sequence; a client has nothing to resume from")
 		}
 		if decoded.Kind != uisession.KindPresence {
 			t.Errorf("first event = %q, want presence", decoded.Kind)
@@ -261,7 +261,7 @@ func TestAVeryLargeChangeIsListedWithoutItsContent(t *testing.T) {
 	run := openTestRun(t, b)
 
 	sess := built.get(t)
-	huge := strings.Repeat("x", maxArtifactSide+1)
+	huge := strings.Repeat("x", maxArtifactChange+1)
 	sess.RecordFileChange("/w/generated.go", "", huge, true)
 	sess.RecordFileChange("/w/small.go", "before", "after", false)
 
@@ -431,7 +431,7 @@ func TestTheArtifactBudgetIsSpentAcrossTheWholeResponse(t *testing.T) {
 
 	// Each is well inside the per-change cap, and together they are several
 	// times the response budget.
-	const each = maxArtifactSide / 2
+	const each = maxArtifactChange / 2
 	files := (maxArtifactBody / each) + 8
 	body := strings.Repeat("y", each)
 	sess := built.get(t)
@@ -531,7 +531,7 @@ func TestTheAdapterCarriesWhoAnsweredAnApproval(t *testing.T) {
 
 	for ev := range stream.Events() {
 		var decoded uisession.Event
-		if err := json.Unmarshal(ev.Data, &decoded); err != nil {
+		if err := json.Unmarshal(ev, &decoded); err != nil {
 			t.Fatal(err)
 		}
 		if decoded.Kind != uisession.KindApprovalResolved {
@@ -591,7 +591,7 @@ func TestTheAdapterCarriesWhoIsWatching(t *testing.T) {
 				t.Fatal("the stream ended before presence arrived")
 			}
 			var decoded uisession.Event
-			if err := json.Unmarshal(ev.Data, &decoded); err != nil {
+			if err := json.Unmarshal(ev, &decoded); err != nil {
 				t.Fatal(err)
 			}
 			if decoded.Kind != uisession.KindPresence {
@@ -627,7 +627,11 @@ func TestTheAdapterResumesFromTheCursorItWasGiven(t *testing.T) {
 	}
 	var last uint64
 	for ev := range first.Events() {
-		last = ev.Seq
+		var decoded uisession.Event
+		if err := json.Unmarshal(ev, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		last = decoded.Seq
 		if last >= 1 {
 			break
 		}
@@ -647,8 +651,12 @@ func TestTheAdapterResumesFromTheCursorItWasGiven(t *testing.T) {
 		if !ok {
 			t.Fatal("the resumed stream closed at once")
 		}
-		if ev.Seq <= last {
-			t.Errorf("resuming after %d replayed event %d", last, ev.Seq)
+		var decoded uisession.Event
+		if err := json.Unmarshal(ev, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Seq <= last {
+			t.Errorf("resuming after %d replayed event %d", last, decoded.Seq)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("nothing arrived on the resumed stream")

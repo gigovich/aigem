@@ -404,7 +404,7 @@ func (l *Local) replayLocked(since uint64) ([]Event, error) {
 		// Beyond what is held in memory, the journal is the record. Only a session
 		// that never reached its first turn has none.
 		if l.id != "" {
-			if evs, err := readJournal(l.id, since); err == nil {
+			if evs, err := ReadJournal(l.id, since); err == nil {
 				return evs, nil
 			}
 		}

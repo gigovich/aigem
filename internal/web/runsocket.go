@@ -27,14 +27,9 @@ import (
 // and the drift would show up as a browser rendering a conversation that did
 // not happen.
 
-// kindClientError names the frame that is not an event. It is deliberately not
-// "error": that is a real event kind, and naming it the same made every client
-// mistake look like something that happened in the conversation - putting
-// "approval already decided" into the timeline as a failure at exactly the
-// moment the design says it must not be one.
-const kindClientError = "client_error"
-
-// wsError is sent when an operation cannot be carried out.
+// wsError is sent when an operation cannot be carried out. Its kind is
+// controlClientError, the same string the control stream uses: one name for one
+// thing on the wire, and a client that learns it once knows it on both streams.
 type wsError struct {
 	Kind  string `json:"kind"`
 	Op    string `json:"op,omitempty"`
@@ -80,9 +75,11 @@ func (s *Server) handleRunSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	client := RunClient{
-		Kind:  firstNonEmpty(r.URL.Query().Get("kind"), "web"),
-		Label: r.URL.Query().Get("label"),
+	// A client that names no kind is still somebody, and a browser is what this
+	// route mostly is.
+	client := RunClient{Kind: "web", Label: r.URL.Query().Get("label")}
+	if kind := r.URL.Query().Get("kind"); kind != "" {
+		client.Kind = kind
 	}
 
 	// Attached before the hijack, so a run that is gone, closed, or past the
@@ -122,7 +119,7 @@ func (s *Server) handleRunSocket(w http.ResponseWriter, r *http.Request) {
 		// The payload is written as it came: it was encoded by the session, and
 		// decoding it here to re-encode it would be this package taking a view
 		// on a vocabulary it deliberately does not have.
-		pump(c, stream.Events(), func(ev RunEvent) error { return c.sendBytes(ev.Data) },
+		pump(c, stream.Events(), func(ev RunEvent) error { return c.sendBytes(ev) },
 			nil, wsPingInterval)
 		c.close()
 	}()
@@ -138,13 +135,13 @@ func (s *Server) handleRunSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runOp(ctx context.Context, id string, client RunClient, data []byte) any {
 	var op RunOp
 	if err := json.Unmarshal(data, &op); err != nil {
-		return wsError{Kind: kindClientError, Error: "bad message: " + err.Error()}
+		return wsError{Kind: controlClientError, Error: "bad message: " + err.Error()}
 	}
 	if op.Op == opPing {
 		return nil
 	}
 	if !runOps[op.Op] {
-		return wsError{Kind: kindClientError, Op: op.Op,
+		return wsError{Kind: controlClientError, Op: op.Op,
 			Error: "unknown op " + strconv.Quote(op.Op)}
 	}
 	if op.Label == "" {
@@ -153,7 +150,7 @@ func (s *Server) runOp(ctx context.Context, id string, client RunClient, data []
 		op.Label = client.Kind
 	}
 	if err := s.backend.ApplyRunOp(ctx, id, op); err != nil {
-		return wsError{Kind: kindClientError, Op: op.Op, Error: opReason(op.Op, err)}
+		return wsError{Kind: controlClientError, Op: op.Op, Error: opReason(op.Op, err)}
 	}
 	return nil
 }
@@ -175,13 +172,4 @@ func opReason(op string, err error) string {
 		slog.Error("the daemon failed a run operation", "op", op, "err", err)
 		return "the daemon could not carry that out"
 	}
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

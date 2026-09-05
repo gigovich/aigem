@@ -111,8 +111,8 @@ type RunView struct {
 }
 
 // RunRequest is what a client asked for when it created a run. Everything in it
-// is a preference: Open resolves the model and the root, and reports what it
-// actually built in RunOpen.
+// is a preference: OpenRun resolves the model and the root, and reports what it
+// actually built in Opened.
 type RunRequest struct {
 	// Mode is the session policy. The zero value is interactive.
 	Mode Mode
@@ -129,7 +129,11 @@ type RunRequest struct {
 type Opened struct {
 	Model string
 	Root  string
-	Title string
+	// There is deliberately no Title. A conversation's name belongs to the
+	// conversation - a SessionStart hook may set it, the first message
+	// otherwise does - and a second place to put one would only ever be the
+	// same string read from the same session, or a disagreement with nothing to
+	// settle it.
 	// Release is called once the session has been saved and closed, for
 	// whatever the caller allocated alongside it - an environment reference, a
 	// worktree. It may be nil, and it is called exactly once per run.
@@ -152,14 +156,27 @@ type RunsConfig struct {
 	// which is what a daemon that could not find its state directory falls back
 	// to: it can still hold a conversation, it just forgets it happened.
 	Store *store.File[[]Run]
+	// Notify is called with a run whose record has changed - opened, named by
+	// its conversation, switched model, closed.
+	//
+	// It exists because most of those do not happen during an HTTP request. A
+	// run gets its name on the first message, which arrives up a websocket, and
+	// a daemon that only announced what its own routes did would leave every
+	// other tab showing an untitled run until something else moved.
+	//
+	// It is called without the registry's lock, and must not block: whatever is
+	// on the other end is a fan-out to connected pages, and a slow one would
+	// hold up the conversation that caused it.
+	Notify func(RunView)
 	// Now is the clock, so a test can pin the timestamps it asserts on.
 	Now func() time.Time
 }
 
 // Runs is the daemon's table of conversations.
 type Runs struct {
-	open OpenRun
-	now  func() time.Time
+	open   OpenRun
+	notify func(RunView)
+	now    func() time.Time
 
 	// once makes Close idempotent, and makes a second caller wait for the first
 	// rather than return while the conversations are still being saved.
@@ -189,6 +206,13 @@ type Runs struct {
 	closed  bool
 }
 
+// row is a record and its session, read together under the lock and used after
+// it: everything about the live half takes the session's own mutex.
+type row struct {
+	rec  Run
+	sess *Session
+}
+
 // liveRun is one row: the record, and the session while there is one.
 type liveRun struct {
 	rec  Run
@@ -213,7 +237,14 @@ func NewRuns(cfg RunsConfig) (*Runs, error) {
 	if now == nil {
 		now = time.Now
 	}
-	r := &Runs{open: cfg.Open, now: now, file: cfg.Store, byID: map[string]*liveRun{}}
+	notify := cfg.Notify
+	if notify == nil {
+		notify = func(RunView) {}
+	}
+	r := &Runs{
+		open: cfg.Open, notify: notify, now: now,
+		file: cfg.Store, byID: map[string]*liveRun{},
+	}
 	if cfg.Store == nil {
 		return r, nil
 	}
@@ -318,10 +349,10 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 		return RunView{}, errors.New("runner: the run was opened without a session")
 	}
 
-	now := r.now()
+	now, meta := r.now(), sess.Local.Meta()
 	rec := Run{
-		ID: id, SessionID: sess.Local.Meta().ID, Mode: req.Mode,
-		Title: opened.Title, Model: opened.Model, Root: opened.Root,
+		ID: id, SessionID: meta.ID, Mode: req.Mode,
+		Title: meta.Title, Model: opened.Model, Root: opened.Root,
 		Status: RunOpen, Created: now, Updated: now,
 	}
 
@@ -339,22 +370,18 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	r.saveLocked()
 	r.mu.Unlock()
 
-	return view(rec, sess), nil
+	v := view(rec, sess)
+	r.notify(v)
+	return v, nil
 }
 
 // List reports every run, oldest first.
 func (r *Runs) List() []RunView {
 	r.mu.Lock()
-	rows := make([]struct {
-		rec  Run
-		sess *Session
-	}, 0, len(r.order))
+	rows := make([]row, 0, len(r.order))
 	for _, id := range r.order {
 		if lr := r.byID[id]; lr != nil {
-			rows = append(rows, struct {
-				rec  Run
-				sess *Session
-			}{lr.rec, lr.sess})
+			rows = append(rows, row{lr.rec, lr.sess})
 		}
 	}
 	r.mu.Unlock()
@@ -363,8 +390,8 @@ func (r *Runs) List() []RunView {
 	// and holding the table's across them would let one busy conversation stall
 	// a list of all the others.
 	out := make([]RunView, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, view(row.rec, row.sess))
+	for _, r := range rows {
+		out = append(out, view(r.rec, r.sess))
 	}
 	return out
 }
@@ -512,6 +539,16 @@ func (r *Runs) Apply(id string, op RunOp) error {
 		l.SetAutoMode(!op.On)
 		return nil
 	case OpSwitchModel:
+		// Refused while a turn is in flight. The switch itself reads the
+		// agent's messages to re-estimate the context window, and the turn
+		// goroutine is writing them - a data race in internal/agent that this
+		// is the daemon's reachable path to. It is also the answer that makes
+		// sense on its own: the turn already started against the model being
+		// replaced, so switching under it changes nothing about the answer
+		// being produced.
+		if l.Running() {
+			return uisession.ErrBusy
+		}
 		info, err := l.SwitchModel(op.Ref, op.Persist)
 		if err != nil {
 			return err
@@ -529,14 +566,18 @@ func (r *Runs) Apply(id string, op RunOp) error {
 // switch did not happen.
 func (r *Runs) setModel(id, ref string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	lr := r.byID[id]
 	if lr == nil || lr.rec.Model == ref {
+		r.mu.Unlock()
 		return
 	}
 	lr.rec.Model = ref
 	lr.rec.Updated = r.now()
 	r.saveLocked()
+	rec, sess := lr.rec, lr.sess
+	r.mu.Unlock()
+
+	r.notify(view(rec, sess))
 }
 
 // CloseRun saves the conversation and ends the session, leaving the record and
@@ -580,8 +621,12 @@ func (r *Runs) CloseRun(id string) error {
 	lr.rec.Status = RunClosed
 	lr.rec.Updated = r.now()
 	r.saveLocked()
+	rec := lr.rec
 	r.mu.Unlock()
 
+	// Announced with the session already detached, so what a page is told
+	// matches what it would read back.
+	r.notify(view(rec, nil))
 	closeSession(sess, rel)
 	return nil
 }
@@ -714,9 +759,9 @@ func (r *Runs) liveLocked() int {
 func (r *Runs) sync(id string, sess *Session) {
 	meta := sess.Local.Meta()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	lr := r.byID[id]
 	if lr == nil {
+		r.mu.Unlock()
 		return
 	}
 	changed := false
@@ -727,10 +772,15 @@ func (r *Runs) sync(id string, sess *Session) {
 		lr.rec.Title, changed = meta.Title, true
 	}
 	if !changed {
+		r.mu.Unlock()
 		return
 	}
 	lr.rec.Updated = r.now()
 	r.saveLocked()
+	rec := lr.rec
+	r.mu.Unlock()
+
+	r.notify(view(rec, sess))
 }
 
 // row reads one record and its session under the lock, so that everything after
@@ -816,6 +866,9 @@ func closeSession(sess *Session, rel func()) {
 	release(rel)
 }
 
+// release calls what Opened handed back, if anything. It is a function rather
+// than a nil check at each site because Release is documented as running once
+// per run, and three of the four sites are error paths.
 func release(rel func()) {
 	if rel != nil {
 		rel()

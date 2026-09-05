@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -38,6 +37,22 @@ type fakeBackend struct {
 	// The errors a test arms. Each stands for a state the router has to have an
 	// answer for and cannot otherwise be driven into.
 	openErr, watchErr, eventsErr, opErr, listErr error
+	// srv is where a change is announced, as the real registry announces one.
+	// It is filled in after New, because the daemon is served out of the
+	// backend and so cannot exist before it.
+	srv *Server
+}
+
+// announce publishes a change the way the run registry does. The router
+// deliberately publishes nothing itself: every change to a run is announced by
+// whoever made it, and most of them do not happen during a request.
+func (b *fakeBackend) announce(run Run) {
+	b.mu.Lock()
+	srv := b.srv
+	b.mu.Unlock()
+	if srv != nil {
+		srv.Publish("run.updated", run)
+	}
 }
 
 // fakeRun is one conversation in the fake: its record, everything that has
@@ -94,6 +109,9 @@ func (b *fakeBackend) OpenRun(_ context.Context, req NewRun) (Run, error) {
 		Updated: time.Unix(int64(b.next), 0).UTC(),
 	}
 	b.addLocked(&fakeRun{run: run})
+	b.mu.Unlock()
+	b.announce(run)
+	b.mu.Lock()
 	return run, nil
 }
 
@@ -138,6 +156,10 @@ func (b *fakeBackend) CloseRun(_ context.Context, id string) error {
 		s.finish()
 	}
 	fr.subs = map[*fakeStream]struct{}{}
+	run := fr.run
+	b.mu.Unlock()
+	b.announce(run)
+	b.mu.Lock()
 	return nil
 }
 
@@ -154,8 +176,8 @@ func (b *fakeBackend) RunEvents(_ context.Context, id string, since uint64, limi
 		return nil, ErrNoRun
 	}
 	var out []RunEvent
-	for _, ev := range fr.events {
-		if ev.Seq > since {
+	for i, ev := range fr.events {
+		if uint64(i)+1 > since {
 			out = append(out, ev)
 		}
 	}
@@ -184,8 +206,8 @@ func (b *fakeBackend) WatchRun(_ context.Context, id string, c RunClient, since 
 	// in without a reader having to be there yet - which is what the session
 	// itself does with a subscriber's queue.
 	s := &fakeStream{b: b, run: fr, client: c, ch: make(chan RunEvent, 64)}
-	for _, ev := range fr.events {
-		if ev.Seq > since {
+	for i, ev := range fr.events {
+		if uint64(i)+1 > since {
 			s.ch <- ev
 		}
 	}
@@ -246,8 +268,11 @@ func (b *fakeBackend) emit(id string, payload string) RunEvent {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	fr := b.runs[id]
-	ev := RunEvent{Seq: uint64(len(fr.events)) + 1}
-	ev.Data = json.RawMessage(`{"seq":` + strconv.FormatUint(ev.Seq, 10) + `,` + payload + `}`)
+	// The sequence goes where the session puts it: inside the event. The
+	// position in this slice is the same number, which is what since counts
+	// against.
+	seq := uint64(len(fr.events)) + 1
+	ev := RunEvent(`{"seq":` + strconv.FormatUint(seq, 10) + `,` + payload + `}`)
 	fr.events = append(fr.events, ev)
 	for s := range fr.subs {
 		s.ch <- ev

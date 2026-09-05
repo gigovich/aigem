@@ -49,10 +49,11 @@ func (b *webBackend) Meta(_ context.Context) (web.Meta, error) {
 }
 
 const (
-	// maxArtifactSide is the largest change this route carries the content of.
-	// A quarter of a megabyte is a very large source file and a small fraction
-	// of what a generated one can be.
-	maxArtifactSide = 256 << 10
+	// maxArtifactChange is the largest change this route carries the content
+	// of - both versions of the file together. A quarter of a megabyte is a
+	// very large source file and a small fraction of what a generated one can
+	// be.
+	maxArtifactChange = 256 << 10
 	// maxArtifactBody is the budget for the contents in one response. A run
 	// that touched a hundred files is a real run; a hundred files' worth of
 	// content in one JSON document is not a page anyone can render.
@@ -111,7 +112,7 @@ func (b *webBackend) RunEvents(_ context.Context, id string, since uint64, limit
 			// answer dressed up as a timeline.
 			return nil, fmt.Errorf("encoding event %d of run %s: %w", ev.Seq, id, err)
 		}
-		out = append(out, web.RunEvent{Seq: ev.Seq, Data: enc})
+		out = append(out, enc)
 	}
 	return out, nil
 }
@@ -155,7 +156,7 @@ func (b *webBackend) RunArtifacts(_ context.Context, id string) ([]web.Artifact,
 		// of what changed is always complete - it is only the content that is
 		// rationed.
 		switch size := len(c.Old) + len(c.New); {
-		case size > maxArtifactSide, size > budget:
+		case size > maxArtifactChange, size > budget:
 			a.Truncated = true
 		default:
 			budget -= size
@@ -222,7 +223,7 @@ func (s *runStream) encode(events <-chan uisession.Event) {
 			continue
 		}
 		select {
-		case s.out <- web.RunEvent{Seq: ev.Seq, Data: enc}:
+		case s.out <- enc:
 		case <-s.done:
 			return
 		}
@@ -265,6 +266,11 @@ func webRunError(err error) error {
 		return web.ErrRunClosed
 	case errors.Is(err, uisession.ErrTruncated):
 		return web.ErrHistoryGone
+	case errors.Is(err, runner.ErrTooManyRuns):
+		// Wrapped rather than replaced: the sentinel decides the status code and
+		// the text says how many are open, which is what tells the person to
+		// close one rather than to wait.
+		return fmt.Errorf("%w: %w", web.ErrBusy, err)
 	case errors.Is(err, runner.ErrRunsClosed):
 		return err
 	default:

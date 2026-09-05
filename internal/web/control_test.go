@@ -126,8 +126,8 @@ func (c *controlClient) send(v any) {
 	c.sendRaw(b)
 }
 
-// sendRaw writes bytes that are not necessarily a document, for the callers
-// about what happens to a frame the server cannot decode.
+// sendRaw writes bytes that are not necessarily a document, for the tests about
+// what the server does with a frame it cannot decode.
 func (c *controlClient) sendRaw(b []byte) {
 	c.t.Helper()
 	if err := wsutil.WriteClientText(c.conn, b); err != nil {

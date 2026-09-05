@@ -14,9 +14,17 @@ import (
 
 func newTestServer(t *testing.T, cfg Config) *Server {
 	t.Helper()
-	srv, err := New(withBackend(cfg))
+	cfg = withBackend(cfg)
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
+	}
+	// The same order the binary wires in: the registry is built before the
+	// daemon it publishes to, so it is told where to publish once there is one.
+	if b, ok := cfg.Backend.(*fakeBackend); ok {
+		b.mu.Lock()
+		b.srv = srv
+		b.mu.Unlock()
 	}
 	t.Cleanup(func() { _ = srv.Close() })
 	go func() { _ = srv.Serve() }()

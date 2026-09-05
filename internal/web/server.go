@@ -270,6 +270,21 @@ func (s *Server) Close() error {
 	return err
 }
 
+// Publish tells the connected pages that something changed, and returns the
+// revision it assigned.
+//
+// It is the backend's half of the control stream. The Backend interface is pull
+// only - the router asks, the backend answers - and most of what changes about
+// a run does not happen during a request: a conversation takes its name on the
+// first message, which arrives up a websocket. Without this, a page other than
+// the one that caused it is told nothing until some later mutation moves the
+// revision.
+//
+// kind is the message type a client switches on, and data is the delta. Neither
+// is interpreted here. It does not block: a page that has stopped reading is
+// disconnected rather than waited for.
+func (s *Server) Publish(kind string, data any) uint64 { return s.hub.publish(kind, data) }
+
 // Addr is the bound address, with the port the kernel chose when none was given.
 func (s *Server) Addr() net.Addr { return s.ln.Addr() }
 
@@ -602,20 +617,19 @@ func securityHeaders(h http.Header) {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	// The status is already written by now, so a failure here has nowhere to go
-	// but the connection, which the client sees as a short read.
-	_ = json.NewEncoder(w).Encode(v)
+	writeJSONStatus(w, http.StatusOK, v)
 }
 
-// writeJSONStatus answers with a status other than 200.
+// writeJSONStatus answers with a status of its own.
 //
-// It exists because the header has to be set before WriteHeader: net/http
-// snapshots the header block when the status goes out, and a Content-Type set
-// after it is silently dropped - which is how a 201 ends up announcing itself
-// as text/plain while every 200 on the same route is JSON.
+// The header goes out before the status, because net/http snapshots the header
+// block when the status is written and a Content-Type set after it is silently
+// dropped - which is how a 201 ends up announcing itself as text/plain while
+// every 200 on the same route is JSON.
 func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+	// The status is already written by now, so a failure here has nowhere to go
+	// but the connection, which the client sees as a short read.
 	_ = json.NewEncoder(w).Encode(v)
 }
