@@ -1014,8 +1014,45 @@ func TestTheCeilingHoldsAgainstCreatesInFlight(t *testing.T) {
 	if refused == 0 {
 		t.Fatal("nothing was refused; the test never reached the ceiling")
 	}
-	if live := len(runs.List()); live > 32 {
-		t.Errorf("the table holds %d live runs, and the limit is 32", live)
+	if live := len(runs.List()); live != 32 {
+		// Exactly, not at most: a count that could be transiently high refuses
+		// creates while slots are free, and tells the person "44 are open" out
+		// of a limit of 32.
+		t.Errorf("%d runs were opened, want the ceiling filled exactly", live)
+	}
+	// And the sentence it refused with is one a person can act on.
+	for _, err := range errs {
+		if errors.Is(err, runner.ErrTooManyRuns) {
+			if !strings.Contains(err.Error(), "32 is the limit") {
+				t.Errorf("refusal = %v, want it to name the limit it is at", err)
+			}
+			break
+		}
+	}
+}
+
+// Two runs opened at the same moment must not be listed in an order their own
+// timestamps contradict: a page that sorts by Created would shuffle them.
+func TestCreatedNeverContradictsTheOrderRunsWereOpenedIn(t *testing.T) {
+	runs := newRuns(t, "", nil, nil)
+	var wg sync.WaitGroup
+	for range 24 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := runs.Create(context.Background(), runner.RunRequest{}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	list := runs.List()
+	for i := 1; i < len(list); i++ {
+		if list[i].Created.Before(list[i-1].Created) {
+			t.Fatalf("%s is listed after %s but was created %v earlier",
+				list[i].ID, list[i-1].ID, list[i-1].Created.Sub(list[i].Created))
+		}
 	}
 }
 

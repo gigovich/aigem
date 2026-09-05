@@ -180,3 +180,46 @@ func TestOnlyHashedAssetsAreCachedForever(t *testing.T) {
 		}
 	}
 }
+
+// A binary built without a bundle has no page to serve, and says so. It must
+// still answer a JSON client the way one expects: routes() promises that an
+// unknown path under /api/ is a 404 and never the page, and that promise does
+// not depend on which build this is. It used to hand a decoder a page's worth
+// of prose about a node toolchain, under a status that says the route exists.
+func TestABinaryWithNoUIStill404sAnUnknownApiPath(t *testing.T) {
+	srv := newTestServer(t, Config{})
+	for _, path := range []string{"api/nothing-here", "api", "API/Nothing", "api/runs/RUN-1/nope"} {
+		req, err := http.NewRequest(http.MethodGet, srv.Base()+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+srv.Token())
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("%s = %d, want 404", path, res.StatusCode)
+		}
+		if strings.Contains(string(body), "node toolchain") {
+			t.Errorf("%s was answered with the missing-UI page:\n%s", path, body)
+		}
+	}
+
+	// And a page request still gets the explanation, which is the whole point
+	// of the handler.
+	res, err := http.Get(srv.Base() + "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotImplemented {
+		t.Errorf("a page = %d, want 501", res.StatusCode)
+	}
+	if !strings.Contains(string(body), "make web") {
+		t.Errorf("the page does not say how to build a UI:\n%s", body)
+	}
+}

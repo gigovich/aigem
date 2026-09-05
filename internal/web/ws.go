@@ -27,6 +27,11 @@ const (
 	// after every connection has been closed under their handlers. It is a
 	// backstop, not a duration anything is expected to take.
 	wsDrainTimeout = 10 * time.Second
+	// wsCloseWait bounds the two things ending a connection politely can wait
+	// for: a frame already in flight, and the close frame that says goodbye. It
+	// is short because both are only worth waiting for while there is a client
+	// still reading, and a client that is reading needs neither.
+	wsCloseWait = 250 * time.Millisecond
 	// wsIdleTimeout is how long a connection may go without a frame from the
 	// client before the daemon gives up on it.
 	//
@@ -134,27 +139,67 @@ func (c *wsConn) closing() bool {
 	}
 }
 
+// stopWrites refuses further frames without touching what is on the wire. It is
+// what makes close below able to wait for a frame in flight rather than cut it:
+// nothing new starts, and the one thing that had started finishes.
+func (c *wsConn) stopWrites() { c.once.Do(func() { close(c.done) }) }
+
 // shutdown unblocks whatever this connection is doing, without waiting for the
 // write mutex. A deadline in the past ends a read and a write that are already
-// in flight, which is what lets close below take the mutex without waiting for
-// a client that has stopped reading.
+// in flight - which cuts that frame in half, so it is for the shutdown path
+// alone: see closeAll, where the alternative is one write timeout per
+// connection instead of one for all of them.
 func (c *wsConn) shutdown() {
-	c.once.Do(func() {
-		close(c.done)
-		_ = c.conn.SetDeadline(time.Now().Add(-time.Second))
-	})
+	c.stopWrites()
+	_ = c.conn.SetDeadline(time.Now().Add(-time.Second))
 }
 
-// close ends the connection without cutting a frame in half. Closing from one
-// goroutine while another is partway through a write leaves the client reading
-// the tail of a frame as a header, which it reports as a reserved opcode - a
-// confusing way to learn about a race.
+// close ends the connection without cutting a frame in half.
+//
+// The mutex is taken before anything touches the socket, so a frame the pump
+// has already begun goes out whole. Closing under it - which is what this used
+// to do, by poisoning the deadline first - leaves the client reading the tail
+// of that frame as a header, which a browser reports as a reserved opcode and
+// a failed connection rather than as the run it was watching ending. It cost
+// about one socket in twelve when a run was closed with tabs attached.
+//
+// The wait is bounded by the deadline every write sets, and the shutdown path
+// has poisoned those already, so Close still costs one timeout rather than one
+// per connection.
+//
+// A close frame goes first when there is still a connection to put it on, so a
+// page sees a clean close rather than a dropped socket. It is best-effort: on
+// the shutdown path the deadline is already in the past and it simply fails.
 func (c *wsConn) close() {
-	c.shutdown()
-	c.mu.Lock()
+	c.stopWrites()
+	if !c.lockBy(time.Now().Add(wsCloseWait)) {
+		// A frame that has not finished in this long is going to somebody who
+		// has stopped reading, and waiting out its whole deadline would hold a
+		// goroutine on a connection that is already gone. Cutting it is the
+		// worse answer only while there is a client left to notice.
+		c.shutdown()
+		c.mu.Lock()
+	}
 	defer c.mu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(wsCloseWait))
+	_ = ws.WriteFrame(c.conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "")))
 	_ = c.conn.SetDeadline(time.Now().Add(-time.Second))
 	_ = c.conn.Close()
+}
+
+// lockBy takes the write mutex, giving up at the deadline. A frame going to a
+// client that is reading finishes in microseconds; one going to a client that
+// is not would otherwise hold this for the whole write timeout.
+func (c *wsConn) lockBy(deadline time.Time) bool {
+	for {
+		if c.mu.TryLock() {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // pump writes what a stream queues until the connection ends, and pings every

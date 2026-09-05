@@ -470,3 +470,40 @@ func TestHealthzAnswersWithNoCredential(t *testing.T) {
 		t.Errorf("status = %d, want 200 with no credential", res.StatusCode)
 	}
 }
+
+// A Refusal is shown to a person. A Go error names the package it came from,
+// which reads as a stack trace escaping into the interface - and the text a
+// front-end puts in front of somebody must not start "runner:".
+func TestARefusalDropsThePackageThatRaisedIt(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"runner: too many conversations are open: 32 is the limit",
+			"too many conversations are open: 32 is the limit"},
+		{"uisession: session closed", "session closed"},
+		{"approval already decided", "approval already decided"},
+		// Prose before the colon is not a package prefix.
+		{"could not open openai/gpt-5.6-sol: unknown provider",
+			"could not open openai/gpt-5.6-sol: unknown provider"},
+		// Nor is anything that is not a lowercase identifier.
+		{"HTTP: bad things", "HTTP: bad things"},
+		{": leading colon", ": leading colon"},
+		{"", ""},
+	} {
+		var refusal *Refusal
+		err := Refuse(errors.New(tc.in))
+		if tc.in == "" {
+			// An error with nothing to say still becomes one.
+			if err == nil {
+				t.Fatal("Refuse(empty) = nil")
+			}
+		}
+		if !errors.As(err, &refusal) {
+			t.Fatalf("Refuse(%q) = %v, want a Refusal", tc.in, err)
+		}
+		if refusal.Reason != tc.want {
+			t.Errorf("Refuse(%q).Reason = %q, want %q", tc.in, refusal.Reason, tc.want)
+		}
+	}
+	if Refuse(nil) != nil {
+		t.Error("Refuse(nil) is not nil")
+	}
+}

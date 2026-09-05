@@ -87,9 +87,14 @@ func runWebCommand(args []string) error {
 		return fmt.Errorf("%w\n\n%s", err, webUsage)
 	}
 
-	// A failure to find the state directory costs the browser sessions and the
-	// run table their persistence, not the daemon its start: the operator
-	// locked out of the UI would be locked out by the one thing the UI is for.
+	// A failure to find the state directory is reported and not fatal: the
+	// operator locked out of the UI would be locked out by the one thing the UI
+	// is for, and /healthz and the page still answer.
+	//
+	// It is not a state the daemon works in, though. Opening a model reads the
+	// credential store, which is under the same directory, so every attempt to
+	// start a conversation will fail with whatever went wrong here. What is
+	// saved is the ability to see that, and to fix it.
 	cookies, stateDir := "", ""
 	if dir, err := config.StateDir(); err != nil {
 		fmt.Fprintf(os.Stderr, "note: browser sign-ins and the list of runs will not "+

@@ -153,8 +153,9 @@ type RunsConfig struct {
 	// Open builds the session behind a new run. It is required.
 	Open OpenRun
 	// Store persists the table. A nil store keeps the runs in memory alone,
-	// which is what a daemon that could not find its state directory falls back
-	// to: it can still hold a conversation, it just forgets it happened.
+	// which is what a daemon with nowhere to write falls back to: the table
+	// still works, it just does not survive the process. Whether a conversation
+	// can be opened at all in that state is Open's answer, not this one.
 	Store *store.File[[]Run]
 	// Notify is called with a run whose record has changed - opened, named by
 	// its conversation, switched model, closed.
@@ -328,9 +329,22 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	r.pending++
 	r.opening.Add(1)
 	r.mu.Unlock()
+	// counted is cleared in the same critical section that adds the row, so the
+	// two halves of the count never both hold this run. Doing it in a lock of
+	// its own - which is what the deferred release does when the run never
+	// arrives - let live+pending exceed the ceiling for as long as it took to
+	// build a view and rewrite the table, and refused creates while slots were
+	// free.
+	counted := true
+	uncount := func() {
+		if counted {
+			counted = false
+			r.pending--
+		}
+	}
 	defer func() {
 		r.mu.Lock()
-		r.pending--
+		uncount()
 		r.mu.Unlock()
 		r.opening.Done()
 	}()
@@ -349,14 +363,18 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 		return RunView{}, errors.New("runner: the run was opened without a session")
 	}
 
-	now, meta := r.now(), sess.Local.Meta()
+	meta := sess.Local.Meta()
+
+	r.mu.Lock()
+	// Stamped under the lock, so the order runs were created in and the order
+	// their timestamps read are the same one. Read before it, two runs opened
+	// at once could be listed in an order their Created fields contradict.
+	now := r.now()
 	rec := Run{
 		ID: id, SessionID: meta.ID, Mode: req.Mode,
 		Title: meta.Title, Model: opened.Model, Root: opened.Root,
 		Status: RunOpen, Created: now, Updated: now,
 	}
-
-	r.mu.Lock()
 	if r.closed {
 		// The registry shut down while the session was starting. It is not in
 		// the table, so nothing else will ever close it.
@@ -367,6 +385,8 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	lr := &liveRun{rec: rec, sess: sess, release: opened.Release}
 	r.byID[id] = lr
 	r.order = append(r.order, id)
+	// The row is the count now.
+	uncount()
 	r.saveLocked()
 	r.mu.Unlock()
 

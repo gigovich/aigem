@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // The runs API: the collection a page lists, the record it opens, and the
@@ -161,24 +162,36 @@ func count(w http.ResponseWriter, r *http.Request, name string, most int) (int, 
 	if raw == "" {
 		return most, true
 	}
-	n, err := strconv.Atoi(raw)
+	n, err := strconv.ParseInt(raw, 10, 64)
+	// A number too large for the type is still a number, and it means the same
+	// thing every other number past the cap means. Refusing it would be the one
+	// value of "as much as you will give me" that is an error.
+	if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(raw, "-") {
+		return most, true
+	}
 	if err != nil || n < 0 {
 		http.Error(w, name+" must be a non-negative whole number", http.StatusBadRequest)
 		return 0, false
 	}
-	if n == 0 || n > most {
-		n = most
+	if n == 0 || n > int64(most) {
+		return most, true
 	}
-	return n, true
+	return int(n), true
 }
 
 // writeRunError turns a backend error into a status code.
 //
 // The sentinels are the contract; a *Refusal is a sentence written for the
-// person at the browser, and everything else is the daemon's own fault. That
-// last case is answered without a detail on purpose: an error assembled
-// somewhere inside the agent is not something anyone at a browser can act on,
-// and it is the one place a path or a provider message could leak into a page.
+// person at the browser, and everything else is the daemon's own fault and is
+// answered without a detail, because an error assembled somewhere inside the
+// agent is not something anyone at a browser can act on.
+//
+// A Refusal does carry whatever the backend put in it, and a backend that
+// classifies broadly will put a filesystem path or a provider's message there.
+// That is the deliberate trade: this daemon serves one signed-in person on
+// their own machine, and hiding "run `aigem auth login openai`" behind "the
+// daemon could not carry that out" leaves them with a button that stopped
+// working and no way to find out why.
 func writeRunError(w http.ResponseWriter, doing string, err error) {
 	var refusal *Refusal
 	switch {

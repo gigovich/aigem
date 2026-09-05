@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -462,5 +463,60 @@ func TestASocketResumingPastTheHistoryIsGone(t *testing.T) {
 	res := handshake(t, srv, "/api/runs/RUN-1/socket?since=90")
 	if res.StatusCode != http.StatusGone {
 		t.Fatalf("status = %d, want 410", res.StatusCode)
+	}
+}
+
+// A run that ends under a tab has to end its socket cleanly. Cutting a frame in
+// half leaves the client reading its tail as a header, which a browser reports
+// as a protocol error and a failed connection rather than as the conversation
+// it was watching ending.
+//
+// The shape that used to do it: a pump partway through a frame while the run
+// closes. Several rounds, because it is a race and one round would miss it.
+func TestAClosingRunEndsItsSocketsWithoutCuttingAFrame(t *testing.T) {
+	for round := range 12 {
+		b := &fakeBackend{}
+		srv := newTestServer(t, Config{Backend: b})
+		id := openRun(t, srv)
+		c := dialRunSocket(t, srv, id, "")
+
+		// Keep the pump busy with frames the client is reading, so the close
+		// lands while one of them is on the wire.
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for range 200 {
+				b.emit(id, `"kind":"content","text":"`+strings.Repeat("x", 512)+`"`)
+			}
+		}()
+
+		if res := api(t, srv, http.MethodDelete, "/api/runs/"+id, ""); res.StatusCode != http.StatusOK {
+			t.Fatalf("round %d: close = %d, want 200", round, res.StatusCode)
+		}
+		<-done
+
+		// Drain to the end. Every frame has to be a whole one: a torn frame
+		// comes back as a protocol error, not as the end of the stream.
+		for {
+			if err := c.conn.SetReadDeadline(time.Now().Add(testWait)); err != nil {
+				t.Fatal(err)
+			}
+			_, err := wsutil.ReadServerText(c.read)
+			if err == nil {
+				continue
+			}
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				break
+			}
+			var closed wsutil.ClosedError
+			if errors.As(err, &closed) {
+				break
+			}
+			var timeout net.Error
+			if errors.As(err, &timeout) && timeout.Timeout() {
+				t.Fatalf("round %d: the socket neither ended nor said anything", round)
+			}
+			t.Fatalf("round %d: the stream ended mid-frame: %v", round, err)
+		}
 	}
 }

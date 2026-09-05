@@ -144,12 +144,13 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/runs/{id}/events` | a page of the timeline, `?since=&limit=` |
 | `GET /api/runs/{id}/socket` | the run stream, `?since=` |
 | `GET /api/runs/{id}/artifacts` | the files the run changed, both sides |
-| `/api/...`  | reserved; an unknown path here is a 404, never the page |
+| `/api/...`  | reserved; an unknown path here is a 404, never the page, in every build |
 | everything else | the application, which routes in the browser |
 
-A binary built without a bundle is the exception to the last row: it has no page
-to serve, so it answers 501 there. `/healthz`, the API routes above and the
-wrong-method 405s answer as they always do.
+A binary built without a bundle is the exception to the last row alone: it has
+no page to serve, so it answers 501 there. `/healthz`, the API routes above,
+the wrong-method 405s and the 404 for an unknown `/api/` path all answer as they
+always do - a JSON client cannot tell which build it is talking to.
 
 ## The control stream
 
@@ -244,7 +245,10 @@ Statuses a client has to tell apart:
   The one refusal here that is worth retrying: nothing about the request is
   wrong, and closing a run makes room.
 - `400` - a sentence meant to be shown. It is written for a person, and a
-  front-end must render it as text, never as markup.
+  front-end must render it as text, never as markup. It may name a model, a
+  provider or a path on the machine the daemon runs on: this daemon serves one
+  signed-in person on their own machine, and "run `aigem auth login openai`" is
+  worth more to them than a message that hides it.
 - `500` - carries nothing. What it was is in the daemon's log.
 
 A browser cannot read the status of a failed websocket handshake: the
@@ -255,11 +259,11 @@ have made anyway.
 
 `?since=` and `?limit=` are non-negative whole numbers. Every cursor on this API
 is one: opaque to the client, compared only for equality and order. A timeline
-is read in pages of at most 2000 events - an absent `limit`, a zero one and one
-past the cap all mean a full page - and a client that gets a full one asks again
-from the last sequence it saw, the same loop it uses to catch up after a
-disconnect. There is no "more" marker: a page that came back full is the signal
-to ask again.
+is read in pages of at most 2000 events - an absent `limit`, a zero one, and one
+past the cap or past the range of a number all mean a full page - and a client
+that gets a full one asks again from the last sequence it saw, the same loop it
+uses to catch up after a disconnect. There is no "more" marker: a page that came
+back full is the signal to ask again.
 
 A create body is capped at 16 KiB, and anything past that is a `400`.
 

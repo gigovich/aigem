@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // Backend is the agent side of the daemon, as the web package sees it.
@@ -109,11 +111,32 @@ func (r *Refusal) Error() string { return r.Reason }
 
 // Refuse builds a Refusal from an error, for a backend turning one it has
 // classified as the client's.
+//
+// A Go error is written for a log and names the package it came from; this text
+// is shown to a person, and "runner: too many conversations are open" reads as
+// a stack trace escaping into the interface. The prefix is dropped when there
+// is one - a single lowercase word before a colon, which is the convention and
+// is never how a sentence for a person starts.
 func Refuse(err error) error {
 	if err == nil {
 		return nil
 	}
-	return &Refusal{Reason: err.Error()}
+	return &Refusal{Reason: unprefixed(err.Error())}
+}
+
+// unprefixed drops a leading "package: " from an error string. A prefix with a
+// space in it is prose - "could not open openai/gpt: ..." - and is left alone.
+func unprefixed(msg string) string {
+	i := strings.Index(msg, ": ")
+	if i <= 0 || strings.ContainsAny(msg[:i], " \t") {
+		return msg
+	}
+	for _, r := range msg[:i] {
+		if !unicode.IsLower(r) && r != '/' && r != '.' && r != '_' {
+			return msg
+		}
+	}
+	return msg[i+2:]
 }
 
 // Run is one conversation as the wire describes it. The first block is what

@@ -245,7 +245,10 @@ func TestAnEmptyTimelineIsAnArrayAndNotNull(t *testing.T) {
 func TestACursorThatIsNotANonNegativeNumberIsRefused(t *testing.T) {
 	srv := newTestServer(t, Config{})
 	run := decode[Run](t, api(t, srv, http.MethodPost, "/api/runs", `{}`))
-	for _, q := range []string{"?since=-1", "?since=later", "?since=1.5", "?limit=-1", "?limit=all"} {
+	for _, q := range []string{
+		"?since=-1", "?since=later", "?since=1.5", "?limit=-1", "?limit=all",
+		"?limit=-99999999999999999999",
+	} {
 		res := api(t, srv, http.MethodGet, "/api/runs/"+run.ID+"/events"+q, "")
 		if res.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s = %d, want 400", q, res.StatusCode)
@@ -403,7 +406,9 @@ func TestAPageIsCappedWhateverTheClientAsksFor(t *testing.T) {
 	for range maxEventPage + 5 {
 		b.emit(run.ID, `"kind":"content"`)
 	}
-	for _, q := range []string{"", "?limit=0", "?limit=999999"} {
+	// The last is past the range of an int, which is still a number and still
+	// means "as much as you will give me".
+	for _, q := range []string{"", "?limit=0", "?limit=999999", "?limit=99999999999999999999"} {
 		page := decode[[]json.RawMessage](t, api(t, srv, http.MethodGet,
 			"/api/runs/"+run.ID+"/events"+q, ""))
 		if len(page) != maxEventPage {

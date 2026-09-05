@@ -134,9 +134,7 @@ func isAppRoute(fsys fs.FS, urlPath string) bool {
 	if name == "" || name == "." || isBuiltAsset(name) {
 		return false
 	}
-	// Case-insensitively: Go's mux is case-sensitive, so no real route is
-	// shadowed by being lenient here.
-	if lower := strings.ToLower(name); lower == "api" || strings.HasPrefix(lower, "api/") {
+	if isAPIPath(urlPath) {
 		return false
 	}
 	if !fs.ValidPath(name) {
@@ -146,14 +144,34 @@ func isAppRoute(fsys fs.FS, urlPath string) bool {
 	return err != nil
 }
 
-// noAssets answers every page request when the binary was built without a UI.
-// A blank page would look like a bug in the app; this says why there is none.
+// isAPIPath reports whether a path belongs to the API rather than to the page.
+// A request for one is answered as a JSON client expects even when there is no
+// route behind it, and never with the application.
+//
+// Case-insensitively: Go's mux is case-sensitive, so no real route is shadowed
+// by being lenient here.
+func isAPIPath(urlPath string) bool {
+	name := strings.ToLower(strings.TrimPrefix(path.Clean("/"+urlPath), "/"))
+	return name == "api" || strings.HasPrefix(name, "api/")
+}
+
+// noAssets answers a page request when the binary was built without a UI. A
+// blank page would look like a bug in the app; this says why there is none.
+//
+// It answers pages only. An unknown path under /api/ is a 404 here as it is
+// with a bundle, because it is a JSON client that asked: this used to hand one
+// a page's worth of prose about a node toolchain, under a status code that says
+// the route exists but is unimplemented, for a route that simply is not there.
 func noAssets() http.Handler {
 	const body = "aigem was built without a browser UI.\n\n" +
 		"A plain `go build` or `go install` deliberately produces a binary with no UI,\n" +
 		"so installing aigem never requires a node toolchain. From a checkout, build\n" +
 		"one with:\n\n    make web && make build\n"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPIPath(r.URL.Path) {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusNotImplemented)
 		_, _ = w.Write([]byte(body))
