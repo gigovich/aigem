@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -175,8 +176,21 @@ func runWebCommand(args []string) error {
 	defer runs.Close()
 
 	var activity *store.Log[web.Activity]
+	// The feed is a record of what happened, not an audit log, and a page shows
+	// the recent end of it. Anything older than this is dropped, which is also
+	// what stops a daemon that has been up for months holding every line it ever
+	// wrote - and what gives a client that can drive mutations a ceiling.
+	const activityRetention = 30 * 24 * time.Hour
 	if stateDir != "" {
 		activity = store.NewLog[web.Activity](filepath.Join(stateDir, "activity.jsonl"))
+		// Trimmed here and not while serving: compaction rewrites the file, and
+		// a cursor a page is holding must not be renumbered under it. Startup is
+		// the one moment no page holds one.
+		if n, err := activity.Compact(time.Now().Add(-activityRetention)); err != nil {
+			slog.Warn("the activity feed could not be trimmed", "err", err)
+		} else if n > 0 {
+			slog.Info("trimmed the activity feed", "dropped", n)
+		}
 	}
 	backend := newWebBackend(webBackendConfig{
 		version: versionString(), models: rt.models, runs: runs,

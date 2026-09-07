@@ -49,8 +49,13 @@ type Skill struct {
 	ProjectLocal bool   // discovered from the current project's skill roots
 	Builtin      bool   // embedded in the binary rather than discovered on disk
 
-	body   string // parsed at discovery, sent to the model only on Render
-	pathRe []*regexp.Regexp
+	body string // parsed at discovery, sent to the model only on Render
+	// pathRe is compiled on first use and then never changes. One *Skill is
+	// shared by every session in a project - the catalog hands the same pointers
+	// to each agent - so the compile happens under a Once rather than on
+	// whichever turn touched a file first.
+	pathOnce sync.Once
+	pathRe   []*regexp.Regexp
 }
 
 // ModelInvocable reports whether the model may auto-invoke this skill.
@@ -66,13 +71,13 @@ func (s *Skill) Matches(rel string) bool {
 	if len(s.Paths) == 0 {
 		return false
 	}
-	if s.pathRe == nil {
+	s.pathOnce.Do(func() {
 		for _, g := range s.Paths {
 			if re := globToRegexp(filepath.ToSlash(g)); re != nil {
 				s.pathRe = append(s.pathRe, re)
 			}
 		}
-	}
+	})
 	rel = filepath.ToSlash(rel)
 	base := rel
 	if i := strings.LastIndexByte(rel, '/'); i >= 0 {

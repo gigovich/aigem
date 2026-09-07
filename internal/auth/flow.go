@@ -19,6 +19,10 @@ const (
 	FlowPending FlowState = "pending"
 	FlowDone    FlowState = "done"
 	FlowFailed  FlowState = "failed"
+	// FlowCancelled is its own state and not a failure: a page polling a login
+	// the person abandoned must not be shown "provider login failed" for
+	// something the person did on purpose.
+	FlowCancelled FlowState = "cancelled"
 )
 
 // ErrFlowCancelled is the terminal result of explicitly abandoning a flow.
@@ -42,7 +46,8 @@ type Flow struct {
 	doneOnce sync.Once
 }
 
-// Status reports the current state. The error is meaningful only for FlowFailed.
+// Status reports the current state. The error is meaningful for FlowFailed and
+// for FlowCancelled, which carries ErrFlowCancelled.
 func (f *Flow) Status() (FlowState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -111,7 +116,7 @@ func (f *Flow) Cancel() {
 	f.mu.Lock()
 	cancel := f.cancel
 	if f.state == FlowPending {
-		f.state, f.err = FlowFailed, ErrFlowCancelled
+		f.state, f.err = FlowCancelled, ErrFlowCancelled
 		f.URL, f.Code = "", ""
 	}
 	f.mu.Unlock()

@@ -147,10 +147,19 @@ func credential(ctx context.Context, provider, modelID string) (llm.Credential, 
 	if err != nil {
 		return llm.Credential{}, err
 	}
+	return credentialFrom(ctx, provider, modelID, rec, ok), nil
+}
+
+// credentialFrom is credential with the store already read. It is split out so
+// that a caller asking about many models of one provider can read the record
+// once: Get takes a process-global lock and parses the whole credential file,
+// and how many models there are is not the daemon's choice - a project's own
+// models.json adds to the registry.
+func credentialFrom(ctx context.Context, provider, modelID string, rec Record, ok bool) llm.Credential {
 	if provider == llm.OpenAIProviderID {
 		if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 			if !ok || rec.Kind != KindOAuth || (modelID != "" && !llm.IsCodexSubscriptionModel(modelID)) {
-				return apiKeyCred(key), nil
+				return apiKeyCred(key)
 			}
 		}
 	}
@@ -160,15 +169,15 @@ func credential(ctx context.Context, provider, modelID string) (llm.Credential, 
 		// tier-gates a model with 403, and it must work without a logout.
 		// Unset the variable to return to the subscription.
 		if key := os.Getenv("XAI_API_KEY"); key != "" {
-			return apiKeyCred(key), nil
+			return apiKeyCred(key)
 		}
 	}
 	if !ok {
-		return llm.Credential{Kind: llm.AuthNone}, nil
+		return llm.Credential{Kind: llm.AuthNone}
 	}
 	switch rec.Kind {
 	case KindAPIKey:
-		return apiKeyCred(rec.Key), nil
+		return apiKeyCred(rec.Key)
 	case KindOAuth:
 		oauthKind := llm.AuthOAuthChatGPT
 		if provider == llm.XAIProviderID {
@@ -185,13 +194,61 @@ func credential(ctx context.Context, provider, modelID string) (llm.Credential, 
 				}
 				return tok.AccessToken, nil
 			},
-		}, nil
+		}
 	}
-	return llm.Credential{Kind: llm.AuthNone}, nil
+	return llm.Credential{Kind: llm.AuthNone}
 }
 
 func apiKeyCred(key string) llm.Credential {
 	return llm.Credential{Kind: llm.AuthAPIKey, Token: func(context.Context) (string, error) { return key, nil }}
+}
+
+// UsableModels reports, for each of the registry's models, whether OpenModel
+// would succeed on it right now. It is what a front-end listing models needs,
+// and it exists as one call because asking per model means one locked parse of
+// the credential file per model: the answer varies per model - an OAuth
+// subscription covers some of a provider's models and not others - but the
+// stored record does not, so the record is read once per provider.
+func UsableModels(reg *llm.Registry, maxTokensFlag int) map[string]bool {
+	out := map[string]bool{}
+	if reg == nil {
+		return out
+	}
+	type stored struct {
+		rec Record
+		ok  bool
+		err error
+	}
+	recs := map[string]stored{}
+	ctx := context.Background()
+	for _, info := range reg.Models() {
+		ref := info.Ref()
+		p, m, err := reg.Resolve(ref)
+		if err != nil {
+			continue
+		}
+		got, known := recs[p.ID]
+		if !known {
+			got.rec, got.ok, got.err = Get(p.ID)
+			recs[p.ID] = got
+		}
+		if got.err != nil {
+			out[ref] = false
+			continue
+		}
+		cred := credentialFrom(ctx, p.ID, m.ID, got.rec, got.ok)
+		if p.NeedsAuth() && cred.Kind == llm.AuthNone {
+			out[ref] = false
+			continue
+		}
+		maxTokens := m.MaxTokens
+		if maxTokens == 0 {
+			maxTokens = maxTokensFlag
+		}
+		_, err = llm.Open(p, m, cred, maxTokens)
+		out[ref] = err == nil
+	}
+	return out
 }
 
 // OpenModel resolves ref against the registry, fetches the provider's stored

@@ -287,8 +287,8 @@ func TestBackendShutdownCancelsProviderLogins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != string(auth.FlowFailed) || got.Error == "" {
-		t.Fatalf("login after shutdown = %+v, want failed without a credential", got)
+	if got.State != string(auth.FlowCancelled) || got.Error == "" {
+		t.Fatalf("login after shutdown = %+v, want cancelled without a credential", got)
 	}
 }
 
@@ -325,8 +325,20 @@ func TestPendingLoginsAreBoundedGloballyAndPerProvider(t *testing.T) {
 		t.Fatalf("the %dth openai login = %v, want ErrBusy", maxPendingLoginsPerProvider+1, err)
 	}
 	// The per-provider cap is per provider: another one still has room.
-	if _, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "xai"}); err != nil {
-		t.Fatalf("a second provider was refused by the first one's cap: %v", err)
+	for range maxPendingLogins - maxPendingLoginsPerProvider {
+		if _, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "xai"}); err != nil {
+			t.Fatalf("a second provider was refused by the first one's cap: %v", err)
+		}
+	}
+	// The global cap cannot be reached separately today: two providers take
+	// browser logins, and 2 x 4 is exactly 8, so the per-provider cap always
+	// fires first. It is the bound that starts doing work when a third provider
+	// gains one, and this pins that relationship rather than pretending to
+	// exercise a path that does not exist.
+	if maxPendingLogins > 2*maxPendingLoginsPerProvider {
+		t.Fatalf("maxPendingLogins (%d) is above what the two providers with browser "+
+			"logins can reach (%d); nothing bounds the total any more",
+			maxPendingLogins, 2*maxPendingLoginsPerProvider)
 	}
 	// Finishing one gives its slot back, which is what makes the cap a bound on
 	// what is in flight rather than on what has ever been asked for.
@@ -360,8 +372,9 @@ func TestACancelledLoginKeepsItsRecordAndStopsItsWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a cancelled login is unreadable: %v", err)
 	}
-	if got.State != string(auth.FlowFailed) {
-		t.Fatalf("a cancelled login reads as %q, want failed", got.State)
+	if got.State != string(auth.FlowCancelled) || got.Error != "cancelled" {
+		t.Fatalf("a cancelled login reads as %q/%q, want cancelled - a page must not be "+
+			"shown a provider failure for something the person did", got.State, got.Error)
 	}
 	if got.URL != "" || got.Code != "" {
 		t.Fatalf("a finished login kept its authorization URL or code: %+v", got)
@@ -430,7 +443,7 @@ func TestClosingTheBackendEndsEveryLoginItStarted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != string(auth.FlowFailed) {
+	if got.State != string(auth.FlowCancelled) {
 		t.Fatalf("a login survived shutdown as %q", got.State)
 	}
 	if _, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"}); err == nil {
@@ -545,5 +558,164 @@ func TestSettingTheDefaultModelToWhatIsSavedChangesNothing(t *testing.T) {
 	}
 	if published != 1 {
 		t.Fatalf("the daemon announced %d changes, want the one that happened", published)
+	}
+}
+
+// Env.Pending is the snapshot Load took, and the first approval clears it. A
+// skill added or edited after that is genuinely pending, so a gate that trusts
+// the snapshot refuses the only route that can pick it up - for the life of the
+// daemon, on a catalog that is quietly out of date.
+func TestASkillAddedAfterAnApprovalCanStillBeApproved(t *testing.T) {
+	cwd := t.TempDir()
+	writeProjectSkill(t, cwd, "one")
+	env, _, err := runner.Load(context.Background(), runner.Options{Cwd: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(env.Close)
+	b := newWebBackend(webBackendConfig{version: "test", env: env})
+
+	first, err := b.TrustSkills(context.Background())
+	if err != nil {
+		t.Fatalf("the first approval: %v", err)
+	}
+	if len(first.Loaded) != 1 {
+		t.Fatalf("the first approval loaded %v, want the one skill", first.Loaded)
+	}
+	// Nothing pending now, so a second press is refused - that is the bound.
+	if _, err := b.TrustSkills(context.Background()); err == nil {
+		t.Fatal("approving with nothing pending succeeded")
+	}
+
+	writeProjectSkill(t, cwd, "two")
+	// The page has to be able to see it before anyone can press the button.
+	listed, err := b.Skills(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed.Pending == nil || len(listed.Pending.Names) == 0 {
+		t.Fatalf("a skill added after the approval is not reported as pending: %+v", listed.Pending)
+	}
+	second, err := b.TrustSkills(context.Background())
+	if err != nil {
+		t.Fatalf("approving a skill added after the first approval: %v", err)
+	}
+	if len(second.Loaded) != 2 {
+		t.Fatalf("the second approval loaded %v, want both skills", second.Loaded)
+	}
+	if _, err := b.Skill(context.Background(), "two"); err != nil {
+		t.Fatalf("the newly approved skill is not readable: %v", err)
+	}
+}
+
+func writeProjectSkill(t *testing.T, cwd, name string) {
+	t.Helper()
+	dir := filepath.Join(cwd, ".skills", name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: " + name + "\ndescription: the " + name + " skill\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A daemon built without a run registry must answer, not panic: the feature map
+// withdraws the screen, but a client that ignores it still reaches the route,
+// and a nil dereference there takes down the handler goroutine.
+func TestRunRoutesWithoutARegistryAreUnavailableRatherThanFatal(t *testing.T) {
+	b := newWebBackend(webBackendConfig{version: "test"})
+	if _, err := b.Runs(context.Background()); !errors.Is(err, web.ErrUnavailable) {
+		t.Fatalf("Runs without a registry = %v, want ErrUnavailable", err)
+	}
+	if _, err := b.Run(context.Background(), "RUN-1"); !errors.Is(err, web.ErrUnavailable) {
+		t.Fatalf("Run without a registry = %v, want ErrUnavailable", err)
+	}
+	if err := b.CloseRun(context.Background(), "RUN-1"); !errors.Is(err, web.ErrUnavailable) {
+		t.Fatalf("CloseRun without a registry = %v, want ErrUnavailable", err)
+	}
+	if _, err := b.RunEvents(context.Background(), "RUN-1", 0, 0); !errors.Is(err, web.ErrUnavailable) {
+		t.Fatalf("RunEvents without a registry = %v, want ErrUnavailable", err)
+	}
+	if _, err := b.RunBlob(context.Background(), "RUN-1", 1); !errors.Is(err, web.ErrUnavailable) {
+		t.Fatalf("RunBlob without a registry = %v, want ErrUnavailable", err)
+	}
+	if _, err := b.WatchRun(context.Background(), "RUN-1", web.RunClient{}, 0); !errors.Is(
+		err, web.ErrUnavailable) {
+		t.Fatalf("WatchRun without a registry = %v, want ErrUnavailable", err)
+	}
+	if _, err := b.RunArtifacts(context.Background(), "RUN-1"); !errors.Is(err, web.ErrUnavailable) {
+		t.Fatalf("RunArtifacts without a registry = %v, want ErrUnavailable", err)
+	}
+	if err := b.ApplyRunOp(context.Background(), "RUN-1", web.RunOp{Op: "submit"}); !errors.Is(
+		err, web.ErrUnavailable) {
+		t.Fatalf("ApplyRunOp without a registry = %v, want ErrUnavailable", err)
+	}
+	if _, err := b.OpenRun(context.Background(), web.NewRun{}); !errors.Is(err, web.ErrUnavailable) {
+		t.Fatalf("OpenRun without a registry = %v, want ErrUnavailable", err)
+	}
+	// And the feature map says so, so a page never offers the screen.
+	var withdrawn bool
+	for _, name := range b.Unavailable() {
+		if name == "runs" {
+			withdrawn = true
+		}
+	}
+	if !withdrawn {
+		t.Fatalf("Unavailable() = %v, want it to withdraw runs", b.Unavailable())
+	}
+}
+
+// A provider that never answers must not hold the request, and must not let a
+// page abandon requests to start an unbounded number of outbound calls: the
+// slot is held until the call it reserved actually returns.
+func TestALoginStartThatHangsIsBoundedAndKeepsItsSlot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	release := make(chan struct{})
+	var started int32
+	b := newWebBackend(webBackendConfig{version: "test",
+		beginFlow: func(ctx context.Context, provider string) (*auth.Flow, error) {
+			atomic.AddInt32(&started, 1)
+			<-release
+			return auth.NewPendingFlow(ctx, provider), nil
+		}})
+	t.Cleanup(func() { close(release); b.CloseBackend() })
+
+	// The request's own context is what a browser closing a tab cancels.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.BeginLogin(ctx, web.LoginRequest{Provider: "openai"})
+		done <- err
+	}()
+	waitFor(t, func() bool { return atomic.LoadInt32(&started) == 1 })
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("an abandoned login start = %v, want the request's own cancellation", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("BeginLogin ignored its request context and waited for the provider")
+	}
+	// The reservation is still held, so the abandoned call cannot be repeated
+	// without limit while the provider is still not answering.
+	b.flowMu.Lock()
+	held := b.flowStarting["openai"]
+	b.flowMu.Unlock()
+	if held != 1 {
+		t.Fatalf("the abandoned start holds %d openai slots, want 1", held)
+	}
+}
+
+// waitFor polls until cond holds, failing rather than hanging.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the condition")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

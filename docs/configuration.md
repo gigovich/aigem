@@ -30,9 +30,9 @@ A journal is never pruned. `blobs/` holds the whole of each tool result over
 the agent clips one before the model sees it. Removing the directory for a
 conversation you are done with costs its timeline and nothing else.
 
-`activity.jsonl` is also append-only. The current web phase has no activity
-retention or pruning policy; remove the file while `aigem web` is stopped to
-clear that feed.
+`activity.jsonl` is append-only while the daemon runs, and is trimmed to the
+last thirty days when `aigem web` starts - the one moment no page is holding a
+cursor into it. Removing the file while the daemon is stopped clears the feed.
 
 On macOS the config directory is `~/Library/Application Support/aigem`.
 

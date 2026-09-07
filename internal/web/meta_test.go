@@ -52,6 +52,18 @@ func TestMetaFeaturesMatchAPartialBackend(t *testing.T) {
 	if res.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("partial runs status = %d, want 501", res.StatusCode)
 	}
+	// A route this daemon does not serve says so whatever the query string. A
+	// client probing capability by status code would otherwise be told its
+	// cursor was wrong about a route that does not exist here at all.
+	for _, path := range []string{
+		"/api/activity?since=abc", "/api/activity?limit=-1", "/api/runs/RUN-1/events?since=-1",
+	} {
+		res := phaseRequest(t, srv, http.MethodGet, path, "")
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusNotImplemented {
+			t.Errorf("%s on a partial backend = %d, want 501", path, res.StatusCode)
+		}
+	}
 }
 
 func TestMetaReportsTheVersionTheModelAndTheFeatures(t *testing.T) {

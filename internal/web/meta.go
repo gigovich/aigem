@@ -18,10 +18,10 @@ import "net/http"
 // A type answers "was this built with the seam"; only the instance knows
 // whether it was handed what the seam needs - a state directory it could
 // create, a project that loaded - so a backend gets the last word through
-// FeatureBackend. The routes themselves stay reachable and answer an empty
-// collection; what this map decides is whether a page offers the screen at all,
-// and offering one that can never hold anything is the failure it exists to
-// prevent.
+// FeatureBackend. The routes stay reachable and answer for themselves - an
+// empty collection, or 501 where there is nothing behind them at all; what this
+// map decides is whether a page offers the screen, and offering one that can
+// never hold anything is the failure it exists to prevent.
 func featuresFor(b Backend) map[string]bool {
 	out := map[string]bool{"controlSocket": true}
 	if _, ok := b.(ActivityBackend); ok {

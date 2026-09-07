@@ -895,3 +895,54 @@ func TestReconfiguringAClosedSessionSaysSo(t *testing.T) {
 		t.Fatalf("fn ran for %v, want the live session alone at its own index", got)
 	}
 }
+
+// Close marks a session closed and only then waits for its turn, giving up
+// after a bound. A turn parked on something no cancellation reaches therefore
+// leaves a session that is closed and still running forever - and if the busy
+// check counted it, that one dead conversation would refuse every skill
+// approval for every other live one, for the life of the process.
+func TestAClosedSessionThatWillNotUnwindDoesNotBlockTheOthers(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	prev := closeWait
+	closeWait = 50 * time.Millisecond
+
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck := New(Config{
+		Tools: reg,
+		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
+			return agent.New(&scriptedClient{}, reg, 0.3, confirm, "")
+		},
+		Ring: 64,
+	})
+	held := make(chan struct{})
+	t.Cleanup(func() {
+		closeWait = prev
+		close(held)
+		stuck.Close()
+	})
+	if err := stuck.Run("held", "held", func(context.Context, agent.Events) (string, error) {
+		<-held
+		return "done", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stuck.Close()
+	if !stuck.Running() {
+		t.Fatal("precondition: the turn was supposed to outlive Close's bound")
+	}
+
+	live := New(Config{Ring: 4})
+	t.Cleanup(live.Close)
+	var reached []int
+	if err := ReconfigureAll([]*Local{stuck, live}, nil, func(i int, _ *agent.Agent) {
+		reached = append(reached, i)
+	}); err != nil {
+		t.Fatalf("a closed-but-running session refused the whole set: %v", err)
+	}
+	if len(reached) != 1 || reached[0] != 1 {
+		t.Fatalf("fn ran for %v, want the live session alone", reached)
+	}
+}

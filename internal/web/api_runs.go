@@ -25,6 +25,13 @@ const (
 	maxEventPage = 2000
 )
 
+// ErrUnavailable is what a backend returns for a route this daemon was built
+// with the seam for but not the thing behind it. It is the same 501 as a
+// missing seam, because it is the same fact from a page's point of view - the
+// daemon cannot do that - and the alternative is a route that answers by
+// dereferencing what it was never given.
+var ErrUnavailable = errors.New("web: this endpoint is not available")
+
 // handleRuns lists the conversations, oldest first.
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	b, ok := backendOf[RunsBackend](s, w)
@@ -273,6 +280,8 @@ func count(w http.ResponseWriter, r *http.Request, name string, most int) (int, 
 func writeRunError(w http.ResponseWriter, doing string, err error) {
 	var refusal *Refusal
 	switch {
+	case errors.Is(err, ErrUnavailable):
+		unavailable(w)
 	case errors.Is(err, ErrNoRun):
 		http.Error(w, "no such run", http.StatusNotFound)
 	case errors.Is(err, ErrNoBlob):

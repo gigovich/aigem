@@ -863,3 +863,30 @@ func TestOutOfScopeAncestorsAreReported(t *testing.T) {
 		}
 	}
 }
+
+// One *Skill is shared by every session in a project: the catalog hands the
+// same pointers to each agent, and each agent checks path activation under its
+// own lock, which does not serialise against any other agent's. Two runs
+// touching a file at the same moment therefore reach Matches concurrently, and
+// the compile it does on first use is a write to the shared value.
+func TestMatchesIsSafeFromTwoSessionsAtOnce(t *testing.T) {
+	s := &Skill{Name: "gated", Paths: []string{"*.go", "cmd/**"}}
+	var wg sync.WaitGroup
+	for i := range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if !s.Matches("cmd/aigem/main.go") {
+					t.Errorf("goroutine %d: a path that matches was reported as not matching", i)
+					return
+				}
+				if s.Matches("README.md") {
+					t.Errorf("goroutine %d: a path that does not match was reported as matching", i)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/gigovich/aigem/internal/auth"
 	"github.com/gigovich/aigem/internal/config"
@@ -29,36 +30,23 @@ import (
 func (b *webBackend) Models(context.Context) ([]web.Model, error) {
 	def := preferredModelRef(b.models)
 	infos := b.models.Models()
-	// Whether a provider has a credential at all is asked once per provider:
-	// reading it is a locked parse of the whole credential file, and asking per
-	// model would make listing thirty models thirty of them, contending with the
-	// write a completing login performs.
-	//
-	// Whether a *model* can be opened still has to be asked per model, and only
-	// for a provider that has a credential: an OAuth login covers some of its
-	// models and not others, and a model outside that set is not one this daemon
-	// can send a turn to however signed in the provider is.
-	credentialed := make(map[string]bool, len(infos))
+	// One call rather than one per model: the answer differs per model, because
+	// an OAuth subscription covers some of a provider's models and not others,
+	// but the stored credential does not - and asking per model is a locked
+	// parse of the whole credential file each time. How many models there are is
+	// not this daemon's choice: a project's own models.json adds to the
+	// registry, so per-model reads are a cost a repository could pick.
+	usable := auth.UsableModels(b.models, defaultMaxTokens)
 	out := make([]web.Model, 0, len(infos))
 	for _, info := range infos {
 		p, _, err := b.models.Resolve(info.Ref())
 		if err != nil {
 			continue
 		}
-		has, known := credentialed[p.ID]
-		if !known {
-			has = !p.NeedsAuth() || auth.IsAuthenticated(p.ID)
-			credentialed[p.ID] = has
-		}
-		ok := has
-		if has && p.NeedsAuth() {
-			_, _, _, openErr := auth.OpenModel(b.models, info.Ref(), defaultMaxTokens)
-			ok = openErr == nil
-		}
 		out = append(out, web.Model{
 			Ref: info.Ref(), Provider: p.ID, Name: info.Name,
 			ContextWindow: info.ContextWindow, MaxTokens: info.MaxTokens, Reasoning: info.Reasoning,
-			NeedsAuth: p.NeedsAuth(), Authenticated: ok,
+			NeedsAuth: p.NeedsAuth(), Authenticated: usable[info.Ref()],
 			Default: info.Ref() == def,
 		})
 	}
@@ -103,12 +91,24 @@ func (b *webBackend) SetDefaultModel(_ context.Context, ref string) (web.Model, 
 }
 
 const (
+	// loginStartTimeout bounds only the provider call that opens a login, not
+	// the login: a person has minutes to authorize one, but the request that
+	// starts it must not hold a handler goroutine for that long.
+	loginStartTimeout             = 20 * time.Second
 	maxPendingLogins              = 8
 	maxPendingLoginsPerProvider   = 4
 	maxRetainedTerminalLoginFlows = 32
 )
 
-func (b *webBackend) BeginLogin(_ context.Context, req web.LoginRequest) (web.Login, error) {
+// startedLogin is what the goroutine below hands back: the flow, or why there
+// is not one, plus the provider whose reservation it holds.
+type startedLogin struct {
+	provider string
+	f        *auth.Flow
+	err      error
+}
+
+func (b *webBackend) BeginLogin(ctx context.Context, req web.LoginRequest) (web.Login, error) {
 	if req.Provider != llm.OpenAIProviderID && req.Provider != llm.XAIProviderID {
 		return web.Login{}, web.Refuse(fmt.Errorf("provider %s has no browser login", req.Provider))
 	}
@@ -155,7 +155,33 @@ func (b *webBackend) BeginLogin(_ context.Context, req web.LoginRequest) (web.Lo
 		}
 	}()
 
-	f, err := b.beginFlow(b.flowCtx, req.Provider)
+	// Started on a goroutine and waited for with a bound. The call reaches a
+	// provider over the network, and the flow it produces has to outlive this
+	// request - so it gets the daemon's context - but the *request* must not:
+	// against a provider that never answers, the flow's own timeout is minutes,
+	// and a browser cannot abort a handler that is not watching for it.
+	begun := make(chan startedLogin, 1)
+	go func() {
+		f, err := b.beginFlow(b.flowCtx, req.Provider)
+		begun <- startedLogin{provider: req.Provider, f: f, err: err}
+	}()
+
+	var got startedLogin
+	select {
+	case got = <-begun:
+	case <-ctx.Done():
+		// The reservation stays until the goroutine returns, and whatever it
+		// produces is thrown away: a flow nobody can name is one nobody can
+		// finish.
+		go b.discardLogin(begun)
+		locked = true
+		return web.Login{}, ctx.Err()
+	case <-time.After(loginStartTimeout):
+		go b.discardLogin(begun)
+		locked = true
+		return web.Login{}, fmt.Errorf("%s did not answer in time: %w", req.Provider, web.ErrBusy)
+	}
+	f, err := got.f, got.err
 	b.flowMu.Lock()
 	locked = true
 	release()
@@ -177,6 +203,24 @@ func (b *webBackend) BeginLogin(_ context.Context, req web.LoginRequest) (web.Lo
 	b.flowMu.Unlock()
 	go b.watchLogin(f)
 	return loginView(id, f), nil
+}
+
+// discardLogin waits out a login start this daemon stopped waiting for, gives
+// its slot back, and cancels whatever it produced. It is the other half of
+// BeginLogin's bound: the reservation is held until the provider call returns,
+// so abandoning one request cannot be used to start an unbounded number of
+// outbound calls.
+func (b *webBackend) discardLogin(begun <-chan startedLogin) {
+	got := <-begun
+	b.flowMu.Lock()
+	b.flowStarting[""]--
+	b.flowStarting[got.provider]--
+	b.flowWG.Done()
+	b.flowMu.Unlock()
+	if got.f != nil {
+		got.f.Cancel()
+		got.f.Wait()
+	}
 }
 
 func (b *webBackend) Login(_ context.Context, id string) (web.Login, error) {
@@ -250,7 +294,10 @@ func loginView(id string, f *auth.Flow) web.Login {
 		ID: id, Provider: f.Provider, URL: url, Code: code,
 		AcceptsPaste: acceptsPaste, State: string(state),
 	}
-	if err != nil {
+	switch {
+	case state == auth.FlowCancelled:
+		v.Error = "cancelled"
+	case err != nil:
 		v.Error = "provider login failed"
 	}
 	return v
@@ -310,9 +357,18 @@ func (b *webBackend) Skills(context.Context) (web.Skills, error) {
 	b.skillMu.Lock()
 	defer b.skillMu.Unlock()
 	out := web.Skills{Items: skillSummaries(b.env.Skills)}
-	if b.env.Pending != nil {
+	// Read from the project rather than from Env.Pending for the same reason
+	// TrustSkills does: the snapshot is from startup, and a page that cannot see
+	// a skill added since then has no way to ask for it. A discovery error is
+	// not worth failing the listing over - the catalog above it is still true -
+	// so it is reported as nothing pending and logged.
+	pending, err := skill.Pending(b.env.Cwd)
+	if err != nil {
+		slog.Warn("the project's pending skills could not be read", "err", err)
+	}
+	if pending != nil {
 		out.Pending = &web.PendingSkills{
-			Names: append([]string(nil), b.env.Pending.Names...), Invalidated: b.env.Pending.Invalidated,
+			Names: append([]string(nil), pending.Names...), Invalidated: pending.Invalidated,
 		}
 	}
 	return out, nil
@@ -361,7 +417,16 @@ func (b *webBackend) TrustSkills(context.Context) (web.SkillApproval, error) {
 	// file, re-walks the project's skill directories under every session's lock
 	// and appends to the feed, so a client holding down the button would stall
 	// every open conversation for as long as it kept asking.
-	if b.env.Pending == nil {
+	//
+	// Asked of the project and not of Env.Pending, which is the snapshot Load
+	// took and is cleared by the first approval: a skill added or edited since
+	// then is genuinely pending, and gating on the stale field would refuse the
+	// only route that can pick it up, for the life of the daemon.
+	pending, err := skill.Pending(b.env.Cwd)
+	if err != nil {
+		return web.SkillApproval{}, err
+	}
+	if pending == nil {
 		return web.SkillApproval{}, web.Refuse(
 			errors.New("this project has no skills awaiting approval"))
 	}

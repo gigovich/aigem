@@ -200,14 +200,14 @@ type Local struct {
 	metaEmitted bool
 }
 
-// New builds a session. The registry's path approver and file-change hook are
-// taken over here: a front-end that also set them would be answering questions
-// the session is meant to own.
 // lockOrder gives every session a rank that never changes, so ReconfigureAll
 // can take a set of session locks in one order whoever asks for them. Sorting
 // by address would do the same, and would mean reaching for unsafe.
 var lockOrder atomic.Uint64
 
+// New builds a session. The registry's path approver and file-change hook are
+// taken over here: a front-end that also set them would be answering questions
+// the session is meant to own.
 func New(cfg Config) *Local {
 	ring := cfg.Ring
 	if ring <= 0 {
@@ -701,8 +701,8 @@ func (l *Local) Reconfigure(fn func(*agent.Agent)) error {
 // somebody ended is not a reason to refuse the others. Indexes passed to fn
 // match locals, so a caller can pair them with what it built them from.
 //
-// The locks are taken in address order rather than in the order given, so two
-// callers holding overlapping sets cannot deadlock against each other. The
+// The locks are taken in the sessions' own rank order rather than in the order
+// given, so two callers holding overlapping sets cannot deadlock. The
 // price is that prepare runs with every session held: an approval that walks
 // the project's skill directories stalls those conversations for the walk, and
 // that is the cost of the guarantee above.

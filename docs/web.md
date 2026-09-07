@@ -13,7 +13,7 @@ aigem web --open                 # open it in the default browser too
 This is the first phase of the rewrite: the daemon, the application shell and
 the build integration are in place; the screens are not. `/healthz` says only
 that the process is up; `GET /api/meta`, behind the credential, is where a page
-reads the version, the default model and which features this build serves.
+reads the version, the default model and which features this daemon serves.
 
 ## Signing in
 
@@ -147,10 +147,10 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/runs/{id}/artifacts` | the files the run changed, both sides |
 | `GET /api/models` | configured model metadata and authentication/default state |
 | `POST /api/models/default` | saves `{"ref":"provider/model"}` as the default |
-| `POST /api/auth/login` | starts interactive login from `{"provider":"openai"}` |
+| `POST /api/auth/login` | starts interactive login (`openai` or `xai`); 201 |
 | `GET /api/auth/login/{id}` | polls that login's `pending`, `done`, or `failed` state |
 | `POST /api/auth/login/{id}/paste` | supplies a redirect URL or code (8 KiB maximum) |
-| `DELETE /api/auth/login/{id}` | cancels and forgets a login flow |
+| `DELETE /api/auth/login/{id}` | cancels a login flow; 204, and the record stays readable |
 | `GET /api/skills` | loaded skill summaries and pending project-skill names |
 | `GET /api/skills/{name}` | static skill metadata and markdown; it runs no dynamic injection |
 | `POST /api/skills/trust` | approves the current project skill set; body is empty or `{}` |
@@ -161,9 +161,15 @@ though the hop to the daemon is plain HTTP.
 | everything else | the application, which routes in the browser |
 
 A binary built without a bundle is the exception to the last row alone: it has
-no page to serve, so it answers 501 there. `/healthz`, the API routes above,
-the wrong-method 405s and the 404 for an unknown `/api/` path all answer as they
-always do - a JSON client cannot tell which build it is talking to.
+no page to serve, so it answers 501 there. `/healthz`, the wrong-method 405s and
+the 404 for an unknown `/api/` path all answer as they always do.
+
+501 is also how a route says this daemon does not have what is behind it. The
+backend is one object implementing whichever seams the binary wired up, and a
+route whose seam is absent - or whose seam is present but was handed nothing to
+work with - answers 501 rather than pretending. It is decided before the query
+string is read, so a bad cursor on a route this daemon does not serve is still
+501 and not 400.
 
 ## Models, login, skills, usage and activity
 
@@ -177,8 +183,12 @@ this API takes, `POST /api/runs` included: a field the daemon does not know is a
 400 rather than something it silently does not do.
 
 A login start returns an id and the user-facing authorization URL, plus a device
-`code` when the provider supplied one. Polling returns `state` (`pending`, `done`
-or `failed`) and a generic failure message. Token values, refresh endpoints and
+`code` when the provider supplied one. Polling returns `state` - `pending`,
+`done`, `failed`, or `cancelled` for one the person abandoned - and a generic
+failure message. A cancelled login keeps its record, so the page that started it
+reads `cancelled` rather than a 404 or a provider failure. A start whose
+provider does not answer within twenty seconds is refused with 503 and
+`Retry-After`; the request never waits for the whole login. Token values, refresh endpoints and
 provider response details never cross this API. Terminal records clear their URL
 and device code and are retained only in a bounded recent set. Pending flows are
 bounded globally and per provider. Login work is owned by the daemon rather than
@@ -203,6 +213,19 @@ Activity is append-only in `activity.jsonl`. Its entries contain `seq`, `at`,
 `kind`, `text`, and optional `runRef`; `since` is the last sequence already held
 and `limit` is capped at 1000. Like run cursors, negative, fractional and
 otherwise malformed values are rejected.
+
+## The feature map
+
+`features` in `/api/meta` and in the control stream's `hello` names what this
+daemon can serve, and a page uses it to decide which screens exist at all. The
+keys are `controlSocket`, `runs`, `models`, `providerLogin`, `skills`,
+`commands`, `usage` and `activity`.
+
+A key is present when the daemon was built with that seam *and* was given what
+the seam needs. Without a state directory there is no activity feed; without a
+loaded project there are no skills or commands. The routes still answer - with
+an empty collection, or 501 where there is nothing behind them at all - so the
+map is what a page reads rather than something it has to discover by probing.
 
 ## The control stream
 

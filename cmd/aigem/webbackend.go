@@ -147,7 +147,22 @@ const (
 // The run half of the backend: the registry's answers, translated into the
 // shapes internal/web marshals and the errors it maps to status codes.
 
+// haveRuns guards the routes that reach the registry. A daemon can be built
+// without one - the run seam is satisfied by this type and not by what it was
+// handed - and the alternative to answering here is a handler goroutine
+// dereferencing nil. Unavailable() keeps the feature map in step, so a page is
+// told the screen does not exist rather than having to discover this.
+func (b *webBackend) haveRuns() error {
+	if b.runs == nil {
+		return web.ErrUnavailable
+	}
+	return nil
+}
+
 func (b *webBackend) Runs(context.Context) ([]web.Run, error) {
+	if err := b.haveRuns(); err != nil {
+		return nil, err
+	}
 	views := b.runs.List()
 	out := make([]web.Run, 0, len(views))
 	for _, v := range views {
@@ -157,6 +172,9 @@ func (b *webBackend) Runs(context.Context) ([]web.Run, error) {
 }
 
 func (b *webBackend) OpenRun(ctx context.Context, req web.NewRun) (web.Run, error) {
+	if err := b.haveRuns(); err != nil {
+		return web.Run{}, err
+	}
 	v, err := b.runs.Create(ctx, runner.RunRequest{
 		Mode:  runner.Mode(req.Mode),
 		Title: req.Title,
@@ -171,6 +189,9 @@ func (b *webBackend) OpenRun(ctx context.Context, req web.NewRun) (web.Run, erro
 }
 
 func (b *webBackend) Run(_ context.Context, id string) (web.Run, error) {
+	if err := b.haveRuns(); err != nil {
+		return web.Run{}, err
+	}
 	v, err := b.runs.Get(id)
 	if err != nil {
 		return web.Run{}, webRunError(err)
@@ -179,6 +200,9 @@ func (b *webBackend) Run(_ context.Context, id string) (web.Run, error) {
 }
 
 func (b *webBackend) CloseRun(_ context.Context, id string) error {
+	if err := b.haveRuns(); err != nil {
+		return err
+	}
 	// Serialize the read-before-close so two tabs closing together append one
 	// activity record rather than both observing the run live.
 	b.closeMu.Lock()
@@ -199,6 +223,9 @@ func (b *webBackend) CloseRun(_ context.Context, id string) error {
 func (b *webBackend) RunEvents(_ context.Context, id string, since uint64, limit int) (
 	[]web.RunEvent, error,
 ) {
+	if err := b.haveRuns(); err != nil {
+		return nil, err
+	}
 	evs, err := b.runs.Events(id, since, limit)
 	if err != nil {
 		return nil, webRunError(err)
@@ -218,6 +245,9 @@ func (b *webBackend) RunEvents(_ context.Context, id string, since uint64, limit
 }
 
 func (b *webBackend) RunBlob(_ context.Context, id string, seq uint64) (string, error) {
+	if err := b.haveRuns(); err != nil {
+		return "", err
+	}
 	body, err := b.runs.Blob(id, seq)
 	if err != nil {
 		return "", webRunError(err)
@@ -228,6 +258,9 @@ func (b *webBackend) RunBlob(_ context.Context, id string, seq uint64) (string, 
 func (b *webBackend) WatchRun(_ context.Context, id string, c web.RunClient, since uint64) (
 	web.RunStream, error,
 ) {
+	if err := b.haveRuns(); err != nil {
+		return nil, err
+	}
 	events, detach, err := b.runs.Subscribe(id,
 		uisession.Client{Kind: c.Kind, Label: c.Label}, since)
 	if err != nil {
@@ -239,6 +272,9 @@ func (b *webBackend) WatchRun(_ context.Context, id string, c web.RunClient, sin
 }
 
 func (b *webBackend) RunArtifacts(_ context.Context, id string) ([]web.Artifact, error) {
+	if err := b.haveRuns(); err != nil {
+		return nil, err
+	}
 	arts, err := b.runs.Artifacts(id)
 	if err != nil {
 		return nil, webRunError(err)
@@ -276,6 +312,9 @@ func (b *webBackend) RunArtifacts(_ context.Context, id string) ([]web.Artifact,
 }
 
 func (b *webBackend) ApplyRunOp(_ context.Context, id string, op web.RunOp) error {
+	if err := b.haveRuns(); err != nil {
+		return err
+	}
 	images := make([]llm.Image, 0, len(op.Images))
 	for _, im := range op.Images {
 		images = append(images, llm.Image{MediaType: im.MediaType, Data: im.Data})
