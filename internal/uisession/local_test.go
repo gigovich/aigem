@@ -864,3 +864,35 @@ func TestAResumePointPastEveryEventIsNotAGap(t *testing.T) {
 		t.Fatalf("Replay(0) = %d events, %v; want all five", len(got), err)
 	}
 }
+
+// Reconfigure is how a front-end changes what one session offers the model, and
+// a session that is gone cannot be changed. ReconfigureAll skips a closed
+// session because a set of them is a transaction that one departure must not
+// fail; a caller holding the one session is told, instead, that it is closed.
+func TestReconfiguringAClosedSessionSaysSo(t *testing.T) {
+	l := New(Config{Ring: 4})
+	l.Close()
+
+	called := false
+	if err := l.Reconfigure(func(*agent.Agent) { called = true }); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Reconfigure on a closed session = %v, want ErrClosed", err)
+	}
+	if called {
+		t.Error("the change was applied to a session that is closed")
+	}
+
+	// The same session inside a set is skipped rather than failing the set.
+	live := New(Config{Ring: 4})
+	t.Cleanup(live.Close)
+	var got []int
+	err := ReconfigureAll([]*Local{l, live}, nil, func(i int, _ *agent.Agent) error {
+		got = append(got, i)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ReconfigureAll with one closed session = %v, want it to stand", err)
+	}
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("fn ran for %v, want the live session alone at its own index", got)
+	}
+}

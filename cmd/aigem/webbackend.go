@@ -9,8 +9,10 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/gigovich/aigem/internal/auth"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/runner"
+	"github.com/gigovich/aigem/internal/store"
 	"github.com/gigovich/aigem/internal/uisession"
 	"github.com/gigovich/aigem/internal/web"
 )
@@ -27,13 +29,48 @@ type webBackend struct {
 	// runs is the daemon's conversations. Everything under /api/runs is this
 	// registry, translated.
 	runs *runner.Runs
+	env  *runner.Env
+
+	activity   *store.Log[web.Activity]
+	activityMu sync.Mutex
+	notify     func(string, any)
+
+	flowMu       sync.Mutex
+	flows        map[string]*auth.Flow
+	flowOrder    []string
+	flowSeq      uint64
+	flowStarting map[string]int
+	flowWG       sync.WaitGroup
+	flowCtx      context.Context
+	flowCancel   context.CancelFunc
+	closed       bool
+	closeOnce    sync.Once
+	beginFlow    func(context.Context, string) (*auth.Flow, error)
+
+	skillMu sync.Mutex
+	closeMu sync.Mutex
 }
 
-func newWebBackend(version string, models *llm.Registry, runs *runner.Runs) *webBackend {
+type webBackendOptions struct {
+	env      *runner.Env
+	activity *store.Log[web.Activity]
+	notify   func(string, any)
+}
+
+func newWebBackend(version string, models *llm.Registry, runs *runner.Runs, options ...webBackendOptions) *webBackend {
 	if models == nil {
 		models = defaultModelRegistry()
 	}
-	return &webBackend{version: version, models: models, runs: runs}
+	var opts webBackendOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	flowCtx, flowCancel := context.WithCancel(context.Background())
+	return &webBackend{
+		version: version, models: models, runs: runs, env: opts.env, activity: opts.activity,
+		notify: opts.notify, flows: map[string]*auth.Flow{}, flowStarting: map[string]int{},
+		beginFlow: auth.Begin, flowCtx: flowCtx, flowCancel: flowCancel,
+	}
 }
 
 // Meta reads the saved preference and the credential store on every call
@@ -81,7 +118,9 @@ func (b *webBackend) OpenRun(ctx context.Context, req web.NewRun) (web.Run, erro
 	if err != nil {
 		return web.Run{}, webRunError(err)
 	}
-	return webRun(v), nil
+	out := webRun(v)
+	b.recordActivity(web.Activity{Kind: "run.created", Text: "Run created", RunRef: out.ID})
+	return out, nil
 }
 
 func (b *webBackend) Run(_ context.Context, id string) (web.Run, error) {
@@ -93,7 +132,21 @@ func (b *webBackend) Run(_ context.Context, id string) (web.Run, error) {
 }
 
 func (b *webBackend) CloseRun(_ context.Context, id string) error {
-	return webRunError(b.runs.CloseRun(id))
+	// Serialize the read-before-close so two tabs closing together append one
+	// activity record rather than both observing the run live.
+	b.closeMu.Lock()
+	defer b.closeMu.Unlock()
+	before, err := b.runs.Get(id)
+	if err != nil {
+		return webRunError(err)
+	}
+	if err := b.runs.CloseRun(id); err != nil {
+		return webRunError(err)
+	}
+	if before.Live {
+		b.recordActivity(web.Activity{Kind: "run.closed", Text: "Run closed", RunRef: id})
+	}
+	return nil
 }
 
 func (b *webBackend) RunEvents(_ context.Context, id string, since uint64, limit int) (

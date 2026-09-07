@@ -145,6 +145,18 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/runs/{id}/socket` | the run stream, `?since=` |
 | `GET /api/runs/{id}/blobs/{seq}` | the whole body of a tool result the timeline trimmed |
 | `GET /api/runs/{id}/artifacts` | the files the run changed, both sides |
+| `GET /api/models` | configured model metadata and authentication/default state |
+| `POST /api/models/default` | saves `{\"ref\":\"provider/model\"}` as the default |
+| `POST /api/auth/login` | starts interactive login from `{\"provider\":\"openai\"}` |
+| `GET /api/auth/login/{id}` | polls that login's `pending`, `done`, or `failed` state |
+| `POST /api/auth/login/{id}/paste` | supplies a redirect URL or code (8 KiB maximum) |
+| `DELETE /api/auth/login/{id}` | cancels and forgets a login flow |
+| `GET /api/skills` | loaded skill summaries and pending project-skill names |
+| `GET /api/skills/{name}` | static skill metadata and markdown; it never executes dynamic injection |
+| `POST /api/skills/trust` | approves the current project skill set; body is empty or `{}` |
+| `GET /api/commands` | the command palette catalogue from the active environment |
+| `GET /api/usage` | stored provider quota snapshots |
+| `GET /api/activity` | persistent mutation feed, paged with `?since=&limit=` |
 | `/api/...`  | reserved; an unknown path here is a 404, never the page, in every build |
 | everything else | the application, which routes in the browser |
 
@@ -152,6 +164,39 @@ A binary built without a bundle is the exception to the last row alone: it has
 no page to serve, so it answers 501 there. `/healthz`, the API routes above,
 the wrong-method 405s and the 404 for an unknown `/api/` path all answer as they
 always do - a JSON client cannot tell which build it is talking to.
+
+## Models, login, skills, usage and activity
+
+Phase-one JSON uses camelCase field names. Model entries contain `ref`,
+`provider`, `name`, `contextWindow`, `maxTokens`, `reasoning`, `needsAuth`,
+`authenticated`, and `default`. They deliberately do not contain provider base
+URLs, transport headers, or credential descriptions. The default-model and
+provider-login request bodies are capped at 16 KiB, reject unknown fields and
+accept exactly one JSON document.
+
+A login start returns an id and the user-facing authorization URL, plus a device
+`code` when the provider supplied one. Polling returns `state` (`pending`, `done`
+or `failed`) and a generic failure message. Token values, refresh endpoints and
+provider response details never cross this API. Terminal records clear their URL
+and device code and are retained only in a bounded recent set. Pending flows are
+bounded globally and per provider. Login work is owned by the daemon rather than
+by the POST request context, and is cancelled when the daemon closes.
+
+`GET /api/skills` returns `{items: [...], pending: {names: [...],
+invalidated: ...}}`; absent collections are always `[]`, not `null`. Skill
+details include the unexpanded markdown `body` and declarative metadata. They
+omit source directories, `SKILL.md` paths and hooks, remove absolute activation
+paths, and never call skill rendering, so opening a detail cannot execute a
+skill's dynamic shell injection. Bodies over 256 KiB are capped and marked with
+`bodyTruncated`. Trust is the explicit mutation which loads the
+current project definitions and updates every attached session.
+
+Usage lists authenticated providers even before their first snapshot; each entry
+has a `windows` array.
+Activity is append-only in `activity.jsonl`. Its entries contain `seq`, `at`,
+`kind`, `text`, and optional `runRef`; `since` is the last sequence already held
+and `limit` is capped at 1000. Like run cursors, negative, fractional and
+otherwise malformed values are rejected.
 
 ## The control stream
 

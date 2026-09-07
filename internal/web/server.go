@@ -55,12 +55,13 @@ type Config struct {
 
 // Server is a running daemon.
 type Server struct {
-	token   string
-	allowed allowlist
-	assets  http.Handler
-	hasUI   bool
-	backend Backend
-	ln      net.Listener
+	token    string
+	allowed  allowlist
+	assets   http.Handler
+	hasUI    bool
+	backend  Backend
+	features map[string]bool
+	ln       net.Listener
 	// mux owns every route. It is a field rather than a local in New so that the
 	// route files added as the API grows register on the server they belong to,
 	// instead of each one being handed a mux by a constructor that has to know
@@ -76,7 +77,8 @@ type Server struct {
 	hub   *hub
 	conns hijacked
 
-	mu sync.Mutex
+	mu           sync.Mutex
+	backendClose sync.Once
 	// cookies are the live browser sessions and when each expires. They are
 	// written to cookieStore on every change when there is one, and held in
 	// memory alone when there is not.
@@ -138,6 +140,7 @@ func New(cfg Config) (*Server, error) {
 		// something to answer with - which is always.
 		hasUI:       cfg.Assets != nil,
 		backend:     cfg.Backend,
+		features:    featuresFor(cfg.Backend),
 		failures:    newLimiter(),
 		cookies:     loadCookies(cookies),
 		cookieStore: cookies,
@@ -210,6 +213,29 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/runs/{id}/blobs/{seq}", methodNotAllowed("GET, HEAD"))
 	s.api("GET /api/runs/{id}/artifacts", s.handleRunArtifacts)
 	s.mux.HandleFunc("/api/runs/{id}/artifacts", methodNotAllowed("GET, HEAD"))
+	s.api("GET /api/models", s.handleModels)
+	s.mux.HandleFunc("/api/models", methodNotAllowed("GET, HEAD"))
+	s.api("POST /api/models/default", s.handleDefaultModel)
+	s.mux.HandleFunc("/api/models/default", methodNotAllowed("POST"))
+	s.api("POST /api/auth/login", s.handleLoginBegin)
+	s.mux.HandleFunc("/api/auth/login", methodNotAllowed("POST"))
+	s.api("GET /api/auth/login/{id}", s.handleLogin)
+	s.api("DELETE /api/auth/login/{id}", s.handleLoginCancel)
+	s.mux.HandleFunc("/api/auth/login/{id}", methodNotAllowed("GET, HEAD, DELETE"))
+	s.api("POST /api/auth/login/{id}/paste", s.handleLoginPaste)
+	s.mux.HandleFunc("/api/auth/login/{id}/paste", methodNotAllowed("POST"))
+	s.api("GET /api/skills", s.handleSkills)
+	s.mux.HandleFunc("/api/skills", methodNotAllowed("GET, HEAD"))
+	// One guarded dispatcher avoids ServeMux's intentional conflict between the
+	// literal POST /trust and the variable GET /{name}; it keeps a method
+	// fallback for both shapes rather than making either one a catch-all.
+	s.api("/api/skills/{name}", s.handleSkillPath)
+	s.api("GET /api/commands", s.handleCommands)
+	s.mux.HandleFunc("/api/commands", methodNotAllowed("GET, HEAD"))
+	s.api("GET /api/usage", s.handleUsage)
+	s.mux.HandleFunc("/api/usage", methodNotAllowed("GET, HEAD"))
+	s.api("GET /api/activity", s.handleActivity)
+	s.mux.HandleFunc("/api/activity", methodNotAllowed("GET, HEAD"))
 	s.mux.Handle("/", s.assets)
 }
 
@@ -238,6 +264,11 @@ func (s *Server) Serve() error {
 // back, up to wsDrainTimeout, so that a caller which returns from here can say
 // the daemon's connections are gone rather than that they were asked to go.
 func (s *Server) Close() error {
+	s.backendClose.Do(func() {
+		if b, ok := s.backend.(BackendShutdown); ok {
+			b.CloseBackend()
+		}
+	})
 	s.mu.Lock()
 	// The table goes with the process. The file is deliberately left alone:
 	// stopping the daemon is not a revocation when it has one, which is the

@@ -62,6 +62,10 @@ var runOps = map[string]bool{
 // connected. It is what keeps a terminal and a browser looking at the same
 // conversation rather than at two renderings that have drifted.
 func (s *Server) handleRunSocket(w http.ResponseWriter, r *http.Request) {
+	b, ok := s.runsBackend(w)
+	if !ok {
+		return
+	}
 	// Refused here rather than by the upgrade: gobwas hijacks before it
 	// validates and writes its own refusal straight onto the connection, past
 	// the wrapper that puts the security headers on every other response. A
@@ -86,7 +90,7 @@ func (s *Server) handleRunSocket(w http.ResponseWriter, r *http.Request) {
 	// point the client asked to resume from is a status code the browser's
 	// fetch can read - rather than a socket that opens and immediately says
 	// nothing.
-	stream, err := s.backend.WatchRun(r.Context(), id, client, since)
+	stream, err := b.WatchRun(r.Context(), id, client, since)
 	if err != nil {
 		writeRunError(w, "attaching to a run", err)
 		return
@@ -123,7 +127,7 @@ func (s *Server) handleRunSocket(w http.ResponseWriter, r *http.Request) {
 			nil, wsPingInterval)
 		c.close()
 	}()
-	c.readClientOps(func(data []byte) any { return s.runOp(r.Context(), id, client, data) })
+	c.readClientOps(func(data []byte) any { return s.runOp(r.Context(), b, id, client, data) })
 	c.close()
 	<-done
 }
@@ -132,7 +136,7 @@ func (s *Server) handleRunSocket(w http.ResponseWriter, r *http.Request) {
 // when there is nothing to say. A message it rejects is answered rather than
 // fatal: one bad frame from a reconnecting phone should not take the
 // conversation down with it.
-func (s *Server) runOp(ctx context.Context, id string, client RunClient, data []byte) any {
+func (s *Server) runOp(ctx context.Context, b RunsBackend, id string, client RunClient, data []byte) any {
 	var op RunOp
 	if err := json.Unmarshal(data, &op); err != nil {
 		return wsError{Kind: controlClientError, Error: "bad message: " + err.Error()}
@@ -149,7 +153,7 @@ func (s *Server) runOp(ctx context.Context, id string, client RunClient, data []
 		// that did not name itself is still somebody.
 		op.Label = client.Kind
 	}
-	if err := s.backend.ApplyRunOp(ctx, id, op); err != nil {
+	if err := b.ApplyRunOp(ctx, id, op); err != nil {
 		return wsError{Kind: controlClientError, Op: op.Op, Error: opReason(op.Op, err)}
 	}
 	return nil

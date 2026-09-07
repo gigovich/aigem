@@ -1604,10 +1604,15 @@ func TestEveryChangeToARecordIsAnnounced(t *testing.T) {
 	if err := runs.Apply(second.ID, runner.RunOp{Op: runner.OpSubmit, Text: "first"}); err != nil {
 		t.Fatal(err)
 	}
+	// Each turn is let finish before the next: a second message under a running
+	// one is refused, and a turn still in flight when the cleanup closes the
+	// registry has its request to the provider cut off mid-body.
+	waitIdle(t, runs, second.ID)
 	_, before := last()
 	if err := runs.Apply(second.ID, runner.RunOp{Op: runner.OpSubmit, Text: "second"}); err != nil {
 		t.Fatal(err)
 	}
+	waitIdle(t, runs, second.ID)
 	if _, after := last(); after != before {
 		t.Errorf("a message that changed nothing announced %d changes", after-before)
 	}
@@ -1671,5 +1676,108 @@ func TestAModelSwitchIsRefusedWhileATurnIsRunning(t *testing.T) {
 		Op: runner.OpSwitchModel, Ref: "local/whatever",
 	}); !errors.Is(err, uisession.ErrBusy) {
 		t.Fatalf("switch_model mid-turn = %v, want ErrBusy", err)
+	}
+}
+
+// runsAgainst builds a registry whose every run is one session against backend,
+// which is what the tests below need and newRuns deliberately does not give:
+// its sessions talk to a provider that is not there.
+func runsAgainst(t *testing.T, cwd string, spec runner.Spec) *runner.Runs {
+	t.Helper()
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			s := spec
+			s.Mode, s.Tools = req.Mode, reg
+			return runner.NewSession(s), runner.Opened{Model: "test/model", Root: cwd}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRuns: %v", err)
+	}
+	t.Cleanup(runs.Close)
+	return runs
+}
+
+// subscribeRun attaches to a run the way the run socket does.
+func subscribeRun(t *testing.T, runs *runner.Runs, id string) <-chan uisession.Event {
+	t.Helper()
+	events, detach, err := runs.Subscribe(id, uisession.Client{Kind: "web"}, 0)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(detach)
+	return events
+}
+
+// Interrupt is the button a person presses when the model is doing the wrong
+// thing, and the only one whose whole job is to end work already under way. A
+// turn that ran on to its own end anyway would look identical in the table and
+// be wrong in the only way that matters.
+func TestInterruptEndsTheTurnThatIsRunning(t *testing.T) {
+	held := newHeldModel(t)
+	cwd := project(t)
+	runs := runsAgainst(t, cwd, runner.Spec{Backend: held.model.ref("held-model")})
+	v := create(t, runs, runner.RunRequest{})
+	events := subscribeRun(t, runs, v.ID)
+
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "go"}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	// The turn is unambiguously running only once it has reached the provider,
+	// and the provider does not answer until this test lets it.
+	held.waitForRequest(t)
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpInterrupt}); err != nil {
+		t.Fatalf("interrupt: %v", err)
+	}
+	ev := waitFor(t, events, uisession.KindTurnEnd)
+	// Released here rather than by a cleanup: the provider handler is holding an
+	// httptest connection, and the server's own Close waits for it.
+	held.release()
+	if !ev.Interrupted {
+		t.Fatal("the turn ended without being marked interrupted: it finished rather than stopped")
+	}
+	// The turn is over as far as the session is concerned, not just as far as
+	// the timeline is: an operation that only a session between turns accepts
+	// is refused by the model reference it names rather than by ErrBusy.
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSwitchModel, Ref: "nowhere/nothing"}); errors.Is(
+		err, uisession.ErrBusy) {
+		t.Fatal("the session still reports a turn in progress after the interrupt")
+	}
+}
+
+// Switching model is metadata in two places that have to agree: the record a
+// browser lists the run from, and the window the session measures compaction
+// against. A switch that moved one and not the other would show the new model
+// beside the old model's limits.
+func TestSwitchingModelUpdatesTheRecordAndTheContextWindow(t *testing.T) {
+	model := newFakeModel(t)
+	cwd := project(t)
+	// The provider declares a 4000-token window, so a window of 4000 after the
+	// switch can only have come from it.
+	models, warns := llm.NewRegistry(cwd, llm.LocalProvider(model.srv.URL, "switched-model", 4000, 0))
+	if len(warns) != 0 {
+		t.Fatalf("model registry warnings: %v", warns)
+	}
+	runs := runsAgainst(t, cwd, runner.Spec{
+		Backend: model.ref("first-model"), Models: models, CtxSize: 4096,
+	})
+	v := create(t, runs, runner.RunRequest{})
+	events := subscribeRun(t, runs, v.ID)
+
+	if err := runs.Apply(v.ID, runner.RunOp{
+		Op: runner.OpSwitchModel, Ref: "local/switched-model",
+	}); err != nil {
+		t.Fatalf("switch_model: %v", err)
+	}
+	if ev := waitFor(t, events, uisession.KindSessionMeta); ev.Ctx != 4000 {
+		t.Errorf("context window after the switch = %d, want the new model's 4000", ev.Ctx)
+	}
+	after, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Model != "local/switched-model" {
+		t.Errorf("the record still names %q, want the model the run switched to", after.Model)
 	}
 }

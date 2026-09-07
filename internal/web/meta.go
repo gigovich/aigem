@@ -12,12 +12,32 @@ import "net/http"
 // route or a name that gets spelled differently when it lands. Adding a line
 // belongs in the commit that makes the feature real.
 //
-// It is written once, at initialisation, and never again: every reader hands
-// the one value straight to an encoder, so a flag that had to change while the
-// daemon runs would need a lock.
-var features = map[string]bool{
-	"controlSocket": true,
-	"runs":          true,
+// The map belongs to one Server: tests and embedders may provide only a focused
+// backend, and capability discovery must describe what that instance can serve.
+func featuresFor(b Backend) map[string]bool {
+	out := map[string]bool{"controlSocket": true}
+	if _, ok := b.(ActivityBackend); ok {
+		out["activity"] = true
+	}
+	if _, ok := b.(CommandsBackend); ok {
+		out["commands"] = true
+	}
+	if _, ok := b.(ModelsBackend); ok {
+		out["models"] = true
+	}
+	if _, ok := b.(AuthBackend); ok {
+		out["providerLogin"] = true
+	}
+	if _, ok := b.(RunsBackend); ok {
+		out["runs"] = true
+	}
+	if _, ok := b.(SkillsBackend); ok {
+		out["skills"] = true
+	}
+	if _, ok := b.(UsageBackend); ok {
+		out["usage"] = true
+	}
+	return out
 }
 
 // metaResponse is what /api/meta answers, and what hello carries. The two are
@@ -44,7 +64,7 @@ type metaResponse struct {
 }
 
 func (s *Server) metaBody(rev uint64, m Meta) metaResponse {
-	return metaResponse{Meta: m, Rev: rev, UI: s.hasUI, Features: features}
+	return metaResponse{Meta: m, Rev: rev, UI: s.hasUI, Features: s.features}
 }
 
 // handleMeta describes the daemon to a signed-in page.

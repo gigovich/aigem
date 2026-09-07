@@ -25,9 +25,21 @@ const (
 	maxEventPage = 2000
 )
 
+func (s *Server) runsBackend(w http.ResponseWriter) (RunsBackend, bool) {
+	b, ok := s.backend.(RunsBackend)
+	if !ok {
+		unavailable(w)
+	}
+	return b, ok
+}
+
 // handleRuns lists the conversations, oldest first.
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	runs, err := s.backend.Runs(r.Context())
+	b, ok := s.runsBackend(w)
+	if !ok {
+		return
+	}
+	runs, err := b.Runs(r.Context())
 	if err != nil {
 		writeRunError(w, "listing the runs", err)
 		return
@@ -42,26 +54,32 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 // handleOpenRun starts a conversation.
 func (s *Server) handleOpenRun(w http.ResponseWriter, r *http.Request) {
+	b, ok := s.runsBackend(w)
+	if !ok {
+		return
+	}
 	var req NewRun
 	if err := decodeJSON(w, r, &req); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	run, err := s.backend.OpenRun(r.Context(), req)
+	run, err := b.OpenRun(r.Context(), req)
 	if err != nil {
 		writeRunError(w, "opening a run", err)
 		return
 	}
-	// Nothing is published here. Every change to a run is announced by whoever
-	// made it, through Server.Publish, because most of them do not happen
-	// during a request - and a route that also published would put two messages
-	// on the stream for the one thing that happened.
+	// Run and activity changes are announced by their backend owners; most run
+	// changes do not happen during an HTTP request at all.
 	writeJSONStatus(w, http.StatusCreated, run)
 }
 
 // handleRun reports one conversation.
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
-	run, err := s.backend.Run(r.Context(), r.PathValue("id"))
+	b, ok := s.runsBackend(w)
+	if !ok {
+		return
+	}
+	run, err := b.Run(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeRunError(w, "reading a run", err)
 		return
@@ -73,14 +91,18 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 // timeline stay: a run a person is done with is one they can still read, and
 // the activity feed goes on referring to it.
 func (s *Server) handleCloseRun(w http.ResponseWriter, r *http.Request) {
+	b, ok := s.runsBackend(w)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
-	if err := s.backend.CloseRun(r.Context(), id); err != nil {
+	if err := b.CloseRun(r.Context(), id); err != nil {
 		writeRunError(w, "closing a run", err)
 		return
 	}
 	// Read back rather than assumed: what a client applies to its table is the
 	// record as it now stands, and this daemon is not the only writer of it.
-	run, err := s.backend.Run(r.Context(), id)
+	run, err := b.Run(r.Context(), id)
 	if err != nil {
 		writeRunError(w, "reading a closed run", err)
 		return
@@ -94,6 +116,10 @@ func (s *Server) handleCloseRun(w http.ResponseWriter, r *http.Request) {
 // session is gone: a closed run has no socket to open, and its journal is the
 // whole of what is left.
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
+	b, ok := s.runsBackend(w)
+	if !ok {
+		return
+	}
 	since, ok := cursor(w, r, "since")
 	if !ok {
 		return
@@ -102,7 +128,7 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	events, err := s.backend.RunEvents(r.Context(), r.PathValue("id"), since, limit)
+	events, err := b.RunEvents(r.Context(), r.PathValue("id"), since, limit)
 	if err != nil {
 		writeRunError(w, "reading a run's events", err)
 		return
@@ -127,11 +153,15 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 // in cross-origin as a script or a stylesheet, and the content policy stops
 // anything in it running if it is opened directly.
 func (s *Server) handleRunBlob(w http.ResponseWriter, r *http.Request) {
+	b, ok := s.runsBackend(w)
+	if !ok {
+		return
+	}
 	seq, ok := pathCursor(w, r, "seq")
 	if !ok {
 		return
 	}
-	body, err := s.backend.RunBlob(r.Context(), r.PathValue("id"), seq)
+	body, err := b.RunBlob(r.Context(), r.PathValue("id"), seq)
 	if err != nil {
 		writeRunError(w, "reading a stored tool result", err)
 		return
@@ -143,7 +173,11 @@ func (s *Server) handleRunBlob(w http.ResponseWriter, r *http.Request) {
 
 // handleRunArtifacts reports the files a run changed.
 func (s *Server) handleRunArtifacts(w http.ResponseWriter, r *http.Request) {
-	arts, err := s.backend.RunArtifacts(r.Context(), r.PathValue("id"))
+	b, ok := s.runsBackend(w)
+	if !ok {
+		return
+	}
+	arts, err := b.RunArtifacts(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeRunError(w, "reading a run's artifacts", err)
 		return
@@ -159,11 +193,16 @@ func (s *Server) handleRunArtifacts(w http.ResponseWriter, r *http.Request) {
 // server silently ignored.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRunBody))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return err
 	}
-	if dec.More() {
-		return errors.New("the body holds more than one JSON document")
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("the body holds more than one JSON document")
+		}
+		return err
 	}
 	return nil
 }

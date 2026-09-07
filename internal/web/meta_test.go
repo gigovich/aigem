@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -29,6 +30,28 @@ func getMeta(t *testing.T, srv *Server) (*http.Response, metaResponse) {
 		}
 	}
 	return res, body
+}
+
+type metaOnlyBackend struct{ meta Meta }
+
+func (b metaOnlyBackend) Meta(context.Context) (Meta, error) { return b.meta, nil }
+
+func TestMetaFeaturesMatchAPartialBackend(t *testing.T) {
+	srv := newTestServer(t, Config{Backend: metaOnlyBackend{meta: Meta{Version: "partial"}}})
+	res := phaseRequest(t, srv, http.MethodGet, "/api/meta", "")
+	defer res.Body.Close()
+	var got metaResponse
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Features) != 1 || !got.Features["controlSocket"] {
+		t.Fatalf("partial features = %v, want only controlSocket", got.Features)
+	}
+	res = phaseRequest(t, srv, http.MethodGet, "/api/runs", "")
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("partial runs status = %d, want 501", res.StatusCode)
+	}
 }
 
 func TestMetaReportsTheVersionTheModelAndTheFeatures(t *testing.T) {

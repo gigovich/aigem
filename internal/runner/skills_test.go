@@ -40,7 +40,9 @@ func sessionWithPrompt(t *testing.T, env *runner.Env, model *fakeModel) (*runner
 		},
 	})
 	t.Cleanup(s.Local.Close)
-	env.Attach(s)
+	if err := env.Attach(s); err != nil {
+		t.Fatal(err)
+	}
 	return s, reg
 }
 
@@ -299,7 +301,6 @@ func newHeldModel(t *testing.T) *heldModel {
 	h := &heldModel{got: make(chan struct{})}
 	let := make(chan struct{})
 	h.release = sync.OnceFunc(func() { close(let) })
-	t.Cleanup(h.release)
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.once.Do(func() { close(h.got) })
 		select {
@@ -313,6 +314,10 @@ func newHeldModel(t *testing.T) *heldModel {
 		}
 	}))
 	t.Cleanup(h.srv.Close)
+	// Registered after Close so it runs before it: httptest.Server.Close waits
+	// for the handler, and the handler waits for this. A test that fails before
+	// releasing would otherwise hang rather than report.
+	t.Cleanup(h.release)
 	h.model = &fakeModel{srv: h.srv}
 	return h
 }

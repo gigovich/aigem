@@ -20,11 +20,19 @@ import (
 // live object, and it names a model or a run the way the wire names it, because
 // resolving that name is the backend's job and not the router's.
 type Backend interface {
+	MetaBackend
+}
+
+// MetaBackend is the small seam used by /api/meta and the control socket.
+type MetaBackend interface {
 	// Meta describes the daemon to a signed-in page. It is the daemon's own
 	// state rather than the request's, and it may change while the daemon runs,
 	// so a page reads it again after anything that could have moved it.
 	Meta(ctx context.Context) (Meta, error)
+}
 
+// RunsBackend is the focused seam used by the run HTTP and websocket routes.
+type RunsBackend interface {
 	// Runs reports every conversation this daemon knows about, oldest first,
 	// including the ones whose sessions did not survive a restart.
 	Runs(ctx context.Context) ([]Run, error)

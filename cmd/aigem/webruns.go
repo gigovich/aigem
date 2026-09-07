@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sync"
 
@@ -112,10 +113,11 @@ func (rt *webRuntime) openRun(_ context.Context, req runner.RunRequest) (
 	if title == "" {
 		title = rt.env.SessionTitle
 	}
+	backendRef := webModelRef(backend)
 	sess := runner.NewSession(runner.Spec{
 		Mode:    req.Mode,
 		Tools:   reg,
-		Backend: llm.NewRef(backend),
+		Backend: backendRef,
 		Models:  rt.models,
 		Agents:  rt.env.Agents,
 		Skills:  rt.env.Skills,
@@ -142,12 +144,25 @@ func (rt *webRuntime) openRun(_ context.Context, req runner.RunRequest) (
 	})
 	// Approving the project's skills has to reach every live conversation, not
 	// just the one that asked.
-	rt.env.Attach(sess)
+	if err := rt.env.Attach(sess); err != nil {
+		sess.Local.Close()
+		return nil, runner.Opened{}, err
+	}
 	return sess, runner.Opened{
 		Model:   info.Ref(),
 		Root:    rt.env.Cwd,
 		Release: func() { rt.env.Detach(sess) },
 	}, nil
+}
+
+func webModelRef(backend llm.Backend) *llm.Ref {
+	ref := llm.NewRef(backend)
+	ref.OnLimits(func(limits llm.Limits) {
+		if err := llm.SaveLimits(limits); err != nil {
+			slog.Error("provider limits could not be saved", "provider", limits.Provider, "err", err)
+		}
+	})
+	return ref
 }
 
 // runNotifier carries a run's changes to the connected pages.
@@ -176,4 +191,26 @@ func (n *runNotifier) publish(v runner.RunView) {
 		return
 	}
 	srv.Publish("run.updated", webRun(v))
+}
+
+// daemonNotifier wires backend-owned mutations to the control stream after the
+// Server exists, just as runNotifier does for registry-owned run changes.
+type daemonNotifier struct {
+	mu  sync.Mutex
+	srv *web.Server
+}
+
+func (n *daemonNotifier) to(srv *web.Server) {
+	n.mu.Lock()
+	n.srv = srv
+	n.mu.Unlock()
+}
+
+func (n *daemonNotifier) publish(kind string, data any) {
+	n.mu.Lock()
+	srv := n.srv
+	n.mu.Unlock()
+	if srv != nil {
+		srv.Publish(kind, data)
+	}
 }

@@ -652,17 +652,70 @@ func (l *Local) Running() bool {
 // fn must not call back into the session: the lock it would need is held here.
 // The agent it is handed is nil for a session built without one.
 func (l *Local) Reconfigure(fn func(*agent.Agent)) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.closed {
+	// ReconfigureAll skips a closed session rather than failing the whole
+	// transaction, which is right for a set and wrong for one: a caller
+	// reconfiguring a single session is told it is gone.
+	var applied bool
+	err := ReconfigureAll([]*Local{l}, nil, func(_ int, ag *agent.Agent) error {
+		applied = true
+		fn(ag)
+		return nil
+	})
+	if err == nil && !applied {
 		return ErrClosed
 	}
-	if l.running {
-		return ErrBusy
+	return err
+}
+
+// reconfigureMu orders the multi-session lock acquisition below. Sessions are
+// locked in the order they are given, so two callers with overlapping sets and
+// different orders would deadlock without it.
+var reconfigureMu sync.Mutex
+
+// ReconfigureAll changes several sessions as one transaction. Every session is
+// locked and checked before fn runs, so a turn can neither start during the
+// change nor leave an earlier session updated when a later one is busy. Closed
+// sessions are skipped; indexes passed to fn match locals.
+func ReconfigureAll(locals []*Local, prepare func() error, fn func(int, *agent.Agent) error) error {
+	reconfigureMu.Lock()
+	defer reconfigureMu.Unlock()
+	locked := make([]*Local, 0, len(locals))
+	seen := make(map[*Local]bool, len(locals))
+	for _, l := range locals {
+		if l == nil || seen[l] {
+			continue
+		}
+		seen[l] = true
+		l.mu.Lock()
+		locked = append(locked, l)
 	}
-	fn(l.ag)
-	if l.ag != nil && l.rebuildSystem != nil {
-		l.ag.SetSystem(l.rebuildSystem())
+	defer func() {
+		for i := len(locked) - 1; i >= 0; i-- {
+			locked[i].mu.Unlock()
+		}
+	}()
+	for _, l := range locked {
+		if l.running {
+			return ErrBusy
+		}
+	}
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			return err
+		}
+	}
+	for i, l := range locals {
+		if l == nil || l.closed {
+			continue
+		}
+		if err := fn(i, l.ag); err != nil {
+			return err
+		}
+	}
+	for _, l := range locked {
+		if !l.closed && l.ag != nil && l.rebuildSystem != nil {
+			l.ag.SetSystem(l.rebuildSystem())
+		}
 	}
 	return nil
 }

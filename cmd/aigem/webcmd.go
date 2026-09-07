@@ -18,6 +18,7 @@ import (
 	"github.com/gigovich/aigem/internal/config"
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/search"
+	"github.com/gigovich/aigem/internal/store"
 	"github.com/gigovich/aigem/internal/web"
 )
 
@@ -173,18 +174,27 @@ func runWebCommand(args []string) error {
 	}
 	defer runs.Close()
 
+	var activity *store.Log[web.Activity]
+	if stateDir != "" {
+		activity = store.NewLog[web.Activity](filepath.Join(stateDir, "activity.jsonl"))
+	}
+	var daemonEvents daemonNotifier
+	backend := newWebBackend(versionString(), rt.models, runs, webBackendOptions{
+		env: env, activity: activity, notify: daemonEvents.publish,
+	})
 	srv, err := web.New(web.Config{
 		Addr:       *addr,
 		Origins:    origins,
 		Assets:     web.Assets(),
 		CookieFile: cookies,
-		Backend:    newWebBackend(versionString(), rt.models, runs),
+		Backend:    backend,
 	})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = srv.Close() }()
 	announce.to(srv)
+	daemonEvents.to(srv)
 
 	// The one place the token is meant to be published: this terminal.
 	url := srv.SignInURL()

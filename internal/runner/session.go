@@ -175,18 +175,20 @@ func (s *Session) SetSkills(sk *skill.Registry) error {
 	if s == nil || s.Local == nil {
 		return errors.New("runner: no session to give the skills to")
 	}
-	return s.Local.Reconfigure(func(ag *agent.Agent) {
-		if s.registerSkillTool != nil {
-			s.registerSkillTool(sk)
+	return s.Local.Reconfigure(func(ag *agent.Agent) { s.setSkillsLocked(sk, ag) })
+}
+
+func (s *Session) setSkillsLocked(sk *skill.Registry, ag *agent.Agent) {
+	if s.registerSkillTool != nil {
+		s.registerSkillTool(sk)
+	}
+	if ag != nil {
+		var conditional []*skill.Skill
+		if sk != nil {
+			conditional = sk.Conditional()
 		}
-		if ag != nil {
-			var conditional []*skill.Skill
-			if sk != nil {
-				conditional = sk.Conditional()
-			}
-			ag.WatchSkills(conditional)
-		}
-	})
+		ag.WatchSkills(conditional)
+	}
 }
 
 // NewSession builds a conversation from spec.
