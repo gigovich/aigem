@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -26,6 +27,9 @@ type phaseBackend struct {
 	login  Login
 	acts   []Activity
 	ref    string
+	// err is what Commands answers with, so one route can be pointed at each
+	// arm of the error mapping without a fake per arm.
+	err error
 }
 
 func (b *phaseBackend) Models(context.Context) ([]Model, error) { return b.models, nil }
@@ -53,7 +57,7 @@ func (b *phaseBackend) Skill(_ context.Context, name string) (Skill, error) {
 func (b *phaseBackend) TrustSkills(context.Context) (SkillApproval, error) {
 	return SkillApproval{}, nil
 }
-func (b *phaseBackend) Commands(context.Context) ([]Command, error) { return nil, nil }
+func (b *phaseBackend) Commands(context.Context) ([]Command, error) { return nil, b.err }
 func (b *phaseBackend) Usage(context.Context) ([]ProviderUsage, error) {
 	return []ProviderUsage{{Provider: "openai"}}, nil
 }
@@ -264,16 +268,150 @@ func TestActivityValidatesAndAppliesItsCursor(t *testing.T) {
 	}
 }
 
-func TestLoginWireContainsNoHiddenCompletionField(t *testing.T) {
+// Login is a hand-built view rather than a marshalled auth.Flow, and the reason
+// is that a flow holds a token. A field added to the view without being thought
+// about is how that stops being true, so the wire's key set is pinned: a new
+// key has to be added here too, which is where somebody asks what it carries.
+func TestTheLoginWireCarriesOnlyTheKeysItIsMeantTo(t *testing.T) {
 	b := &phaseBackend{fakeBackend: &fakeBackend{}, login: Login{
 		ID: "LOGIN-1", Provider: "openai", URL: "https://example.test/authorize",
-		State: "done",
+		Code: "ABCD-1234", AcceptsPaste: true, State: "failed", Error: "provider login failed",
 	}}
 	srv := newTestServer(t, Config{Backend: b})
 	res := phaseRequest(t, srv, http.MethodGet, "/api/auth/login/LOGIN-1", "")
 	defer res.Body.Close()
-	data, _ := io.ReadAll(res.Body)
-	if bytes.Contains(data, []byte("completedNow")) {
-		t.Fatalf("internal transition leaked onto wire: %s", data)
+	var got map[string]json.RawMessage
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"id": true, "provider": true, "url": true, "code": true,
+		"acceptsPaste": true, "state": true, "error": true,
+	}
+	for key := range got {
+		if !want[key] {
+			t.Errorf("the login wire carries %q, which nothing asked for", key)
+		}
+	}
+	for key := range want {
+		if _, ok := got[key]; !ok {
+			t.Errorf("the login wire lost %q", key)
+		}
+	}
+}
+
+// Every failure a phase-one route can produce, and the status each one is meant
+// to become. Without this the whole mapping can be deleted and the suite stays
+// green: a page would be told "the daemon could not carry that out" for an
+// unknown login, for a name it mistyped, and for a turn it only had to wait for.
+func TestEveryPhaseOneFailureBecomesTheStatusItMeans(t *testing.T) {
+	b := &phaseBackend{fakeBackend: &fakeBackend{}}
+	srv := newTestServer(t, Config{Backend: b})
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+		body   string
+		retry  string
+	}{
+		{"an unknown login", ErrNoLogin, http.StatusNotFound, "no such login", ""},
+		{"an unknown skill", ErrNoSkill, http.StatusNotFound, "no such skill", ""},
+		{"a busy daemon", ErrBusy, http.StatusServiceUnavailable, "", "5"},
+		{"a refusal", Refuse(errors.New("that project has no skills")),
+			http.StatusBadRequest, "that project has no skills", ""},
+		{"the daemon's own fault", errNope, http.StatusInternalServerError,
+			"the daemon could not carry that out", ""},
+	} {
+		b.err = tc.err
+		res := phaseRequest(t, srv, http.MethodGet, "/api/commands", "")
+		body, _ := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != tc.status {
+			t.Errorf("%s = %d, want %d", tc.name, res.StatusCode, tc.status)
+		}
+		if tc.body != "" && !strings.Contains(string(body), tc.body) {
+			t.Errorf("%s said %q, want it to name %q", tc.name, body, tc.body)
+		}
+		if tc.retry != "" && res.Header.Get("Retry-After") != tc.retry {
+			t.Errorf("%s Retry-After = %q, want %q", tc.name, res.Header.Get("Retry-After"), tc.retry)
+		}
+		if errors.Is(tc.err, errNope) && strings.Contains(string(body), errNope.Error()) {
+			t.Errorf("the daemon's own error text reached the client: %q", body)
+		}
+	}
+}
+
+// The feature map is how a page decides which screens exist. Each flag has to
+// answer for its own seam: a map that lost them all would hide every phase-one
+// screen, and nothing else in the daemon would notice.
+func TestTheFeatureMapNamesEverySeamTheBackendImplements(t *testing.T) {
+	srv := newTestServer(t, Config{Backend: &phaseBackend{fakeBackend: &fakeBackend{}}})
+	_, body := getMeta(t, srv)
+	want := []string{
+		"activity", "commands", "controlSocket", "models", "providerLogin", "runs", "skills", "usage",
+	}
+	for _, name := range want {
+		if !body.Features[name] {
+			t.Errorf("the feature map does not name %q, so a page hides that screen", name)
+		}
+	}
+	if len(body.Features) != len(want) {
+		t.Errorf("features = %v, want exactly %v", body.Features, want)
+	}
+}
+
+// The wire never carries null where a collection belongs: a page that iterates
+// what it was given must not have to test every field for it first.
+func TestEveryPhaseOneCollectionIsAnArrayWhenItIsEmpty(t *testing.T) {
+	b := &phaseBackend{
+		fakeBackend: &fakeBackend{},
+		skills:      Skills{Pending: &PendingSkills{}},
+		detail:      Skill{SkillSummary: SkillSummary{Name: "ship"}},
+	}
+	srv := newTestServer(t, Config{Backend: b})
+	for _, tc := range []struct {
+		method, path string
+		fields       []string
+	}{
+		{http.MethodGet, "/api/models", nil},
+		{http.MethodGet, "/api/commands", nil},
+		{http.MethodGet, "/api/activity", nil},
+		{http.MethodGet, "/api/usage", nil},
+		{http.MethodGet, "/api/skills", []string{"items", "pending.names"}},
+		{http.MethodGet, "/api/skills/ship", []string{"allowedTools", "disallowedTools", "paths"}},
+		{http.MethodPost, "/api/skills/trust", []string{"loaded", "notices"}},
+	} {
+		res := phaseRequest(t, srv, tc.method, tc.path, "")
+		body, _ := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("%s = %d: %s", tc.path, res.StatusCode, body)
+		}
+		if bytes.Contains(body, []byte("null")) {
+			t.Errorf("%s answered with a null collection: %s", tc.path, body)
+		}
+		if tc.fields == nil && !bytes.HasPrefix(bytes.TrimSpace(body), []byte("[")) {
+			t.Errorf("%s = %s, want an array", tc.path, body)
+		}
+	}
+}
+
+// Usage exists to show quota, so the windows are the answer. Dropping them
+// would leave every provider listed with nothing under it, which reads as "no
+// limits" rather than as a daemon that lost them.
+func TestUsageCarriesEveryWindowInAStableOrder(t *testing.T) {
+	b := &phaseBackend{fakeBackend: &fakeBackend{}}
+	srv := newTestServer(t, Config{Backend: b})
+	res := phaseRequest(t, srv, http.MethodGet, "/api/usage", "")
+	defer res.Body.Close()
+	var got []ProviderUsage
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Provider != "openai" {
+		t.Fatalf("usage = %+v, want the one provider the backend reported", got)
+	}
+	if got[0].Windows == nil {
+		t.Error("a provider with no snapshot lost its windows array")
 	}
 }

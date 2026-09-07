@@ -165,52 +165,34 @@ func webModelRef(backend llm.Backend) *llm.Ref {
 	return ref
 }
 
-// runNotifier carries a run's changes to the connected pages.
+// notifier carries a mutation to the connected pages.
 //
-// It exists because of an ordering the wiring cannot avoid: the registry is
-// built before the daemon, since the daemon is served out of it. The server is
-// filled in as soon as there is one, and a change published before that is
-// dropped rather than queued - there is no page connected to hear it, because
-// nothing is serving yet.
-type runNotifier struct {
+// It exists because of an ordering the wiring cannot avoid: the run registry
+// and the backend are both built before the daemon, since the daemon is served
+// out of them. The server is filled in as soon as there is one, and anything
+// published before that is dropped rather than queued - there is no page
+// connected to hear it, because nothing is serving yet.
+type notifier struct {
 	mu  sync.Mutex
 	srv *web.Server
 }
 
-func (n *runNotifier) to(srv *web.Server) {
+func (n *notifier) to(srv *web.Server) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.srv = srv
 }
 
-func (n *runNotifier) publish(v runner.RunView) {
+func (n *notifier) publish(kind string, data any) {
 	n.mu.Lock()
 	srv := n.srv
 	n.mu.Unlock()
 	if srv == nil {
 		return
 	}
-	srv.Publish("run.updated", webRun(v))
+	srv.Publish(kind, data)
 }
 
-// daemonNotifier wires backend-owned mutations to the control stream after the
-// Server exists, just as runNotifier does for registry-owned run changes.
-type daemonNotifier struct {
-	mu  sync.Mutex
-	srv *web.Server
-}
-
-func (n *daemonNotifier) to(srv *web.Server) {
-	n.mu.Lock()
-	n.srv = srv
-	n.mu.Unlock()
-}
-
-func (n *daemonNotifier) publish(kind string, data any) {
-	n.mu.Lock()
-	srv := n.srv
-	n.mu.Unlock()
-	if srv != nil {
-		srv.Publish(kind, data)
-	}
-}
+// publishRun is the registry's own callback shape: it takes the runner's view
+// and names the one kind a run change is ever announced as.
+func (n *notifier) publishRun(v runner.RunView) { n.publish("run.updated", webRun(v)) }

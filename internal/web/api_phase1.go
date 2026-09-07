@@ -4,13 +4,27 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 )
 
+// The rest of the phase-one API: what a page needs to choose a model, sign in
+// to a provider, see the project's skills and read what has happened.
+//
+// Everything here is small, whole documents rather than streams: none of it
+// changes fast enough to be worth a socket, and a page that has just been told
+// through the control stream that something moved refetches the one collection
+// it names. The seams are declared per endpoint group, because a fake built for
+// one screen must not have to implement the other six.
+
 const (
-	maxActivityPage   = 1000
+	// A page shows a feed, not a database. The cap is what one screenful's worth
+	// of scrollback costs to encode; a client that wants more asks again from
+	// the cursor it was given.
+	maxActivityPage = 1000
+	// A pasted provider callback is a URL or a code. Eight kibibytes is far more
+	// than either, and small enough that a client cannot make the daemon hold a
+	// body worth holding.
 	maxLoginPasteBody = 8 << 10
 )
 
@@ -151,9 +165,8 @@ type Activity struct {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(ModelsBackend)
+	b, ok := backendOf[ModelsBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	items, err := b.Models(r.Context())
@@ -161,6 +174,10 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		writePhaseError(w, "listing models", err)
 		return
 	}
+	// Empty is an empty collection and never null, here and in every handler
+	// below: the reason is the one given over writeJSON's own use of it in
+	// api_runs.go - a page that iterates what it was given should not have to
+	// test each field for null first.
 	if items == nil {
 		items = []Model{}
 	}
@@ -168,9 +185,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(ModelsBackend)
+	b, ok := backendOf[ModelsBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	var req struct {
@@ -193,9 +209,8 @@ func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(AuthBackend)
+	b, ok := backendOf[AuthBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	var req LoginRequest
@@ -216,9 +231,8 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(AuthBackend)
+	b, ok := backendOf[AuthBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	v, err := b.Login(r.Context(), r.PathValue("id"))
@@ -230,9 +244,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLoginPaste(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(AuthBackend)
+	b, ok := backendOf[AuthBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxLoginPasteBody))
@@ -249,9 +262,8 @@ func (s *Server) handleLoginPaste(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLoginCancel(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(AuthBackend)
+	b, ok := backendOf[AuthBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	if err := b.CancelLogin(r.Context(), r.PathValue("id")); err != nil {
@@ -262,9 +274,8 @@ func (s *Server) handleLoginCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(SkillsBackend)
+	b, ok := backendOf[SkillsBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	v, err := b.Skills(r.Context())
@@ -281,6 +292,14 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, v)
 }
 
+// handleSkillPath is one guarded route for two shapes, because ServeMux treats
+// a literal segment and a wildcard at the same position as a conflict.
+//
+// The cost is that a skill actually named "trust" cannot be read through this
+// route: GET on it is a 405 naming the mutation. Nothing shadows the mutation
+// in the other direction - it needs POST - and the name is documented, so a
+// project that hits this is told why rather than left with a skill that is
+// listed and cannot be opened.
 func (s *Server) handleSkillPath(w http.ResponseWriter, r *http.Request) {
 	if r.PathValue("name") == "trust" {
 		if r.Method != http.MethodPost {
@@ -298,9 +317,8 @@ func (s *Server) handleSkillPath(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(SkillsBackend)
+	b, ok := backendOf[SkillsBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	v, err := b.Skill(r.Context(), r.PathValue("name"))
@@ -321,9 +339,8 @@ func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkillTrust(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(SkillsBackend)
+	b, ok := backendOf[SkillsBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	// This mutation has no options. An empty body and {} are accepted; any field,
@@ -348,9 +365,8 @@ func (s *Server) handleSkillTrust(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(CommandsBackend)
+	b, ok := backendOf[CommandsBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	v, err := b.Commands(r.Context())
@@ -365,9 +381,8 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.backend.(UsageBackend)
+	b, ok := backendOf[UsageBackend](s, w)
 	if !ok {
-		unavailable(w)
 		return
 	}
 	v, err := b.Usage(r.Context())
@@ -387,17 +402,19 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	// The seam first, as everywhere else: a client probing what this daemon can
+	// do must not be told its query string was wrong by a route that does not
+	// exist here at all.
+	b, ok := backendOf[ActivityBackend](s, w)
+	if !ok {
+		return
+	}
 	since, ok := cursor(w, r, "since")
 	if !ok {
 		return
 	}
 	limit, ok := count(w, r, "limit", maxActivityPage)
 	if !ok {
-		return
-	}
-	b, ok := s.backend.(ActivityBackend)
-	if !ok {
-		unavailable(w)
 		return
 	}
 	v, err := b.Activity(r.Context(), since, limit)
@@ -411,22 +428,35 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, v)
 }
 
+// backendOf selects the seam a route needs. The backend is one object
+// implementing whichever of the interfaces above the embedder wired up, so a
+// route whose seam is missing is a daemon built without that feature rather
+// than a request that went wrong - which is what 501 says, and why /api/meta
+// derives its feature map from the same assertions.
+func backendOf[T any](s *Server, w http.ResponseWriter) (T, bool) {
+	b, ok := s.backend.(T)
+	if !ok {
+		unavailable(w)
+	}
+	return b, ok
+}
+
 func unavailable(w http.ResponseWriter) {
 	http.Error(w, "this endpoint is not available", http.StatusNotImplemented)
 }
 
+// writePhaseError is writeRunError with the two sentinels this file owns in
+// front of it. Everything else - the busy answer, a refusal written to be read,
+// and the daemon's own faults being described to nobody - is the same decision
+// for the same reasons, and having it here twice is how the two halves of one
+// API end up answering the same failure differently.
 func writePhaseError(w http.ResponseWriter, doing string, err error) {
-	var refusal *Refusal
 	switch {
-	case errors.Is(err, ErrNoLogin), errors.Is(err, ErrNoSkill):
-		http.Error(w, "not found", http.StatusNotFound)
-	case errors.Is(err, ErrBusy):
-		w.Header().Set("Retry-After", "5")
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-	case errors.As(err, &refusal):
-		http.Error(w, refusal.Reason, http.StatusBadRequest)
+	case errors.Is(err, ErrNoLogin):
+		http.Error(w, "no such login", http.StatusNotFound)
+	case errors.Is(err, ErrNoSkill):
+		http.Error(w, "no such skill", http.StatusNotFound)
 	default:
-		slog.Error("the daemon failed a request", "doing", doing, "err", err)
-		http.Error(w, "the daemon could not carry that out", http.StatusInternalServerError)
+		writeRunError(w, doing, err)
 	}
 }

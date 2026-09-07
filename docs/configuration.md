@@ -15,7 +15,7 @@ aigem honors the XDG base directories.
 | `~/.local/state/aigem/sessions/`          | saved conversations (`0600` in a `0700` directory)  |
 | `~/.local/state/aigem/journal/<id>/`      | one conversation's timeline, plus `blobs/` (`0700`) |
 | `~/.local/state/aigem/web-cookies.json`   | browser sign-ins for `aigem web` (`0600`)           |
-| `~/.local/state/aigem/activity.jsonl`      | append-only browser activity feed (`0600`)           |
+| `~/.local/state/aigem/activity.jsonl`     | append-only browser activity feed (`0600`)          |
 | `~/.local/state/aigem/path-grants.json`   | approved read paths outside a working directory     |
 | `~/.local/state/aigem/project-trust.json` | approved project hooks, skills, and MCP targets     |
 | `~/.local/state/aigem/local.json`         | local llama.cpp server settings                     |

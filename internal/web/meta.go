@@ -14,6 +14,14 @@ import "net/http"
 //
 // The map belongs to one Server: tests and embedders may provide only a focused
 // backend, and capability discovery must describe what that instance can serve.
+//
+// A type answers "was this built with the seam"; only the instance knows
+// whether it was handed what the seam needs - a state directory it could
+// create, a project that loaded - so a backend gets the last word through
+// FeatureBackend. The routes themselves stay reachable and answer an empty
+// collection; what this map decides is whether a page offers the screen at all,
+// and offering one that can never hold anything is the failure it exists to
+// prevent.
 func featuresFor(b Backend) map[string]bool {
 	out := map[string]bool{"controlSocket": true}
 	if _, ok := b.(ActivityBackend); ok {
@@ -37,7 +45,19 @@ func featuresFor(b Backend) map[string]bool {
 	if _, ok := b.(UsageBackend); ok {
 		out["usage"] = true
 	}
+	if r, ok := b.(FeatureBackend); ok {
+		for _, name := range r.Unavailable() {
+			delete(out, name)
+		}
+	}
 	return out
+}
+
+// FeatureBackend withdraws a capability this instance cannot serve. Its names
+// are the ones featuresFor puts in the map; a name that is not in it is
+// ignored, so an adapter may list a feature unconditionally.
+type FeatureBackend interface {
+	Unavailable() []string
 }
 
 // metaResponse is what /api/meta answers, and what hello carries. The two are

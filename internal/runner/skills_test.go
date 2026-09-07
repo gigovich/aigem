@@ -332,3 +332,59 @@ func (h *heldModel) waitForRequest(t *testing.T) {
 		t.Fatal("the turn never reached the provider")
 	}
 }
+
+// agentSystem is the system prompt the model is actually being sent.
+func agentSystem(t *testing.T, s *runner.Session) string {
+	t.Helper()
+	msgs := s.Local.Agent().Messages()
+	if len(msgs) == 0 {
+		t.Fatal("the agent holds no messages, so there is no system prompt to read")
+	}
+	return msgs[0].Content
+}
+
+// A SessionStart hook's context belongs to the one session it ran for. The
+// prompt assembler does not have it - it is the project's, and shared by every
+// conversation - so anything that reassembles the prompt mid-session has to put
+// it back. A rebuild that does not takes the hook's context away from a
+// conversation that has already been told it, and nothing says so: the model
+// simply stops knowing something it knew a moment ago.
+func TestAPromptRebuiltMidSessionKeepsTheSessionsOwnHookContext(t *testing.T) {
+	cwd := project(t)
+	writeSkill(t, cwd, "greet", untrustedSkill)
+	sessionStartHook(t, `{"hookSpecificOutput":{"additionalContext":"PER-SESSION HOOK CONTEXT"}}`)
+	env, _ := load(t, runner.Options{Cwd: cwd})
+	reg, err := env.NewTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A fixed assembler, so the hook's context can only be in the prompt because
+	// the session put it there.
+	s := runner.NewSession(runner.Spec{
+		Tools: reg, Backend: newFakeModel(t).ref("m"), Skills: env.Skills, Hooks: env.Hooks,
+		System: "PROJECT PROMPT", RebuildSystem: func() string { return "PROJECT PROMPT" },
+	})
+	t.Cleanup(s.Local.Close)
+	const marker = "PER-SESSION HOOK CONTEXT"
+	if got := agentSystem(t, s); !strings.Contains(got, marker) {
+		t.Fatalf("precondition: the session started without its hook's context: %q", got)
+	}
+
+	// Attaching reconciles the catalog, and reconciling rebuilds the prompt.
+	if err := env.Attach(s); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentSystem(t, s); !strings.Contains(got, marker) {
+		t.Fatalf("attaching dropped the hook's context: %q", got)
+	}
+
+	if _, err := env.ApproveProjectSkills(); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentSystem(t, s); !strings.Contains(got, marker) {
+		t.Fatalf("approving skills dropped the hook's context: %q", got)
+	}
+	if got := agentSystem(t, s); !strings.HasPrefix(got, "PROJECT PROMPT") {
+		t.Fatalf("the assembler's own half is gone: %q", got)
+	}
+}

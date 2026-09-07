@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -17,20 +18,47 @@ import (
 	"github.com/gigovich/aigem/internal/web"
 )
 
+// The daemon's half of the phase-one API: everything internal/web declares and
+// deliberately cannot do itself, because doing it means knowing how a model
+// reference resolves, where credentials live and what a project's skills are.
+//
+// Nothing here hands back a live object. Each method answers with the transport
+// types internal/web owns, so the seam stays one that a second front-end could
+// implement.
+
 func (b *webBackend) Models(context.Context) ([]web.Model, error) {
 	def := preferredModelRef(b.models)
 	infos := b.models.Models()
+	// Whether a provider has a credential at all is asked once per provider:
+	// reading it is a locked parse of the whole credential file, and asking per
+	// model would make listing thirty models thirty of them, contending with the
+	// write a completing login performs.
+	//
+	// Whether a *model* can be opened still has to be asked per model, and only
+	// for a provider that has a credential: an OAuth login covers some of its
+	// models and not others, and a model outside that set is not one this daemon
+	// can send a turn to however signed in the provider is.
+	credentialed := make(map[string]bool, len(infos))
 	out := make([]web.Model, 0, len(infos))
 	for _, info := range infos {
 		p, _, err := b.models.Resolve(info.Ref())
 		if err != nil {
 			continue
 		}
-		_, _, _, openErr := auth.OpenModel(b.models, info.Ref(), defaultMaxTokens)
+		has, known := credentialed[p.ID]
+		if !known {
+			has = !p.NeedsAuth() || auth.IsAuthenticated(p.ID)
+			credentialed[p.ID] = has
+		}
+		ok := has
+		if has && p.NeedsAuth() {
+			_, _, _, openErr := auth.OpenModel(b.models, info.Ref(), defaultMaxTokens)
+			ok = openErr == nil
+		}
 		out = append(out, web.Model{
 			Ref: info.Ref(), Provider: p.ID, Name: info.Name,
 			ContextWindow: info.ContextWindow, MaxTokens: info.MaxTokens, Reasoning: info.Reasoning,
-			NeedsAuth: p.NeedsAuth(), Authenticated: openErr == nil,
+			NeedsAuth: p.NeedsAuth(), Authenticated: ok,
 			Default: info.Ref() == def,
 		})
 	}
@@ -38,23 +66,38 @@ func (b *webBackend) Models(context.Context) ([]web.Model, error) {
 }
 
 func (b *webBackend) SetDefaultModel(_ context.Context, ref string) (web.Model, error) {
+	// The reference is the client's, so the reason it cannot be resolved is
+	// written here rather than passed through: the resolver's own errors name
+	// providers and, through the credential store, absolute paths.
 	p, info, err := b.models.Resolve(ref)
 	if err != nil {
-		return web.Model{}, web.Refuse(err)
+		return web.Model{}, web.Refuse(fmt.Errorf("no model called %q is configured", ref))
 	}
 	if _, _, _, err := auth.OpenModel(b.models, info.Ref(), defaultMaxTokens); err != nil {
-		return web.Model{}, web.Refuse(err)
+		slog.Warn("a model could not be opened", "ref", info.Ref(), "err", err)
+		return web.Model{}, web.Refuse(fmt.Errorf(
+			"%s is not signed in; sign in to %s first", info.Ref(), p.ID))
 	}
 	ref = info.Ref()
-	if err := config.SaveModelPref(ref); err != nil {
-		return web.Model{}, err
-	}
-	b.recordActivity(web.Activity{Kind: "model.default", Text: "Default model changed to " + ref})
 	out := web.Model{
 		Ref: ref, Provider: p.ID, Name: info.Name, ContextWindow: info.ContextWindow,
 		MaxTokens: info.MaxTokens, Reasoning: info.Reasoning, NeedsAuth: p.NeedsAuth(),
 		Authenticated: true, Default: true,
 	}
+	// Setting the default to what is already *saved* changes nothing, and must
+	// not look as though it did: every repeat would otherwise be a durable
+	// write, a line in the activity feed and a message to every open tab, which
+	// is a state directory a client can grow by holding down a button. The
+	// comparison is against the saved preference and not against the effective
+	// default, because "nothing is saved" is a state a person is entitled to
+	// leave by naming the model that was being defaulted to anyway.
+	if config.LoadPrefs().Model == ref {
+		return out, nil
+	}
+	if err := config.SaveModelPref(ref); err != nil {
+		return web.Model{}, err
+	}
+	b.recordActivity(web.Activity{Kind: "model.default", Text: "Default model changed to " + ref})
 	b.publish("model.default", out)
 	return out, nil
 }
@@ -94,11 +137,28 @@ func (b *webBackend) BeginLogin(_ context.Context, req web.LoginRequest) (web.Lo
 	b.flowWG.Add(1)
 	b.flowMu.Unlock()
 
+	// Released by a defer, not by the lines below: beginFlow is a network call
+	// into third-party code, and a panic there would otherwise consume a slot
+	// for the life of the process and leave CloseBackend's Wait blocked -
+	// meaning the daemon could never shut down.
+	release := func() {
+		b.flowStarting[""]--
+		b.flowStarting[req.Provider]--
+		b.flowWG.Done()
+	}
+	locked := false
+	defer func() {
+		if !locked {
+			b.flowMu.Lock()
+			release()
+			b.flowMu.Unlock()
+		}
+	}()
+
 	f, err := b.beginFlow(b.flowCtx, req.Provider)
 	b.flowMu.Lock()
-	b.flowStarting[""]--
-	b.flowStarting[req.Provider]--
-	b.flowWG.Done()
+	locked = true
+	release()
 	if err != nil {
 		b.flowMu.Unlock()
 		return web.Login{}, err
@@ -138,16 +198,13 @@ func (b *webBackend) PasteLogin(_ context.Context, id, raw string) (web.Login, e
 	return loginView(id, f), nil
 }
 
+// CancelLogin abandons a login and keeps its record. The page that started it
+// is still polling, and an id that vanished would answer 404 where the truth is
+// "cancelled"; the record is evicted with the other finished ones instead.
 func (b *webBackend) CancelLogin(_ context.Context, id string) error {
-	b.flowMu.Lock()
-	f := b.flows[id]
-	if f != nil {
-		delete(b.flows, id)
-		b.removeFlowOrderLocked(id)
-	}
-	b.flowMu.Unlock()
-	if f == nil {
-		return web.ErrNoLogin
+	f, err := b.loginFlow(id)
+	if err != nil {
+		return err
 	}
 	f.Cancel()
 	return nil
@@ -180,6 +237,13 @@ func (b *webBackend) watchLogin(f *auth.Flow) {
 	b.flowMu.Unlock()
 }
 
+// loginView is what a browser is told about a login. The failure is a fixed
+// string on purpose, and it is the one place in this file that differs from
+// webRunError's argument for passing a reason through: a provider's own error
+// carries its endpoints, its response body and, through the credential store,
+// absolute paths. There is nothing in it a person can act on that "sign in
+// again" does not already say, so the detail goes to the daemon's log once, at
+// the terminal transition, and never from a status poll.
 func loginView(id string, f *auth.Flow) web.Login {
 	state, url, code, acceptsPaste, err := f.Snapshot()
 	v := web.Login{
@@ -192,6 +256,10 @@ func loginView(id string, f *auth.Flow) web.Login {
 	return v
 }
 
+// cleanupFlowsLocked drops the oldest finished logins once there are more of
+// them than anyone will look at. Only finished ones are dropped: a pending flow
+// is a browser tab still waiting on an answer, and forgetting it would leave
+// that tab polling an id this daemon no longer knows.
 func (b *webBackend) cleanupFlowsLocked() {
 	terminal := 0
 	for _, id := range b.flowOrder {
@@ -201,28 +269,19 @@ func (b *webBackend) cleanupFlowsLocked() {
 			}
 		}
 	}
-	for terminal > maxRetainedTerminalLoginFlows {
-		for _, id := range b.flowOrder {
-			f := b.flows[id]
-			if f != nil {
-				if state, _ := f.Status(); state != auth.FlowPending {
-					delete(b.flows, id)
-					b.removeFlowOrderLocked(id)
-					terminal--
-					break
-				}
+	kept := b.flowOrder[:0]
+	for _, id := range b.flowOrder {
+		f := b.flows[id]
+		if f != nil && terminal > maxRetainedTerminalLoginFlows {
+			if state, _ := f.Status(); state != auth.FlowPending {
+				delete(b.flows, id)
+				terminal--
+				continue
 			}
 		}
+		kept = append(kept, id)
 	}
-}
-
-func (b *webBackend) removeFlowOrderLocked(id string) {
-	for i, have := range b.flowOrder {
-		if have == id {
-			b.flowOrder = append(b.flowOrder[:i], b.flowOrder[i+1:]...)
-			return
-		}
-	}
+	b.flowOrder = kept
 }
 
 func (b *webBackend) CloseBackend() {
@@ -298,10 +357,28 @@ func (b *webBackend) TrustSkills(context.Context) (web.SkillApproval, error) {
 	// detail response observing half of the catalog replacement.
 	b.skillMu.Lock()
 	defer b.skillMu.Unlock()
+	// Refused before the work, not after it: approving again re-writes the trust
+	// file, re-walks the project's skill directories under every session's lock
+	// and appends to the feed, so a client holding down the button would stall
+	// every open conversation for as long as it kept asking.
+	if b.env.Pending == nil {
+		return web.SkillApproval{}, web.Refuse(
+			errors.New("this project has no skills awaiting approval"))
+	}
 	res, err := b.env.ApproveProjectSkills()
 	if err != nil {
+		// web.ErrBusy rather than a refusal: the request was fine and the answer
+		// is to ask again, which is what 503 and Retry-After say and what 400
+		// does not.
 		if errors.Is(err, uisession.ErrBusy) {
-			return web.SkillApproval{}, web.Refuse(errors.New("skills cannot change while a turn is running"))
+			return web.SkillApproval{}, fmt.Errorf(
+				"skills cannot change while a turn is running: %w", web.ErrBusy)
+		}
+		// Nothing to approve is a question with an answer, not a fault: the
+		// project defines no skills, or the ones it defined are already trusted.
+		if errors.Is(err, skill.ErrNoProjectSkills) {
+			return web.SkillApproval{}, web.Refuse(
+				errors.New("this project has no skills awaiting approval"))
 		}
 		// Discovery and persistence errors can carry absolute source paths. They
 		// belong in the daemon log, not in this transport.
@@ -395,8 +472,9 @@ func (b *webBackend) Activity(_ context.Context, since uint64, limit int) ([]web
 	if b.activity == nil {
 		return []web.Activity{}, nil
 	}
-	maxInt := uint64(^uint(0) >> 1)
-	if since > maxInt {
+	// The wire cursor is a uint64 and the log's is an int. A cursor past what an
+	// int holds names no entry that can exist, so the page after it is empty.
+	if since > math.MaxInt {
 		return []web.Activity{}, nil
 	}
 	entries, err := b.activity.Range(int(since), limit)

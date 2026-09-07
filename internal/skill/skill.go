@@ -257,6 +257,12 @@ func Discover(cwd string) (*Registry, []error) {
 	return r, errs
 }
 
+// ErrNoProjectSkills is what approving a project that defines none returns. It
+// is a sentinel because it is the one outcome here that is a person asking for
+// something that does not apply rather than a fault: a front-end tells them
+// there is nothing to approve, where every other error is the daemon's.
+var ErrNoProjectSkills = errors.New("project has no skills to approve")
+
 // ApproveProject approves the current set of project-local skills. Any change
 // to those skill files invalidates the approval.
 func ApproveProject(cwd string) error {
@@ -266,7 +272,7 @@ func ApproveProject(cwd string) error {
 		return err
 	}
 	if len(sources) == 0 {
-		return fmt.Errorf("project has no skills to approve")
+		return ErrNoProjectSkills
 	}
 	return projecttrust.Approve(projectDir, projecttrust.CapabilitySkills, "project-skills", fingerprint, "user")
 }

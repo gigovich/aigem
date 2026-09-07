@@ -49,17 +49,12 @@ func (f *Flow) Status() (FlowState, error) {
 	return f.state, f.err
 }
 
-// Display reports the non-secret values a front-end may show. They are cleared
-// at a terminal transition so an authorization URL cannot linger in retained
-// flow records.
-func (f *Flow) Display() (url, code string, acceptsPaste bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.URL, f.Code, f.AcceptsPaste
-}
-
-// Snapshot reads status and display data at one instant for an API response.
-func (f *Flow) Snapshot() (FlowState, string, string, bool, error) {
+// Snapshot reads state and the non-secret display values at one instant, which
+// is what an API response needs: a caller assembling them from separate reads
+// could show a pending flow's authorization URL beside its failure. The URL and
+// the code are cleared at a terminal transition, so neither lingers in a
+// retained record.
+func (f *Flow) Snapshot() (state FlowState, url, code string, acceptsPaste bool, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.state, f.URL, f.Code, f.AcceptsPaste, f.err
@@ -123,6 +118,27 @@ func (f *Flow) Cancel() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// NewPendingFlow is a login with no provider behind it: it stays pending until
+// its context is cancelled or Cancel is called, and it never writes a
+// credential.
+//
+// It exists because everything a daemon does *around* a login - the caps on how
+// many may be in flight, evicting the finished ones, cancelling them all at
+// shutdown - is bookkeeping that has nothing to do with any provider, and the
+// only other way to reach it is to bind the fixed callback port and talk to
+// one.
+func NewPendingFlow(ctx context.Context, provider string) *Flow {
+	ctx, cancel := context.WithCancel(ctx)
+	f := &Flow{Provider: provider, state: FlowPending, cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer f.complete()
+		defer cancel()
+		<-ctx.Done()
+		f.finish(Record{}, ErrFlowCancelled)
+	}()
+	return f
 }
 
 // Begin starts an interactive login. Its caller must give it an ownership

@@ -1,11 +1,14 @@
 package uisession
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gigovich/aigem/internal/agent"
@@ -113,6 +116,12 @@ type Config struct {
 	// can be restored on resume. The model can change during a session, which is
 	// why this is a function rather than a value.
 	ModelRef func() string
+	// StartContext is what this session's SessionStart hook contributed to the
+	// prompt. It is held separately from the assembled prompt because
+	// RebuildSystem belongs to the project and this belongs to the session: a
+	// rebuild that dropped it would quietly take the hook's context away from a
+	// conversation that has already been told it.
+	StartContext string
 	// RebuildSystem reassembles the system prompt. It is called when a fresh
 	// conversation starts, so edits to the project instruction files take effect
 	// without a restart.
@@ -132,9 +141,12 @@ type Config struct {
 
 // Local is a session whose agent runs in this process.
 type Local struct {
-	mu    sync.Mutex
-	tools *tools.Registry
-	ag    *agent.Agent
+	mu sync.Mutex
+	// lockOrder is this session's rank in the one order ReconfigureAll takes a
+	// set of session locks in. Immutable, so it is read without mu.
+	lockOrder uint64
+	tools     *tools.Registry
+	ag        *agent.Agent
 
 	autoMode   bool
 	toolPolicy map[string]string
@@ -165,6 +177,7 @@ type Local struct {
 	transcriptPath string
 	modelRef       func() string
 	rebuildSystem  func() string
+	startContext   string
 
 	models     *llm.Registry
 	backend    *llm.Ref
@@ -190,12 +203,18 @@ type Local struct {
 // New builds a session. The registry's path approver and file-change hook are
 // taken over here: a front-end that also set them would be answering questions
 // the session is meant to own.
+// lockOrder gives every session a rank that never changes, so ReconfigureAll
+// can take a set of session locks in one order whoever asks for them. Sorting
+// by address would do the same, and would mean reaching for unsafe.
+var lockOrder atomic.Uint64
+
 func New(cfg Config) *Local {
 	ring := cfg.Ring
 	if ring <= 0 {
 		ring = defaultRing
 	}
 	l := &Local{
+		lockOrder:  lockOrder.Add(1),
 		tools:      cfg.Tools,
 		autoMode:   cfg.AutoMode,
 		toolPolicy: map[string]string{},
@@ -218,6 +237,7 @@ func New(cfg Config) *Local {
 			return time.Time{}
 		}(),
 		rebuildSystem: cfg.RebuildSystem,
+		startContext:  cfg.StartContext,
 
 		models:     cfg.Models,
 		backend:    cfg.Backend,
@@ -654,12 +674,11 @@ func (l *Local) Running() bool {
 func (l *Local) Reconfigure(fn func(*agent.Agent)) error {
 	// ReconfigureAll skips a closed session rather than failing the whole
 	// transaction, which is right for a set and wrong for one: a caller
-	// reconfiguring a single session is told it is gone.
+	// reconfiguring the single session it holds is told it is gone.
 	var applied bool
-	err := ReconfigureAll([]*Local{l}, nil, func(_ int, ag *agent.Agent) error {
+	err := ReconfigureAll([]*Local{l}, nil, func(_ int, ag *agent.Agent) {
 		applied = true
 		fn(ag)
-		return nil
 	})
 	if err == nil && !applied {
 		return ErrClosed
@@ -667,18 +686,27 @@ func (l *Local) Reconfigure(fn func(*agent.Agent)) error {
 	return err
 }
 
-// reconfigureMu orders the multi-session lock acquisition below. Sessions are
-// locked in the order they are given, so two callers with overlapping sets and
-// different orders would deadlock without it.
-var reconfigureMu sync.Mutex
-
-// ReconfigureAll changes several sessions as one transaction. Every session is
-// locked and checked before fn runs, so a turn can neither start during the
-// change nor leave an earlier session updated when a later one is busy. Closed
-// sessions are skipped; indexes passed to fn match locals.
-func ReconfigureAll(locals []*Local, prepare func() error, fn func(int, *agent.Agent) error) error {
-	reconfigureMu.Lock()
-	defer reconfigureMu.Unlock()
+// ReconfigureAll changes several sessions as one transaction: every session is
+// locked and checked before anything is applied, so no client can be shown a
+// set half of them have and half of them do not, and no turn can start in the
+// middle of the change.
+//
+// prepare is the part that may fail - discovery, an approval written to disk -
+// and it runs after the locks are taken and before the first session is
+// touched, so a failure leaves every session as it was. fn cannot fail, and
+// deliberately: past prepare there is nothing left to undo, and an error there
+// would be a promise this cannot keep.
+//
+// Closed sessions are skipped rather than failing the set: a conversation
+// somebody ended is not a reason to refuse the others. Indexes passed to fn
+// match locals, so a caller can pair them with what it built them from.
+//
+// The locks are taken in address order rather than in the order given, so two
+// callers holding overlapping sets cannot deadlock against each other. The
+// price is that prepare runs with every session held: an approval that walks
+// the project's skill directories stalls those conversations for the walk, and
+// that is the cost of the guarantee above.
+func ReconfigureAll(locals []*Local, prepare func() error, fn func(int, *agent.Agent)) error {
 	locked := make([]*Local, 0, len(locals))
 	seen := make(map[*Local]bool, len(locals))
 	for _, l := range locals {
@@ -686,8 +714,11 @@ func ReconfigureAll(locals []*Local, prepare func() error, fn func(int, *agent.A
 			continue
 		}
 		seen[l] = true
-		l.mu.Lock()
 		locked = append(locked, l)
+	}
+	slices.SortFunc(locked, func(a, b *Local) int { return cmp.Compare(a.lockOrder, b.lockOrder) })
+	for _, l := range locked {
+		l.mu.Lock()
 	}
 	defer func() {
 		for i := len(locked) - 1; i >= 0; i-- {
@@ -695,7 +726,11 @@ func ReconfigureAll(locals []*Local, prepare func() error, fn func(int, *agent.A
 		}
 	}()
 	for _, l := range locked {
-		if l.running {
+		// A session that is closed is skipped here as well as below. Close marks
+		// it closed and only then waits for its turn, giving up after a bound,
+		// so closed-and-still-running is reachable - and a conversation somebody
+		// has ended is not a reason to refuse the change to the others.
+		if l.running && !l.closed {
 			return ErrBusy
 		}
 	}
@@ -704,20 +739,35 @@ func ReconfigureAll(locals []*Local, prepare func() error, fn func(int, *agent.A
 			return err
 		}
 	}
+	applied := make(map[*Local]bool, len(locked))
 	for i, l := range locals {
-		if l == nil || l.closed {
+		if l == nil || l.closed || applied[l] {
 			continue
 		}
-		if err := fn(i, l.ag); err != nil {
-			return err
-		}
+		applied[l] = true
+		fn(i, l.ag)
 	}
 	for _, l := range locked {
 		if !l.closed && l.ag != nil && l.rebuildSystem != nil {
-			l.ag.SetSystem(l.rebuildSystem())
+			l.ag.SetSystem(l.systemLocked())
 		}
 	}
 	return nil
+}
+
+// systemLocked is the prompt this session should be holding: what the caller's
+// assembler builds, plus what this session's SessionStart hook added to it. The
+// assembler is shared between conversations and knows nothing about the hook,
+// so everything that rebuilds has to put the hook's half back.
+func (l *Local) systemLocked() string {
+	var out string
+	if l.rebuildSystem != nil {
+		out = l.rebuildSystem()
+	}
+	if l.startContext != "" {
+		out += "\n\n" + l.startContext
+	}
+	return out
 }
 
 func (l *Local) recordFileChange(c tools.FileChange) {

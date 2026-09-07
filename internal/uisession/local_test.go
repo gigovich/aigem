@@ -885,9 +885,8 @@ func TestReconfiguringAClosedSessionSaysSo(t *testing.T) {
 	live := New(Config{Ring: 4})
 	t.Cleanup(live.Close)
 	var got []int
-	err := ReconfigureAll([]*Local{l, live}, nil, func(i int, _ *agent.Agent) error {
+	err := ReconfigureAll([]*Local{l, live}, nil, func(i int, _ *agent.Agent) {
 		got = append(got, i)
-		return nil
 	})
 	if err != nil {
 		t.Fatalf("ReconfigureAll with one closed session = %v, want it to stand", err)

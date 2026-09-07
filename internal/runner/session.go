@@ -241,6 +241,7 @@ func NewSession(spec Spec) *Session {
 	if spec.SessionID == "" {
 		spec.SessionID = session.NewID(time.Now())
 	}
+	var startContext string
 	boundHooks := spec.Hooks
 	if spec.Hooks != nil {
 		boundHooks = spec.Hooks.ForSession(spec.SessionID, spec.TranscriptPath, spec.Cwd)
@@ -253,6 +254,7 @@ func NewSession(spec Spec) *Session {
 		}
 		if start.Context != "" {
 			spec.System += "\n\n" + start.Context
+			startContext = start.Context
 		}
 	}
 
@@ -279,6 +281,7 @@ func NewSession(spec Spec) *Session {
 		Compact:        compact,
 
 		RebuildSystem: spec.RebuildSystem,
+		StartContext:  startContext,
 		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
 			if spec.Agents != nil {
 				reg.Register(agent.NewTaskTool(stream, reg, spec.Temp, confirm, spec.Agents, spec.Project))

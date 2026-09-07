@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/llm"
@@ -49,22 +50,47 @@ func TestAttachCannotMissConcurrentSkillApproval(t *testing.T) {
 		_, err := env.ApproveProjectSkills()
 		approvedDone <- err
 	}()
-	<-started // approval now owns env.sessMu
+	await(t, started, "the approval to take the environment's lock")
 	attached := make(chan error, 1)
 	go func() { attached <- env.Attach(sess) }()
+	// Long enough that Attach has certainly been scheduled and has certainly
+	// reached the lock. Reading the channel immediately would pass whether or
+	// not Attach blocks, because the goroutine has not run yet either way.
 	select {
 	case err := <-attached:
-		t.Fatalf("Attach returned during approval: %v", err)
-	default:
+		t.Fatalf("Attach returned while the approval held the lock: %v", err)
+	case <-time.After(200 * time.Millisecond):
 	}
 	close(release)
-	if err := <-approvedDone; err != nil {
+	if err := awaitErr(t, approvedDone, "the approval to finish"); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-attached; err != nil {
+	if err := awaitErr(t, attached, "Attach to finish"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := reg.Get(agent.SkillToolName); !ok {
 		t.Fatal("the concurrently attached session missed the approved catalog")
+	}
+}
+
+// await and awaitErr fail rather than hang: a guard added above the stub below
+// would otherwise turn this test into a package-timeout with no explanation.
+func await(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func awaitErr(t *testing.T, ch <-chan error, what string) error {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		return nil
 	}
 }

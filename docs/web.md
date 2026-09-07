@@ -146,13 +146,13 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/runs/{id}/blobs/{seq}` | the whole body of a tool result the timeline trimmed |
 | `GET /api/runs/{id}/artifacts` | the files the run changed, both sides |
 | `GET /api/models` | configured model metadata and authentication/default state |
-| `POST /api/models/default` | saves `{\"ref\":\"provider/model\"}` as the default |
-| `POST /api/auth/login` | starts interactive login from `{\"provider\":\"openai\"}` |
+| `POST /api/models/default` | saves `{"ref":"provider/model"}` as the default |
+| `POST /api/auth/login` | starts interactive login from `{"provider":"openai"}` |
 | `GET /api/auth/login/{id}` | polls that login's `pending`, `done`, or `failed` state |
 | `POST /api/auth/login/{id}/paste` | supplies a redirect URL or code (8 KiB maximum) |
 | `DELETE /api/auth/login/{id}` | cancels and forgets a login flow |
 | `GET /api/skills` | loaded skill summaries and pending project-skill names |
-| `GET /api/skills/{name}` | static skill metadata and markdown; it never executes dynamic injection |
+| `GET /api/skills/{name}` | static skill metadata and markdown; it runs no dynamic injection |
 | `POST /api/skills/trust` | approves the current project skill set; body is empty or `{}` |
 | `GET /api/commands` | the command palette catalogue from the active environment |
 | `GET /api/usage` | stored provider quota snapshots |
@@ -172,7 +172,9 @@ Phase-one JSON uses camelCase field names. Model entries contain `ref`,
 `authenticated`, and `default`. They deliberately do not contain provider base
 URLs, transport headers, or credential descriptions. The default-model and
 provider-login request bodies are capped at 16 KiB, reject unknown fields and
-accept exactly one JSON document.
+accept exactly one JSON document. Those three rules belong to every JSON body
+this API takes, `POST /api/runs` included: a field the daemon does not know is a
+400 rather than something it silently does not do.
 
 A login start returns an id and the user-facing authorization URL, plus a device
 `code` when the provider supplied one. Polling returns `state` (`pending`, `done`
@@ -189,7 +191,11 @@ omit source directories, `SKILL.md` paths and hooks, remove absolute activation
 paths, and never call skill rendering, so opening a detail cannot execute a
 skill's dynamic shell injection. Bodies over 256 KiB are capped and marked with
 `bodyTruncated`. Trust is the explicit mutation which loads the
-current project definitions and updates every attached session.
+current project definitions and updates every attached session. It is refused
+when the project has nothing awaiting approval, and answered with 503 and
+`Retry-After` while a turn is running. A project skill named `trust` cannot be
+read through `GET /api/skills/{name}`: that name is the mutation, and the route
+answers 405 for it.
 
 Usage lists authenticated providers even before their first snapshot; each entry
 has a `windows` array.

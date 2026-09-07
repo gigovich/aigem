@@ -51,26 +51,73 @@ type webBackend struct {
 	closeMu sync.Mutex
 }
 
-type webBackendOptions struct {
+// The interfaces internal/web declares are satisfied here or nowhere: the
+// Server holds one Backend and reaches each route's seam by type assertion, so
+// a method whose signature drifts does not fail to compile - it silently
+// unbinds the route, which then answers 501 and disappears from /api/meta.
+// These lines are what turns that into a build failure.
+var (
+	_ web.Backend         = (*webBackend)(nil)
+	_ web.RunsBackend     = (*webBackend)(nil)
+	_ web.ModelsBackend   = (*webBackend)(nil)
+	_ web.AuthBackend     = (*webBackend)(nil)
+	_ web.SkillsBackend   = (*webBackend)(nil)
+	_ web.CommandsBackend = (*webBackend)(nil)
+	_ web.UsageBackend    = (*webBackend)(nil)
+	_ web.ActivityBackend = (*webBackend)(nil)
+	_ web.FeatureBackend  = (*webBackend)(nil)
+	_ web.BackendShutdown = (*webBackend)(nil)
+)
+
+// webBackendConfig is everything the daemon hands its adapter. It is one struct
+// rather than a parameter list because most of its fields are optional in the
+// same way - a test builds an adapter for one screen - and because a field
+// added here is then named at every call site.
+type webBackendConfig struct {
+	version  string
+	models   *llm.Registry
+	runs     *runner.Runs
 	env      *runner.Env
 	activity *store.Log[web.Activity]
 	notify   func(string, any)
+	// beginFlow starts a provider login. It is here so that a test can drive the
+	// bookkeeping around one - the caps, the eviction, the shutdown - without
+	// binding the fixed OAuth callback port or talking to a provider.
+	beginFlow func(context.Context, string) (*auth.Flow, error)
 }
 
-func newWebBackend(version string, models *llm.Registry, runs *runner.Runs, options ...webBackendOptions) *webBackend {
-	if models == nil {
-		models = defaultModelRegistry()
+func newWebBackend(cfg webBackendConfig) *webBackend {
+	if cfg.models == nil {
+		cfg.models = defaultModelRegistry()
 	}
-	var opts webBackendOptions
-	if len(options) > 0 {
-		opts = options[0]
+	if cfg.beginFlow == nil {
+		cfg.beginFlow = auth.Begin
 	}
 	flowCtx, flowCancel := context.WithCancel(context.Background())
 	return &webBackend{
-		version: version, models: models, runs: runs, env: opts.env, activity: opts.activity,
-		notify: opts.notify, flows: map[string]*auth.Flow{}, flowStarting: map[string]int{},
-		beginFlow: auth.Begin, flowCtx: flowCtx, flowCancel: flowCancel,
+		version: cfg.version, models: cfg.models, runs: cfg.runs, env: cfg.env,
+		activity: cfg.activity, notify: cfg.notify,
+		flows: map[string]*auth.Flow{}, flowStarting: map[string]int{},
+		beginFlow: cfg.beginFlow, flowCtx: flowCtx, flowCancel: flowCancel,
 	}
+}
+
+// Unavailable names what this daemon was not given what it needs to serve. A
+// page is told the screen does not exist rather than shown one that can never
+// hold anything: without a state directory there is no activity feed to read,
+// and without a loaded project there are no skills or commands to list.
+func (b *webBackend) Unavailable() []string {
+	var out []string
+	if b.activity == nil {
+		out = append(out, "activity")
+	}
+	if b.env == nil {
+		out = append(out, "skills", "commands")
+	}
+	if b.runs == nil {
+		out = append(out, "runs")
+	}
+	return out
 }
 
 // Meta reads the saved preference and the credential store on every call

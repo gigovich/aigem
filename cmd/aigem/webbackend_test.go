@@ -25,7 +25,7 @@ import (
 // version this binary reports, and a model reference the registry can resolve
 // rather than a label meant for a human.
 func TestWebBackendMetaReportsTheVersionAndAResolvableModel(t *testing.T) {
-	b := newWebBackend("1.2.3-test", nil, nil)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test"})
 	meta, err := b.Meta(context.Background())
 	if err != nil {
 		t.Fatalf("Meta: %v", err)
@@ -91,7 +91,7 @@ func openTestRun(t *testing.T, b *webBackend) web.Run {
 // dropped one would show up as a screen that renders nothing and says nothing.
 func TestTheAdapterPutsTheWholeRunOnTheWire(t *testing.T) {
 	runs, _ := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 
 	if run.ID == "" || run.Title != "a run" || run.Mode != "interactive" {
@@ -150,7 +150,7 @@ func TestTheAdapterClassifiesWhatTheRegistryReports(t *testing.T) {
 // An unsupported mode is the client's mistake and its reason is worth reading.
 func TestAModeTheRegistryRefusesReachesTheClient(t *testing.T) {
 	runs, _ := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	_, err := b.OpenRun(context.Background(), web.NewRun{Mode: "autonomous"})
 	var refusal *web.Refusal
 	if !errors.As(err, &refusal) || !strings.Contains(refusal.Reason, "autonomous") {
@@ -162,7 +162,7 @@ func TestAModeTheRegistryRefusesReachesTheClient(t *testing.T) {
 // encoding: the web package writes them out untouched.
 func TestEventsCrossTheSeamAsTheirOwnEncoding(t *testing.T) {
 	runs, _ := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 	// Attaching is an event: the other clients are shown who is there.
 	stream, err := b.WatchRun(context.Background(), run.ID, web.RunClient{Kind: "web"}, 0)
@@ -204,7 +204,7 @@ func TestEventsCrossTheSeamAsTheirOwnEncoding(t *testing.T) {
 // the session the second time.
 func TestARunStreamIsSafeToCloseTwice(t *testing.T) {
 	runs, _ := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 	stream, err := b.WatchRun(context.Background(), run.ID, web.RunClient{Kind: "web"}, 0)
 	if err != nil {
@@ -223,7 +223,7 @@ func TestARunStreamIsSafeToCloseTwice(t *testing.T) {
 // 404, which is not the same as the daemon failing.
 func TestABlobCrossesTheSeamAndAMissingOneIsTheWebSentinel(t *testing.T) {
 	runs, built := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 
 	sess := built.get(t)
@@ -305,7 +305,7 @@ func waitForKind(t *testing.T, events <-chan uisession.Event, kind uisession.Kin
 // A page redraws this list on every change, and a map's order is not one.
 func TestArtifactsAreSortedByPath(t *testing.T) {
 	runs, built := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 
 	sess := built.get(t)
@@ -343,7 +343,7 @@ func TestArtifactsAreSortedByPath(t *testing.T) {
 // what changed is what the page actually needs.
 func TestAVeryLargeChangeIsListedWithoutItsContent(t *testing.T) {
 	runs, built := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 
 	sess := built.get(t)
@@ -380,7 +380,7 @@ func TestAVeryLargeChangeIsListedWithoutItsContent(t *testing.T) {
 // reference where the approval id goes would compile and run.
 func TestTheAdapterTranslatesEachOperation(t *testing.T) {
 	runs, built := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 	ctx := context.Background()
 
@@ -472,7 +472,7 @@ func TestTheAdapterTranslatesEachOperation(t *testing.T) {
 // 400 refusal is not something a page can act on.
 func TestASessionClosedUnderTheTableIsStillAClosedRun(t *testing.T) {
 	runs, built := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 
 	built.get(t).Close()
@@ -512,7 +512,7 @@ func (s *lastSession) get(t *testing.T) *uisession.Local {
 // listed, with its real size, whether or not its content came along.
 func TestTheArtifactBudgetIsSpentAcrossTheWholeResponse(t *testing.T) {
 	runs, built := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 
 	// Each is well inside the per-change cap, and together they are several
@@ -585,7 +585,7 @@ func TestTheAdapterCarriesWhoAnsweredAnApproval(t *testing.T) {
 	}
 	t.Cleanup(runs.Close)
 
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 	stream, err := b.WatchRun(context.Background(), run.ID, web.RunClient{Kind: "web"}, 0)
 	if err != nil {
@@ -659,7 +659,7 @@ func newAskingModel(t *testing.T) *httptest.Server {
 // "thinking" apart from "waiting for somebody who walked away".
 func TestTheAdapterCarriesWhoIsWatching(t *testing.T) {
 	runs, _ := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 
 	stream, err := b.WatchRun(context.Background(), run.ID,
@@ -702,7 +702,7 @@ func TestTheAdapterCarriesWhoIsWatching(t *testing.T) {
 // conversation over one the page already has.
 func TestTheAdapterResumesFromTheCursorItWasGiven(t *testing.T) {
 	runs, _ := testRuns(t)
-	b := newWebBackend("1.2.3-test", nil, runs)
+	b := newWebBackend(webBackendConfig{version: "1.2.3-test", runs: runs})
 	run := openTestRun(t, b)
 	ctx := context.Background()
 

@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 
@@ -21,7 +24,7 @@ import (
 
 func TestWebModelsExposeOnlyTransportMetadataAndPersistCanonicalDefault(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	b := newWebBackend("test", nil, nil)
+	b := newWebBackend(webBackendConfig{version: "test"})
 	models, err := b.Models(context.Background())
 	if err != nil || len(models) == 0 {
 		t.Fatalf("Models = %+v, %v", models, err)
@@ -57,7 +60,7 @@ func TestWebModelsRejectOAuthModelsThatCannotOpen(t *testing.T) {
 	if err := auth.Put("openai", auth.Record{Kind: auth.KindOAuth, Token: &oauth2.Token{AccessToken: "token"}}); err != nil {
 		t.Fatal(err)
 	}
-	b := newWebBackend("test", nil, nil)
+	b := newWebBackend(webBackendConfig{version: "test"})
 	models, err := b.Models(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +90,7 @@ func TestSkillDetailIsStaticAndContainsNoAbsoluteSourcePaths(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatal(errs)
 	}
-	b := newWebBackend("test", nil, nil, webBackendOptions{env: &runner.Env{Skills: reg}})
+	b := newWebBackend(webBackendConfig{version: "test", env: &runner.Env{Skills: reg}})
 	got, err := b.Skill(context.Background(), "inspect")
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +136,7 @@ func TestWebModelLimitPersistenceSurvivesSwitch(t *testing.T) {
 func TestWebUsageIncludesAuthenticatedProviderWithoutSnapshot(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XAI_API_KEY", "key")
-	b := newWebBackend("test", nil, nil)
+	b := newWebBackend(webBackendConfig{version: "test"})
 	usage, err := b.Usage(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -153,9 +156,8 @@ func TestActivityPersistsAndRunMutationsAppendExactlyOnce(t *testing.T) {
 	log := store.NewLog[web.Activity](filepath.Join(t.TempDir(), "activity.jsonl"))
 	runs, _ := testRuns(t)
 	var published []string
-	b := newWebBackend("test", nil, runs, webBackendOptions{activity: log, notify: func(kind string, _ any) {
-		published = append(published, kind)
-	}})
+	b := newWebBackend(webBackendConfig{version: "test", runs: runs, activity: log,
+		notify: func(kind string, _ any) { published = append(published, kind) }})
 	run := openTestRun(t, b)
 	if err := b.CloseRun(context.Background(), run.ID); err != nil {
 		t.Fatal(err)
@@ -176,7 +178,7 @@ func TestActivityPersistsAndRunMutationsAppendExactlyOnce(t *testing.T) {
 	if len(published) != 2 || published[0] != "activity.updated" || published[1] != "activity.updated" {
 		t.Fatalf("activity publications = %v, want exactly the two successful appends", published)
 	}
-	other := newWebBackend("test", nil, nil, webBackendOptions{activity: store.NewLog[web.Activity](log.Path())})
+	other := newWebBackend(webBackendConfig{version: "test", activity: store.NewLog[web.Activity](log.Path())})
 	resumed, err := other.Activity(context.Background(), 1, 100)
 	if err != nil || len(resumed) != 1 || resumed[0].Seq != 2 {
 		t.Fatalf("persisted activity after 1 = %+v, %v", resumed, err)
@@ -204,24 +206,39 @@ func TestSkillReadsAndApprovalAreSynchronized(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(env.Close)
-	b := newWebBackend("test", nil, nil, webBackendOptions{env: env})
+	b := newWebBackend(webBackendConfig{version: "test", env: env})
 
-	var wg sync.WaitGroup
+	// The readers have to be running *while* the approval replaces the catalog,
+	// or this test proves nothing: eight goroutines that finish a hundred cheap
+	// reads in microseconds are long gone by the time discovery has walked the
+	// project. They are started, waited for, and then kept reading until the
+	// approval has returned.
+	var wg, ready sync.WaitGroup
+	stop := make(chan struct{})
 	for range 8 {
 		wg.Add(1)
+		ready.Add(1)
 		go func() {
 			defer wg.Done()
-			for range 100 {
+			ready.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
 				_, _ = b.Skills(context.Background())
 				_, _ = b.Commands(context.Background())
 			}
 		}()
 	}
+	ready.Wait()
 	approved, err := b.TrustSkills(context.Background())
+	close(stop)
+	wg.Wait()
 	if err != nil {
 		t.Fatal(err)
 	}
-	wg.Wait()
 	if len(approved.Loaded) != 1 || approved.Loaded[0] != "project-one" {
 		t.Fatalf("approval = %+v", approved)
 	}
@@ -233,9 +250,31 @@ func TestSkillReadsAndApprovalAreSynchronized(t *testing.T) {
 	}
 }
 
+// A project that defines no skills is a person asking for something that does
+// not apply, not a daemon fault. Answering it as a fault puts a 500 and a log
+// line in front of a browser for the ordinary case of an empty project.
+func TestApprovingAProjectWithNoSkillsIsRefusedNotFailed(t *testing.T) {
+	cwd := t.TempDir()
+	env, _, err := runner.Load(context.Background(), runner.Options{Cwd: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(env.Close)
+	b := newWebBackend(webBackendConfig{version: "test", env: env})
+
+	_, err = b.TrustSkills(context.Background())
+	var refusal *web.Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("TrustSkills on a project with no skills = %v, want a refusal", err)
+	}
+	if strings.Contains(refusal.Reason, cwd) {
+		t.Fatalf("the refusal names a filesystem path: %q", refusal.Reason)
+	}
+}
+
 func TestBackendShutdownCancelsProviderLogins(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	b := newWebBackend("test", nil, nil)
+	b := newWebBackend(webBackendConfig{version: "test"})
 	requestCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	login, err := b.BeginLogin(requestCtx, web.LoginRequest{Provider: "openai"})
@@ -250,5 +289,261 @@ func TestBackendShutdownCancelsProviderLogins(t *testing.T) {
 	}
 	if got.State != string(auth.FlowFailed) || got.Error == "" {
 		t.Fatalf("login after shutdown = %+v, want failed without a credential", got)
+	}
+}
+
+// stubFlows hands out logins with no provider behind them, so the bookkeeping
+// around one can be driven without binding the callback port.
+func stubFlows(t *testing.T, started *int32) func(context.Context, string) (*auth.Flow, error) {
+	t.Helper()
+	return func(ctx context.Context, provider string) (*auth.Flow, error) {
+		if started != nil {
+			atomic.AddInt32(started, 1)
+		}
+		return auth.NewPendingFlow(ctx, provider), nil
+	}
+}
+
+// The caps are what stands between a signed-in page and an unbounded number of
+// outbound authorization requests. A cap that counted the wrong thing would let
+// a loop through and be invisible until it was.
+func TestPendingLoginsAreBoundedGloballyAndPerProvider(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	b := newWebBackend(webBackendConfig{version: "test", beginFlow: stubFlows(t, nil)})
+	t.Cleanup(b.CloseBackend)
+
+	var ids []string
+	for range maxPendingLoginsPerProvider {
+		v, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"})
+		if err != nil {
+			t.Fatalf("BeginLogin: %v", err)
+		}
+		ids = append(ids, v.ID)
+	}
+	_, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"})
+	if !errors.Is(err, web.ErrBusy) {
+		t.Fatalf("the %dth openai login = %v, want ErrBusy", maxPendingLoginsPerProvider+1, err)
+	}
+	// The per-provider cap is per provider: another one still has room.
+	if _, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "xai"}); err != nil {
+		t.Fatalf("a second provider was refused by the first one's cap: %v", err)
+	}
+	// Finishing one gives its slot back, which is what makes the cap a bound on
+	// what is in flight rather than on what has ever been asked for.
+	if err := b.CancelLogin(context.Background(), ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"}); err != nil {
+		t.Fatalf("a cancelled login did not give its slot back: %v", err)
+	}
+}
+
+// A cancelled login is finished, not forgotten: the page that started it is
+// still polling, and an id that vanished would answer 404 where the truth is
+// that the person cancelled it.
+func TestACancelledLoginKeepsItsRecordAndStopsItsWork(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	b := newWebBackend(webBackendConfig{version: "test", beginFlow: stubFlows(t, nil)})
+	t.Cleanup(b.CloseBackend)
+
+	v, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.State != string(auth.FlowPending) {
+		t.Fatalf("a new login is %q, want pending", v.State)
+	}
+	if err := b.CancelLogin(context.Background(), v.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := b.Login(context.Background(), v.ID)
+	if err != nil {
+		t.Fatalf("a cancelled login is unreadable: %v", err)
+	}
+	if got.State != string(auth.FlowFailed) {
+		t.Fatalf("a cancelled login reads as %q, want failed", got.State)
+	}
+	if got.URL != "" || got.Code != "" {
+		t.Fatalf("a finished login kept its authorization URL or code: %+v", got)
+	}
+	if err := b.CancelLogin(context.Background(), "LOGIN-nope"); !errors.Is(err, web.ErrNoLogin) {
+		t.Fatalf("cancelling an unknown login = %v, want ErrNoLogin", err)
+	}
+}
+
+// Finished logins are kept so a page can read what happened, and evicted so a
+// long-lived daemon does not hold every one it ever started.
+func TestFinishedLoginsAreEvictedOldestFirst(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	b := newWebBackend(webBackendConfig{version: "test", beginFlow: stubFlows(t, nil)})
+	t.Cleanup(b.CloseBackend)
+
+	var ids []string
+	for range maxRetainedTerminalLoginFlows + 4 {
+		v, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, v.ID)
+		// Cancelled and waited out one at a time, so the cap is never reached and
+		// the order they finish in is the order they were started in.
+		if err := b.CancelLogin(context.Background(), v.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The eviction happens on the watcher goroutine, so wait for it rather than
+	// racing it.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		b.flowMu.Lock()
+		n := len(b.flowOrder)
+		b.flowMu.Unlock()
+		if n <= maxRetainedTerminalLoginFlows {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d login records retained, want at most %d", n, maxRetainedTerminalLoginFlows)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The oldest went and the newest stayed.
+	if _, err := b.Login(context.Background(), ids[0]); !errors.Is(err, web.ErrNoLogin) {
+		t.Errorf("the oldest finished login was retained: %v", err)
+	}
+	if _, err := b.Login(context.Background(), ids[len(ids)-1]); err != nil {
+		t.Errorf("the newest finished login was evicted: %v", err)
+	}
+}
+
+// Shutdown owns the logins the daemon started: a flow left running would hold
+// a listener and a goroutine past the process's own teardown.
+func TestClosingTheBackendEndsEveryLoginItStarted(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	b := newWebBackend(webBackendConfig{version: "test", beginFlow: stubFlows(t, nil)})
+	v, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.CloseBackend()
+	b.CloseBackend()
+	got, err := b.Login(context.Background(), v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != string(auth.FlowFailed) {
+		t.Fatalf("a login survived shutdown as %q", got.State)
+	}
+	if _, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"}); err == nil {
+		t.Fatal("a closed backend started another login")
+	}
+}
+
+// The feed and the announcement are one thing: a page told the collection
+// changed refetches it, and finding nothing new there is worse than never
+// having been told. So the durable append has to succeed first.
+func TestAnActivityThatCouldNotBeRecordedIsNotAnnounced(t *testing.T) {
+	// A log whose directory cannot be created, so every append fails.
+	blocked := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log := store.NewLog[web.Activity](filepath.Join(blocked, "activity.jsonl"))
+	var published []string
+	b := newWebBackend(webBackendConfig{version: "test", activity: log,
+		notify: func(kind string, _ any) { published = append(published, kind) }})
+
+	if b.recordActivity(web.Activity{Kind: "run.created", Text: "Run created"}) {
+		t.Fatal("recordActivity reported success against a log it cannot write")
+	}
+	if len(published) != 0 {
+		t.Fatalf("published %v for an append that failed", published)
+	}
+}
+
+// Two tabs pressing Close at the same moment. The run ends once, so the feed
+// says so once: a second line would have the person reading that they closed
+// the same conversation twice.
+func TestTwoConcurrentClosesRecordOneClosure(t *testing.T) {
+	log := store.NewLog[web.Activity](filepath.Join(t.TempDir(), "activity.jsonl"))
+	runs, _ := testRuns(t)
+	b := newWebBackend(webBackendConfig{version: "test", runs: runs, activity: log})
+	run := openTestRun(t, b)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = b.CloseRun(context.Background(), run.ID)
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("close %d: %v", i, err)
+		}
+	}
+	got, err := b.Activity(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var closed int
+	for _, a := range got {
+		if a.Kind == "run.closed" {
+			closed++
+		}
+	}
+	if closed != 1 {
+		t.Fatalf("two concurrent closes recorded %d closures, want one: %+v", closed, got)
+	}
+}
+
+// Setting the default to what is already saved is not a change. Treating it as
+// one makes a durable write, a feed entry and a broadcast out of a button a
+// person can hold down, and the state directory grows for as long as they do.
+func TestSettingTheDefaultModelToWhatIsSavedChangesNothing(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	log := store.NewLog[web.Activity](filepath.Join(t.TempDir(), "activity.jsonl"))
+	var published int
+	b := newWebBackend(webBackendConfig{version: "test", activity: log,
+		notify: func(kind string, _ any) {
+			if kind == "model.default" {
+				published++
+			}
+		}})
+
+	models, err := b.Models(context.Background())
+	if err != nil || len(models) == 0 {
+		t.Fatalf("Models = %+v, %v", models, err)
+	}
+	ref := models[0].Ref
+	// The first call saves, even when that model was already what the daemon
+	// would have chosen: nothing was written down before.
+	if _, err := b.SetDefaultModel(context.Background(), ref); err != nil {
+		t.Fatal(err)
+	}
+	if config.LoadPrefs().Model != ref {
+		t.Fatalf("the first call saved %q, want %q", config.LoadPrefs().Model, ref)
+	}
+	after, err := b.Activity(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if _, err := b.SetDefaultModel(context.Background(), ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := b.Activity(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(after) {
+		t.Fatalf("repeating the same default appended %d entries", len(got)-len(after))
+	}
+	if published != 1 {
+		t.Fatalf("the daemon announced %d changes, want the one that happened", published)
 	}
 }

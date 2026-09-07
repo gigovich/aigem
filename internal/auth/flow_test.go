@@ -13,7 +13,7 @@ func TestFlowCancelIsIdempotentAndTerminal(t *testing.T) {
 	if state != FlowFailed || err == nil || !strings.Contains(err.Error(), "cancelled") {
 		t.Fatalf("Status = %q, %v, want a cancelled failure", state, err)
 	}
-	if url, code, _ := f.Display(); url != "" || code != "" {
+	if _, url, code, _, _ := f.Snapshot(); url != "" || code != "" {
 		t.Fatalf("terminal flow retained URL/code %q/%q", url, code)
 	}
 }

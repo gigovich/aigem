@@ -64,11 +64,10 @@ func ApproveSkills(cwd string, catalog *skill.Registry, sessions ...*Session) (S
 			}
 		}
 		return nil
-	}, func(i int, ag *agent.Agent) error {
+	}, func(i int, ag *agent.Agent) {
 		if sessions[i] != nil {
 			sessions[i].setSkillsLocked(out.Catalog, ag)
 		}
-		return nil
 	})
 	if errors.Is(err, uisession.ErrBusy) {
 		err = fmt.Errorf("runner: approving skills would change the tools a running turn is using: %w", err)
@@ -123,6 +122,11 @@ func (e *Env) Detach(s *Session) {
 	}
 }
 
+// approveEnvironmentSkills is the seam a test replaces to hold an approval open
+// while it races Attach against it. There is no other way to observe that
+// window: everything between taking sessMu and returning is one call.
+var approveEnvironmentSkills = ApproveSkills
+
 // ApproveProjectSkills approves this project's skill definitions and brings
 // every attached session to the result: the environment's catalog, the skill
 // tool each session offers and each session's system prompt all describe the
@@ -130,10 +134,9 @@ func (e *Env) Detach(s *Session) {
 //
 // It writes the environment's own Pending and Skills, so it belongs to whoever
 // owns the Env - the front-end or the daemon that loaded it - rather than to a
-// session goroutine. The per-session updates are each taken under that
-// session's own lock.
-var approveEnvironmentSkills = ApproveSkills
-
+// session goroutine. It holds sessMu for the whole call, and the approval below
+// it holds every attached session's own lock across the change, so no client
+// can be shown half a catalog.
 func (e *Env) ApproveProjectSkills() (SkillApproval, error) {
 	if e == nil {
 		return SkillApproval{}, errors.New("runner: no environment to approve skills in")

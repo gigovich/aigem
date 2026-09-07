@@ -289,7 +289,14 @@ func startCallback(redirect, expectState string, allowStdinPaste bool) (*callbac
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, callbackHTML)
 	})
-	cs.srv = &http.Server{Handler: mux}
+	// Timeouts because this listener is now opened by the web daemon as well as
+	// by the CLI: a connection that sends no headers would otherwise hold a
+	// descriptor for the whole login window, and anything local can open one.
+	cs.srv = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
 	for _, ln := range listeners {
 		go func(ln net.Listener) { _ = cs.srv.Serve(ln) }(ln)
 	}

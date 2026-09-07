@@ -136,12 +136,11 @@ func (l *Local) Reset() error {
 	if l.ag != nil {
 		l.ag.Reset()
 		l.ag.SetHooks(boundHooks)
+		// The new conversation's own hook context replaces the old one's, and is
+		// kept so that a later rebuild does not drop it.
+		l.startContext = start.Context
 		if l.rebuildSystem != nil {
-			prompt := l.rebuildSystem()
-			if start.Context != "" {
-				prompt += "\n\n" + start.Context
-			}
-			l.ag.SetSystem(prompt)
+			l.ag.SetSystem(l.systemLocked())
 		}
 	}
 	l.toolPolicy = map[string]string{}
@@ -218,6 +217,6 @@ func (l *Local) RebuildSystem() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.ag != nil && l.rebuildSystem != nil {
-		l.ag.SetSystem(l.rebuildSystem())
+		l.ag.SetSystem(l.systemLocked())
 	}
 }

@@ -167,8 +167,8 @@ func runWebCommand(args []string) error {
 	// in below rather than at construction. Nothing can be missed in between:
 	// the registry is empty until a request arrives, and no request can arrive
 	// until Serve.
-	var announce runNotifier
-	runs, err := rt.newRuns(stateDir, announce.publish)
+	var announce notifier
+	runs, err := rt.newRuns(stateDir, announce.publishRun)
 	if err != nil {
 		return err
 	}
@@ -178,9 +178,9 @@ func runWebCommand(args []string) error {
 	if stateDir != "" {
 		activity = store.NewLog[web.Activity](filepath.Join(stateDir, "activity.jsonl"))
 	}
-	var daemonEvents daemonNotifier
-	backend := newWebBackend(versionString(), rt.models, runs, webBackendOptions{
-		env: env, activity: activity, notify: daemonEvents.publish,
+	backend := newWebBackend(webBackendConfig{
+		version: versionString(), models: rt.models, runs: runs,
+		env: env, activity: activity, notify: announce.publish,
 	})
 	srv, err := web.New(web.Config{
 		Addr:       *addr,
@@ -194,7 +194,6 @@ func runWebCommand(args []string) error {
 	}
 	defer func() { _ = srv.Close() }()
 	announce.to(srv)
-	daemonEvents.to(srv)
 
 	// The one place the token is meant to be published: this terminal.
 	url := srv.SignInURL()

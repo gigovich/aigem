@@ -25,17 +25,9 @@ const (
 	maxEventPage = 2000
 )
 
-func (s *Server) runsBackend(w http.ResponseWriter) (RunsBackend, bool) {
-	b, ok := s.backend.(RunsBackend)
-	if !ok {
-		unavailable(w)
-	}
-	return b, ok
-}
-
 // handleRuns lists the conversations, oldest first.
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.runsBackend(w)
+	b, ok := backendOf[RunsBackend](s, w)
 	if !ok {
 		return
 	}
@@ -54,7 +46,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 // handleOpenRun starts a conversation.
 func (s *Server) handleOpenRun(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.runsBackend(w)
+	b, ok := backendOf[RunsBackend](s, w)
 	if !ok {
 		return
 	}
@@ -75,7 +67,7 @@ func (s *Server) handleOpenRun(w http.ResponseWriter, r *http.Request) {
 
 // handleRun reports one conversation.
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.runsBackend(w)
+	b, ok := backendOf[RunsBackend](s, w)
 	if !ok {
 		return
 	}
@@ -91,7 +83,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 // timeline stay: a run a person is done with is one they can still read, and
 // the activity feed goes on referring to it.
 func (s *Server) handleCloseRun(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.runsBackend(w)
+	b, ok := backendOf[RunsBackend](s, w)
 	if !ok {
 		return
 	}
@@ -116,7 +108,7 @@ func (s *Server) handleCloseRun(w http.ResponseWriter, r *http.Request) {
 // session is gone: a closed run has no socket to open, and its journal is the
 // whole of what is left.
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.runsBackend(w)
+	b, ok := backendOf[RunsBackend](s, w)
 	if !ok {
 		return
 	}
@@ -153,7 +145,7 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 // in cross-origin as a script or a stylesheet, and the content policy stops
 // anything in it running if it is opened directly.
 func (s *Server) handleRunBlob(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.runsBackend(w)
+	b, ok := backendOf[RunsBackend](s, w)
 	if !ok {
 		return
 	}
@@ -173,7 +165,7 @@ func (s *Server) handleRunBlob(w http.ResponseWriter, r *http.Request) {
 
 // handleRunArtifacts reports the files a run changed.
 func (s *Server) handleRunArtifacts(w http.ResponseWriter, r *http.Request) {
-	b, ok := s.runsBackend(w)
+	b, ok := backendOf[RunsBackend](s, w)
 	if !ok {
 		return
 	}
@@ -191,6 +183,11 @@ func (s *Server) handleRunArtifacts(w http.ResponseWriter, r *http.Request) {
 // decodeJSON reads a bounded request body into v and refuses anything but one
 // JSON document. A second document in the same body would be a field the
 // server silently ignored.
+// A field this package does not know is refused rather than ignored: the bodies
+// here are small and named, so an unknown key is a client sending something the
+// daemon will silently not do - a spelling mistake in a field that decides what
+// a run is, and no way for its author to find out. It applies to every body,
+// this route's included.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRunBody))
 	dec.DisallowUnknownFields()
