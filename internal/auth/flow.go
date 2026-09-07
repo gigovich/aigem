@@ -28,6 +28,13 @@ const (
 // ErrFlowCancelled is the terminal result of explicitly abandoning a flow.
 var ErrFlowCancelled = errors.New("cancelled")
 
+// ErrLoginInProgress is returned when a login cannot start because the one
+// callback port its provider redirects to is already taken. It is a sentinel
+// because it is the one way a login start fails that is not a fault: another
+// sign-in is under way, here or in a terminal, and the answer is to finish or
+// cancel that one rather than anything about this daemon.
+var ErrLoginInProgress = errors.New("another sign-in is already in progress")
+
 // Flow is a provider login which continues independently of the request that
 // started it. Its public fields contain display data only, never credentials or
 // token endpoints.

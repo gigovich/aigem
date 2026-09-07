@@ -116,6 +116,17 @@ var ErrHistoryGone = errors.New("web: the run's history no longer reaches that p
 // Retry-After - so a page has one shape for "not now" rather than two.
 var ErrBusy = errors.New("web: the daemon is at capacity")
 
+// Busy wraps ErrBusy with a sentence written to be read, the way Refuse does
+// for a client's mistake. Wrapping with fmt.Errorf instead leaves ErrBusy's own
+// text - which names its package, because a Go error is written for a log -
+// somewhere in the middle of what a person is shown.
+func Busy(reason string) error { return &busy{reason: reason} }
+
+type busy struct{ reason string }
+
+func (b *busy) Error() string { return b.reason }
+func (b *busy) Unwrap() error { return ErrBusy }
+
 // Refusal is an error whose text is meant to be shown.
 //
 // It is how a backend says "this is the client's mistake, and the reason is

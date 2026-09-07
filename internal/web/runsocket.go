@@ -62,7 +62,7 @@ var runOps = map[string]bool{
 // connected. It is what keeps a terminal and a browser looking at the same
 // conversation rather than at two renderings that have drifted.
 func (s *Server) handleRunSocket(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[RunsBackend](s, w)
+	b, ok := backendOf[RunsBackend](s, w, "runs")
 	if !ok {
 		return
 	}

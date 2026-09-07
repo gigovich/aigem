@@ -272,14 +272,19 @@ func TestApprovingAProjectWithNoSkillsIsRefusedNotFailed(t *testing.T) {
 	}
 }
 
+// The real flow, not a stub: this is the one test that exercises auth.Begin's
+// own listener, and shutdown's whole job is to take it down. A live request
+// context, because a cancelled one now returns before the flow is registered -
+// which is what made this test skip itself into doing nothing.
 func TestBackendShutdownCancelsProviderLogins(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	b := newWebBackend(webBackendConfig{version: "test"})
-	requestCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	login, err := b.BeginLogin(requestCtx, web.LoginRequest{Provider: "openai"})
+	login, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"})
 	if err != nil {
-		t.Skipf("the fixed OAuth callback port is unavailable: %v", err)
+		if errors.Is(err, auth.ErrLoginInProgress) {
+			t.Skip("the fixed OAuth callback port is already bound on this machine")
+		}
+		t.Fatalf("BeginLogin: %v", err)
 	}
 	b.CloseBackend()
 	b.CloseBackend()
@@ -289,6 +294,14 @@ func TestBackendShutdownCancelsProviderLogins(t *testing.T) {
 	}
 	if got.State != string(auth.FlowCancelled) || got.Error == "" {
 		t.Fatalf("login after shutdown = %+v, want cancelled without a credential", got)
+	}
+	// Shutdown waited for the teardown, not just for the bookkeeping: the port
+	// the flow held is free the moment CloseBackend returns, which is what the
+	// next daemon - or the next test - needs.
+	second := newWebBackend(webBackendConfig{version: "test"})
+	t.Cleanup(second.CloseBackend)
+	if _, err := second.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"}); err != nil {
+		t.Fatalf("a login after shutdown = %v, want the callback port to be free", err)
 	}
 }
 
@@ -305,40 +318,50 @@ func stubFlows(t *testing.T, started *int32) func(context.Context, string) (*aut
 }
 
 // The caps are what stands between a signed-in page and an unbounded number of
-// outbound authorization requests. A cap that counted the wrong thing would let
-// a loop through and be invisible until it was.
-func TestPendingLoginsAreBoundedGloballyAndPerProvider(t *testing.T) {
+// outbound authorization requests. They are per provider because the flows are
+// not alike: ChatGPT redirects to one fixed loopback port, so a second
+// concurrent one cannot succeed however generous the number is, and letting it
+// through produced a bind failure dressed up as a daemon fault.
+func TestPendingLoginsAreBoundedPerProviderByWhatItsFlowCanDo(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	b := newWebBackend(webBackendConfig{version: "test", beginFlow: stubFlows(t, nil)})
 	t.Cleanup(b.CloseBackend)
 
+	if pendingLoginsFor("openai") != 1 {
+		t.Fatalf("openai allows %d concurrent logins, but it has one callback port",
+			pendingLoginsFor("openai"))
+	}
 	var ids []string
-	for range maxPendingLoginsPerProvider {
-		v, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"})
-		if err != nil {
-			t.Fatalf("BeginLogin: %v", err)
+	for _, provider := range []string{"openai", "xai"} {
+		for range pendingLoginsFor(provider) {
+			v, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: provider})
+			if err != nil {
+				t.Fatalf("BeginLogin %s: %v", provider, err)
+			}
+			ids = append(ids, v.ID)
 		}
-		ids = append(ids, v.ID)
-	}
-	_, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"})
-	if !errors.Is(err, web.ErrBusy) {
-		t.Fatalf("the %dth openai login = %v, want ErrBusy", maxPendingLoginsPerProvider+1, err)
-	}
-	// The per-provider cap is per provider: another one still has room.
-	for range maxPendingLogins - maxPendingLoginsPerProvider {
-		if _, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: "xai"}); err != nil {
-			t.Fatalf("a second provider was refused by the first one's cap: %v", err)
+		_, err := b.BeginLogin(context.Background(), web.LoginRequest{Provider: provider})
+		if !errors.Is(err, web.ErrBusy) {
+			t.Fatalf("one %s login past its cap = %v, want ErrBusy", provider, err)
+		}
+		// And it says which provider, because "at capacity" alone leaves a person
+		// with no idea what to close.
+		if !strings.Contains(err.Error(), provider) {
+			t.Errorf("the refusal %q does not name the provider that is busy", err)
+		}
+		if strings.HasPrefix(err.Error(), "a "+provider) {
+			t.Errorf("the refusal %q reads ungrammatically", err)
+		}
+		if strings.Contains(err.Error(), "web:") {
+			t.Errorf("the refusal %q reads as a package error rather than a sentence", err)
 		}
 	}
-	// The global cap cannot be reached separately today: two providers take
-	// browser logins, and 2 x 4 is exactly 8, so the per-provider cap always
-	// fires first. It is the bound that starts doing work when a third provider
-	// gains one, and this pins that relationship rather than pretending to
-	// exercise a path that does not exist.
-	if maxPendingLogins > 2*maxPendingLoginsPerProvider {
-		t.Fatalf("maxPendingLogins (%d) is above what the two providers with browser "+
-			"logins can reach (%d); nothing bounds the total any more",
-			maxPendingLogins, 2*maxPendingLoginsPerProvider)
+	// The global cap cannot be reached separately today: the two providers with
+	// browser logins allow 1 and 4, well under it. It is the bound that starts
+	// doing work when a third gains one, and this pins that relationship rather
+	// than pretending to exercise a path that does not exist.
+	if pendingLoginsFor("openai")+pendingLoginsFor("xai") > maxPendingLogins {
+		t.Fatalf("the per-provider caps sum above the global one (%d)", maxPendingLogins)
 	}
 	// Finishing one gives its slot back, which is what makes the cap a bound on
 	// what is in flight rather than on what has ever been asked for.
@@ -606,6 +629,19 @@ func TestASkillAddedAfterAnApprovalCanStillBeApproved(t *testing.T) {
 	if _, err := b.Skill(context.Background(), "two"); err != nil {
 		t.Fatalf("the newly approved skill is not readable: %v", err)
 	}
+	// The listing is memoised, and an approval is exactly the moment the memo is
+	// wrong: a page refetching after pressing the button must not be shown the
+	// answer from before it.
+	after, err := b.Skills(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Pending != nil {
+		t.Fatalf("the listing still reports %+v pending after approving it", after.Pending)
+	}
+	if len(after.Items) < 2 {
+		t.Fatalf("the listing shows %d skills after approving two", len(after.Items))
+	}
 }
 
 func writeProjectSkill(t *testing.T, cwd, name string) {
@@ -717,5 +753,49 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("timed out waiting for the condition")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A login start the browser walked away from still holds the OAuth callback
+// port until it is torn down, so shutdown has to wait for that and not merely
+// for the slot to be given back. A daemon that returned from CloseBackend early
+// would leave the next one - or the next test - unable to bind.
+func TestShutdownWaitsForALoginStartTheRequestAbandoned(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	b := newWebBackend(webBackendConfig{version: "test",
+		// The real flow, gated: the port it binds is the whole point, and the
+		// gate is what makes the abandonment happen before the bind rather than
+		// racing it.
+		beginFlow: func(ctx context.Context, provider string) (*auth.Flow, error) {
+			once.Do(func() { close(entered) })
+			<-release
+			return auth.Begin(ctx, provider)
+		}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.BeginLogin(ctx, web.LoginRequest{Provider: "openai"})
+		done <- err
+	}()
+	<-entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the abandoned start = %v, want the request's own cancellation", err)
+	}
+	close(release)
+
+	b.CloseBackend()
+	// The port is free the moment CloseBackend returns.
+	second := newWebBackend(webBackendConfig{version: "test"})
+	t.Cleanup(second.CloseBackend)
+	if _, err := second.BeginLogin(context.Background(), web.LoginRequest{Provider: "openai"}); err != nil {
+		if errors.Is(err, auth.ErrLoginInProgress) {
+			t.Fatal("CloseBackend returned while an abandoned login still held the callback port")
+		}
+		t.Fatalf("BeginLogin after shutdown: %v", err)
 	}
 }

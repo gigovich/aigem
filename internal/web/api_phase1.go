@@ -165,7 +165,7 @@ type Activity struct {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[ModelsBackend](s, w)
+	b, ok := backendOf[ModelsBackend](s, w, "models")
 	if !ok {
 		return
 	}
@@ -185,7 +185,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[ModelsBackend](s, w)
+	b, ok := backendOf[ModelsBackend](s, w, "models")
 	if !ok {
 		return
 	}
@@ -209,7 +209,7 @@ func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[AuthBackend](s, w)
+	b, ok := backendOf[AuthBackend](s, w, "providerLogin")
 	if !ok {
 		return
 	}
@@ -231,7 +231,7 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[AuthBackend](s, w)
+	b, ok := backendOf[AuthBackend](s, w, "providerLogin")
 	if !ok {
 		return
 	}
@@ -244,7 +244,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLoginPaste(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[AuthBackend](s, w)
+	b, ok := backendOf[AuthBackend](s, w, "providerLogin")
 	if !ok {
 		return
 	}
@@ -262,7 +262,7 @@ func (s *Server) handleLoginPaste(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLoginCancel(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[AuthBackend](s, w)
+	b, ok := backendOf[AuthBackend](s, w, "providerLogin")
 	if !ok {
 		return
 	}
@@ -274,7 +274,7 @@ func (s *Server) handleLoginCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[SkillsBackend](s, w)
+	b, ok := backendOf[SkillsBackend](s, w, "skills")
 	if !ok {
 		return
 	}
@@ -317,7 +317,7 @@ func (s *Server) handleSkillPath(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[SkillsBackend](s, w)
+	b, ok := backendOf[SkillsBackend](s, w, "skills")
 	if !ok {
 		return
 	}
@@ -339,7 +339,7 @@ func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSkillTrust(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[SkillsBackend](s, w)
+	b, ok := backendOf[SkillsBackend](s, w, "skills")
 	if !ok {
 		return
 	}
@@ -365,7 +365,7 @@ func (s *Server) handleSkillTrust(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[CommandsBackend](s, w)
+	b, ok := backendOf[CommandsBackend](s, w, "commands")
 	if !ok {
 		return
 	}
@@ -381,7 +381,7 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[UsageBackend](s, w)
+	b, ok := backendOf[UsageBackend](s, w, "usage")
 	if !ok {
 		return
 	}
@@ -405,7 +405,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	// The seam first, as everywhere else: a client probing what this daemon can
 	// do must not be told its query string was wrong by a route that does not
 	// exist here at all.
-	b, ok := backendOf[ActivityBackend](s, w)
+	b, ok := backendOf[ActivityBackend](s, w, "activity")
 	if !ok {
 		return
 	}
@@ -428,17 +428,26 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, v)
 }
 
-// backendOf selects the seam a route needs. The backend is one object
-// implementing whichever of the interfaces above the embedder wired up, so a
-// route whose seam is missing is a daemon built without that feature rather
-// than a request that went wrong - which is what 501 says, and why /api/meta
-// derives its feature map from the same assertions.
-func backendOf[T any](s *Server, w http.ResponseWriter) (T, bool) {
+// backendOf selects the seam a route needs, and is the single gate on whether
+// this daemon serves that route at all.
+//
+// Two things can make it not: the backend may not implement the seam, or it may
+// implement it and have been handed nothing to work with - no state directory,
+// no loaded project. Both are the same fact to a page, both are 501, and both
+// are already decided in s.features, which /api/meta answers from. Asking the
+// feature map here rather than keeping a second list of the same fact is what
+// stops the route and the map from drifting apart.
+//
+// It is asked before the query string is read, so a bad cursor on a route this
+// daemon does not serve is 501 and not a complaint about the cursor.
+func backendOf[T any](s *Server, w http.ResponseWriter, feature string) (T, bool) {
 	b, ok := s.backend.(T)
-	if !ok {
+	if !ok || !s.features[feature] {
+		var zero T
 		unavailable(w)
+		return zero, false
 	}
-	return b, ok
+	return b, true
 }
 
 func unavailable(w http.ResponseWriter) {

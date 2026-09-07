@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/gigovich/aigem/internal/auth"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/runner"
+	"github.com/gigovich/aigem/internal/skill"
 	"github.com/gigovich/aigem/internal/store"
 	"github.com/gigovich/aigem/internal/uisession"
 	"github.com/gigovich/aigem/internal/web"
@@ -48,7 +50,14 @@ type webBackend struct {
 	beginFlow    func(context.Context, string) (*auth.Flow, error)
 
 	skillMu sync.Mutex
-	closeMu sync.Mutex
+	// pending memoises what the project's skills are waiting on. Answering it
+	// means reading and hashing every SKILL.md, and how many there are is the
+	// project's choice, so a page polling the listing would otherwise pay for
+	// the whole tree once a second. Short enough that a skill added by hand
+	// shows up while the person is still looking at the screen.
+	pendingAt  time.Time
+	pendingVal *skill.PendingSkills
+	closeMu    sync.Mutex
 }
 
 // The interfaces internal/web declares are satisfied here or nowhere: the
@@ -416,10 +425,9 @@ func webRunError(err error) error {
 	case errors.Is(err, uisession.ErrTruncated):
 		return web.ErrHistoryGone
 	case errors.Is(err, runner.ErrTooManyRuns):
-		// Wrapped rather than replaced: the sentinel decides the status code and
-		// the text says how many are open, which is what tells the person to
-		// close one rather than to wait.
-		return fmt.Errorf("%w: %w", web.ErrBusy, err)
+		// The sentinel decides the status code and the text says how many are
+		// open, which is what tells the person to close one rather than to wait.
+		return web.Busy(err.Error())
 	case errors.Is(err, runner.ErrRunsClosed):
 		return err
 	default:

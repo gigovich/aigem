@@ -415,3 +415,69 @@ func TestUsageCarriesEveryWindowInAStableOrder(t *testing.T) {
 		t.Error("a provider with no snapshot lost its windows array")
 	}
 }
+
+// A daemon whose backend implements a seam but was handed nothing to work with
+// is a daemon that cannot serve that route, and says so the same way one built
+// without the seam does. One rule, decided in one place: the feature map and
+// the routes cannot drift apart, because they are the same list.
+type withdrawnBackend struct{ *phaseBackend }
+
+func (b withdrawnBackend) Unavailable() []string { return []string{"activity", "skills"} }
+
+func TestAWithdrawnFeatureIsRefusedByItsRoutesToo(t *testing.T) {
+	b := withdrawnBackend{phaseBackend: &phaseBackend{
+		fakeBackend: &fakeBackend{}, detail: Skill{SkillSummary: SkillSummary{Name: "ship"}},
+	}}
+	srv := newTestServer(t, Config{Backend: b})
+	_, meta := getMeta(t, srv)
+	for _, name := range []string{"activity", "skills"} {
+		if meta.Features[name] {
+			t.Errorf("the feature map still names %q, which the backend withdrew", name)
+		}
+	}
+	for _, path := range []string{
+		"/api/activity", "/api/activity?since=abc", "/api/skills", "/api/skills/ship",
+	} {
+		res := phaseRequest(t, srv, http.MethodGet, path, "")
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusNotImplemented {
+			t.Errorf("%s on a withdrawn feature = %d, want 501", path, res.StatusCode)
+		}
+	}
+	// A bad cursor on a withdrawn route is still 501: the route not existing is
+	// decided before the query string is read.
+	res := phaseRequest(t, srv, http.MethodPost, "/api/skills/trust", "")
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotImplemented {
+		t.Errorf("the trust mutation on a withdrawn feature = %d, want 501", res.StatusCode)
+	}
+	// What was not withdrawn still works.
+	res = phaseRequest(t, srv, http.MethodGet, "/api/commands", "")
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("a feature that was not withdrawn = %d, want 200", res.StatusCode)
+	}
+}
+
+// The text of a "not now" is read by a person. ErrBusy names its package,
+// because a Go error is written for a log, and that must not reach a browser.
+func TestABusyAnswerReadsAsASentence(t *testing.T) {
+	b := &phaseBackend{fakeBackend: &fakeBackend{}, err: Busy("close a conversation first")}
+	srv := newTestServer(t, Config{Backend: b})
+	res := phaseRequest(t, srv, http.MethodGet, "/api/commands", "")
+	body, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a busy answer = %d, want 503", res.StatusCode)
+	}
+	if got := strings.TrimSpace(string(body)); got != "close a conversation first" {
+		t.Fatalf("the busy answer reads %q, want the sentence the backend wrote", got)
+	}
+	b.err = ErrBusy
+	res = phaseRequest(t, srv, http.MethodGet, "/api/commands", "")
+	body, _ = io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if strings.Contains(string(body), "web:") {
+		t.Fatalf("the bare busy answer reads as a package error: %q", body)
+	}
+}

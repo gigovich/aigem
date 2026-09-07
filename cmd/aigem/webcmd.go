@@ -184,8 +184,9 @@ func runWebCommand(args []string) error {
 	if stateDir != "" {
 		activity = store.NewLog[web.Activity](filepath.Join(stateDir, "activity.jsonl"))
 		// Trimmed here and not while serving: compaction rewrites the file, and
-		// a cursor a page is holding must not be renumbered under it. Startup is
-		// the one moment no page holds one.
+		// a page holding a cursor into the part being dropped would find its
+		// next page empty rather than wrong. Startup is the one moment no page
+		// holds one at all.
 		if n, err := activity.Compact(time.Now().Add(-activityRetention)); err != nil {
 			slog.Warn("the activity feed could not be trimmed", "err", err)
 		} else if n > 0 {

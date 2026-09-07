@@ -98,7 +98,26 @@ const (
 	maxPendingLogins              = 8
 	maxPendingLoginsPerProvider   = 4
 	maxRetainedTerminalLoginFlows = 32
+	// pendingSkillsTTL bounds how often the skill listing reads the project.
+	// Short enough that a skill added by hand appears while the person is still
+	// looking at the screen, long enough that a polling page does not pay for
+	// the whole tree on every request.
+	pendingSkillsTTL = 2 * time.Second
 )
+
+// pendingLoginsFor is how many logins a provider can have in flight at once.
+//
+// It is not one number, because it is not one mechanism. A device-code flow
+// polls the provider and can run several times over; the ChatGPT flow redirects
+// to a fixed loopback port and there is one of those, so a second concurrent
+// one cannot succeed however generous the cap is. Letting it through anyway
+// produced a bind failure dressed up as a daemon fault.
+func pendingLoginsFor(provider string) int {
+	if provider == llm.OpenAIProviderID {
+		return 1
+	}
+	return maxPendingLoginsPerProvider
+}
 
 // startedLogin is what the goroutine below hands back: the flow, or why there
 // is not one, plus the provider whose reservation it holds.
@@ -126,9 +145,9 @@ func (b *webBackend) BeginLogin(ctx context.Context, req web.LoginRequest) (web.
 			}
 		}
 	}
-	if global >= maxPendingLogins || provider >= maxPendingLoginsPerProvider {
+	if global >= maxPendingLogins || provider >= pendingLoginsFor(req.Provider) {
 		b.flowMu.Unlock()
-		return web.Login{}, web.ErrBusy
+		return web.Login{}, web.Busy("a sign-in to " + req.Provider + " is already in progress")
 	}
 	// Reserve before the possibly-blocking device-code request, both for the
 	// capacity bound and so shutdown cannot miss in-flight construction.
@@ -137,14 +156,20 @@ func (b *webBackend) BeginLogin(ctx context.Context, req web.LoginRequest) (web.
 	b.flowWG.Add(1)
 	b.flowMu.Unlock()
 
-	// Released by a defer, not by the lines below: beginFlow is a network call
-	// into third-party code, and a panic there would otherwise consume a slot
-	// for the life of the process and leave CloseBackend's Wait blocked -
-	// meaning the daemon could never shut down.
+	// The slot is given back by a defer, not by the lines below: beginFlow is a
+	// network call into third-party code, and a panic there would otherwise
+	// consume a slot for the life of the process and leave CloseBackend's Wait
+	// blocked - meaning the daemon could never shut down.
+	//
+	// flowWG is a separate defer, and it is the outer one, so it is marked done
+	// last of all. It is what CloseBackend waits on, and what it is waiting for
+	// is not the slot but the teardown: a flow this request started holds the
+	// OAuth callback port, and a Wait that returned before it was cancelled
+	// would leave the next daemon unable to bind.
+	defer b.flowWG.Done()
 	release := func() {
 		b.flowStarting[""]--
 		b.flowStarting[req.Provider]--
-		b.flowWG.Done()
 	}
 	locked := false
 	defer func() {
@@ -172,14 +197,17 @@ func (b *webBackend) BeginLogin(ctx context.Context, req web.LoginRequest) (web.
 	case <-ctx.Done():
 		// The reservation stays until the goroutine returns, and whatever it
 		// produces is thrown away: a flow nobody can name is one nobody can
-		// finish.
+		// finish. The WaitGroup passes to the discard, so shutdown still waits
+		// for the teardown this request walked away from.
+		b.flowWG.Add(1)
 		go b.discardLogin(begun)
 		locked = true
 		return web.Login{}, ctx.Err()
 	case <-time.After(loginStartTimeout):
+		b.flowWG.Add(1)
 		go b.discardLogin(begun)
 		locked = true
-		return web.Login{}, fmt.Errorf("%s did not answer in time: %w", req.Provider, web.ErrBusy)
+		return web.Login{}, web.Busy(req.Provider + " did not answer in time")
 	}
 	f, err := got.f, got.err
 	b.flowMu.Lock()
@@ -187,10 +215,19 @@ func (b *webBackend) BeginLogin(ctx context.Context, req web.LoginRequest) (web.
 	release()
 	if err != nil {
 		b.flowMu.Unlock()
+		// A callback port already taken is another sign-in, not a fault: this
+		// daemon does not own that port, and a terminal running `aigem auth
+		// login` holds it too. Told as a refusal, with what to do about it.
+		if errors.Is(err, auth.ErrLoginInProgress) {
+			return web.Login{}, web.Refuse(errors.New(
+				"another sign-in is already in progress; finish or cancel it first"))
+		}
 		return web.Login{}, err
 	}
 	if b.closed {
 		b.flowMu.Unlock()
+		// Torn down before this returns, and before the deferred Done: the flow
+		// holds the callback port, and shutdown is what is waiting for it.
 		f.Cancel()
 		f.Wait()
 		return web.Login{}, errors.New("the web backend is closed")
@@ -211,11 +248,14 @@ func (b *webBackend) BeginLogin(ctx context.Context, req web.LoginRequest) (web.
 // so abandoning one request cannot be used to start an unbounded number of
 // outbound calls.
 func (b *webBackend) discardLogin(begun <-chan startedLogin) {
+	// Done last, after the flow is not only cancelled but finished: what
+	// CloseBackend is waiting for is the callback listener being closed, not the
+	// bookkeeping being tidy.
+	defer b.flowWG.Done()
 	got := <-begun
 	b.flowMu.Lock()
 	b.flowStarting[""]--
 	b.flowStarting[got.provider]--
-	b.flowWG.Done()
 	b.flowMu.Unlock()
 	if got.f != nil {
 		got.f.Cancel()
@@ -359,10 +399,11 @@ func (b *webBackend) Skills(context.Context) (web.Skills, error) {
 	out := web.Skills{Items: skillSummaries(b.env.Skills)}
 	// Read from the project rather than from Env.Pending for the same reason
 	// TrustSkills does: the snapshot is from startup, and a page that cannot see
-	// a skill added since then has no way to ask for it. A discovery error is
-	// not worth failing the listing over - the catalog above it is still true -
-	// so it is reported as nothing pending and logged.
-	pending, err := skill.Pending(b.env.Cwd)
+	// a skill added since then has no way to ask for it. Memoised, because this
+	// is a listing a page polls and the read behind it is the whole skill tree.
+	// A discovery error is not worth failing the listing over - the catalog
+	// above it is still true - so it is reported as nothing pending and logged.
+	pending, err := b.pendingSkillsLocked()
 	if err != nil {
 		slog.Warn("the project's pending skills could not be read", "err", err)
 	}
@@ -422,10 +463,14 @@ func (b *webBackend) TrustSkills(context.Context) (web.SkillApproval, error) {
 	// took and is cleared by the first approval: a skill added or edited since
 	// then is genuinely pending, and gating on the stale field would refuse the
 	// only route that can pick it up, for the life of the daemon.
+	//
+	// Not memoised, unlike the listing: this is the mutation, and it must not
+	// approve against an answer from a moment ago.
 	pending, err := skill.Pending(b.env.Cwd)
 	if err != nil {
 		return web.SkillApproval{}, err
 	}
+	b.forgetPendingLocked()
 	if pending == nil {
 		return web.SkillApproval{}, web.Refuse(
 			errors.New("this project has no skills awaiting approval"))
@@ -436,8 +481,7 @@ func (b *webBackend) TrustSkills(context.Context) (web.SkillApproval, error) {
 		// is to ask again, which is what 503 and Retry-After say and what 400
 		// does not.
 		if errors.Is(err, uisession.ErrBusy) {
-			return web.SkillApproval{}, fmt.Errorf(
-				"skills cannot change while a turn is running: %w", web.ErrBusy)
+			return web.SkillApproval{}, web.Busy("skills cannot change while a turn is running")
 		}
 		// Nothing to approve is a question with an answer, not a fault: the
 		// project defines no skills, or the ones it defined are already trusted.
@@ -459,6 +503,26 @@ func (b *webBackend) TrustSkills(context.Context) (web.SkillApproval, error) {
 	b.recordActivity(web.Activity{Kind: "skills.trusted", Text: "Approved project skills"})
 	b.publish("skills.updated", out)
 	return out, nil
+}
+
+// pendingSkillsLocked answers from the memo when it is fresh. Held under
+// skillMu, which is also what serialises it against an approval.
+func (b *webBackend) pendingSkillsLocked() (*skill.PendingSkills, error) {
+	if !b.pendingAt.IsZero() && time.Since(b.pendingAt) < pendingSkillsTTL {
+		return b.pendingVal, nil
+	}
+	got, err := skill.Pending(b.env.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	b.pendingVal, b.pendingAt = got, time.Now()
+	return got, nil
+}
+
+// forgetPendingLocked drops the memo, so the answer after an approval is the
+// one the approval produced rather than the one it replaced.
+func (b *webBackend) forgetPendingLocked() {
+	b.pendingVal, b.pendingAt = nil, time.Time{}
 }
 
 func skillSummaries(reg *skill.Registry) []web.SkillSummary {

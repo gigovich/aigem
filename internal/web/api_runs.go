@@ -34,7 +34,7 @@ var ErrUnavailable = errors.New("web: this endpoint is not available")
 
 // handleRuns lists the conversations, oldest first.
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[RunsBackend](s, w)
+	b, ok := backendOf[RunsBackend](s, w, "runs")
 	if !ok {
 		return
 	}
@@ -53,7 +53,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 // handleOpenRun starts a conversation.
 func (s *Server) handleOpenRun(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[RunsBackend](s, w)
+	b, ok := backendOf[RunsBackend](s, w, "runs")
 	if !ok {
 		return
 	}
@@ -74,7 +74,7 @@ func (s *Server) handleOpenRun(w http.ResponseWriter, r *http.Request) {
 
 // handleRun reports one conversation.
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[RunsBackend](s, w)
+	b, ok := backendOf[RunsBackend](s, w, "runs")
 	if !ok {
 		return
 	}
@@ -90,7 +90,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 // timeline stay: a run a person is done with is one they can still read, and
 // the activity feed goes on referring to it.
 func (s *Server) handleCloseRun(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[RunsBackend](s, w)
+	b, ok := backendOf[RunsBackend](s, w, "runs")
 	if !ok {
 		return
 	}
@@ -115,7 +115,7 @@ func (s *Server) handleCloseRun(w http.ResponseWriter, r *http.Request) {
 // session is gone: a closed run has no socket to open, and its journal is the
 // whole of what is left.
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[RunsBackend](s, w)
+	b, ok := backendOf[RunsBackend](s, w, "runs")
 	if !ok {
 		return
 	}
@@ -152,7 +152,7 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 // in cross-origin as a script or a stylesheet, and the content policy stops
 // anything in it running if it is opened directly.
 func (s *Server) handleRunBlob(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[RunsBackend](s, w)
+	b, ok := backendOf[RunsBackend](s, w, "runs")
 	if !ok {
 		return
 	}
@@ -172,7 +172,7 @@ func (s *Server) handleRunBlob(w http.ResponseWriter, r *http.Request) {
 
 // handleRunArtifacts reports the files a run changed.
 func (s *Server) handleRunArtifacts(w http.ResponseWriter, r *http.Request) {
-	b, ok := backendOf[RunsBackend](s, w)
+	b, ok := backendOf[RunsBackend](s, w, "runs")
 	if !ok {
 		return
 	}
@@ -294,8 +294,11 @@ func writeRunError(w http.ResponseWriter, doing string, err error) {
 	case errors.Is(err, ErrBusy):
 		// The message rather than a fixed sentence: it says how much is open and
 		// what the limit is, which is what turns "try later" into "close one".
+		// Unprefixed for the same reason Refuse is: this text is read by a
+		// person, and "web: the daemon is at capacity" reads as a stack trace
+		// escaping into the interface.
 		w.Header().Set("Retry-After", "5")
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		http.Error(w, unprefixed(err.Error()), http.StatusServiceUnavailable)
 	case errors.As(err, &refusal):
 		http.Error(w, refusal.Reason, http.StatusBadRequest)
 	default:

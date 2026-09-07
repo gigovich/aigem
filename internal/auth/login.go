@@ -262,8 +262,8 @@ func startCallback(redirect, expectState string, allowStdinPaste bool) (*callbac
 		for _, ln := range listeners {
 			_ = ln.Close()
 		}
-		return nil, fmt.Errorf("bind callback %s: %s (is another login in progress?)",
-			u.Host, strings.Join(bindErrs, "; "))
+		return nil, fmt.Errorf("%w: bind callback %s: %s",
+			ErrLoginInProgress, u.Host, strings.Join(bindErrs, "; "))
 	}
 	cs := &callbackServer{results: make(chan callbackResult, 1)}
 	mux := http.NewServeMux()

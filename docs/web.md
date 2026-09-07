@@ -148,7 +148,7 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/models` | configured model metadata and authentication/default state |
 | `POST /api/models/default` | saves `{"ref":"provider/model"}` as the default |
 | `POST /api/auth/login` | starts interactive login (`openai` or `xai`); 201 |
-| `GET /api/auth/login/{id}` | polls that login's `pending`, `done`, or `failed` state |
+| `GET /api/auth/login/{id}` | polls that login's `pending`, `done`, `failed` or `cancelled` state |
 | `POST /api/auth/login/{id}/paste` | supplies a redirect URL or code (8 KiB maximum) |
 | `DELETE /api/auth/login/{id}` | cancels a login flow; 204, and the record stays readable |
 | `GET /api/skills` | loaded skill summaries and pending project-skill names |
@@ -183,7 +183,9 @@ this API takes, `POST /api/runs` included: a field the daemon does not know is a
 400 rather than something it silently does not do.
 
 A login start returns an id and the user-facing authorization URL, plus a device
-`code` when the provider supplied one. Polling returns `state` - `pending`,
+`code` when the provider supplied one. Only one ChatGPT sign-in can be under way
+at a time - it redirects to a single loopback port - and a second is refused
+with 503 rather than failing on the bind. Polling returns `state` - `pending`,
 `done`, `failed`, or `cancelled` for one the person abandoned - and a generic
 failure message. A cancelled login keeps its record, so the page that started it
 reads `cancelled` rather than a 404 or a provider failure. A start whose
@@ -223,9 +225,10 @@ keys are `controlSocket`, `runs`, `models`, `providerLogin`, `skills`,
 
 A key is present when the daemon was built with that seam *and* was given what
 the seam needs. Without a state directory there is no activity feed; without a
-loaded project there are no skills or commands. The routes still answer - with
-an empty collection, or 501 where there is nothing behind them at all - so the
-map is what a page reads rather than something it has to discover by probing.
+loaded project there are no skills or commands. A route whose key is absent
+answers 501, so the map is what a page reads rather than something it has to
+discover by probing, and the two cannot disagree: the routes are gated on the
+same map `/api/meta` returns.
 
 ## The control stream
 
