@@ -284,13 +284,13 @@ export function clearBanner() {
   patch({ banner: '' })
 }
 
-export function setTheme(theme: Theme) {
+function setTheme(theme: Theme) {
   document.documentElement.dataset.theme = theme
   write('aigem.theme', theme)
   patch({ theme })
 }
 
-export function setDensity(density: Density) {
+function setDensity(density: Density) {
   document.documentElement.dataset.density = density
   write('aigem.density', density)
   patch({ density })
@@ -335,7 +335,7 @@ export function setPendingCommand(text: string) {
  * breakpoint is a decision the layout made, not one the person made, and a
  * window dragged narrow and back should not cost them the panel.
  */
-export function applyWidth(width: number) {
+function applyWidth(width: number) {
   const narrow = width < NARROW_AT
   store.set((s) => (s.narrow === narrow ? s : { ...s, narrow, inspectorOpen: !narrow }))
 }

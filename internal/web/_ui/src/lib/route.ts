@@ -46,7 +46,7 @@ export function format(route: Route): string {
   return route.id ? `/${route.screen}/${encodeURIComponent(route.id)}` : `/${route.screen}`
 }
 
-export function sameRoute(a: Route, b: Route): boolean {
+function sameRoute(a: Route, b: Route): boolean {
   return a.screen === b.screen && a.id === b.id
 }
 

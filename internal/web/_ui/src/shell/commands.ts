@@ -214,7 +214,7 @@ export function filter(items: PaletteItem[], query: string): PaletteItem[] {
     .map(({ item }) => item)
 }
 
-export const GROUP_ORDER: PaletteGroup[] = ['Navigate', 'Create', 'Execute', 'Preferences']
+const GROUP_ORDER: PaletteGroup[] = ['Navigate', 'Create', 'Execute', 'Preferences']
 
 /** The filtered list, grouped and flattened in the canvas's group order. */
 export function ordered(items: PaletteItem[], query: string): PaletteItem[] {
