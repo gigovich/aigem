@@ -418,3 +418,85 @@ test('a command chosen from another screen reaches the composer', async () => {
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('/compact '),
   )
 })
+
+// `send` drops an operation while the socket is down - queueing one would
+// replay it into a conversation the person has since left - so a composer that
+// cleared anyway would be destroying what they typed.
+test('keeps the message when the socket will not take it', async () => {
+  const user = userEvent.setup()
+  const h = await mountApp({ runs: [RUN] })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  // Deliberately not opened: the socket exists and is not ready.
+
+  const box = screen.getByRole('textbox', { name: 'Message' })
+  await user.type(box, 'do not lose this')
+  await user.keyboard('{Control>}{Enter}{/Control}')
+
+  expect(h.runSocket()?.sent).toHaveLength(0)
+  expect(box).toHaveValue('do not lose this')
+})
+
+// The record reports what the live session is doing, and the daemon announces
+// it - so the button comes back off because the daemon said so, not because
+// this tab assumed it.
+test('the step mode button follows the record the daemon announces', async () => {
+  const user = userEvent.setup()
+  let step = false
+  const h = await mountApp({
+    runs: [RUN],
+    routes: {
+      '/api/runs': () =>
+        new Response(JSON.stringify([{ ...RUN, step: step || undefined }]), { status: 200 }),
+    },
+  })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+
+  const button = screen.getByRole('button', { name: 'Step mode' })
+  expect(button).toHaveAttribute('aria-pressed', 'false')
+
+  step = true
+  await user.click(button)
+  // The daemon publishes the changed record; the page reads it back.
+  h.publish('run.updated', 2, { id: 'r-1' })
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Step mode' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    ),
+  )
+})
+
+// The keys name the arguments. Without them a run_command shows a command and a
+// working directory as two unlabelled blocks.
+test('the approval labels each argument it shows', async () => {
+  const h = await attached()
+  h.emit({
+    ...APPROVAL,
+    approval: {
+      ...APPROVAL.approval!,
+      args: { command: 'rm -rf build', cwd: '/home/dev/aigem' },
+    },
+  })
+
+  const card = await screen.findByRole('group', { name: 'Approval required' })
+  expect(card).toHaveTextContent('command')
+  expect(card).toHaveTextContent('cwd')
+  expect(card).toHaveTextContent('rm -rf build')
+  expect(card).toHaveTextContent('/home/dev/aigem')
+})
+
+// A tool argument carrying a bidi override renders reversed in the block a
+// person reads before approving: the command they approve is not the one they
+// see. Cycle one covered the path form of this and not the argument form.
+test('a tool argument that lies about itself is shown as what it is', async () => {
+  const h = await attached()
+  h.emit({
+    ...APPROVAL,
+    approval: { ...APPROVAL.approval!, args: { command: 'cat report‮hs.txt' } },
+  })
+
+  const card = await screen.findByRole('group', { name: 'Approval required' })
+  expect(card.textContent).toContain('\\u202e')
+  expect(card.textContent).not.toContain('‮')
+})

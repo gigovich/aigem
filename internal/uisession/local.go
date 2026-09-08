@@ -195,8 +195,10 @@ type Local struct {
 
 	journal *journal
 
-	done        chan struct{}
-	closed      bool
+	done   chan struct{}
+	closed bool
+	// watchers are told the kind of each event; see Watch.
+	watchers    []chan Kind
 	metaEmitted bool
 }
 
@@ -311,8 +313,19 @@ func (l *Local) Close() {
 	}
 	subs := l.subs
 	l.subs = map[string]*subscriber{}
+	watchers := l.watchers
+	l.watchers = nil
 	hookRunner, sessionID := l.hooks, l.id
 	l.mu.Unlock()
+
+	// Closed by the session that owns them, which is what ends the loops
+	// reading them. A watcher's detach function is then a no-op, because the
+	// list it would search is empty.
+	if first {
+		for _, w := range watchers {
+			close(w)
+		}
+	}
 
 	if first && hookRunner != nil && sessionID != "" {
 		hookRunner.RunBounded(hooks.EventSessionEnd, hooks.Input{Source: "exit"}, 5*time.Second)
@@ -384,6 +397,17 @@ func (l *Local) emitLocked(ev Event) {
 	for _, s := range l.subs {
 		s.Push(ev)
 	}
+	// Watchers are not clients: they are told the kind and nothing else, they
+	// never block the turn that emitted, and a full one is skipped. What they
+	// are for is a caller that has to notice a state change - a run registry
+	// keeping a record honest - and would otherwise have to attend the
+	// conversation to do it.
+	for _, w := range l.watchers {
+		select {
+		case w <- ev.Kind:
+		default:
+		}
+	}
 }
 
 // Seq is the sequence number of the most recent event, which is what a client
@@ -437,6 +461,38 @@ func (l *Local) replayLocked(since uint64) ([]Event, error) {
 		}
 	}
 	return out, nil
+}
+
+// Watch reports the kind of every event this session emits, to something that
+// is not a client.
+//
+// It differs from Subscribe in every way that matters for that: a watcher does
+// not appear in presence, gets no backlog, and is skipped rather than
+// disconnected when it falls behind - a missed kind leaves whatever it was
+// keeping current one event stale, and the next one repairs it. The channel is
+// closed when the session is.
+func (l *Local) Watch(buffer int) (<-chan Kind, func(), error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil, nil, ErrClosed
+	}
+	ch := make(chan Kind, buffer)
+	l.watchers = append(l.watchers, ch)
+	var once sync.Once
+	return ch, func() { once.Do(func() { l.unwatch(ch) }) }, nil
+}
+
+func (l *Local) unwatch(ch chan Kind) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i, w := range l.watchers {
+		if w == ch {
+			l.watchers = append(l.watchers[:i], l.watchers[i+1:]...)
+			close(ch)
+			return
+		}
+	}
 }
 
 // Subscribe attaches a client and returns its event channel plus a function to

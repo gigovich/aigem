@@ -398,9 +398,40 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	r.saveLocked()
 	r.mu.Unlock()
 
+	r.watch(id, sess)
 	v := view(rec, sess)
 	r.notify(v)
 	return v, nil
+}
+
+// watch announces the run whenever the session's own state changes what a
+// record says about it.
+//
+// Running, Waiting and Step are read off the live session by view(), so they
+// are only ever as fresh as the last thing that happened to announce a record -
+// and until this, that was opening, naming, switching a model and closing. A
+// page listing runs showed every conversation as running from its first message
+// until it was closed, and a status bar counting them said the same.
+//
+// It watches rather than subscribing: a subscriber is a client, and a registry
+// keeping its own table honest has no business appearing on the presence list
+// the other tabs are shown. The channel is closed when the session is, which is
+// what ends this goroutine.
+func (r *Runs) watch(id string, sess *Session) {
+	kinds, stop, err := sess.Local.Watch(watchBuffer)
+	if err != nil {
+		return
+	}
+	go func() {
+		defer stop()
+		for kind := range kinds {
+			switch kind {
+			case uisession.KindTurnStart, uisession.KindTurnEnd,
+				uisession.KindApprovalRequest, uisession.KindApprovalResolved:
+				r.announce(id)
+			}
+		}
+	}()
 }
 
 // List reports every run, oldest first.
@@ -558,6 +589,13 @@ type RunOp struct {
 // The operations a run takes. They are named here rather than being an open
 // string so that a front-end's typo is a refusal with a list, and so that the
 // set a transport advertises is the set this file implements.
+// watchBuffer is how many event kinds a run's watcher may fall behind by. It is
+// generous because the four kinds it acts on are rare - a turn starting and
+// ending, an approval asked and answered - and everything else is skipped in
+// the loop below; a full channel would only mean one stale record until the
+// next event repairs it.
+const watchBuffer = 64
+
 const (
 	OpSubmit      = "submit"
 	OpInterrupt   = "interrupt"

@@ -8,7 +8,7 @@ export function ToastHost() {
     // reader announces a mutation inside a region it was already observing;
     // inserting the region and its text in one commit - which is what a
     // conditional render does - is announced by nothing.
-    <div role="status" aria-live="polite" className="sr-only">
+    <div role="status" aria-live="polite" aria-label="Notifications" className="sr-only">
       {toast}
     </div>
   )

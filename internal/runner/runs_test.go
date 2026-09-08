@@ -1587,9 +1587,10 @@ func TestEveryChangeToARecordIsAnnounced(t *testing.T) {
 		t.Fatalf("closing announced %+v, want a record with no session", got)
 	}
 
-	// A second message on a run whose record has not changed says nothing: the
-	// name and the id are already there, and a page must not be made to refetch
-	// the collection on every keystroke-sized action.
+	// A second message announces the turn starting and the turn ending, and
+	// nothing else: Running is read off the live session, so a record that says
+	// a conversation is running has changed when it stops. What must not happen
+	// is an announcement per keystroke-sized action, and a turn is not one.
 	second, err := runs.Create(context.Background(), runner.RunRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -1601,13 +1602,37 @@ func TestEveryChangeToARecordIsAnnounced(t *testing.T) {
 	// one is refused, and a turn still in flight when the cleanup closes the
 	// registry has its request to the provider cut off mid-body.
 	waitIdle(t, runs, second.ID)
-	_, before := last()
+	_, before := waitAnnounced(t, last, 0)
 	if err := runs.Apply(second.ID, runner.RunOp{Op: runner.OpSubmit, Text: "second"}); err != nil {
 		t.Fatal(err)
 	}
 	waitIdle(t, runs, second.ID)
-	if _, after := last(); after != before {
-		t.Errorf("a message that changed nothing announced %d changes", after-before)
+	got, after := waitAnnounced(t, last, before+2)
+	if after != before+2 {
+		t.Errorf("a second message announced %d changes, want the turn's start and end",
+			after-before)
+	}
+	if got.Running {
+		t.Error("the last announcement of a finished turn still says the run is running")
+	}
+}
+
+// waitAnnounced blocks until at least want announcements have been made, and
+// returns the last one. The watcher that announces a turn's end is a goroutine,
+// so a test that read straight away would be asking before it had run.
+func waitAnnounced(
+	t *testing.T,
+	last func() (runner.RunView, int),
+	want int,
+) (runner.RunView, int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		v, n := last()
+		if n >= want || time.Now().After(deadline) {
+			return v, n
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

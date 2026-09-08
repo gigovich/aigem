@@ -60,6 +60,14 @@ test('a bare carriage return is content, not a line break', () => {
 // The table is O(n·m), which is fine for a file a person is about to read and
 // hopeless for a generated one. Past the ceiling the sizes are reported rather
 // than the tab freezing.
+// The constant is asserted, not just the branch: a test that derives its input
+// from MAX_DIFF_LINES passes for any value of it, and the value is the only
+// thing between the browser and an O(n*m) table.
+test('the ceiling is where it was measured to belong', () => {
+  expect(MAX_DIFF_LINES).toBe(1500)
+  expect(MAX_DIFF_BYTES).toBe(512 * 1024)
+})
+
 test('refuses to diff a file too long to diff', () => {
   const long = `${'x\n'.repeat(MAX_DIFF_LINES + 1)}`
   const d = diffLines(long, 'y\n')

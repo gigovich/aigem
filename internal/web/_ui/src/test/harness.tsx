@@ -24,8 +24,14 @@ export type Daemon = {
   commands?: Command[]
   activity?: Activity[]
   events?: RunEvent[]
-  /** Answers for routes a case wants to fail or shape by hand. */
-  routes?: Record<string, () => Response>
+  /**
+   * Answers for routes a case wants to fail or shape by hand.
+   *
+   * A promise is allowed, and a promise that never settles is how a case holds
+   * a request open - which is the only way to see what the page draws while one
+   * is in flight.
+   */
+  routes?: Record<string, () => Response | Promise<Response>>
   /**
    * Render under StrictMode, which invokes every state updater twice.
    *

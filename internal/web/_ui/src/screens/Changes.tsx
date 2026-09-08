@@ -22,9 +22,10 @@ export function Changes({ runId, live, seq }: { runId: string; live: boolean; se
     files: null,
     error: '',
   })
-  // Reset during render: run A's diffs must not paint under run B's header for
-  // the frame between the commit and the effect.
-  if (state.runId !== runId) setState({ runId, files: null, error: '' })
+  // Read through the run it was read for, rather than reset when that changes:
+  // run A's diffs must not paint under run B's header even for the frame before
+  // the next answer arrives, and a comparison at the point of use cannot be a
+  // frame late the way a state update can.
   const { files, error } = state.runId === runId ? state : { files: null, error: '' }
 
   useEffect(() => {

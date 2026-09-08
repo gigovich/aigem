@@ -206,6 +206,15 @@ export const refresh = {
 /** How much of the feed a page holds; the screen shows the recent end of it. */
 const ACTIVITY_SHOWN = 200
 const ACTIVITY_PAGE = 1000
+/**
+ * How many pages the walk will read before giving up.
+ *
+ * The cursor check below is what ends it on a daemon behaving sensibly. This is
+ * what ends it on one that is not - a page whose last entry never advances is
+ * otherwise a loop that never returns, and the tab it is running in is the one
+ * a person is looking at.
+ */
+const ACTIVITY_PAGES = 50
 
 /**
  * The end of the activity feed, newest first.
@@ -220,7 +229,7 @@ const ACTIVITY_PAGE = 1000
 async function readActivityTail(): Promise<Activity[]> {
   const tail: Activity[] = []
   let since = 0
-  for (;;) {
+  for (let read = 0; read < ACTIVITY_PAGES; read++) {
     const page = await api.activity(since, ACTIVITY_PAGE)
     if (page.length === 0) break
     tail.push(...page)

@@ -63,10 +63,8 @@ test('a confirmation announces itself', async () => {
   // The announcement is the region that was already in the document, not the
   // visible plate beside it: a region inserted together with its text is
   // announced by nothing.
-  const regions = await screen.findAllByRole('status')
-  const toast = regions.find((r) => r.textContent === 'Theme: latte')
-  expect(toast).toBeDefined()
-  expect(toast).toHaveAttribute('aria-live', 'polite')
+  const toast = await screen.findByRole('status', { name: 'Notifications' })
+  await waitFor(() => expect(toast).toHaveTextContent('Theme: latte'))
 })
 
 // The context bar is a number, and a number drawn as a coloured strip is not a
@@ -90,13 +88,23 @@ test('the context bar reports its value', async () => {
   expect(bar).toHaveAccessibleName(/50,000 \/ 200,000 tokens/)
 })
 
-// The region has to be in the document before the text arrives. This is the
-// check that keeps a future "return null when empty" from silencing the toast.
-test('the announcement region is present before there is anything to announce', async () => {
-  await mountApp()
-  const regions = screen.getAllByRole('status')
-  expect(regions.some((r) => r.getAttribute('aria-live') === 'polite')).toBe(true)
-  expect(regions.every((r) => r.textContent === '')).toBe(true)
+// Each region has to be in the document before its text arrives, and each is
+// asserted by name: over "some status region exists" the check passes on any
+// one of the three, so removing another silences it with the test still green.
+test('every announcement region is present before there is anything to announce', async () => {
+  const h = await mountApp({ runs: [RUN] })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+  for (const name of ['Notifications', 'Connection', 'Stream']) {
+    const region = screen.getByRole('status', { name })
+    expect(region, name).toHaveAttribute('aria-live', 'polite')
+    expect(region.textContent, name).toBe('')
+  }
+  // The approval region is assertive: it is the moment the agent stops and
+  // waits for a person, and a polite one waits for a pause that may not come.
+  const approval = screen.getByRole('region', { name: 'Approval' })
+  expect(approval).toHaveAttribute('aria-live', 'assertive')
+  expect(approval.textContent).toBe('')
 })
 
 // A run whose transcript is folded outside React must not fold twice under

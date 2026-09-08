@@ -160,19 +160,30 @@ func TestTheBrowserKnowsThisPackagesEventFields(t *testing.T) {
 	}
 }
 
-// The approval a person answers, and the answer they give. Both cross the wire
-// inside an event, and both are read by name in the browser.
+// The approval a person answers, the answer they give, and who is attending.
+// All three cross the wire inside an event and are read by name in the browser.
+//
+// Each pair is compared inside its own type and in both directions. Searching
+// the whole file instead would pass on any field whose name happens to appear
+// somewhere else in it - `name`, `text` and `id` occur in nearly every type -
+// and one direction would let the browser read a field the daemon never writes.
 func TestTheBrowserKnowsTheApprovalFields(t *testing.T) {
-	for _, name := range []string{"Approval", "Option", "Client"} {
-		want := goJSONTags(t, name)
-		source := readBrowserWire(t)
+	for _, pair := range []struct{ goType, tsType string }{
+		{"Approval", "Approval"},
+		{"Option", "ApprovalOption"},
+		{"Client", "PresenceClient"},
+	} {
+		want := goJSONTags(t, pair.goType)
+		got := browserFields(t, pair.tsType)
 		for _, field := range want {
-			// Matched as a property declaration - preceded by a brace, a
-			// semicolon or whitespace - so a field that only appears inside a
-			// longer word or in prose does not pass. A one-line object type is
-			// as valid a declaration as an indented one.
-			if !regexp.MustCompile(`[{;\s]` + regexp.QuoteMeta(field) + `\??:`).MatchString(source) {
-				t.Errorf("the browser does not read %s.%s; add it to %s", name, field, browserWire)
+			if !contains(got, field) {
+				t.Errorf("the browser's %s has no %q; add it to %s", pair.tsType, field, browserWire)
+			}
+		}
+		for _, field := range got {
+			if !contains(want, field) {
+				t.Errorf("the browser's %s reads %q, which uisession.%s does not write; "+
+					"remove it from %s", pair.tsType, field, pair.goType, browserWire)
 			}
 		}
 	}
@@ -219,33 +230,86 @@ func goJSONTags(t *testing.T, name string) []string {
 	return out
 }
 
-var browserFieldLine = regexp.MustCompile(`^\s+([a-z_]+)\??:`)
+// browserFieldLine matches one property declaration. The optional quotes are
+// what stops a browser-only field being smuggled in as `'x-run'?: string`,
+// which an unquoted-only pattern cannot see.
+var browserFieldLine = regexp.MustCompile(`^\s*['"]?([a-z_][a-z0-9_-]*)['"]?\??:`)
 
-// browserEventFields reads the property names off the browser's RunEvent.
 func browserEventFields(t *testing.T) []string {
 	t.Helper()
-	source := readBrowserWire(t)
-	const open = "export type RunEvent = {"
+	fields := browserFields(t, "RunEvent")
+	if len(fields) < 10 {
+		t.Fatalf("found only %d fields on the browser's RunEvent", len(fields))
+	}
+	return fields
+}
+
+// browserFields reads the property names off one of the browser's object types.
+//
+// Comments are stripped first: a field that exists only in prose - "blob: the
+// daemon kept the whole body" inside a block comment - would otherwise count as
+// declared, which is the one way a removed field passes unnoticed.
+func browserFields(t *testing.T, name string) []string {
+	t.Helper()
+	source := stripComments(readBrowserWire(t))
+	open := "export type " + name + " = {"
 	start := strings.Index(source, open)
 	if start < 0 {
 		t.Fatalf("%s does not declare %s", browserWire, open)
 	}
 	rest := source[start+len(open):]
+	// A one-line type ends at its brace; a multi-line one at a brace in the
+	// first column.
 	end := strings.Index(rest, "\n}")
+	if brace := strings.Index(rest, "}"); brace >= 0 && (end < 0 || brace < end) {
+		end = brace
+	}
 	if end < 0 {
-		t.Fatalf("%s: the RunEvent type is not closed", browserWire)
+		t.Fatalf("%s: the %s type is not closed", browserWire, name)
 	}
 	var fields []string
-	for _, line := range strings.Split(rest[:end], "\n") {
-		if m := browserFieldLine.FindStringSubmatch(line); m != nil {
+	// Split on both, so a one-line `{ a: X; b: Y }` reads as two declarations.
+	for _, part := range strings.FieldsFunc(rest[:end], func(r rune) bool {
+		return r == '\n' || r == ';'
+	}) {
+		if m := browserFieldLine.FindStringSubmatch(part); m != nil {
 			fields = append(fields, m[1])
 		}
 	}
-	if len(fields) < 10 {
-		t.Fatalf("found only %d fields on the browser's RunEvent", len(fields))
+	if len(fields) == 0 {
+		t.Fatalf("%s: found no fields on %s", browserWire, name)
 	}
 	sort.Strings(fields)
 	return fields
+}
+
+// stripComments blanks out // and /* */ runs. It is not a TypeScript parser and
+// does not need to be: it never sees a string literal containing a comment
+// marker, because this file's declarations are types.
+func stripComments(source string) string {
+	var out strings.Builder
+	for i := 0; i < len(source); {
+		switch {
+		case strings.HasPrefix(source[i:], "//"):
+			end := strings.IndexByte(source[i:], '\n')
+			if end < 0 {
+				return out.String()
+			}
+			i += end
+		case strings.HasPrefix(source[i:], "/*"):
+			end := strings.Index(source[i:], "*/")
+			if end < 0 {
+				return out.String()
+			}
+			// The newlines are kept so line-based reading still lines up.
+			out.WriteString(strings.Repeat("\n", strings.Count(source[i:i+end], "\n")))
+			i += end + 2
+		default:
+			out.WriteByte(source[i])
+			i++
+		}
+	}
+	return out.String()
 }
 
 func readBrowserWire(t *testing.T) string {

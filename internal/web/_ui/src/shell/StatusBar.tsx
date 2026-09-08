@@ -25,7 +25,12 @@ export function StatusBar() {
       <span style={{ color: 'var(--running)' }}>● {counts.running} running</span>
       <span style={{ color: 'var(--attention)' }}>! {counts.waiting} needs attention</span>
       {/* The region is permanent; only the sentence inside it appears. */}
-      <span role="status" aria-live="polite" style={{ color: 'var(--warning)' }}>
+      <span
+        role="status"
+        aria-live="polite"
+        aria-label="Connection"
+        style={{ color: 'var(--warning)' }}
+      >
         {control === 'open' ? '' : '◐ reconnecting'}
       </span>
       <span className="ml-auto">⌘K commands · ⌘J quick chat · / filter</span>

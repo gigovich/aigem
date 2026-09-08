@@ -162,7 +162,12 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                 {/* Mounted always, with only the sentence appearing: a live
                     region inserted together with its text is announced by
                     nothing. */}
-                <span className="font-mono text-[10.5px] text-warning" role="status">
+                <span
+                  className="font-mono text-[10.5px] text-warning"
+                  role="status"
+                  aria-live="polite"
+                  aria-label="Stream"
+                >
                   {state === 'open' ? '' : state === 'gone' ? 'stream ended' : 'reconnecting'}
                 </span>
                 <div className="ml-auto flex flex-none gap-[6px]">
