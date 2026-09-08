@@ -300,3 +300,38 @@ test('a diff names its changed lines and says nothing about the rest', async () 
   // "context" appears nowhere: it is the word the reader would wade through.
   expect(body?.textContent).not.toContain('context')
 })
+
+// The status bar has been promising `/ filter` since the shell was built. A
+// project can declare a thousand models; a table that long is searched, not
+// read.
+test('the models table filters, and slash focuses the filter', async () => {
+  const user = userEvent.setup()
+  await mountApp({ models: MODELS })
+  go('models')
+
+  const box = await screen.findByRole('textbox', { name: 'Filter models' })
+  expect(screen.getByText('GPT-5')).toBeInTheDocument()
+
+  await user.type(box, 'opus')
+  expect(screen.getByText('Claude Opus 5')).toBeInTheDocument()
+  expect(screen.queryByText('GPT-5')).not.toBeInTheDocument()
+
+  await user.clear(box)
+  await user.type(box, 'zzz')
+  expect(await screen.findByText(/No model matches/)).toBeInTheDocument()
+})
+
+test('slash from the page focuses the filter, and from a field types a slash', async () => {
+  const user = userEvent.setup()
+  await mountApp({ models: MODELS })
+  go('models')
+  const box = await screen.findByRole('textbox', { name: 'Filter models' })
+
+  await user.click(document.body)
+  await user.keyboard('/')
+  expect(box).toHaveFocus()
+  expect(box).toHaveValue('')
+
+  await user.keyboard('a/b')
+  expect(box).toHaveValue('a/b')
+})

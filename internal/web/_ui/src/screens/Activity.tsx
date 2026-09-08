@@ -75,7 +75,7 @@ export function Activity() {
             </div>
           )
         })}
-        {activity.length === 0 && <EmptyState title="Nothing has happened here yet." />}
+        {activity.length === 0 && <EmptyState title="Nothing has run here yet." />}
       </div>
     </>
   )

@@ -27,8 +27,16 @@ export function Models({ selected }: { selected?: string }) {
   }))
   const [confirming, setConfirming] = useState<Model | null>(null)
   const [login, setLogin] = useState<string>('')
+  const [filter, setFilter] = useState('')
 
   const inUse = (ref: string) => runs.filter((r) => r.live && r.model === ref).length
+  // What `/` focuses, and what the status bar has been promising. A project can
+  // declare a thousand models in .aigem/models.json; a table that long is not
+  // read, it is searched.
+  const needle = filter.trim().toLowerCase()
+  const shown = needle
+    ? models.filter((m) => `${m.name} ${m.ref}`.toLowerCase().includes(needle))
+    : models
 
   const makeDefault = async (m: Model) => {
     setConfirming(null)
@@ -164,20 +172,32 @@ export function Models({ selected }: { selected?: string }) {
           The routing pool available to agents. Select a row to inspect it; the default is what a
           new session starts on{defaultModel ? ` — currently ${defaultModel}` : ''}.
         </p>
+        <input
+          data-filter
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter models…  /"
+          aria-label="Filter models"
+          className="mt-[10px] h-[26px] w-[280px] max-w-full rounded-md border border-line bg-bg px-[10px] text-[12px] outline-none focus:border-primary"
+        />
       </div>
       <DataGrid
         label="Models"
         columns={columns}
-        rows={models}
+        rows={shown}
         rowKey={(m) => m.ref}
         minWidth={720}
         selected={(m) => m.ref === selected}
         onSelect={(m) => navigate({ screen: 'models', id: m.ref })}
         empty={
-          <EmptyState
-            title="No models are configured."
-            detail="Add one to .aigem/models.json, or sign a provider in from the inspector."
-          />
+          needle ? (
+            <EmptyState inline title={`No model matches “${filter.trim()}”.`} />
+          ) : (
+            <EmptyState
+              title="No models are configured."
+              detail="Add one to .aigem/models.json, or sign a provider in from the inspector."
+            />
+          )
         }
       />
 
