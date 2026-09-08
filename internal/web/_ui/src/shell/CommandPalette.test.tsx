@@ -1,7 +1,7 @@
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
-import { mountApp } from '@/test/harness'
+import { mountApp, RUN } from '@/test/harness'
 import { filter, ordered, score } from './commands'
 import type { PaletteItem } from './commands'
 
@@ -119,4 +119,38 @@ test('offers only what the feature map allows', async () => {
   expect(labels.some((l) => l.includes('New session'))).toBe(true)
   expect(labels.some((l) => l.includes('Activity feed'))).toBe(false)
   expect(labels.some((l) => l.includes('Switch model'))).toBe(false)
+})
+
+// The daemon spells its commands with the slash already on ("/new"). A palette
+// that added another would list "//new", which nobody finds by typing its name.
+test('lists the daemon catalogue without doubling the slash', async () => {
+  const user = userEvent.setup()
+  await mountApp({
+    commands: [{ name: '/new', description: 'Start a fresh session' }],
+  })
+
+  await user.keyboard('{Control>}k{/Control}')
+  await screen.findByRole('dialog', { name: 'Command palette' })
+  const labels = screen.getAllByRole('option').map((o) => o.textContent ?? '')
+
+  expect(labels.some((l) => l.includes('/new'))).toBe(true)
+  expect(labels.some((l) => l.includes('//new'))).toBe(false)
+})
+
+// Choosing one drops the person into the composer with it typed, which is where
+// a slash command is entered anyway.
+test('a command from the palette lands in the composer', async () => {
+  const user = userEvent.setup()
+  await mountApp({
+    runs: [RUN],
+    commands: [{ name: '/compact', description: 'Compact the conversation' }],
+  })
+
+  await user.keyboard('{Control>}k{/Control}')
+  await screen.findByRole('dialog', { name: 'Command palette' })
+  await user.keyboard('compact{Enter}')
+
+  await waitFor(() =>
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('/compact '),
+  )
 })

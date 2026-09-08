@@ -47,18 +47,14 @@ import { Modal } from '@/ui/Modal'
  */
 export default function App() {
   const route = useSyncExternalStore(subscribeRoute, getRoute, getRoute)
-  const { loading, fatal, banner, paletteOpen, quickOpen, activeRun, runs, features } = useApp(
-    (s) => ({
-      loading: s.loading,
-      fatal: s.fatal,
-      banner: s.banner,
-      paletteOpen: s.paletteOpen,
-      quickOpen: s.quickOpen,
-      activeRun: s.activeRun,
-      runs: s.runs,
-      features: s.meta?.features ?? {},
-    }),
-  )
+  // The whole state, not a slice: the palette is built out of what the daemon
+  // offers, and a shell that subscribed to a subset would go on offering the
+  // commands that were true when it last re-rendered. The store moves when a
+  // collection is refetched or a layer opens - never per event of a
+  // conversation, which lives in the run hook's own state.
+  const app = useApp((s) => s)
+  const { loading, fatal, banner, paletteOpen, quickOpen, activeRun, runs } = app
+  const features = app.meta?.features ?? {}
   const inspector = useInspectorContent()
   const [signedIn, setSignedIn] = useState(false)
   const [query, setQuery] = useState('')
@@ -133,11 +129,8 @@ export default function App() {
   }, [])
 
   const items = useMemo(
-    () => paletteItems(store.get(), { newSession: () => void newSession() }),
-    // The palette is rebuilt whenever what the daemon offers moves. Reading the
-    // store inside the memo rather than subscribing to all of it keeps the
-    // shell from re-rendering on every event of every conversation.
-    [newSession],
+    () => paletteItems(app, { newSession: () => void newSession() }),
+    [app, newSession],
   )
   const matches = useMemo(() => ordered(items, query), [items, query])
 

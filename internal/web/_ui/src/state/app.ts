@@ -64,7 +64,15 @@ export type AppState = {
    * would be three against a daemon that allows 64 across every tab.
    */
   activeRun: string
-  /** Text the palette put in the composer, for the screen to pick up. */
+  /**
+   * The composer's text.
+   *
+   * It lives here rather than in the chat screen because the palette writes to
+   * it: a command chosen there has to land in a composer that is already
+   * mounted, and a one-shot handover would only reach one that mounts after.
+   * Keeping it here also means the half-written message survives a look at the
+   * models screen.
+   */
   draft: string
 }
 
@@ -268,10 +276,8 @@ export function setActiveRun(id: string) {
   patch({ activeRun: id })
 }
 
-export function takeDraft(): string {
-  const draft = store.get().draft
-  if (draft) patch({ draft: '' })
-  return draft
+export function setDraft(draft: string) {
+  patch({ draft })
 }
 
 /** The design's breakpoint: below it the inspector closes and stays closed. */

@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
 import { ago, percent } from '@/lib/format'
 import { navigate } from '@/lib/route'
 import { runStatus } from '@/lib/wire'
 import type { Decision, Run, RunOp } from '@/lib/wire'
-import { setActiveRun, takeDraft, useApp } from '@/state/app'
+import { setActiveRun, setDraft, useApp } from '@/state/app'
 import { toRows } from '@/state/eventrow'
 import { usePublishInspector } from '@/state/inspector'
 import type { RunView } from '@/state/run'
@@ -31,21 +31,12 @@ type Props = {
  * one a person steers; in phase one only the second exists, and this is it.
  */
 export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
-  const { runs, live } = useApp((s) => ({
+  const { runs, live, text } = useApp((s) => ({
     runs: s.runs,
     live: s.runs.filter((r) => r.live).length,
+    text: s.draft,
   }))
-  // A command chosen from the palette lands here, in the composer, which is
-  // where a slash command is typed anyway. Taken as the initial value rather
-  // than set from an effect: the composer must never paint empty first and
-  // then fill in, which is what steals a keystroke from someone already typing.
-  const [text, setText] = useState(takeDraft)
-  const composer = useRef<HTMLTextAreaElement>(null)
   const record = runs.find((r) => r.id === runId)
-
-  useEffect(() => {
-    if (composer.current?.value) composer.current.focus()
-  }, [])
 
   const rows = useMemo(() => toRows(run.events), [run.events])
   const pending = run.pending[0]
@@ -88,7 +79,7 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
     } else {
       send({ op: 'submit', text: value })
     }
-    setText('')
+    setDraft('')
   }
 
   const decide = (id: string, decision: Decision) =>
@@ -227,10 +218,10 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
               <div className="max-w-[84ch]">
                 <div className="flex gap-2">
                   <textarea
-                    ref={composer}
+                    data-composer
                     rows={2}
                     value={text}
-                    onChange={(e) => setText(e.target.value)}
+                    onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
                       e.preventDefault()

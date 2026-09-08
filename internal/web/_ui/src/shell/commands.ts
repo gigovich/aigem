@@ -9,7 +9,7 @@
 
 import { navigate } from '@/lib/route'
 import type { Route } from '@/lib/route'
-import { flash, setPalette, setQuick, store, toggleDensity, toggleTheme } from '@/state/app'
+import { flash, setDraft, setPalette, setQuick, store, toggleDensity, toggleTheme } from '@/state/app'
 import type { AppState } from '@/state/app'
 
 export type PaletteGroup = 'Navigate' | 'Create' | 'Execute' | 'Preferences'
@@ -106,20 +106,29 @@ export function paletteItems(state: AppState, actions: { newSession: () => void 
       setQuick(true)
     },
   })
-  // The daemon's own catalogue. It registers none yet, and when it does they
-  // are run inside a conversation - so this drops the person into the composer
-  // with the command typed, which is where a slash command is entered anyway.
+  // The daemon's own catalogue. A command is run inside a conversation, so this
+  // drops the person into the composer with it typed, which is where a slash
+  // command is entered anyway.
+  //
+  // The daemon spells these with the slash already on ("/new"), so it is put
+  // back only when it is missing - a label of "//new" would be a command nobody
+  // could find by typing its name.
   for (const c of state.commands) {
+    const name = c.name.startsWith('/') ? c.name : `/${c.name}`
     items.push({
-      id: `cmd-${c.name}`,
-      label: `/${c.name}`,
+      id: `cmd-${name}`,
+      label: name,
       hint: c.description,
       icon: '›',
       group: 'Execute',
       run: () => {
         setPalette(false)
-        store.set((s) => ({ ...s, draft: `/${c.name} ` }))
+        setDraft(`${name} `)
         navigate({ screen: 'chat' })
+        // After the composer has been re-rendered with the text in it: the
+        // palette has no reference to it, and the point of choosing a command
+        // here is to go on typing its argument.
+        queueMicrotask(() => document.querySelector<HTMLElement>('[data-composer]')?.focus())
       },
     })
   }
