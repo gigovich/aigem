@@ -91,6 +91,14 @@ export function connectControl(
     // Before the gap check: a page that has not been given a base has nothing
     // to compare against, and the daemon sends hello first on every connection.
     if (!based) return
+    // A frame with no revision is a frame this page cannot place. Comparing
+    // against it poisons the watermark to NaN, after which every comparison is
+    // false and no gap is ever reported again on this connection - a page that
+    // has stopped noticing it is stale, silently and for good.
+    if (typeof msg.rev !== 'number' || !Number.isFinite(msg.rev)) {
+      handlers.onGap()
+      return
+    }
     if (msg.rev > rev + 1) handlers.onGap()
     rev = Math.max(rev, msg.rev)
     // "A delta that arrives with no data carries nothing the client can apply"

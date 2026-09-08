@@ -229,6 +229,11 @@ type liveRun struct {
 	// release is Opened.Release, cleared as it is called so that closing a run
 	// twice does not release its environment twice.
 	release func()
+	// version counts the changes to this row. It exists so that a view built
+	// outside the lock - which is the only way to build one, since it asks the
+	// session questions - can be discarded when the row moved while it was
+	// being built. See publish.
+	version uint64
 }
 
 // NewRuns loads the table and returns the registry.
@@ -417,19 +422,21 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 // keeping its own table honest has no business appearing on the presence list
 // the other tabs are shown. The channel is closed when the session is, which is
 // what ends this goroutine.
+//
+// What arrives is a wake-up rather than an event, so nothing can be missed: the
+// announcement reads the run as it is at that moment, and a second wake-up
+// while one is pending would say the same thing.
 func (r *Runs) watch(id string, sess *Session) {
-	kinds, stop, err := sess.Local.Watch(watchBuffer)
+	moved, stop, err := sess.Local.Watch(
+		uisession.KindTurnStart, uisession.KindTurnEnd,
+		uisession.KindApprovalRequest, uisession.KindApprovalResolved)
 	if err != nil {
 		return
 	}
 	go func() {
 		defer stop()
-		for kind := range kinds {
-			switch kind {
-			case uisession.KindTurnStart, uisession.KindTurnEnd,
-				uisession.KindApprovalRequest, uisession.KindApprovalResolved:
-				r.announce(id)
-			}
+		for range moved {
+			r.announce(id)
 		}
 	}()
 }
@@ -589,13 +596,6 @@ type RunOp struct {
 // The operations a run takes. They are named here rather than being an open
 // string so that a front-end's typo is a refusal with a list, and so that the
 // set a transport advertises is the set this file implements.
-// watchBuffer is how many event kinds a run's watcher may fall behind by. It is
-// generous because the four kinds it acts on are rare - a turn starting and
-// ending, an approval asked and answered - and everything else is skipped in
-// the loop below; a full channel would only mean one stale record until the
-// next event repairs it.
-const watchBuffer = 64
-
 const (
 	OpSubmit      = "submit"
 	OpInterrupt   = "interrupt"
@@ -670,17 +670,52 @@ func (r *Runs) Apply(id string, op RunOp) error {
 // announce publishes a run's current record. It is for a change that alters
 // what a record reports without altering the record itself - the live
 // session's own state, which view() reads.
-func (r *Runs) announce(id string) {
+func (r *Runs) announce(id string) { r.publish(id) }
+
+// publish builds a run's view and sends it, unless the row moved while it was
+// being built.
+//
+// The window is wide and the consequence is severe. view() asks the session
+// five questions, each taking the session's own mutex, and none of that can be
+// done under this registry's lock - the two are deliberately never held
+// together. A CloseRun landing in the middle would otherwise publish the closed
+// record first and this stale one after, so the last thing every tab is told
+// about a conversation that has ended is that it is open, live and running -
+// and `live` is the field a client reads before it decides whether to keep
+// dialling.
+//
+// The row's version is what closes it: a change that moved the row published
+// its own view, and this one is then not worth sending. Dropping it is safe in
+// a way that sending it is not, because the newer one is strictly more true.
+// betweenBuildAndPublish is a seam for the test that proves the check below is
+// load-bearing. It is nil in every build but the test binary's.
+var betweenBuildAndPublish func()
+
+func (r *Runs) publish(id string) {
 	r.mu.Lock()
 	lr := r.byID[id]
 	if lr == nil {
 		r.mu.Unlock()
 		return
 	}
-	rec, sess := lr.rec, lr.sess
+	rec, sess, version := lr.rec, lr.sess, lr.version
 	r.mu.Unlock()
 
-	r.notify(view(rec, sess))
+	v := view(rec, sess)
+	// The window this exists to close, made reachable: building the view above
+	// asks the session five questions and cannot hold the registry's lock, so
+	// a close can land here. Nothing sets this outside the test binary.
+	if betweenBuildAndPublish != nil {
+		betweenBuildAndPublish()
+	}
+
+	r.mu.Lock()
+	stale := r.byID[id] != lr || lr.version != version
+	r.mu.Unlock()
+	if stale {
+		return
+	}
+	r.notify(v)
 }
 
 // setModel records the model a run switched to. The switch has already
@@ -696,11 +731,11 @@ func (r *Runs) setModel(id, ref string) {
 	}
 	lr.rec.Model = ref
 	lr.rec.Updated = r.now()
+	lr.version++
 	r.saveLocked()
-	rec, sess := lr.rec, lr.sess
 	r.mu.Unlock()
 
-	r.notify(view(rec, sess))
+	r.publish(id)
 }
 
 // CloseRun saves the conversation and ends the session, leaving the record and
@@ -743,6 +778,7 @@ func (r *Runs) CloseRun(id string) error {
 	}
 	lr.rec.Status = RunClosed
 	lr.rec.Updated = r.now()
+	lr.version++
 	r.saveLocked()
 	rec := lr.rec
 	r.mu.Unlock()
@@ -899,11 +935,11 @@ func (r *Runs) sync(id string, sess *Session) {
 		return
 	}
 	lr.rec.Updated = r.now()
+	lr.version++
 	r.saveLocked()
-	rec := lr.rec
 	r.mu.Unlock()
 
-	r.notify(view(rec, sess))
+	r.publish(id)
 }
 
 // row reads one record and its session under the lock, so that everything after

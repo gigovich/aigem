@@ -55,6 +55,14 @@ export type RunView = {
   todos: TodoItem[]
   agents: AgentNode[]
   files: ChangedFile[]
+  /**
+   * How many times the run said it wrote something.
+   *
+   * Distinct from `files.length`, which counts paths: a conversation editing
+   * one file over and over moves this and not that, and it is this that says
+   * the working tree is worth reading again.
+   */
+  writes: number
   clients: PresenceClient[]
   /** The last error the conversation reported, for the header. */
   error: string
@@ -82,6 +90,7 @@ export function emptyRun(): RunView {
     todos: [],
     agents: [],
     files: [],
+    writes: 0,
     clients: [],
     error: '',
   }
@@ -155,6 +164,7 @@ export function apply(view: RunView, e: RunEvent): RunView {
       )
       break
     case EventKind.FileChanged:
+      next.writes = next.writes + 1
       if (e.path && !next.files.some((f) => f.path === e.path)) {
         next.files = [...next.files, { path: e.path, created: e.created === true }]
       }

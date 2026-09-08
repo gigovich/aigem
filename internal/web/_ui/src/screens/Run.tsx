@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { clock, elapsed, tokens as tokenLabel } from '@/lib/format'
 import { navigate } from '@/lib/route'
 import { readable } from '@/lib/text'
-import { runStatus } from '@/lib/wire'
+import { liveStatus } from '@/state/run'
 import type { RunOp } from '@/lib/wire'
 import type { RunSocketState } from '@/lib/socket'
 import { useApp } from '@/state/app'
@@ -77,7 +77,7 @@ export function Run({ run, runId, state, send }: Props) {
           <h1 className="m-0 text-[15px] font-semibold">
             {run.title || record.title || 'Untitled run'}
           </h1>
-          <StatusChip status={runStatus(record)} />
+          <StatusChip status={liveStatus(record, run)} />
           <span className="font-mono text-[10.5px] text-fg-subtle">
             {elapsed(record.created)} elapsed
           </span>
@@ -130,7 +130,7 @@ export function Run({ run, runId, state, send }: Props) {
             </span>
           </div>
           {view === 'changes' && (
-            <Changes runId={runId} live={record.live} seq={run.files.length} />
+            <Changes runId={runId} live={record.live} seq={run.writes} />
           )}
           {view === 'events' && (
           <EventStream

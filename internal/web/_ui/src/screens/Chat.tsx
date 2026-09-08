@@ -3,7 +3,7 @@ import { ago, percent } from '@/lib/format'
 import { navigate } from '@/lib/route'
 import { runStatus } from '@/lib/wire'
 import type { Decision, Run, RunOp } from '@/lib/wire'
-import { refresh, setActiveRun, useApp } from '@/state/app'
+import { setActiveRun, useApp } from '@/state/app'
 
 import { usePublishInspector } from '@/state/inspector'
 import { liveStatus } from '@/state/run'
@@ -33,9 +33,10 @@ type Props = {
  * one a person steers; in phase one only the second exists, and this is it.
  */
 export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
-  const { runs, pendingCommand } = useApp((s) => ({
+  const { runs, pendingCommand, opening } = useApp((s) => ({
     runs: s.runs,
     pendingCommand: s.pendingCommand,
+    opening: s.opening,
   }))
   const record = runs.find((r) => r.id === runId)
 
@@ -119,8 +120,9 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
           <button
             type="button"
             onClick={onNew}
+            disabled={opening}
             title="New session"
-            className="ml-auto h-5 cursor-pointer rounded-[5px] border border-line px-[7px] text-[10.5px] text-fg-muted hover:border-line-strong hover:text-fg"
+            className="ml-auto h-5 rounded-[5px] border border-line px-[7px] text-[10.5px] text-fg-muted enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
           >
             New
           </button>
@@ -149,7 +151,7 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
           <EmptyState
             title="No session yet."
             detail="Start one to drive an agent step by step."
-            action={{ label: 'New session', onClick: onNew }}
+            action={{ label: opening ? 'Starting…' : 'New session', onClick: onNew, busy: opening }}
           />
         ) : (
           <>
@@ -173,15 +175,13 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                 <div className="ml-auto flex flex-none gap-[6px]">
                   <button
                     type="button"
-                    onClick={() => {
-                      // Step mode is read off the live session when a record is
-                      // built, and the daemon announces a record only when the
-                      // conversation is opened, named, switched or closed - so
-                      // the answer to this op arrives nowhere unless it is
-                      // asked for. Without the reread the button never comes
-                      // back off.
-                      if (send({ op: 'step_mode', on: !record.step })) void refresh.runs()
-                    }}
+                    // Nothing is read back: the daemon announces the changed
+                    // record, and this tab applies it like any other. Asking
+                    // over HTTP as well would be racing the socket this line
+                    // just wrote to - the request can be answered before the
+                    // operation is applied, and the answer would then arrive
+                    // after the announcement and undo it.
+                    onClick={() => send({ op: 'step_mode', on: !record.step })}
                     title="Pause before each tool call"
                     className="h-[26px] cursor-pointer rounded-md border px-[10px] text-[11.5px] whitespace-nowrap"
                     style={{

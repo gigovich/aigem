@@ -1799,3 +1799,73 @@ func TestSwitchingModelUpdatesTheRecordAndTheContextWindow(t *testing.T) {
 		t.Errorf("the record still names %q, want the model the run switched to", after.Model)
 	}
 }
+
+// The last thing a page is told about a run that ended must not be that it is
+// running.
+//
+// A published view is built outside the registry's lock, because building one
+// asks the session five questions and the two locks are deliberately never held
+// together. A close landing in that window would otherwise publish the closed
+// record first and the stale one after - and `live` is the field a client reads
+// before it decides whether to go on dialling.
+func TestTheLastWordOnAClosedRunIsThatItIsClosed(t *testing.T) {
+	cwd := project(t)
+	var mu sync.Mutex
+	var seen []runner.RunView
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Notify: func(v runner.RunView) {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, v)
+		},
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			return runner.NewSession(runner.Spec{
+				Mode: req.Mode, Tools: reg, Backend: deadBackend(),
+			}), runner.Opened{Model: "local/one"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	v, err := runs.Create(context.Background(), runner.RunRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The close happens while the announcement's view is built and not yet
+	// sent. That is the ordering the check guards against, and it is otherwise
+	// a window measured in microseconds.
+	closed := make(chan struct{})
+	restore := runner.PauseBetweenBuildAndPublish(func() {
+		select {
+		case <-closed:
+			return
+		default:
+		}
+		if err := runs.CloseRun(v.ID); err != nil {
+			t.Error(err)
+		}
+		close(closed)
+	})
+	defer restore()
+
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpStepMode, On: true}); err != nil {
+		t.Fatal(err)
+	}
+	<-closed
+
+	mu.Lock()
+	defer mu.Unlock()
+	var last runner.RunView
+	for _, got := range seen {
+		if got.ID == v.ID {
+			last = got
+		}
+	}
+	if last.Live || last.Status != runner.RunClosed {
+		t.Fatalf("the last word on %s was %+v, want a record with no session", v.ID, last)
+	}
+}

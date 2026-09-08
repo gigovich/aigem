@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 type Props = {
   title: string
   detail?: ReactNode
-  action?: { label: string; onClick: () => void }
+  action?: { label: string; onClick: () => void; busy?: boolean }
   /** The flush form the session list uses inside a narrow column. */
   inline?: boolean
 }
@@ -25,7 +25,8 @@ export function EmptyState({ title, detail, action, inline = false }: Props) {
         <button
           type="button"
           onClick={action.onClick}
-          className="mt-3 h-[27px] cursor-pointer rounded-md border border-primary bg-primary px-[11px] text-[11.5px] font-medium text-bg hover:brightness-110"
+          disabled={action.busy}
+          className="mt-3 h-[27px] rounded-md border border-primary bg-primary px-[11px] text-[11.5px] font-medium text-bg enabled:cursor-pointer enabled:hover:brightness-110 disabled:opacity-50"
         >
           {action.label}
         </button>

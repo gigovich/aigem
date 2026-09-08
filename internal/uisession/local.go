@@ -197,8 +197,8 @@ type Local struct {
 
 	done   chan struct{}
 	closed bool
-	// watchers are told the kind of each event; see Watch.
-	watchers    []chan Kind
+	// watchers are told the kinds they asked for; see Watch.
+	watchers    []*watcher
 	metaEmitted bool
 }
 
@@ -323,7 +323,7 @@ func (l *Local) Close() {
 	// list it would search is empty.
 	if first {
 		for _, w := range watchers {
-			close(w)
+			close(w.ch)
 		}
 	}
 
@@ -397,14 +397,24 @@ func (l *Local) emitLocked(ev Event) {
 	for _, s := range l.subs {
 		s.Push(ev)
 	}
-	// Watchers are not clients: they are told the kind and nothing else, they
-	// never block the turn that emitted, and a full one is skipped. What they
-	// are for is a caller that has to notice a state change - a run registry
+	// Watchers are not clients: they are woken, and nothing else. What they are
+	// for is a caller that has to notice a state change - a run registry
 	// keeping a record honest - and would otherwise have to attend the
 	// conversation to do it.
+	//
+	// A wake-up is coalescing rather than queued, which is what makes it
+	// impossible to lose. A queue can overflow, and the one kind whose loss is
+	// not self-healing is the last one: after a turn ends there may be no next
+	// event at all, and a record dropped at that moment says the conversation
+	// is running for as long as it exists. A pending wake-up already promises
+	// what a second one would say, because the reader looks at the session as
+	// it is when it wakes and not at what it was told.
 	for _, w := range l.watchers {
+		if !w.wants[ev.Kind] {
+			continue
+		}
 		select {
-		case w <- ev.Kind:
+		case w.ch <- struct{}{}:
 		default:
 		}
 	}
@@ -463,36 +473,55 @@ func (l *Local) replayLocked(since uint64) ([]Event, error) {
 	return out, nil
 }
 
-// Watch reports the kind of every event this session emits, to something that
-// is not a client.
+// Watch wakes something that is not a client when one of the given kinds
+// happens.
 //
 // It differs from Subscribe in every way that matters for that: a watcher does
-// not appear in presence, gets no backlog, and is skipped rather than
-// disconnected when it falls behind - a missed kind leaves whatever it was
-// keeping current one event stale, and the next one repairs it. The channel is
-// closed when the session is.
-func (l *Local) Watch(buffer int) (<-chan Kind, func(), error) {
+// not appear in presence, gets no backlog, and is never blocked on. The channel
+// is closed when the session is.
+//
+// What arrives is a wake-up and not an event, deliberately. A watcher is
+// something that reads the session's current state - which is the state at the
+// moment it wakes, and never the state the message described - so a second
+// wake-up while one is pending has nothing to add. That makes it impossible to
+// miss a change: the queue is one deep and full means "already told".
+//
+// The kinds are declared rather than filtered by the reader so that a turn's
+// hundreds of content deltas never reach a watcher waiting on its end.
+//
+// Watching nothing is not an error and wakes nothing: a caller that computes
+// its set is entitled to compute an empty one.
+func (l *Local) Watch(kinds ...Kind) (<-chan struct{}, func(), error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
 		return nil, nil, ErrClosed
 	}
-	ch := make(chan Kind, buffer)
-	l.watchers = append(l.watchers, ch)
+	w := &watcher{ch: make(chan struct{}, 1), wants: make(map[Kind]bool, len(kinds))}
+	for _, k := range kinds {
+		w.wants[k] = true
+	}
+	l.watchers = append(l.watchers, w)
 	var once sync.Once
-	return ch, func() { once.Do(func() { l.unwatch(ch) }) }, nil
+	return w.ch, func() { once.Do(func() { l.unwatch(w) }) }, nil
 }
 
-func (l *Local) unwatch(ch chan Kind) {
+func (l *Local) unwatch(w *watcher) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for i, w := range l.watchers {
-		if w == ch {
+	for i, have := range l.watchers {
+		if have == w {
 			l.watchers = append(l.watchers[:i], l.watchers[i+1:]...)
-			close(ch)
+			close(w.ch)
 			return
 		}
 	}
+}
+
+// watcher is one Watch: the wake-up channel and the kinds it asked for.
+type watcher struct {
+	ch    chan struct{}
+	wants map[Kind]bool
 }
 
 // Subscribe attaches a client and returns its event channel plus a function to

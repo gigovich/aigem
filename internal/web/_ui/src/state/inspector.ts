@@ -28,7 +28,7 @@ export type InspectorContent = {
   title: ReactNode
   status?: StatusKey
   fields: Field[]
-  progress?: { used: number; total: number; label?: string }
+  progress?: { used: number; total: number }
   listTitle?: string
   list?: InspectorRow[]
   actions?: { label: string; onClick: () => void }[]

@@ -188,7 +188,9 @@ this API takes, `POST /api/runs` included: a field the daemon does not know is a
 400 rather than something it silently does not do.
 
 A login start returns an id and the user-facing authorization URL, plus a device
-`code` when the provider supplied one. Only one ChatGPT sign-in can be under way
+`code` when the provider supplied one and `acceptsPaste` when the flow can be
+finished by handing back the address the provider redirected to - which is how a
+login started on one machine is completed from another. Only one ChatGPT sign-in can be under way
 at a time - it redirects to a single loopback port - and a second is refused
 with 503 rather than failing on the bind. Polling returns `state` - `pending`,
 `done`, `failed`, or `cancelled` for one the person abandoned - and a generic
@@ -249,6 +251,13 @@ is at once it has been read:
  "data":{"version":"...","defaultModel":"...","rev":12,"ui":true,"features":{...}}}
 {"type":"run.updated","rev":13,"data":{"id":"..."}}
 ```
+
+The kinds this daemon publishes are `run.updated`, carrying the record;
+`model.default`, carrying the model that is now the default; `auth.updated`,
+naming the provider whose credentials changed; `skills.updated`, carrying what
+was loaded; and `activity.updated`, naming the kind of entry appended. Each is a
+statement that a collection moved, and what a page does with one is read that
+collection again - the payload is there to say which, not to be applied.
 
 `hello` arrives first and is the client's base - byte for byte the document
 `/api/meta` serves, so a page that has just reconnected does not have to ask
@@ -336,11 +345,24 @@ Statuses a client has to tell apart:
   worth more to them than a message that hides it.
 - `500` - carries nothing. What it was is in the daemon's log.
 
+Three more come from the credential layer rather than from a route, and apply to
+every `/api/` path: `401` when the request carries no usable credential, `403`
+when its `Origin` or `Host` is not one this daemon answers to, and `429` when
+too many unauthenticated attempts have arrived from one place. A page that has
+signed in sees `401` only after its cookie has expired, and answers it by
+reloading.
+
 A browser cannot read the status of a failed websocket handshake: the
 `WebSocket` API reports only that it failed. So a page whose socket will not
-open finds out why over HTTP - `GET /api/runs/{id}` for a `404` or a `409`, and
+open finds out why over HTTP - `GET /api/runs/{id}`, and
 `GET /api/runs/{id}/events?since=` for the `410`, which is the request it would
 have made anyway.
+
+What that first request answers is worth being exact about, because getting it
+wrong is a tab that redials for ever. `GET /api/runs/{id}` describes a closed
+run perfectly well and answers `200` with `"live":false`; the `409` belongs to
+the routes that need the session - the socket and the artifacts - and never to
+the record. So the field a client reads there is `live`, not the status code.
 
 `?since=` and `?limit=` are non-negative whole numbers. Every cursor on this API
 is one: opaque to the client, compared only for equality and order. A timeline

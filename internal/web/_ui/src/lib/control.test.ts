@@ -216,3 +216,19 @@ test('reports that it disconnected', () => {
   expect(seen.states).toContain('closed')
   conn.close()
 })
+
+// A frame with no revision cannot be placed. Comparing against it poisons the
+// watermark to NaN, and every comparison afterwards is false - a page that has
+// silently stopped noticing it is stale, for the life of the connection.
+test('a frame with no revision does not blind the gap check', () => {
+  const { seen, conn } = connect()
+  FakeSocket.last.open()
+  FakeSocket.last.deliver({ type: 'hello', rev: 12, data: meta })
+  FakeSocket.last.deliver({ type: 'run.updated', data: { id: 'r1' } })
+  expect(seen.gaps).toBe(1)
+
+  // And a real gap after it is still seen.
+  FakeSocket.last.deliver({ type: 'run.updated', rev: 20, data: { id: 'r1' } })
+  expect(seen.gaps).toBe(2)
+  conn.close()
+})

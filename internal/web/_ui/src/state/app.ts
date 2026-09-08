@@ -58,6 +58,15 @@ export type AppState = {
    */
   activeRun: string
   /**
+   * A conversation is being opened.
+   *
+   * Here rather than in the component because two buttons offer it and both
+   * have to be able to say so, and because a double click is otherwise two
+   * conversations against a daemon that holds thirty-two - the second one
+   * nobody asked for.
+   */
+  opening: boolean
+  /**
    * A command the palette chose, for the composer to pick up.
    *
    * It is a handover and not the composer's value: binding the text itself to
@@ -134,6 +143,7 @@ export function initialState(): AppState {
     toast: '',
     banner: '',
     activeRun: '',
+    opening: false,
     pendingCommand: { text: '', nth: 0 },
   }
 }
@@ -261,7 +271,7 @@ export async function refreshAll() {
 export function explain(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.detail) return err.detail
-    if (err.status === 503) return 'The daemon is at capacity. Close a run and try again.'
+    if (err.busy) return 'The daemon is at capacity. Close a run and try again.'
     return `The daemon answered ${err.status}.`
   }
   if (err instanceof Error) return err.message
@@ -322,6 +332,22 @@ export function setQuick(open: boolean) {
 
 export function setActiveRun(id: string) {
   patch({ activeRun: id })
+}
+
+/**
+ * Claim the right to open a conversation, or report that somebody already has.
+ *
+ * Read and set in one step against the store rather than checked and then set,
+ * so two clicks in the same tick cannot both pass.
+ */
+export function claimOpening(): boolean {
+  if (store.get().opening) return false
+  patch({ opening: true })
+  return true
+}
+
+export function releaseOpening() {
+  patch({ opening: false })
 }
 
 export function setPendingCommand(text: string) {

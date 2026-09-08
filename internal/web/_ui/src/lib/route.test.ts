@@ -79,3 +79,13 @@ test('resync adopts a URL that was rewritten underneath it', () => {
   expect(calls).toBe(1)
   stop()
 })
+
+// `decodeURIComponent` throws on a malformed escape, and this runs at module
+// scope - before React has mounted. An uncaught throw there is the whole
+// application replaced by "URI malformed", with no shell to report it and no
+// way back but the address bar.
+test('an id that cannot be decoded is still a route', () => {
+  expect(() => parse('/run/100%')).not.toThrow()
+  expect(parse('/run/100%')).toEqual({ screen: 'run', id: '100%' })
+  expect(parse('/skills/%E0%A4%A')).toEqual({ screen: 'skills', id: '%E0%A4%A' })
+})

@@ -239,3 +239,15 @@ test('a row offers a body only when there is one', () => {
   expect(toRow(ev(4, EventKind.ToolEnd, { name: 't', bytes: 9000, blob: true }))?.blob).toBe(4)
   expect(toRow(ev(4, EventKind.ToolEnd, { name: 't', bytes: 9000 }))?.blob).toBeUndefined()
 })
+
+// `files` counts paths and a conversation can write one file over and over.
+// What says the working tree is worth reading again is the number of writes.
+test('a file written twice counts twice, and is listed once', () => {
+  const view = applyAll(emptyRun(), [
+    ev(1, EventKind.FileChanged, { path: 'notes.md' }),
+    ev(2, EventKind.FileChanged, { path: 'notes.md' }),
+    ev(3, EventKind.FileChanged, { path: 'other.md' }),
+  ])
+  expect(view.files.map((f) => f.path)).toEqual(['notes.md', 'other.md'])
+  expect(view.writes).toBe(3)
+})

@@ -14,3 +14,12 @@ func SetSessionStartTimeout(d time.Duration) func() {
 	sessionStartTimeout = d
 	return func() { sessionStartTimeout = old }
 }
+
+// PauseBetweenBuildAndPublish widens the window in which a run's view has been
+// built and not yet sent, so a test can land a close inside it. Tests in this
+// package do not run in parallel, which is what makes writing a package-level
+// variable safe here.
+func PauseBetweenBuildAndPublish(during func()) func() {
+	betweenBuildAndPublish = during
+	return func() { betweenBuildAndPublish = nil }
+}

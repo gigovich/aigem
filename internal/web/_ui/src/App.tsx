@@ -4,10 +4,12 @@ import { canonicalise, getRoute, navigate, resync, subscribeRoute } from '@/lib/
 import type { Route } from '@/lib/route'
 import { signIn } from '@/lib/auth'
 import {
+  claimOpening,
   clearBanner,
   explain,
   flash,
   refresh,
+  releaseOpening,
   setActiveRun,
   setBanner,
   setPalette,
@@ -113,6 +115,7 @@ export default function App() {
       flash('This daemon does not serve runs.')
       return
     }
+    if (!claimOpening()) return
     try {
       const run = await api.openRun({})
       await refresh.runs()
@@ -120,6 +123,8 @@ export default function App() {
       navigate({ screen: 'chat' })
     } catch (err) {
       setBanner(explain(err))
+    } finally {
+      releaseOpening()
     }
   }, [features.runs])
 

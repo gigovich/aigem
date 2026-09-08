@@ -50,11 +50,7 @@ export function Inspector({ content }: { content: InspectorContent }) {
 
       {content.progress && (
         <div className="px-3 pb-[14px]">
-          <ProgressBar
-            used={content.progress.used}
-            total={content.progress.total}
-            label={content.progress.label}
-          />
+          <ProgressBar used={content.progress.used} total={content.progress.total} />
         </div>
       )}
 

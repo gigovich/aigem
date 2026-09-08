@@ -39,7 +39,18 @@ function isScreen(value: string): value is Screen {
 export function parse(pathname: string): Route {
   const [screen, id] = pathname.replace(/^\/+/, '').split('/')
   if (!screen || !isScreen(screen)) return HOME
-  return id ? { screen, id: decodeURIComponent(id) } : { screen }
+  if (!id) return { screen }
+  // `decodeURIComponent` throws on a malformed escape - one stray `%` is
+  // enough - and this runs at module scope, before React has mounted. An
+  // uncaught throw there is a blank page with no shell to report it: the whole
+  // application replaced by "URI malformed", and no way back but the address
+  // bar. An id that cannot be decoded is an id nothing answers to, which the
+  // screen already knows how to say.
+  try {
+    return { screen, id: decodeURIComponent(id) }
+  } catch {
+    return { screen, id }
+  }
 }
 
 export function format(route: Route): string {

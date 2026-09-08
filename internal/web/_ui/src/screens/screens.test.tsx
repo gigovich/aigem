@@ -335,3 +335,54 @@ test('slash from the page focuses the filter, and from a field types a slash', a
   await user.keyboard('a/b')
   expect(box).toHaveValue('a/b')
 })
+
+// The run screen has the stream as a prop and was reading the record instead.
+// The record's booleans are whatever was true when the daemon last announced
+// one; on the screen whose whole subject is watching a run, that is the wrong
+// source.
+test('the run screen reads its status from the stream it is drawing', async () => {
+  const h = await mountApp({ runs: [RUN] })
+  act(() => navigate({ screen: 'run', id: 'r-1' }))
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+
+  h.emit({ seq: 1, time: '2026-09-08T12:00:01Z', kind: EventKind.TurnStart })
+  await waitFor(() => expect(screen.getByRole('main')).toHaveTextContent('Running'))
+
+  h.emit({
+    seq: 2,
+    time: '2026-09-08T12:00:02Z',
+    kind: EventKind.ApprovalRequest,
+    id: 'a-1',
+    approval: { kind: 'tool', tool: 'bash', options: [] },
+  })
+  await waitFor(() => expect(screen.getByRole('main')).toHaveTextContent('Needs attention'))
+})
+
+// A double click is two conversations against a daemon that holds thirty-two,
+// and the second is one nobody asked for.
+test('a second click while the first is still opening does nothing', async () => {
+  const user = userEvent.setup()
+  let answer: (r: Response) => void = () => undefined
+  const h = await mountApp({
+    runs: [],
+    routes: {
+      'POST /api/runs': () =>
+        new Promise<Response>((ok) => {
+          answer = ok
+        }),
+    },
+  })
+
+  const button = await screen.findByRole('button', { name: 'New session' })
+  await user.click(button)
+  // The request is held open, which is the window a double click lands in. The
+  // button says so, and a click on it does nothing.
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Starting…' })).toBeDisabled())
+  await user.click(screen.getByRole('button', { name: 'Starting…' }))
+
+  act(() => answer(new Response(JSON.stringify(RUN), { status: 201 })))
+  await waitFor(() =>
+    expect(h.sent.filter((r) => r.method === 'POST' && r.path === '/api/runs')).toHaveLength(1),
+  )
+})
