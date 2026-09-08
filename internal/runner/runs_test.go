@@ -736,13 +736,15 @@ func TestEachOperationReachesTheRightPartOfTheSession(t *testing.T) {
 		t.Errorf("an unknown command = %v, want ErrUnknownCommand", err)
 	}
 
-	// resolve: an approval nobody is waiting on is refused, and refused as the
-	// ordinary outcome it is rather than as something else.
+	// resolve: an id this session never asked about is refused, and refused as
+	// what it is. "Already decided" is the other refusal - two people answering
+	// at once - and telling them apart is telling somebody who got there first
+	// from somebody who answered the wrong conversation.
 	err = runs.Apply(v.ID, runner.RunOp{
 		Op: runner.OpResolve, ID: "a1", Decision: uisession.DecisionOnce, By: "web",
 	})
-	if !errors.Is(err, uisession.ErrAlreadyDecided) {
-		t.Errorf("resolve = %v, want ErrAlreadyDecided", err)
+	if !errors.Is(err, uisession.ErrNoApproval) {
+		t.Errorf("resolve = %v, want ErrNoApproval", err)
 	}
 
 	// switch_model: the ref is what is resolved, and a failed switch leaves the

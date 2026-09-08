@@ -454,7 +454,15 @@ events are the acknowledgement. One that is refused comes back as
 `{"kind":"client_error","op":"...","error":"..."}` and the socket stays open: an
 approval somebody else answered first is the normal outcome of two people
 answering at once, not a failure in the conversation, and it must not appear in
-the timeline as one. `ping` is answered with silence.
+the timeline as one. An id this session never asked about is told apart from
+that one - "no such approval in this session" rather than "already decided" -
+because the two are different things to be told. `ping` is answered with
+silence.
+
+`interrupt` stops the turn and refuses anything parked on an approval. Both
+halves matter: cancelling the turn alone leaves a blocked tool call waiting for
+an answer the person has just said they do not want to give, and if somebody
+then answers "yes" the call the interrupt was meant to stop runs first.
 
 The connection's own contract - the pings, the timeouts, the frame and message
 caps, the 64-socket ceiling - is the control stream's, above. The frame cap is

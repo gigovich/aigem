@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 import App from './App'
@@ -157,4 +157,40 @@ test('lets go of the run socket when the run changes', async () => {
   act(() => navigate({ screen: 'run', id: 'r-1' }))
   await waitFor(() => expect(h.runSocket()?.url).toContain('/api/runs/r-1/socket'))
   expect(first.readyState).toBe(FakeSocket.CLOSED)
+})
+
+// Both screens that draw a conversation can name one in the address bar.
+// Honouring it on only one of them is a page whose URL, breadcrumb and
+// inspector disagree with what it is actually reading - and after a reload you
+// are typing into a different conversation than the one you linked to.
+test('a link to a conversation opens that conversation, from either screen', async () => {
+  const older = { ...RUN, id: 'r-1', title: 'The older one' }
+  const newer = { ...RUN, id: 'r-2', title: 'The newer one' }
+  const { FakeSocket } = await import('@/test/fakesocket')
+
+  const h = await mountApp({ runs: [older, newer], path: '/chat/r-1' })
+  await waitFor(() => expect(h.runSocket()?.url).toContain('/api/runs/r-1/socket'))
+  expect(screen.getByRole('main')).toHaveTextContent('The older one')
+
+  act(() => navigate({ screen: 'run', id: 'r-2' }))
+  await waitFor(() => expect(h.runSocket()?.url).toContain('/api/runs/r-2/socket'))
+  void FakeSocket
+})
+
+// And choosing a session puts it in the address bar, so the link exists to be
+// sent in the first place.
+test('choosing a session makes it the address', async () => {
+  const user = userEvent.setup()
+  await mountApp({
+    runs: [
+      { ...RUN, id: 'r-1', title: 'The older one' },
+      { ...RUN, id: 'r-2', title: 'The newer one' },
+    ],
+  })
+
+  // Two buttons name it: the row itself and its close button.
+  const list = await screen.findByRole('list', { name: 'Sessions' })
+  const [row] = within(list).getAllByRole('button', { name: /The older one/ })
+  await user.click(row!)
+  expect(window.location.pathname).toBe('/chat/r-1')
 })

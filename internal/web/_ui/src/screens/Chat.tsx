@@ -4,6 +4,7 @@ import { navigate } from '@/lib/route'
 import { runStatus } from '@/lib/wire'
 import type { Decision, Run, RunOp } from '@/lib/wire'
 import { setActiveRun, useApp } from '@/state/app'
+import { tabLabel } from '@/hooks/useRunEvents'
 
 import { usePublishInspector } from '@/state/inspector'
 import { liveStatus } from '@/state/run'
@@ -33,8 +34,11 @@ type Props = {
  * one a person steers; in phase one only the second exists, and this is it.
  */
 export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
-  const { runs, pendingCommand, opening } = useApp((s) => ({
+  const { runs, models, pendingCommand, opening } = useApp((s) => ({
     runs: s.runs,
+    // Only the ones that can actually be opened: offering a model with no
+    // credential is offering a switch that comes back refused.
+    models: s.models.filter((m) => !m.needsAuth || m.authenticated),
     pendingCommand: s.pendingCommand,
     opening: s.opening,
   }))
@@ -106,8 +110,11 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
     if (sent) setText('')
   }
 
+  // Labelled with the tab, not with "browser": the point of saying who decided
+  // is that the other clients can tell, and every browser tab saying the same
+  // word tells them nothing.
   const decide = (id: string, decision: Decision) =>
-    send({ op: 'resolve', id, decision, label: 'browser' })
+    send({ op: 'resolve', id, decision, label: tabLabel() })
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -137,7 +144,13 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                 key={r.id}
                 run={r}
                 active={r.id === runId}
-                onOpen={() => setActiveRun(r.id)}
+                // Both: the address bar so the conversation can be linked to,
+              // and the store so it survives a move to a screen that names no
+              // run of its own.
+              onOpen={() => {
+                setActiveRun(r.id)
+                navigate({ screen: 'chat', id: r.id })
+              }}
                 onClose={() => onClose(r.id)}
               />
             ))}
@@ -161,6 +174,18 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                   {run.title || record.title || 'Untitled session'}
                 </h1>
                 <StatusChip status={liveStatus(record, run)} />
+                {/* The presence event exists for exactly this: an approval
+                    blocks the turn, and knowing whether anyone else is here is
+                    the difference between "thinking" and "waiting for somebody
+                    who walked away". */}
+                {run.clients.length > 1 && (
+                  <span
+                    className="font-mono text-[10.5px] text-fg-subtle"
+                    title={run.clients.map((c) => c.label || c.kind || c.id).join(', ')}
+                  >
+                    {run.clients.length} watching
+                  </span>
+                )}
                 {/* Mounted always, with only the sentence appearing: a live
                     region inserted together with its text is announced by
                     nothing. */}
@@ -216,7 +241,30 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                   as the machine makes them. Each cell is clipped on its own so
                   one long path cannot push the rest off the row. */}
               <div className="mt-[9px] flex flex-wrap gap-x-4 gap-y-[6px] font-mono text-[10.5px] text-fg-subtle">
-                <Meta label="model" value={run.model || record.model || '—'} />
+                <label className="flex min-w-0 items-baseline gap-1 whitespace-nowrap">
+                  model
+                  <select
+                    value={run.model || record.model || ''}
+                    disabled={run.running || state !== 'open'}
+                    aria-label="Model for this conversation"
+                    onChange={(e) => send({ op: 'switch_model', ref: e.target.value })}
+                    className="min-w-0 max-w-[28ch] cursor-pointer truncate border-none bg-transparent font-mono text-[10.5px] text-fg-muted outline-none disabled:cursor-not-allowed"
+                  >
+                    {/* The run's own model first, because it may be one the
+                        registry no longer lists - a model removed from
+                        models.json does not end the conversation using it. */}
+                    {!models.some((m) => m.ref === (run.model || record.model)) && (
+                      <option value={run.model || record.model || ''}>
+                        {run.model || record.model || '—'}
+                      </option>
+                    )}
+                    {models.map((m) => (
+                      <option key={m.ref} value={m.ref}>
+                        {m.ref}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <Meta label="root" value={record.root ?? '—'} />
                 <Meta label="mode" value={record.mode} />
                 <Meta

@@ -43,6 +43,11 @@ type Session = {
  */
 const TAB = `tab ${Math.random().toString(36).slice(2, 6)}`
 
+/** What this tab calls itself, for anything else that has to say who acted. */
+export function tabLabel(): string {
+  return TAB
+}
+
 const fresh = (id: string | undefined): Session => ({
   id,
   view: emptyRun(),

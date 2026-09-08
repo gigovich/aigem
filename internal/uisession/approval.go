@@ -15,6 +15,12 @@ import (
 // others learn who gave it from the approval_resolved event.
 var ErrAlreadyDecided = errors.New("approval already decided")
 
+// ErrNoApproval is returned by Resolve for an id this session never asked
+// about. It is told apart from ErrAlreadyDecided because the two are different
+// things to be told: one says somebody got there first, the other says the
+// answer was sent to the wrong conversation.
+var ErrNoApproval = errors.New("no such approval in this session")
+
 // ErrBadDecision is returned when a decision is not one the request offered -
 // an "always" on a write outside the working directory, say, which is a button
 // that would not do what it says.
@@ -206,8 +212,16 @@ func (l *Local) Resolve(id string, d Decision, by string) error {
 	l.mu.Lock()
 	p := l.active
 	if p == nil || p.id != id {
+		// Two different situations, and the difference is worth telling: an
+		// approval that was open and is not any more is the ordinary outcome of
+		// two people answering at once, and one this session never asked is a
+		// client sending an id from somewhere else.
+		asked := l.askedLocked(id)
 		l.mu.Unlock()
-		return ErrAlreadyDecided
+		if asked {
+			return ErrAlreadyDecided
+		}
+		return ErrNoApproval
 	}
 	if !p.req.offers(d) {
 		l.mu.Unlock()

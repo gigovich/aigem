@@ -946,3 +946,85 @@ func TestAClosedSessionThatWillNotUnwindDoesNotBlockTheOthers(t *testing.T) {
 		t.Fatalf("fn ran for %v, want the live session alone", reached)
 	}
 }
+
+// Interrupt is the button that says stop. Cancelling the turn's context alone
+// leaves a tool call parked on an approval nobody now wants to answer: the turn
+// ends as interrupted only once somebody does, and if they answer "yes" the
+// call the interrupt was meant to stop runs first.
+func TestInterruptRefusesWhatIsParkedOnAnApproval(t *testing.T) {
+	l := New(Config{Ring: 16})
+	t.Cleanup(l.Close)
+	answered := make(chan bool, 1)
+	go func() { answered <- l.confirmTool("bash", nil) }()
+
+	deadline := time.After(3 * time.Second)
+	for {
+		if _, req := l.Pending(); req != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("request never opened")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	l.Interrupt()
+	select {
+	case ok := <-answered:
+		if ok {
+			t.Fatal("a call parked at the interrupt was allowed; it must be refused")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("interrupting left a tool call parked forever")
+	}
+	if _, req := l.Pending(); req != nil {
+		t.Error("an approval survived the interrupt")
+	}
+}
+
+// Interrupting a session with nothing running has nothing to refuse either.
+func TestInterruptingAnIdleSessionIsHarmless(t *testing.T) {
+	l := New(Config{Ring: 16})
+	t.Cleanup(l.Close)
+	l.Interrupt()
+	l.Interrupt()
+}
+
+// Two situations worth telling apart: an approval that was open and is not any
+// more is two people answering at once, and one this session never asked is an
+// answer sent to the wrong conversation.
+func TestAnAnswerToAnApprovalThatWasNeverAskedSaysSo(t *testing.T) {
+	l := New(Config{Ring: 16})
+	t.Cleanup(l.Close)
+	answered := make(chan bool, 1)
+	go func() { answered <- l.confirmTool("bash", nil) }()
+
+	deadline := time.After(3 * time.Second)
+	var id string
+	for id == "" {
+		if got, req := l.Pending(); req != nil {
+			id = got
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("request never opened")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	for _, unknown := range []string{"ap-999", "ap-0", "nonsense", "", "ap-"} {
+		if err := l.Resolve(unknown, DecisionOnce, ""); !errors.Is(err, ErrNoApproval) {
+			t.Errorf("resolving %q returned %v, want ErrNoApproval", unknown, err)
+		}
+	}
+	if err := l.Resolve(id, DecisionOnce, ""); err != nil {
+		t.Fatal(err)
+	}
+	<-answered
+	// The same id again is the ordinary race, and says so.
+	if err := l.Resolve(id, DecisionOnce, ""); !errors.Is(err, ErrAlreadyDecided) {
+		t.Errorf("answering twice returned %v, want ErrAlreadyDecided", err)
+	}
+}

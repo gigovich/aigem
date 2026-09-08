@@ -39,6 +39,8 @@ export type Daemon = {
    * pure - which for this client would be a transcript folded twice.
    */
   strict?: boolean
+  /** The address the page is opened at. Defaults to the daemon's root. */
+  path?: string
 }
 
 export const META: Meta = {
@@ -103,7 +105,7 @@ export function installDaemon(daemon: Daemon = {}): Harness {
   const sent: { path: string; method: string; body: string }[] = []
 
   installFakeSocket()
-  window.history.replaceState(null, '', '/')
+  window.history.replaceState(null, '', daemon.path ?? '/')
   Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true })
   store.set(initialState())
   setInspectorContent(null)

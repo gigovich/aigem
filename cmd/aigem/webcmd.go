@@ -78,6 +78,16 @@ func runWebCommand(args []string) error {
 	var origins originList
 	fs.Var(&origins, "origin", "public origin this daemon is reached at, scheme and all;\n"+
 		"repeat for more than one. Required to bind an address the network can reach")
+	// The same three the terminal takes, because the warnings a withheld
+	// capability produces name them by name: without these, the only way to
+	// follow the daemon's own advice is to start the TUI in this directory
+	// first, which is not advice anybody should have to work out.
+	trustHooks := fs.Bool("trust-project-hooks", false,
+		"approve this project's local hooks as they are now")
+	trustMCP := fs.Bool("trust-project-mcp", false,
+		"approve this project's local MCP servers as they are now")
+	trustSkills := fs.Bool("trust-project-skills", false,
+		"approve this project's local skills as they are now")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Println(webUsage)
@@ -140,12 +150,18 @@ func runWebCommand(args []string) error {
 	// to it, and there is no flag for another because the project a browser
 	// session works in is a phase-2 choice.
 	//
-	// A daemon has nobody to ask about a withheld capability, so the
-	// --trust-project-* decisions are not made here: a project's local hooks,
-	// MCP servers and skills stay withheld until a person approves them.
+	// A daemon has nobody to ask about a withheld capability once it is
+	// running, so the --trust-project-* decisions are made here or not at all:
+	// without one of those flags a project's local hooks, MCP servers and
+	// skills stay withheld. Skills are the exception, because the browser has a
+	// screen for them - POST /api/skills/trust is the same decision, asked at
+	// the moment it matters.
 	env, _, err := runner.Load(context.Background(), runner.Options{
-		Version: versionString(),
-		Search:  searchCfg,
+		Version:            versionString(),
+		Search:             searchCfg,
+		TrustProjectHooks:  *trustHooks,
+		TrustProjectMCP:    *trustMCP,
+		TrustProjectSkills: *trustSkills,
 		// Raised as they happen rather than collected: Load dials the MCP
 		// servers and runs the SessionStart hook, and a terminal that says
 		// nothing until those finish reads as a hang.

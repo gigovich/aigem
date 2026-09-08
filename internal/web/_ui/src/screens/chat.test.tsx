@@ -500,3 +500,101 @@ test('a tool argument that lies about itself is shown as what it is', async () =
   expect(card.textContent).toContain('\\u202e')
   expect(card.textContent).not.toContain('‮')
 })
+
+// The presence event exists so that a person can tell "the agent is thinking"
+// from "it is waiting for somebody who walked away". Storing it and drawing
+// nothing makes the two-tab case it is for invisible.
+test('says when somebody else is attached to the same conversation', async () => {
+  const h = await attached()
+  expect(screen.queryByText(/watching/)).not.toBeInTheDocument()
+
+  h.emit({
+    seq: 2,
+    time: '2026-09-08T12:00:02Z',
+    kind: EventKind.Presence,
+    clients: [
+      { id: 'c-1', kind: 'web', label: 'tab abcd' },
+      { id: 'c-2', kind: 'tui' },
+    ],
+  })
+
+  expect(await screen.findByText('2 watching')).toHaveAttribute('title', 'tab abcd, tui')
+})
+
+// `switch_model` has been on the wire since the run stream was built and
+// nothing sent it: a conversation's model could not be changed from the page.
+test('switches the model of the conversation it is showing', async () => {
+  const user = userEvent.setup()
+  const h = await mountApp({
+    runs: [RUN],
+    models: [
+      {
+        ref: 'anthropic/claude-opus-5',
+        provider: 'anthropic',
+        name: 'Opus',
+        needsAuth: true,
+        authenticated: true,
+        default: true,
+      },
+      {
+        ref: 'openai/gpt-5',
+        provider: 'openai',
+        name: 'GPT',
+        needsAuth: true,
+        authenticated: true,
+        default: false,
+      },
+      // Offering one with no credential is offering a switch that comes back
+      // refused.
+      {
+        ref: 'xai/grok',
+        provider: 'xai',
+        name: 'Grok',
+        needsAuth: true,
+        authenticated: false,
+        default: false,
+      },
+    ],
+  })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+
+  const picker = await screen.findByRole('combobox', { name: 'Model for this conversation' })
+  expect(within(picker).queryByText('xai/grok')).not.toBeInTheDocument()
+
+  await user.selectOptions(picker, 'openai/gpt-5')
+  await waitFor(() => expect(h.runSocket()?.sent).toHaveLength(1))
+  expect(JSON.parse(h.runSocket()?.sent[0] ?? '{}')).toEqual({
+    op: 'switch_model',
+    ref: 'openai/gpt-5',
+  })
+})
+
+// The daemon refuses a switch under a running turn - the turn already started
+// against the model being replaced - so the page must not offer one.
+test('the model cannot be changed under a running turn', async () => {
+  const h = await attached()
+  h.emit({ seq: 2, time: '2026-09-08T12:00:02Z', kind: EventKind.TurnStart })
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: 'Model for this conversation' })).toBeDisabled(),
+  )
+
+  h.emit({ seq: 3, time: '2026-09-08T12:00:03Z', kind: EventKind.TurnEnd })
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: 'Model for this conversation' })).toBeEnabled(),
+  )
+})
+
+// The answer says which tab gave it. Every browser saying "browser" tells the
+// others nothing, which is the whole point of carrying a label.
+test('an answer to an approval says which tab gave it', async () => {
+  const user = userEvent.setup()
+  const h = await attached()
+  h.emit(APPROVAL)
+  const card = await screen.findByRole('group', { name: 'Approval required' })
+
+  await user.click(within(card).getByRole('button', { name: 'Approve & run' }))
+  await waitFor(() => expect(h.runSocket()?.sent).toHaveLength(1))
+  const sent = JSON.parse(h.runSocket()?.sent[0] ?? '{}') as { label?: string }
+  expect(sent.label).toMatch(/^tab [a-z0-9]{4}$/)
+})

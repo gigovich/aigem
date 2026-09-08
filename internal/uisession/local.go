@@ -363,9 +363,21 @@ func (l *Local) waitForTurns() {
 	}
 }
 
+// askedLocked reports whether this session ever minted that approval id.
+//
+// The ids are a counter, so the question is arithmetic rather than a set that
+// grows for the life of the conversation - and a set would have to be trimmed,
+// which would make "never asked" and "asked long ago" the same answer again.
+func (l *Local) askedLocked(id string) bool {
+	n, err := strconv.ParseUint(strings.TrimPrefix(id, approvalPrefix), 10, 64)
+	return err == nil && strings.HasPrefix(id, approvalPrefix) && n >= 1 && n <= l.approvalSeq
+}
+
+const approvalPrefix = "ap-"
+
 func (l *Local) nextApprovalID() string {
 	l.approvalSeq++
-	return "ap-" + strconv.FormatUint(l.approvalSeq, 10)
+	return approvalPrefix + strconv.FormatUint(l.approvalSeq, 10)
 }
 
 // ---- event fan-out ----
@@ -729,12 +741,23 @@ func (l *Local) Notice(text string) {
 }
 
 // Interrupt cancels the running turn. It is a no-op when nothing is running.
+// Interrupt stops the turn in flight.
+//
+// Anything parked on an approval is refused as part of it. Cancelling the
+// context alone leaves a blocked tool call waiting for an answer that the
+// person has just said they do not want to give: the turn ends as interrupted
+// only once somebody answers, and if they answer "yes" the call the interrupt
+// was meant to stop runs first. Refusing them here is what makes the button
+// mean what it says.
+//
+// It is safe to call with nothing running: there is then nothing parked either.
 func (l *Local) Interrupt() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.cancel != nil {
 		l.cancel()
 	}
+	l.failPendingLocked()
 }
 
 // Running reports whether a turn is in progress.

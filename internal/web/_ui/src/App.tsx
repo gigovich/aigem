@@ -96,7 +96,10 @@ export default function App() {
    * describing the daemon's restart rather than the person's work.
    */
   const runId = useMemo(() => {
-    if (route.screen === 'run' && route.id) return route.id
+    // Both screens that draw a conversation can name one in the address bar,
+    // and honouring it on only one of them is a page whose URL, breadcrumb and
+    // inspector disagree with what it is actually reading.
+    if ((route.screen === 'run' || route.screen === 'chat') && route.id) return route.id
     if (activeRun && runs.some((r) => r.id === activeRun)) return activeRun
     const newest = [...runs].reverse()
     return (newest.find((r) => r.live) ?? newest[0])?.id ?? ''

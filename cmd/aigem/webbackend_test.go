@@ -445,14 +445,16 @@ func TestTheAdapterTranslatesEachOperation(t *testing.T) {
 		t.Errorf("the message did not carry its image: %+v", evs)
 	}
 
-	// resolve carries the decision and who made it, and an approval nobody is
-	// waiting on is the ordinary refusal rather than something else.
+	// resolve carries the decision and who made it, and an id this session never
+	// asked about comes back as a sentence saying so - not as the daemon's own
+	// fault, and not as the "already decided" that means somebody got there
+	// first.
 	err = b.ApplyRunOp(ctx, run.ID, web.RunOp{
 		Op: "resolve", ID: "a1", Decision: "once", Label: "web",
 	})
 	var refusal *web.Refusal
-	if !errors.As(err, &refusal) || !strings.Contains(refusal.Reason, "already decided") {
-		t.Errorf("resolve = %v, want a refusal saying the approval was decided", err)
+	if !errors.As(err, &refusal) || !strings.Contains(refusal.Reason, "no such approval") {
+		t.Errorf("resolve = %v, want a refusal saying there is no such approval", err)
 	}
 
 	// switch_model resolves the ref, and a failed switch leaves the record.
