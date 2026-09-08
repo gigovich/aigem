@@ -58,6 +58,14 @@ export type AppState = {
   toast: string
   /** A refusal worth showing: the daemon's own sentence, rendered as text. */
   banner: string
+  /**
+   * The conversation the shell is attached to. One per tab: the chat screen,
+   * the run screen and the quick chat all draw the same run, and a socket each
+   * would be three against a daemon that allows 64 across every tab.
+   */
+  activeRun: string
+  /** Text the palette put in the composer, for the screen to pick up. */
+  draft: string
 }
 
 const EMPTY_SKILLS: Skills = { items: [] }
@@ -93,29 +101,42 @@ function write(key: string, value: string) {
   }
 }
 
-export const store = createStore<AppState>({
-  meta: null,
-  loading: true,
-  fatal: '',
-  control: 'connecting',
-  runs: [],
-  models: [],
-  skills: EMPTY_SKILLS,
-  commands: [],
-  usage: [],
-  activity: [],
-  theme: initialTheme(),
-  density: initialDensity(),
-  narrow: window.innerWidth < NARROW_AT,
-  // The design opens with the inspector shown, and closed below the breakpoint
-  // where there is no room for it.
-  inspectorOpen: window.innerWidth >= NARROW_AT,
-  selection: null,
-  paletteOpen: false,
-  quickOpen: false,
-  toast: '',
-  banner: '',
-})
+/**
+ * The state a page starts in, before it has spoken to the daemon.
+ *
+ * A function rather than a literal so there is one description of "nothing has
+ * been read yet" - which is what a fresh tab holds, and what a test harness
+ * puts the store back to between cases.
+ */
+export function initialState(): AppState {
+  return {
+    meta: null,
+    loading: true,
+    fatal: '',
+    control: 'connecting',
+    runs: [],
+    models: [],
+    skills: EMPTY_SKILLS,
+    commands: [],
+    usage: [],
+    activity: [],
+    theme: initialTheme(),
+    density: initialDensity(),
+    narrow: window.innerWidth < NARROW_AT,
+    // The design opens with the inspector shown, and closed below the
+    // breakpoint where there is no room for it.
+    inspectorOpen: window.innerWidth >= NARROW_AT,
+    selection: null,
+    paletteOpen: false,
+    quickOpen: false,
+    toast: '',
+    banner: '',
+    activeRun: '',
+    draft: '',
+  }
+}
+
+export const store = createStore<AppState>(initialState())
 
 export function useApp<S>(select: (state: AppState) => S): S {
   return useStore(store, select)
@@ -126,7 +147,10 @@ function patch(next: Partial<AppState>) {
 }
 
 export function has(feature: string): boolean {
-  return store.get().meta?.features[feature] === true
+  // Read through rather than indexed: a daemon that answered without a feature
+  // map at all must leave the page with no screens, not with no page.
+  const features = store.get().meta?.features
+  return features?.[feature] === true
 }
 
 /**
@@ -238,6 +262,16 @@ export function setPalette(open: boolean) {
 
 export function setQuick(open: boolean) {
   patch({ quickOpen: open })
+}
+
+export function setActiveRun(id: string) {
+  patch({ activeRun: id })
+}
+
+export function takeDraft(): string {
+  const draft = store.get().draft
+  if (draft) patch({ draft: '' })
+  return draft
 }
 
 /** The design's breakpoint: below it the inspector closes and stays closed. */

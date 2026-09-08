@@ -1,0 +1,189 @@
+import { useMemo, useState } from 'react'
+import { clock, elapsed, tokens as tokenLabel } from '@/lib/format'
+import { navigate } from '@/lib/route'
+import { runStatus } from '@/lib/wire'
+import type { RunOp } from '@/lib/wire'
+import type { RunSocketState } from '@/lib/socket'
+import { useApp } from '@/state/app'
+import { toRows } from '@/state/eventrow'
+import { agentTree } from '@/state/run'
+import type { RunView } from '@/state/run'
+import { AgentTree } from '@/ui/AgentTree'
+import { EmptyState } from '@/ui/EmptyState'
+import { EventStream } from '@/ui/EventStream'
+import { FieldList } from '@/ui/FieldList'
+import { ProgressBar } from '@/ui/ProgressBar'
+import { StatusChip } from '@/ui/StatusChip'
+
+type Props = {
+  run: RunView
+  runId: string
+  state: RunSocketState
+  send: (op: RunOp) => boolean
+}
+
+/**
+ * One run, read rather than steered.
+ *
+ * It is the same event stream the chat screen draws - the same renderer over
+ * the same events - with the room a transcript does not have: the agent tree,
+ * the run's own fields, the context window and the files it touched.
+ *
+ * There is no "Stop run" button. Stopping a run is bound up with discarding the
+ * worktree it was working in, and neither exists yet; a button that quietly did
+ * half of that would be worse than its absence.
+ */
+export function Run({ run, runId, state, send }: Props) {
+  const { record, narrow } = useApp((s) => ({
+    record: s.runs.find((r) => r.id === runId),
+    narrow: s.narrow,
+  }))
+  const [follow, setFollow] = useState(true)
+  const [detail, setDetail] = useState(true)
+
+  const rows = useMemo(() => toRows(run.events, detail), [run.events, detail])
+  const tree = useMemo(() => agentTree(run), [run])
+
+  if (!record) {
+    return (
+      <EmptyState
+        title="No such run."
+        detail="It may have been closed on a daemon that has since restarted."
+        action={{ label: 'Back to sessions', onClick: () => navigate({ screen: 'chat' }) }}
+      />
+    )
+  }
+
+  return (
+    <>
+      <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-3">
+        <div className="flex flex-wrap items-center gap-[10px]">
+          <span className="font-mono text-[12px] text-fg-subtle">{record.id}</span>
+          <h1 className="m-0 text-[15px] font-semibold">
+            {run.title || record.title || 'Untitled run'}
+          </h1>
+          <StatusChip status={runStatus(record)} />
+          <span className="font-mono text-[10.5px] text-fg-subtle">
+            {elapsed(record.created)} elapsed
+          </span>
+          <div className="ml-auto flex gap-[6px]">
+            <button
+              type="button"
+              onClick={() => setFollow(!follow)}
+              aria-pressed={follow}
+              className="h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] text-fg-muted hover:border-line-strong hover:text-fg"
+              style={{ background: follow ? 'var(--s0)' : 'transparent' }}
+            >
+              Follow
+            </button>
+            <button
+              type="button"
+              disabled={!run.running || state !== 'open'}
+              onClick={() => send({ op: 'interrupt' })}
+              className="h-[26px] rounded-md border border-line px-[10px] text-[11.5px] text-fg-muted enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
+            >
+              Interrupt
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="flex flex-none items-center gap-[10px] border-b border-line px-[18px] py-2">
+            <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+              Execution
+            </h2>
+            <button
+              type="button"
+              onClick={() => setDetail(!detail)}
+              aria-pressed={detail}
+              className="h-[22px] cursor-pointer rounded-[5px] border border-line px-2 font-mono text-[10.5px] text-fg-muted hover:border-line-strong hover:text-fg"
+            >
+              {detail ? 'detail' : 'phases'}
+            </button>
+            <span className="ml-auto font-mono text-[10.5px] text-fg-subtle">
+              {rows.length} events
+            </span>
+          </div>
+          <EventStream
+            rows={rows}
+            follow={follow}
+            label="Run events"
+            live={
+              // The stamp is the last event's, not the wall clock: a component
+              // that read the time as it rendered would show a different one
+              // every time anything else on the page moved.
+              run.running
+                ? {
+                    time: clock(run.events[run.events.length - 1]?.time ?? ''),
+                    text: 'The agent is working…',
+                  }
+                : null
+            }
+          />
+        </div>
+
+        {!narrow && (
+          <div className="w-[304px] flex-none overflow-y-auto border-l border-line bg-shell">
+            <h2 className="m-0 border-b border-line px-3 py-[10px] text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+              Agent tree
+            </h2>
+            <AgentTree nodes={tree} />
+
+            <div aria-hidden="true" className="h-px bg-line" />
+            <div className="p-3">
+              <FieldList
+                keyWidth={78}
+                fields={[
+                  { key: 'mode', value: record.mode },
+                  { key: 'model', value: run.model || record.model || '—' },
+                  { key: 'status', value: record.status },
+                  { key: 'journal', value: run.sessionId || record.sessionId || '—' },
+                  { key: 'events', value: String(run.seq) },
+                ]}
+              />
+              {run.ctxSize > 0 && (
+                <div className="mt-3">
+                  <ProgressBar
+                    used={run.contextTokens}
+                    total={run.ctxSize}
+                    label={tokenLabel(run.contextTokens, run.ctxSize)}
+                    title="Context window"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div aria-hidden="true" className="h-px bg-line" />
+            <div className="p-3">
+              <h2 className="mb-2 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+                Working directory
+              </h2>
+              <div className="font-mono text-[11px] break-all text-fg-muted">
+                {record.root ?? '—'}
+              </div>
+              <div className="mt-2 font-mono text-[11px] text-fg-subtle">
+                {run.files.length} file{run.files.length === 1 ? '' : 's'} touched
+              </div>
+              {run.files.map((f) => (
+                <div key={f.path} className="flex h-6 items-center gap-2 font-mono text-[11px]">
+                  <span
+                    aria-hidden="true"
+                    className="w-2"
+                    style={{ color: f.created ? 'var(--added)' : 'var(--modified)' }}
+                  >
+                    {f.created ? '+' : '~'}
+                  </span>
+                  <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
+                    {f.path}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  )
+}

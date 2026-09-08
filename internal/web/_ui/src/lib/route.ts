@@ -97,6 +97,20 @@ window.addEventListener('popstate', () => {
 })
 
 /**
+ * Rewrite the address bar to the canonical path for the route it already holds.
+ *
+ * The sign-in link is the daemon's root, and the root is the home screen - so
+ * without this the address bar says "/" while the page is on /chat, and
+ * navigating to the screen it is already showing changes nothing that a person
+ * could copy or bookmark.
+ */
+export function canonicalise() {
+  const path = format(current)
+  if (window.location.pathname === path) return
+  window.history.replaceState(null, '', `${path}${window.location.search}${window.location.hash}`)
+}
+
+/**
  * Adopt whatever the address bar says now.
  *
  * The sign-in rewrites the URL to take the token out of it, and that
