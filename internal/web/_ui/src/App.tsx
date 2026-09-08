@@ -123,7 +123,9 @@ export default function App() {
       const run = await api.openRun({})
       await refresh.runs()
       setActiveRun(run.id)
-      navigate({ screen: 'chat' })
+      // Named in the address bar like any other, so a conversation is linkable
+      // from the moment it exists rather than from the first time it is chosen.
+      navigate({ screen: 'chat', id: run.id })
     } catch (err) {
       setBanner(explain(err))
     } finally {

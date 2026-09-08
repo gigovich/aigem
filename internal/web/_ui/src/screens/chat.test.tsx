@@ -294,7 +294,8 @@ test('starting a session posts a run and shows it', async () => {
   await waitFor(() => {
     expect(h.sent.filter((r) => r.method === 'POST' && r.path === '/api/runs')).toHaveLength(1)
   })
-  expect(window.location.pathname).toBe('/chat')
+  // Linkable from the moment it exists, not from the first time it is chosen.
+  await waitFor(() => expect(window.location.pathname).toBe('/chat/r-9'))
 })
 
 // The daemon's refusals are written for a person and must reach them as text.
