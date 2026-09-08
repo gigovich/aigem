@@ -1,3 +1,5 @@
+import { readable } from '@/lib/text'
+
 type Props = {
   path: string
   /** The unified body: each line starts with ' ', '+' or '-'. */
@@ -40,7 +42,7 @@ export function DiffView({ path, lines, change = '~' }: Props) {
         <span aria-hidden="true" style={{ color: SIGN_COLOR[change] }}>
           {change}
         </span>
-        <span>{path}</span>
+        <span className="break-all">{readable(path)}</span>
       </div>
       {lines.map((line, i) => {
         const sign = line.startsWith('@@') ? '@' : (line[0] ?? ' ')
@@ -59,9 +61,16 @@ export function DiffView({ path, lines, change = '~' }: Props) {
             <span aria-hidden="true" style={{ color: SIGN_COLOR[sign] ?? 'var(--fg-subtle)' }}>
               {sign === '@' ? '' : sign.trim()}
             </span>
-            <span className="sr-only">{SIGN_LABEL[sign] ?? 'context'} </span>
+            {/* Only where the sign carries something. A five-hundred-line diff
+                that says "context" before four hundred and eighty of them is a
+                reader wading through the word rather than the file. */}
+            {sign !== ' ' && <span className="sr-only">{SIGN_LABEL[sign] ?? 'changed'} </span>}
+            {/* Broken anywhere rather than clipped: the card is
+                `overflow-hidden`, and an unbroken run pushes the text track
+                past it - a minified line appended to a file would simply not be
+                on the screen a person is auditing it on. */}
             <span
-              className="whitespace-pre-wrap"
+              className="break-all whitespace-pre-wrap"
               style={{ color: sign === '@' ? 'var(--fg-subtle)' : 'var(--fg-muted)' }}
             >
               {text}

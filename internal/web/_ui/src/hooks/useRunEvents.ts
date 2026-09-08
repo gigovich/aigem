@@ -54,6 +54,25 @@ const fresh = (id: string | undefined): Session => ({
 export function useRunEvents(id: string | undefined): UseRun {
   const [session, setSession] = useState<Session>(() => fresh(id))
   const conn = useRef<RunConnection | null>(null)
+  /**
+   * The conversation as it stands, folded outside React.
+   *
+   * The fold appends in place - a run is tens of thousands of events long and
+   * copying per event is quadratic - and a `setState` updater must be pure:
+   * StrictMode invokes it twice, and React may replay a queued one when a
+   * render is interrupted. Either would apply every event twice. So the fold
+   * happens in the socket's callback and the updater does nothing but hand
+   * React the object the fold produced.
+   */
+  const held = useRef<RunView>(session.view)
+  /**
+   * Which connection is the current one.
+   *
+   * A run visited, left and visited again is the same `id`, so a page still in
+   * flight from the first connection cannot be told from the second's by id
+   * alone - and it would be folded into a timeline that already holds it.
+   */
+  const live = useRef<object | null>(null)
 
   // Adjusted during render rather than in an effect: switching runs must not
   // paint the previous conversation's transcript under the new run's header for
@@ -63,22 +82,30 @@ export function useRunEvents(id: string | undefined): UseRun {
 
   useEffect(() => {
     if (!id) return
+    const mine = {}
+    live.current = mine
+    // Reset here rather than beside the setState above: a ref is not part of
+    // the render output, and nothing can fold into it before this line - the
+    // socket that would do the folding is opened three lines below.
+    held.current = emptyRun()
+    const current = (s: Session) => s.id === id && live.current === mine
     const merge = (patch: Partial<Session>) =>
-      setSession((s) => (s.id === id ? { ...s, ...patch } : s))
+      setSession((s) => (current(s) ? { ...s, ...patch } : s))
     const c = connectRun(
       id,
       {
         // Batched by the caller: a replay hands a whole page at once, so
         // folding it in one setState is one render rather than two thousand.
-        onEvents: (events) =>
-          setSession((s) => {
-            if (s.id !== id) return s
-            return { ...s, view: events.length === 0 ? emptyRun() : applyAll(s.view, events) }
-          }),
+        onEvents: (events) => {
+          if (live.current !== mine) return
+          held.current = events.length === 0 ? emptyRun() : applyAll(held.current, events)
+          const view = held.current
+          setSession((s) => (current(s) ? { ...s, view } : s))
+        },
         onRefusal: (err) => merge({ refusal: err.error }),
         onStatus: (state, why) =>
           setSession((s) =>
-            s.id !== id || (s.state === state && s.reason === (why ?? ''))
+            !current(s) || (s.state === state && s.reason === (why ?? ''))
               ? s
               : { ...s, state, reason: why ?? '' },
           ),
@@ -88,6 +115,7 @@ export function useRunEvents(id: string | undefined): UseRun {
     conn.current = c
     return () => {
       conn.current = null
+      if (live.current === mine) live.current = null
       c.close()
     }
   }, [id])

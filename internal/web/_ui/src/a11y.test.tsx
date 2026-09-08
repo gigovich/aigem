@@ -1,6 +1,7 @@
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
+import { EventKind } from '@/lib/wire'
 import { mountApp, RUN } from '@/test/harness'
 
 afterEach(() => {
@@ -96,4 +97,21 @@ test('the announcement region is present before there is anything to announce', 
   const regions = screen.getAllByRole('status')
   expect(regions.some((r) => r.getAttribute('aria-live') === 'polite')).toBe(true)
   expect(regions.every((r) => r.textContent === '')).toBe(true)
+})
+
+// A run whose transcript is folded outside React must not fold twice under
+// StrictMode, which invokes a state updater a second time to find exactly this.
+test('an event is applied once under StrictMode', async () => {
+  const h = await mountApp({ runs: [RUN], strict: true })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+  h.emit({
+    seq: 1,
+    time: '2026-09-08T12:00:01Z',
+    kind: EventKind.UserMessage,
+    text: 'said once',
+  })
+
+  const log = await screen.findByRole('log')
+  expect(within(log).getAllByText('said once')).toHaveLength(1)
 })

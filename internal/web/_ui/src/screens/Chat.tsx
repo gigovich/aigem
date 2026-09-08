@@ -42,16 +42,19 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
   // The composer's own text. Kept here rather than in the application store,
   // which the shell subscribes to whole: a store that moved on every keystroke
   // would re-render the shell, the palette and the transcript per character.
-  const [text, setText] = useState('')
+  //
   // A command chosen in the palette has to land in a composer that is already
-  // mounted, which is the ordinary case. Adopted during render rather than from
-  // an effect, so the text is never painted a frame late.
-  const [blob, setBlob] = useState<number | null>(null)
-  const [adopted, setAdopted] = useState(pendingCommand)
-  if (pendingCommand !== adopted) {
-    setAdopted(pendingCommand)
-    if (pendingCommand) setText(pendingCommand)
+  // mounted - the ordinary case - and in one that mounts afterwards, which is
+  // what choosing it from the models screen does. The first is the adjustment
+  // below, during render so the text is never painted a frame late; the second
+  // is the initial value.
+  const [text, setText] = useState(pendingCommand.text)
+  const [adopted, setAdopted] = useState(pendingCommand.nth)
+  if (pendingCommand.nth !== adopted) {
+    setAdopted(pendingCommand.nth)
+    setText(pendingCommand.text)
   }
+  const [blob, setBlob] = useState<number | null>(null)
 
   const rows = run.rows
   const pending = run.pending[0]
@@ -156,11 +159,12 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                   {run.title || record.title || 'Untitled session'}
                 </h1>
                 <StatusChip status={liveStatus(record, run)} />
-                {state !== 'open' && (
-                  <span className="font-mono text-[10.5px] text-warning" role="status">
-                    {state === 'gone' ? 'stream ended' : 'reconnecting'}
-                  </span>
-                )}
+                {/* Mounted always, with only the sentence appearing: a live
+                    region inserted together with its text is announced by
+                    nothing. */}
+                <span className="font-mono text-[10.5px] text-warning" role="status">
+                  {state === 'open' ? '' : state === 'gone' ? 'stream ended' : 'reconnecting'}
+                </span>
                 <div className="ml-auto flex flex-none gap-[6px]">
                   <button
                     type="button"
@@ -351,7 +355,7 @@ function SessionRow({
           onClick={onClose}
           aria-label={`Close ${run.title || run.id}`}
           title="Close session"
-          className="grid size-[14px] cursor-pointer place-items-center text-[11px] text-fg-subtle hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+          className="grid size-6 cursor-pointer place-items-center text-[11px] text-fg-subtle hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
         >
           <span aria-hidden="true">×</span>
         </button>

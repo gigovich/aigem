@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '@/lib/api'
 import { diffLines, unified } from '@/lib/diff'
 import { bytes as sizeOf } from '@/lib/format'
+import { readable } from '@/lib/text'
 import type { Artifact } from '@/lib/wire'
 import { explain } from '@/state/app'
 import { DiffView } from '@/ui/DiffView'
@@ -15,9 +16,16 @@ import { EmptyState } from '@/ui/EmptyState'
  * which is why `truncated` is drawn as a statement about the change rather than
  * as an empty diff.
  */
-export function Changes({ runId, live }: { runId: string; live: boolean }) {
-  const [files, setFiles] = useState<Artifact[] | null>(null)
-  const [error, setError] = useState('')
+export function Changes({ runId, live, seq }: { runId: string; live: boolean; seq: number }) {
+  const [state, setState] = useState<{ runId: string; files: Artifact[] | null; error: string }>({
+    runId,
+    files: null,
+    error: '',
+  })
+  // Reset during render: run A's diffs must not paint under run B's header for
+  // the frame between the commit and the effect.
+  if (state.runId !== runId) setState({ runId, files: null, error: '' })
+  const { files, error } = state.runId === runId ? state : { files: null, error: '' }
 
   useEffect(() => {
     // Artifacts live with the session and not in the journal, so a closed run
@@ -28,13 +36,16 @@ export function Changes({ runId, live }: { runId: string; live: boolean }) {
     const abort = new AbortController()
     void api
       .runArtifacts(runId, abort.signal)
-      .then(setFiles)
+      .then((got) => setState({ runId, files: got, error: '' }))
       .catch((err: unknown) => {
         if (abort.signal.aborted) return
-        setError(explain(err))
+        setState({ runId, files: [], error: explain(err) })
       })
     return () => abort.abort()
-  }, [runId, live])
+    // `seq` is in here so a conversation that goes on writing files is read
+    // again: the daemon has no event for "the working tree moved", and a tab
+    // left open on this view would otherwise show what was true when it opened.
+  }, [runId, live, seq])
 
   if (!live) {
     return (
@@ -58,7 +69,7 @@ export function Changes({ runId, live }: { runId: string; live: boolean }) {
                 <span aria-hidden="true" style={{ color: 'var(--modified)' }}>
                   ~
                 </span>
-                <span>{f.path}</span>
+                <span className="break-all">{readable(f.path)}</span>
               </div>
               <p className="mt-2 mb-0 text-[11.5px] text-fg-subtle">
                 {f.created ? 'Created' : 'Changed'}, {sizeOf(f.oldBytes ?? 0)} to{' '}
@@ -75,11 +86,24 @@ export function Changes({ runId, live }: { runId: string; live: boolean }) {
 }
 
 function FileDiff({ file }: { file: Artifact }) {
-  const diff = diffLines(file.old ?? '', file.new ?? '')
+  // Memoised on the contents themselves: the run screen re-renders on every
+  // event of the conversation, and the table this builds is the one thing on
+  // the page whose cost is measured in hundreds of milliseconds.
+  const diff = useMemo(() => diffLines(file.old ?? '', file.new ?? ''), [file.old, file.new])
+  if (diff.kind === 'invisible') {
+    return (
+      <div className="rounded-md border border-line bg-bg p-3">
+        <div className="font-mono text-[11px] break-all text-fg-muted">{readable(file.path)}</div>
+        <p className="mt-2 mb-0 text-[11.5px] text-fg-subtle">
+          Every line is unchanged; the line endings or the final newline are not.
+        </p>
+      </div>
+    )
+  }
   if (diff.kind === 'too-large') {
     return (
       <div className="rounded-md border border-line bg-bg p-3">
-        <div className="font-mono text-[11px] text-fg-muted">{file.path}</div>
+        <div className="font-mono text-[11px] break-all text-fg-muted">{readable(file.path)}</div>
         <p className="mt-2 mb-0 text-[11.5px] text-fg-subtle">
           {diff.oldLines} lines became {diff.newLines} — too long to diff in a browser.
         </p>

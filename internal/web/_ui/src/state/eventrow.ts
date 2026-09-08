@@ -8,6 +8,7 @@
  */
 
 import { bytes as sizeOf, clock, count } from '@/lib/format'
+import { readable } from '@/lib/text'
 import { EventKind } from '@/lib/wire'
 import type { RunEvent } from '@/lib/wire'
 
@@ -55,7 +56,10 @@ function toolText(e: RunEvent): string {
   const first = ['path', 'file_path', 'command', 'pattern', 'query'].find(
     (k) => typeof args[k] === 'string',
   )
-  return first ? `${e.name ?? 'tool'} ${String(args[first])}` : (e.name ?? 'tool')
+  // Through `readable`: a path with a bidi override in it displays as one name
+  // and is another, and the timeline is where a person reads back what the
+  // agent actually did.
+  return first ? `${e.name ?? 'tool'} ${readable(String(args[first]))}` : (e.name ?? 'tool')
 }
 
 export function toRow(e: RunEvent): EventRow | null {

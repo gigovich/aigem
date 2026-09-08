@@ -599,6 +599,13 @@ func (r *Runs) Apply(id string, op RunOp) error {
 		return l.Command(op.Name, op.Args)
 	case OpStepMode:
 		l.SetAutoMode(!op.On)
+		// Announced, because it changes what a record says: Step is read off
+		// the live session in view(). Without this the client that asked has
+		// nothing to read back - the answer to an applied operation is silence
+		// - and a page that re-fetched the record instead would be racing this
+		// very call, since the operation arrives on the socket and the fetch
+		// goes over HTTP.
+		r.announce(id)
 		return nil
 	case OpSwitchModel:
 		// Refused while a turn is in flight. The switch itself reads the
@@ -620,6 +627,22 @@ func (r *Runs) Apply(id string, op RunOp) error {
 	default:
 		return fmt.Errorf("runner: unknown run operation %q", op.Op)
 	}
+}
+
+// announce publishes a run's current record. It is for a change that alters
+// what a record reports without altering the record itself - the live
+// session's own state, which view() reads.
+func (r *Runs) announce(id string) {
+	r.mu.Lock()
+	lr := r.byID[id]
+	if lr == nil {
+		r.mu.Unlock()
+		return
+	}
+	rec, sess := lr.rec, lr.sess
+	r.mu.Unlock()
+
+	r.notify(view(rec, sess))
 }
 
 // setModel records the model a run switched to. The switch has already

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { clock, elapsed, tokens as tokenLabel } from '@/lib/format'
 import { navigate } from '@/lib/route'
+import { readable } from '@/lib/text'
 import { runStatus } from '@/lib/wire'
 import type { RunOp } from '@/lib/wire'
 import type { RunSocketState } from '@/lib/socket'
@@ -45,11 +46,17 @@ export function Run({ run, runId, state, send }: Props) {
   const [detail, setDetail] = useState(true)
   const [view, setView] = useState<'events' | 'changes'>('events')
   const [blob, setBlob] = useState<number | null>(null)
+  // The tree is a listbox, and a listbox with nothing selectable is a role that
+  // promises a keyboard contract it does not keep. Selecting a node narrows the
+  // stream to what that agent did.
+  const [agent, setAgent] = useState('root')
 
   // Not memoised: the fold appends to `run.rows` in place, so the array is the
   // same object from one event to the next and a memo on it would never
   // recompute. The filter itself is a walk over rows that are already built.
-  const rows = visibleRows(run.rows, detail)
+  const rows = visibleRows(run.rows, detail).filter(
+    (r) => agent === 'root' || r.event.run_id === agent || r.event.id === agent,
+  )
   const tree = useMemo(() => agentTree(run), [run])
 
   if (!record) {
@@ -122,7 +129,9 @@ export function Run({ run, runId, state, send }: Props) {
               {view === 'events' ? `${rows.length} events` : `${run.files.length} files`}
             </span>
           </div>
-          {view === 'changes' && <Changes runId={runId} live={record.live} />}
+          {view === 'changes' && (
+            <Changes runId={runId} live={record.live} seq={run.files.length} />
+          )}
           {view === 'events' && (
           <EventStream
             rows={rows}
@@ -156,7 +165,7 @@ export function Run({ run, runId, state, send }: Props) {
             <h2 className="m-0 border-b border-line px-3 py-[10px] text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
               Agent tree
             </h2>
-            <AgentTree nodes={tree} />
+            <AgentTree nodes={tree} selected={agent} onSelect={setAgent} />
 
             <div aria-hidden="true" className="h-px bg-line" />
             <div className="p-3">
@@ -204,7 +213,7 @@ export function Run({ run, runId, state, send }: Props) {
                   </span>
                   <span className="sr-only">{f.created ? 'created' : 'modified'}</span>
                   <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
-                    {f.path}
+                    {readable(f.path)}
                   </span>
                 </div>
               ))}

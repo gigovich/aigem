@@ -7,6 +7,7 @@
  * components, and the only thing it replaces is the process on the other end.
  */
 
+import { StrictMode } from 'react'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 import App from '@/App'
@@ -25,6 +26,13 @@ export type Daemon = {
   events?: RunEvent[]
   /** Answers for routes a case wants to fail or shape by hand. */
   routes?: Record<string, () => Response>
+  /**
+   * Render under StrictMode, which invokes every state updater twice.
+   *
+   * The application does, and it is how React finds an updater that is not
+   * pure - which for this client would be a transcript folded twice.
+   */
+  strict?: boolean
 }
 
 export const META: Meta = {
@@ -139,7 +147,7 @@ export function installDaemon(daemon: Daemon = {}): Harness {
 /** Render the application and wait until it is past the sign-in. */
 export async function mountApp(daemon: Daemon = {}): Promise<Harness> {
   const harness = installDaemon(daemon)
-  render(<App />)
+  render(daemon.strict ? <StrictMode><App /></StrictMode> : <App />)
   // The control socket is opened once the page has a cookie; hello is what
   // takes it off "connecting".
   await waitFor(() => {

@@ -1408,29 +1408,21 @@ func testModelRegistry(t *testing.T, cwd string, model *fakeModel) *llm.Registry
 // SessionEnd hook against an environment already torn down.
 func TestAReleaseHappensAfterTheSessionHasEnded(t *testing.T) {
 	cwd := project(t)
-	var order []string
-	var mu sync.Mutex
-	note := func(what string) {
-		mu.Lock()
-		defer mu.Unlock()
-		order = append(order, what)
-	}
+	var closedFirst bool
+	var released bool
 	runs, err := runner.NewRuns(runner.RunsConfig{
 		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
 			_, reg := newEnvAndTools(t, cwd)
 			s := runner.NewSession(runner.Spec{Mode: req.Mode, Tools: reg, Backend: deadBackend()})
-			// Closing the session is what ends the stream, so a subscriber is
-			// how the test sees when that happened.
-			events, _, err := s.Local.Subscribe(uisession.Client{}, 0)
-			if err != nil {
-				return nil, runner.Opened{}, err
-			}
-			go func() {
-				for range events {
-				}
-				note("session closed")
-			}()
-			return s, runner.Opened{Release: func() { note("released") }}, nil
+			// Asked of the session itself rather than watched for on the event
+			// stream: a subscriber notices the close on a goroutine the
+			// scheduler owes nothing to, so a test built on that observation
+			// passes or fails by timing rather than by order.
+			return s, runner.Opened{Release: func() {
+				released = true
+				_, _, err := s.Local.Subscribe(uisession.Client{}, 0)
+				closedFirst = errors.Is(err, uisession.ErrClosed)
+			}}, nil
 		},
 	})
 	if err != nil {
@@ -1442,10 +1434,11 @@ func TestAReleaseHappensAfterTheSessionHasEnded(t *testing.T) {
 	if err := runs.CloseRun(v.ID); err != nil {
 		t.Fatal(err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(order) != 2 || order[0] != "session closed" || order[1] != "released" {
-		t.Errorf("order = %v, want the session to end before what it ran in is released", order)
+	if !released {
+		t.Fatal("the environment the run worked in was never released")
+	}
+	if !closedFirst {
+		t.Error("the session was still open when what it ran in was released")
 	}
 }
 

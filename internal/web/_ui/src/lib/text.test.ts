@@ -55,3 +55,34 @@ test('refuses a scheme that executes', () => {
     expect(safeHref(url), url).toBeNull()
   }
 })
+
+// The URL parser removes tab, LF and CR from anywhere in a URL before it parses
+// it, so the two slashes of an authority only have to be adjacent afterwards.
+// Trimming the ends does not reach an interior one.
+test('an authority-relative URL cannot hide behind a control character', () => {
+  for (const url of [
+    '/\t/evil.example/steal',
+    '/\n/evil.example/steal',
+    '/\r/evil.example/steal',
+    '/\t\\evil.example/steal',
+    '/\r\n/evil.example/steal',
+  ]) {
+    expect(safeHref(url), JSON.stringify(url)).toBeNull()
+  }
+})
+
+// What comes back is the form that was checked, not the form that was given.
+test('returns the URL it actually inspected', () => {
+  expect(safeHref('https://exam\tple.test/x')).toBe('https://example.test/x')
+})
+
+// U+061C is a bidi formatting control in exactly the class this covers - it
+// behaves as U+200F, which was covered - so leaving it out made the claim
+// incomplete rather than merely narrow.
+test('covers the bidi controls, including the Arabic letter mark', () => {
+  for (const ch of ['؜', '‏', '‮', '⁦', '­', '⁠']) {
+    expect(readable(`a${ch}b`), JSON.stringify(ch)).not.toContain(ch)
+  }
+  // The tag block, which renders as nothing at all.
+  expect(readable('a\u{e0041}b')).not.toContain('\u{e0041}')
+})

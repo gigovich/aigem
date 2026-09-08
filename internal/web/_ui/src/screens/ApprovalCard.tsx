@@ -35,6 +35,12 @@ function argLines(args: unknown): { key: string; value: string }[] {
 export function ApprovalCard({ approval, onDecide, disabled = false }: Props) {
   const args = approval.kind === 'tool' ? argLines(approval.args) : []
   const lines = args.reduce((n, a) => n + a.value.split('\n').length, 0)
+  const chars = args.reduce((n, a) => n + a.value.length, 0)
+  // Long is long in either direction: a shell command needs no whitespace
+  // around `;`, `|` or `&&`, and `${IFS}` replaces the rest - so one line of
+  // five hundred characters hides its tail exactly the way sixty lines hid
+  // theirs, and counting newlines alone calls it "1 line".
+  const long = lines > 12 || chars > 400
   const options = approval.options
   const refuse = options[options.length - 1]
   const rest = options.slice(0, -1)
@@ -73,25 +79,34 @@ export function ApprovalCard({ approval, onDecide, disabled = false }: Props) {
               with one hostile line at the end is exactly the shape an attacker
               wants approved, and a box showing nine of its sixty lines - or all
               sixty run together with \n between them - is the mechanism. */}
+          {/* Above the arguments, not below them: a notice telling you to read
+              to the end is no use where you can only see it once you have. */}
+          {long && (
+            <p className="mt-2 mb-0 font-mono text-[10.5px] text-attention">
+              {lines > 1 ? `${lines} lines, ` : ''}
+              {chars} characters — read all of it before approving
+            </p>
+          )}
           {args.map((a) => (
             <div key={a.key} className="mt-2">
-              <div className="font-mono text-[10px] text-fg-subtle">{a.key}</div>
-              <pre className="m-0 overflow-x-auto rounded-md border border-line bg-shell p-2 font-mono text-[11px] whitespace-pre-wrap text-fg-muted">
+              <div className="font-mono text-[10px] break-all text-fg-subtle">{readable(a.key)}</div>
+              {/* Wrapped anywhere rather than scrolled sideways: `pre-wrap`
+                  breaks only at soft-wrap opportunities, and a run with no
+                  whitespace has none - so it leaves the screen behind a
+                  scrollbar nobody looks for. */}
+              <pre className="m-0 rounded-md border border-line bg-shell p-2 font-mono text-[11px] break-all whitespace-pre-wrap text-fg-muted">
                 {readable(a.value)}
               </pre>
             </div>
           ))}
-          {lines > 12 && (
-            <p className="mt-1 mb-0 font-mono text-[10.5px] text-attention">
-              {lines} lines — read to the end before approving
-            </p>
-          )}
         </>
       )}
 
       <div className="mt-[11px] flex flex-wrap items-center gap-2">
-        <span className="font-mono text-[10.5px] text-fg-subtle">
-          {approval.kind === 'path' ? approval.tool : 'answered once, by whoever gets there first'}
+        <span className="font-mono text-[10.5px] break-all text-fg-subtle">
+          {approval.kind === 'path'
+            ? readable(approval.tool)
+            : 'answered once, by whoever gets there first'}
         </span>
         <div className="ml-auto flex gap-2">
           {refuse && (

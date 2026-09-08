@@ -238,3 +238,65 @@ test('the session list shows both live and closed conversations', async () => {
   expect(within(list).getByText('Rotate the signing keys')).toBeInTheDocument()
   expect(within(list).getByText('An old one')).toBeInTheDocument()
 })
+
+// The tree is a listbox, and a listbox nothing can select is a role promising a
+// keyboard contract it does not keep.
+test('the agent tree can be selected from the keyboard', async () => {
+  const user = userEvent.setup()
+  const h = await mountApp({ runs: [RUN] })
+  act(() => navigate({ screen: 'run', id: 'r-1' }))
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+  h.emit({ seq: 1, time: '2026-09-08T12:00:01Z', kind: EventKind.SessionMeta, name: 'p/m' })
+  h.emit({
+    seq: 2,
+    time: '2026-09-08T12:00:02Z',
+    kind: EventKind.AgentStart,
+    id: 'a-1',
+    agent: 'Research',
+  })
+
+  const tree = await screen.findByRole('listbox', { name: 'Agent tree' })
+  const options = within(tree).getAllByRole('option')
+  expect(options).toHaveLength(2)
+  // One tab stop for the widget, the arrows inside it.
+  expect(options.filter((o) => o.getAttribute('tabindex') === '0')).toHaveLength(1)
+
+  // The arrows move the focus; Enter chooses. Selection does not follow focus,
+  // because choosing a node here filters the stream and arrowing past one
+  // should not.
+  options[0]?.focus()
+  await user.keyboard('{ArrowDown}')
+  expect(options[1]).toHaveFocus()
+  expect(options[1]).toHaveAttribute('aria-selected', 'false')
+
+  await user.keyboard('{Enter}')
+  expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true')
+})
+
+// The diff's sign is the content, so it needs a word - but not on the four
+// hundred and eighty unchanged lines of a five hundred line diff.
+test('a diff names its changed lines and says nothing about the rest', async () => {
+  const h = await mountApp({
+    runs: [RUN],
+    routes: {
+      '/api/runs/r-1/artifacts': () =>
+        new Response(
+          JSON.stringify([{ path: 'a.go', old: 'one\ntwo\n', new: 'one\nTWO\n' }]),
+          { status: 200 },
+        ),
+    },
+  })
+  act(() => navigate({ screen: 'run', id: 'r-1' }))
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('radio', { name: 'Changes' }))
+  await screen.findByText('a.go')
+
+  const body = screen.getByText('a.go').closest('div')?.parentElement
+  expect(body?.textContent).toContain('removed')
+  expect(body?.textContent).toContain('added')
+  // "context" appears nowhere: it is the word the reader would wade through.
+  expect(body?.textContent).not.toContain('context')
+})

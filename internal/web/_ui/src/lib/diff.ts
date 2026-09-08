@@ -10,19 +10,43 @@
 
 export type DiffLine = { sign: '+' | '-' | ' '; text: string }
 
-/** Past this many lines on either side the table is not worth building. */
-export const MAX_DIFF_LINES = 4000
+/**
+ * The ceilings, in lines and in bytes.
+ *
+ * Measured: 4000x4000 with nothing in common is 439ms and 108MB for one file,
+ * synchronously, on the thread that draws - and a run can change ten. 1500 is
+ * an eighth of that table. The byte ceiling is the other half of the same
+ * question: 1499 lines of 200 kB each passes a line count and is a diff nobody
+ * would read anyway.
+ */
+export const MAX_DIFF_LINES = 1500
+export const MAX_DIFF_BYTES = 512 * 1024
 
 export type Diff =
   | { kind: 'lines'; lines: DiffLine[]; added: number; removed: number }
   | { kind: 'too-large'; oldLines: number; newLines: number }
+  /**
+   * Every line is the same and the bytes are not: the line endings changed, or
+   * the file gained or lost its final newline.
+   */
+  | { kind: 'invisible' }
 
 export function diffLines(before: string, after: string): Diff {
   const a = split(before)
   const b = split(after)
-  if (a.length > MAX_DIFF_LINES || b.length > MAX_DIFF_LINES) {
+  if (
+    a.length > MAX_DIFF_LINES ||
+    b.length > MAX_DIFF_LINES ||
+    before.length > MAX_DIFF_BYTES ||
+    after.length > MAX_DIFF_BYTES
+  ) {
     return { kind: 'too-large', oldLines: a.length, newLines: b.length }
   }
+  // Both sides are read with CRLF normalised and without their trailing empty
+  // line, so a file that changed only in those would otherwise come out as a
+  // diff with nothing in it - a change the daemon reported and the page saying
+  // it did not happen.
+  if (before !== after && same(a, b)) return { kind: 'invisible' }
 
   // table[i][j] is the length of the longest common subsequence of a[i:] and
   // b[j:]. Built backwards so the walk below can go forwards, which is the
@@ -72,14 +96,22 @@ export function diffLines(before: string, after: string): Diff {
   return { kind: 'lines', lines, added, removed }
 }
 
+function same(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((line, i) => line === b[i])
+}
+
 /**
  * The lines of a file, with the trailing empty one a final newline produces
  * dropped: it is not a line anybody wrote and it appears as a change whenever
  * one side ends with a newline and the other does not.
+ *
+ * Only CRLF is normalised. A lone carriage return is a character inside a line -
+ * a progress bar's output, most often - and treating it as a break invents
+ * lines the file does not have.
  */
 function split(text: string): string[] {
   if (text === '') return []
-  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
   if (lines[lines.length - 1] === '') lines.pop()
   return lines
 }

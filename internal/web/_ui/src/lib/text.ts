@@ -16,10 +16,16 @@
  * an approval dialog. The replacement keeps the character's identity visible
  * rather than dropping it, because a silently shortened path is its own lie.
  */
-const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g
+// Split in two because the variation selectors combine with what precedes them,
+// which a single class would be flagged for: they are matched on their own.
+const INVISIBLE =
+  /[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]|[\u{e0000}-\u{e007f}]/gu
+const VARIATION = /[\ufe00-\ufe0f]/g
+
+const escape = (ch: string) => `\\u${ch.codePointAt(0)?.toString(16).padStart(4, '0')}`
 
 export function readable(text: string): string {
-  return text.replace(INVISIBLE, (ch) => `\\u${ch.codePointAt(0)?.toString(16).padStart(4, '0')}`)
+  return text.replace(INVISIBLE, escape).replace(VARIATION, escape)
 }
 
 /**
@@ -33,7 +39,12 @@ export function readable(text: string): string {
 const SAFE_SCHEME = /^(https?:|mailto:)/i
 
 export function safeHref(url: string): string | null {
-  const trimmed = url.trim()
+  // Tab, LF and CR are removed from anywhere in a URL by the parser before it
+  // parses, so the two slashes of an authority only have to be adjacent *after*
+  // that strip: `/<tab>/evil.example` is `//evil.example`. Trimming the ends
+  // does not reach them. The stripped form is what is returned, so what this
+  // function checked is what the browser is given.
+  const trimmed = url.replace(/[\t\n\r]/g, '').trim()
   if (/^[/\\]{2}/.test(trimmed)) return null
   if (trimmed.startsWith('/') || trimmed.startsWith('#')) return trimmed
   return SAFE_SCHEME.test(trimmed) ? trimmed : null

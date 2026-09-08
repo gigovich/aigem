@@ -62,10 +62,13 @@ export type AppState = {
    *
    * It is a handover and not the composer's value: binding the text itself to
    * the store would move the store on every keystroke, and the shell subscribes
-   * to all of it. The chat screen adopts this when it changes and keeps its own
-   * text from then on.
+   * to all of it. The chat screen adopts it and keeps its own text from then on.
+   *
+   * The counter is what makes choosing the same command twice a second
+   * handover: comparing the text alone, the second choice looks like the first
+   * and the composer stays empty.
    */
-  pendingCommand: string
+  pendingCommand: { text: string; nth: number }
 }
 
 const EMPTY_SKILLS: Skills = { items: [] }
@@ -131,7 +134,7 @@ export function initialState(): AppState {
     toast: '',
     banner: '',
     activeRun: '',
-    pendingCommand: '',
+    pendingCommand: { text: '', nth: 0 },
   }
 }
 
@@ -312,8 +315,8 @@ export function setActiveRun(id: string) {
   patch({ activeRun: id })
 }
 
-export function setPendingCommand(pendingCommand: string) {
-  patch({ pendingCommand })
+export function setPendingCommand(text: string) {
+  store.set((s) => ({ ...s, pendingCommand: { text, nth: s.pendingCommand.nth + 1 } }))
 }
 
 /**

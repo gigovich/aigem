@@ -74,6 +74,7 @@ export function EventStream({ rows, follow = true, live, label, onOpenBlob }: Pr
               <button
                 type="button"
                 onClick={() => onOpenBlob(r.blob ?? 0)}
+                aria-label={`Show all output of ${r.text || 'the tool'} at ${r.time}`}
                 className="flex-none cursor-pointer font-mono text-[10px] text-primary hover:underline"
               >
                 show all
