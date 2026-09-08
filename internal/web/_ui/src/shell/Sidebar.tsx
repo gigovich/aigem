@@ -33,8 +33,7 @@ function countsOf(s: AppState): Partial<Record<Screen, number>> {
 }
 
 export function Sidebar({ route, onNewProject }: Props) {
-  const { narrow, features, counts } = useApp((s) => ({
-    narrow: s.narrow,
+  const { features, counts } = useApp((s) => ({
     features: s.meta?.features ?? {},
     // Partial on purpose: three of the rows have nothing to count, and a full
     // record would need a zero for each - which the row would then draw.
@@ -70,7 +69,7 @@ export function Sidebar({ route, onNewProject }: Props) {
     <nav
       aria-label="Navigation"
       className="flex flex-none flex-col overflow-y-auto border-r border-line bg-shell"
-      style={{ width: narrow ? '168px' : '208px' }}
+      style={{ width: 'var(--rail)' }}
     >
       <div className="px-[6px] pt-2 pb-[6px]">{TOP.map(row)}</div>
 

@@ -30,7 +30,7 @@ export function Header({ crumbs }: Props) {
     <header className="flex h-[38px] flex-none items-stretch border-b border-line bg-shell">
       <div
         className="flex flex-none items-center gap-2 border-r border-line px-[10px]"
-        style={{ width: narrow ? '168px' : '208px' }}
+        style={{ width: 'var(--rail)' }}
       >
         <span aria-hidden="true" className="size-[15px] flex-none rounded-[3px] bg-agent opacity-90" />
         <span className="font-semibold tracking-[-0.01em]">Aigem</span>
@@ -59,12 +59,14 @@ export function Header({ crumbs }: Props) {
 
         {!narrow && (
           <nav aria-label="Breadcrumb" className="ml-1 flex items-center gap-[2px]">
-            {crumbs.map((c, i) => (
+            {crumbs.map((c, i) => {
+              const to = c.route
+              return (
               <button
                 key={c.label}
                 type="button"
-                disabled={!c.route}
-                onClick={c.route ? () => navigate(c.route!) : undefined}
+                disabled={!to}
+                onClick={to ? () => navigate(to) : undefined}
                 className="flex h-[24px] items-center gap-[6px] rounded-[4px] px-[7px] font-mono text-[11px] text-fg-muted enabled:cursor-pointer enabled:hover:bg-s0 enabled:hover:text-fg"
               >
                 <span>{c.label}</span>
@@ -74,7 +76,8 @@ export function Header({ crumbs }: Props) {
                   </span>
                 )}
               </button>
-            ))}
+              )
+            })}
           </nav>
         )}
 

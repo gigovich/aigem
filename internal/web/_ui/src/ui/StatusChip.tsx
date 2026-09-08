@@ -1,9 +1,10 @@
 import { STATUS } from '@/lib/wire'
-import type { StatusKey } from '@/lib/wire'
+import type { StatusInfo, StatusKey } from '@/lib/wire'
 
 type Props = {
-  status: StatusKey
-  /** The row form: glyph only, with the label carried by the title. */
+  /** A key of the canvas dictionary, or an entry from one of the two beside it. */
+  status: StatusKey | StatusInfo
+  /** The row form: glyph only, with the label carried for a reader. */
   compact?: boolean
   className?: string
 }
@@ -16,7 +17,7 @@ type Props = {
  * are the same red - only the glyph separates them.
  */
 export function StatusChip({ status, compact = false, className = '' }: Props) {
-  const s = STATUS[status]
+  const s = typeof status === 'string' ? STATUS[status] : status
   return (
     <span
       className={`flex items-center gap-[6px] text-[11.5px] ${className}`}

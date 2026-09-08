@@ -1,24 +1,9 @@
 import type { ReactNode } from 'react'
 import { FieldList } from '@/ui/FieldList'
-import type { Field } from '@/ui/FieldList'
 import { ProgressBar } from '@/ui/ProgressBar'
 import { StatusChip } from '@/ui/StatusChip'
-import type { StatusKey } from '@/lib/wire'
 import { setInspector, useApp } from '@/state/app'
-
-export type InspectorRow = { icon: string; color?: string; text: string; meta?: string }
-
-export type InspectorContent = {
-  kind: string
-  id: string
-  title: string
-  status?: StatusKey
-  fields: Field[]
-  progress?: { used: number; total: number; label?: string }
-  listTitle?: string
-  list?: InspectorRow[]
-  actions?: { label: string; onClick: () => void }[]
-} | null
+import type { InspectorContent } from '@/state/inspector'
 
 /**
  * The right-hand panel: what is selected, said once and in full.
@@ -28,13 +13,13 @@ export type InspectorContent = {
  * the model was picked out of.
  */
 export function Inspector({ content }: { content: InspectorContent }) {
-  const { open, narrow } = useApp((s) => ({ open: s.inspectorOpen, narrow: s.narrow }))
+  const open = useApp((s) => s.inspectorOpen)
   if (!open || !content) return null
   return (
     <aside
       aria-label="Inspector"
       className="flex-none overflow-y-auto border-l border-line bg-shell"
-      style={{ width: narrow ? '252px' : '304px', animation: 'aigem-sheet .16s ease-out' }}
+      style={{ width: 'var(--panel)', animation: 'aigem-sheet .16s ease-out' }}
     >
       <div className="flex items-center gap-2 border-b border-line px-3 py-[10px]">
         <span className="font-mono text-[11px] text-fg-subtle">{content.kind}</span>

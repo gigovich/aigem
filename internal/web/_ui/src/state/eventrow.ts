@@ -25,6 +25,14 @@ export type EventRow = {
   mono: boolean
   /** The event this row came from, for the rows that can be opened. */
   event: RunEvent
+  /**
+   * The sequence whose whole body the daemon kept, when this row is the head of
+   * a tool result that was trimmed. `blob` is set from the write that kept it
+   * and never ahead of it, so a row that admits it was trimmed without
+   * promising a body is the honest answer to a state directory that could not
+   * be written - and offering a fetch there would 404.
+   */
+  blob?: number
 }
 
 const MUTED = 'var(--fg-subtle)'
@@ -111,6 +119,7 @@ export function toRow(e: RunEvent): EventRow | null {
         color: e.error ? 'var(--danger)' : 'var(--success)',
         text: e.error ? (e.error ?? '') : (e.name ?? 'tool'),
         meta: e.bytes ? sizeOf(e.bytes) : '',
+        blob: e.blob ? e.seq : undefined,
         level: 1 + sub,
         mono: true,
       }

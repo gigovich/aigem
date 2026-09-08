@@ -11,11 +11,15 @@ afterEach(() => {
 
 const width = (el: Element | null) => (el as HTMLElement | null)?.style.width
 
-test('the shell is the canvas layout at the ordinary width', async () => {
+// The two vertical rules come from one token each, so the header's logo column
+// and the navigation column beneath it cannot drift apart. The values behind
+// the tokens are pinned against the canvas in test/design-values.test.ts.
+test('the shell draws its two columns from the layout tokens', async () => {
   await mountApp({ runs: [RUN] })
-  expect(width(screen.getByRole('navigation', { name: 'Navigation' }))).toBe('208px')
+  expect(width(screen.getByRole('navigation', { name: 'Navigation' }))).toBe('var(--rail)')
+  expect(width(screen.getByRole('banner').firstElementChild)).toBe('var(--rail)')
   await waitFor(() =>
-    expect(width(screen.getByRole('complementary', { name: 'Inspector' }))).toBe('304px'),
+    expect(width(screen.getByRole('complementary', { name: 'Inspector' }))).toBe('var(--panel)'),
   )
 })
 
@@ -32,7 +36,6 @@ test('narrows the columns and closes the inspector below the breakpoint', async 
   await waitFor(() =>
     expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument(),
   )
-  expect(width(screen.getByRole('navigation', { name: 'Navigation' }))).toBe('168px')
   expect(screen.queryByRole('navigation', { name: 'Breadcrumb' })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: /Search or run a command/ })).toBeInTheDocument()
 })
@@ -41,10 +44,44 @@ test('narrows the columns and closes the inspector below the breakpoint', async 
 // `window.innerWidth < 1120`.
 test('the breakpoint itself is the wide layout', async () => {
   await mountApp({ runs: [RUN] })
+  act(() => setViewport(NARROW_AT - 1))
+  await waitFor(() =>
+    expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument(),
+  )
   act(() => setViewport(NARROW_AT))
   await waitFor(() =>
-    expect(width(screen.getByRole('complementary', { name: 'Inspector' }))).toBe('304px'),
+    expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toBeInTheDocument(),
   )
+})
+
+// Closing the panel below the breakpoint is the layout's decision, not the
+// person's, and a window dragged narrow and back should not cost them the panel.
+test('widening brings the inspector back', async () => {
+  await mountApp({ runs: [RUN] })
+  await screen.findByRole('complementary', { name: 'Inspector' })
+
+  act(() => setViewport(900))
+  await waitFor(() =>
+    expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument(),
+  )
+
+  act(() => setViewport(1440))
+  await waitFor(() =>
+    expect(screen.getByRole('complementary', { name: 'Inspector' })).toBeInTheDocument(),
+  )
+})
+
+// It can also be closed on purpose, and brought back from the header.
+test('the inspector can be closed and reopened', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN] })
+  await screen.findByRole('complementary', { name: 'Inspector' })
+
+  await user.click(screen.getByRole('button', { name: 'Close inspector' }))
+  expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Inspector: hidden' }))
+  expect(screen.getByRole('complementary', { name: 'Inspector' })).toBeInTheDocument()
 })
 
 test('the theme and density toggles change the document and the footer', async () => {

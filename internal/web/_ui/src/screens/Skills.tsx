@@ -3,17 +3,16 @@ import { api } from '@/lib/api'
 import { navigate } from '@/lib/route'
 import { explain, flash, refresh, setBanner, useApp } from '@/state/app'
 import { usePublishInspector } from '@/state/inspector'
-import type { Skill, SkillSummary } from '@/lib/wire'
+import { SKILL_STATUS } from '@/lib/wire'
+import type { Skill, SkillSummary, StatusInfo } from '@/lib/wire'
 import { EmptyState } from '@/ui/EmptyState'
 import { Markdown } from '@/ui/Markdown'
 import { Modal } from '@/ui/Modal'
+import { StatusChip } from '@/ui/StatusChip'
 
-/** Enabled / Pending, in the canvas's own vocabulary for this screen. */
-function state(s: SkillSummary, pending: string[]): { label: string; icon: string; color: string } {
-  if (pending.includes(s.name)) {
-    return { label: 'Pending approval', icon: '◐', color: 'var(--warning)' }
-  }
-  return { label: 'Enabled', icon: '●', color: 'var(--success)' }
+/** Enabled / Pending, from the shared dictionary rather than a local copy. */
+function state(s: SkillSummary, pending: string[]): StatusInfo {
+  return pending.includes(s.name) ? SKILL_STATUS.pending : SKILL_STATUS.enabled
 }
 
 function scopeOf(s: SkillSummary): string {
@@ -164,15 +163,7 @@ export function Skills({ selected }: { selected?: string }) {
             <div className="border-b border-line px-[18px] pt-[14px] pb-3">
               <div className="flex items-center gap-[10px]">
                 <h1 className="m-0 font-mono text-[14px] font-medium">{chosen.name}</h1>
-                <span
-                  className="flex items-center gap-[6px] text-[11.5px]"
-                  style={{ color: state(chosen, pending).color }}
-                >
-                  <span aria-hidden="true" className="text-[10px]">
-                    {state(chosen, pending).icon}
-                  </span>
-                  {state(chosen, pending).label}
-                </span>
+                <StatusChip status={state(chosen, pending)} />
               </div>
               <p className="mt-[6px] mb-0 text-[12px] text-fg-muted">{chosen.description}</p>
               <div className="mt-[10px] flex gap-4 font-mono text-[10.5px] text-fg-subtle">

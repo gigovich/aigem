@@ -42,6 +42,7 @@ export function Activity() {
       <div className="flex-1 overflow-y-auto pt-2 pb-10">
         {activity.map((a) => {
           const m = mark(a.kind)
+          const ref = a.runRef
           return (
             <div
               key={a.seq ?? `${a.at ?? ''}${a.text}`}
@@ -60,13 +61,13 @@ export function Activity() {
               <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
                 {a.text}
               </span>
-              {a.runRef ? (
+              {ref ? (
                 <button
                   type="button"
-                  onClick={() => navigate({ screen: 'run', id: a.runRef! })}
+                  onClick={() => navigate({ screen: 'run', id: ref })}
                   className="cursor-pointer text-right font-mono text-[10.5px] text-primary hover:underline"
                 >
-                  {a.runRef}
+                  {ref}
                 </button>
               ) : (
                 <span />

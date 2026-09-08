@@ -291,3 +291,52 @@ test('shows the daemon\'s sentence when a session cannot be opened', async () =>
   await user.click(await screen.findByRole('button', { name: 'New session' }))
   expect(await screen.findByRole('alert')).toHaveTextContent('32 conversations are already open')
 })
+
+// A tool result over the daemon's threshold reaches the timeline as its head,
+// with the whole of it kept beside the journal. Without the offer to fetch it,
+// `bytes` and `blob` are two fields nobody can act on.
+test('offers the whole of a tool result the timeline trimmed', async () => {
+  const user = userEvent.setup()
+  const h = await mountApp({
+    runs: [RUN],
+    routes: {
+      '/api/runs/r-1/blobs/3': () =>
+        new Response('the whole of the output', {
+          status: 200,
+          headers: { 'Content-Type': 'text/plain' },
+        }),
+    },
+  })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+  h.emit({
+    seq: 3,
+    time: '2026-09-08T12:00:03Z',
+    kind: EventKind.ToolEnd,
+    name: 'run_command',
+    bytes: 40960,
+    blob: true,
+  })
+
+  await user.click(await screen.findByRole('button', { name: 'show all' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Tool output' })
+  await waitFor(() => expect(dialog).toHaveTextContent('the whole of the output'))
+})
+
+// A trimmed result the daemon could not keep says so by not promising one. A
+// page that offered the fetch anyway would be offering a 404.
+test('offers nothing when the daemon kept no body', async () => {
+  const h = await mountApp({ runs: [RUN] })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+  h.emit({
+    seq: 3,
+    time: '2026-09-08T12:00:03Z',
+    kind: EventKind.ToolEnd,
+    name: 'run_command',
+    bytes: 40960,
+  })
+
+  await screen.findByRole('log')
+  expect(screen.queryByRole('button', { name: 'show all' })).not.toBeInTheDocument()
+})

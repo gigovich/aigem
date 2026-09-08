@@ -3,20 +3,19 @@ import { api } from '@/lib/api'
 import { compact } from '@/lib/format'
 import { navigate } from '@/lib/route'
 import { explain, flash, refresh, setBanner, useApp } from '@/state/app'
-import type { Model } from '@/lib/wire'
+import { MODEL_STATUS } from '@/lib/wire'
+import type { Model, StatusInfo } from '@/lib/wire'
 import { DataGrid } from '@/ui/DataGrid'
 import type { Column } from '@/ui/DataGrid'
 import { EmptyState } from '@/ui/EmptyState'
+import { StatusChip } from '@/ui/StatusChip'
 import { Modal } from '@/ui/Modal'
 import { usePublishInspector } from '@/state/inspector'
 import { LoginDialog } from './LoginDialog'
 
-/** Available / No key, in the canvas's own vocabulary for this screen. */
-function state(m: Model): { label: string; icon: string; color: string } {
-  if (!m.needsAuth || m.authenticated) {
-    return { label: 'Available', icon: '●', color: 'var(--success)' }
-  }
-  return { label: 'No key', icon: '×', color: 'var(--danger)' }
+/** Available / No key, from the shared dictionary rather than a local copy. */
+function state(m: Model): StatusInfo {
+  return !m.needsAuth || m.authenticated ? MODEL_STATUS.available : MODEL_STATUS.noKey
 }
 
 export function Models({ selected }: { selected?: string }) {
@@ -107,17 +106,7 @@ export function Models({ selected }: { selected?: string }) {
       key: 'status',
       header: 'Status',
       width: '96px',
-      cell: (m) => {
-        const s = state(m)
-        return (
-          <span className="flex items-center gap-[6px] text-[11.5px]" style={{ color: s.color }}>
-            <span aria-hidden="true" className="text-[10px]">
-              {s.icon}
-            </span>
-            {s.label}
-          </span>
-        )
-      },
+      cell: (m) => <StatusChip status={state(m)} />,
     },
     {
       key: 'context',

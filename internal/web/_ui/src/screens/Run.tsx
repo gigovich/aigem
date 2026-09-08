@@ -8,12 +8,15 @@ import { useApp } from '@/state/app'
 import { visibleRows } from '@/state/eventrow'
 import { agentTree } from '@/state/run'
 import type { RunView } from '@/state/run'
+import { SegmentedControl } from '@/ui/SegmentedControl'
 import { AgentTree } from '@/ui/AgentTree'
 import { EmptyState } from '@/ui/EmptyState'
 import { EventStream } from '@/ui/EventStream'
 import { FieldList } from '@/ui/FieldList'
 import { ProgressBar } from '@/ui/ProgressBar'
 import { StatusChip } from '@/ui/StatusChip'
+import { BlobDialog } from './BlobDialog'
+import { Changes } from './Changes'
 
 type Props = {
   run: RunView
@@ -40,6 +43,8 @@ export function Run({ run, runId, state, send }: Props) {
   }))
   const [follow, setFollow] = useState(true)
   const [detail, setDetail] = useState(true)
+  const [view, setView] = useState<'events' | 'changes'>('events')
+  const [blob, setBlob] = useState<number | null>(null)
 
   // Not memoised: the fold appends to `run.rows` in place, so the array is the
   // same object from one event to the next and a memo on it would never
@@ -94,25 +99,36 @@ export function Run({ run, runId, state, send }: Props) {
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex flex-none items-center gap-[10px] border-b border-line px-[18px] py-2">
-            <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
-              Execution
-            </h2>
-            <button
-              type="button"
-              onClick={() => setDetail(!detail)}
-              aria-pressed={detail}
-              className="h-[22px] cursor-pointer rounded-[5px] border border-line px-2 font-mono text-[10.5px] text-fg-muted hover:border-line-strong hover:text-fg"
-            >
-              {detail ? 'detail' : 'phases'}
-            </button>
+            <SegmentedControl
+              label="What to show"
+              value={view}
+              onChange={setView}
+              segments={[
+                { value: 'events', label: 'Execution' },
+                { value: 'changes', label: 'Changes' },
+              ]}
+            />
+            {view === 'events' && (
+              <button
+                type="button"
+                onClick={() => setDetail(!detail)}
+                aria-pressed={detail}
+                className="h-[22px] cursor-pointer rounded-[5px] border border-line px-2 font-mono text-[10.5px] text-fg-muted hover:border-line-strong hover:text-fg"
+              >
+                {detail ? 'detail' : 'phases'}
+              </button>
+            )}
             <span className="ml-auto font-mono text-[10.5px] text-fg-subtle">
-              {rows.length} events
+              {view === 'events' ? `${rows.length} events` : `${run.files.length} files`}
             </span>
           </div>
+          {view === 'changes' && <Changes runId={runId} live={record.live} />}
+          {view === 'events' && (
           <EventStream
             rows={rows}
             follow={follow}
             label="Run events"
+            onOpenBlob={setBlob}
             live={
               // The stamp is the last event's, not the wall clock: a component
               // that read the time as it rendered would show a different one
@@ -125,10 +141,18 @@ export function Run({ run, runId, state, send }: Props) {
                 : null
             }
           />
+          )}
         </div>
 
+        {/* The run's own panel, not the shell's inspector: the canvas gives
+            this screen a permanent right column - agent tree, fields, context
+            and working directory - beside the inspector rather than instead of
+            it. Same width token, so the two line up. */}
         {!narrow && (
-          <div className="w-[304px] flex-none overflow-y-auto border-l border-line bg-shell">
+          <div
+            className="flex-none overflow-y-auto border-l border-line bg-shell"
+            style={{ width: 'var(--panel)' }}
+          >
             <h2 className="m-0 border-b border-line px-3 py-[10px] text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
               Agent tree
             </h2>
@@ -188,6 +212,9 @@ export function Run({ run, runId, state, send }: Props) {
           </div>
         )}
       </div>
+      {blob !== null && (
+        <BlobDialog runId={runId} seq={blob} onClose={() => setBlob(null)} />
+      )}
     </>
   )
 }

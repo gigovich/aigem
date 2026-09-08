@@ -8,8 +8,31 @@
  */
 
 import { useEffect } from 'react'
+import type { ReactNode } from 'react'
 import { createStore, useStore } from '@/lib/store'
-import type { InspectorContent } from '@/shell/Inspector'
+import type { StatusKey } from '@/lib/wire'
+import type { Field } from '@/ui/FieldList'
+
+export type InspectorRow = { icon: string; color?: string; text: string; meta?: string }
+
+/**
+ * What a screen publishes for the panel to draw.
+ *
+ * Declared here and not in the component that renders it: the contract belongs
+ * to the publisher, and a `state/` module importing a type out of `shell/`
+ * inverts the dependency every other import in this tree keeps.
+ */
+export type InspectorContent = {
+  kind: string
+  id: string
+  title: ReactNode
+  status?: StatusKey
+  fields: Field[]
+  progress?: { used: number; total: number; label?: string }
+  listTitle?: string
+  list?: InspectorRow[]
+  actions?: { label: string; onClick: () => void }[]
+} | null
 
 const store = createStore<InspectorContent>(null)
 

@@ -66,7 +66,16 @@ const LATTE = {
   '--deleted': '#d20f39',
 }
 
-const DENSE = { '--row-h': '30px', '--gut': '12px', '--fs': '13px', '--fs-meta': '11px' }
+const DENSE = {
+  '--row-h': '30px',
+  '--gut': '12px',
+  '--fs': '13px',
+  '--fs-meta': '11px',
+  // The sidebar and the inspector at the ordinary width.
+  '--rail': '208px',
+  '--panel': '304px',
+}
+const NARROW = { '--rail': '168px', '--panel': '252px' }
 const COMFORTABLE = { '--row-h': '40px', '--gut': '18px', '--fs': '13.5px' }
 
 const css = (name: string) => readFileSync(join(import.meta.dirname, '../src/theme', name), 'utf8')
@@ -112,6 +121,18 @@ test('density changes exactly the three metrics the canvas changes', () => {
   expect(Object.keys(comfortable).sort()).toEqual(Object.keys(COMFORTABLE).sort())
   for (const [name, value] of Object.entries(COMFORTABLE)) {
     expect(comfortable[name], `${name} at comfortable`).toBe(value)
+  }
+})
+
+// The canvas's narrow layout: 208px becomes 168px and 304px becomes 252px, at
+// 1120px. A width that drifts here breaks the single vertical rule the header
+// and the sidebar draw between them.
+test('the narrow layout is the canvas breakpoint and the canvas widths', () => {
+  const source = css('tokens.css')
+  expect(source).toContain('@media (max-width: 1119px)')
+  const narrow = block(source.slice(source.indexOf('@media')), ':root')
+  for (const [name, value] of Object.entries(NARROW)) {
+    expect(narrow[name], `${name} at narrow`).toBe(value)
   }
 })
 

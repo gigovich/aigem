@@ -6,6 +6,23 @@
   --gut: 12px;
   --fs: 13px;
   --fs-meta: 11px;
+
+  /* The two vertical rules of the layout. They are here and not in the two
+   * components that draw them because the header's logo column and the
+   * navigation column beneath it are one rule down the page and must move
+   * together - and because a media query is the honest home for a width that
+   * depends on the viewport and nothing else. The breakpoint is the canvas's
+   * 1120px; the JavaScript that hides the breadcrumbs and the inspector reads
+   * the same number from NARROW_AT. */
+  --rail: 208px;
+  --panel: 304px;
+}
+
+@media (max-width: 1119px) {
+  :root {
+    --rail: 168px;
+    --panel: 252px;
+  }
 }
 
 :root[data-density='comfortable'] {

@@ -178,39 +178,39 @@ func TestTheBrowserKnowsTheApprovalFields(t *testing.T) {
 	}
 }
 
-// goJSONTags reads the json tag names off one struct in this package.
+// goJSONTags reads the json tag names off one struct in this package. The two
+// files it looks in are the two that declare what crosses the wire; a struct
+// declared elsewhere would be found by name and reported as having no tags.
 func goJSONTags(t *testing.T, name string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
-	pkg, err := parser.ParseDir(fset, ".", nil, 0)
-	if err != nil {
-		t.Fatalf("parsing the package: %v", err)
-	}
 	var out []string
-	for _, p := range pkg {
-		for _, file := range p.Files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				spec, ok := n.(*ast.TypeSpec)
-				if !ok || spec.Name.Name != name {
-					return true
-				}
-				st, ok := spec.Type.(*ast.StructType)
-				if !ok {
-					return true
-				}
-				for _, f := range st.Fields.List {
-					if f.Tag == nil {
-						continue
-					}
-					tag := reflect.StructTag(strings.Trim(f.Tag.Value, "`")).Get("json")
-					field, _, _ := strings.Cut(tag, ",")
-					if field != "" && field != "-" {
-						out = append(out, field)
-					}
-				}
-				return false
-			})
+	for _, path := range []string{"event.go", "approval.go"} {
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
 		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			spec, ok := n.(*ast.TypeSpec)
+			if !ok || spec.Name.Name != name {
+				return true
+			}
+			st, ok := spec.Type.(*ast.StructType)
+			if !ok {
+				return true
+			}
+			for _, f := range st.Fields.List {
+				if f.Tag == nil {
+					continue
+				}
+				tag := reflect.StructTag(strings.Trim(f.Tag.Value, "`")).Get("json")
+				field, _, _ := strings.Cut(tag, ",")
+				if field != "" && field != "-" {
+					out = append(out, field)
+				}
+			}
+			return false
+		})
 	}
 	if len(out) == 0 {
 		t.Fatalf("found no json tags on %s", name)

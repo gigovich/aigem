@@ -9,6 +9,8 @@ type Props = {
   /** The line under the stream while a turn is in flight. */
   live?: { time: string; text: string } | null
   label: string
+  /** Open the whole body of a tool result whose timeline form was trimmed. */
+  onOpenBlob?: (seq: number) => void
 }
 
 /**
@@ -19,7 +21,7 @@ type Props = {
  * something happened, and the glyph column is what carries the state when the
  * colour cannot.
  */
-export function EventStream({ rows, follow = true, live, label }: Props) {
+export function EventStream({ rows, follow = true, live, label, onOpenBlob }: Props) {
   const end = useRef<HTMLDivElement>(null)
   const last = rows[rows.length - 1]?.key
 
@@ -67,6 +69,15 @@ export function EventStream({ rows, follow = true, live, label }: Props) {
             </span>
             {r.meta && (
               <span className="flex-none font-mono text-[10px] text-fg-subtle">{r.meta}</span>
+            )}
+            {r.blob !== undefined && onOpenBlob && (
+              <button
+                type="button"
+                onClick={() => onOpenBlob(r.blob ?? 0)}
+                className="flex-none cursor-pointer font-mono text-[10px] text-primary hover:underline"
+              >
+                show all
+              </button>
             )}
           </span>
         </div>

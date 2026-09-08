@@ -10,10 +10,15 @@ aigem web --addr 127.0.0.1:7777  # a fixed one
 aigem web --open                 # open it in the default browser too
 ```
 
-This is the first phase of the rewrite: the daemon, the application shell and
-the build integration are in place; the screens are not. `/healthz` says only
-that the process is up; `GET /api/meta`, behind the credential, is where a page
-reads the version, the default model and which features this daemon serves.
+`/healthz` says only that the process is up; `GET /api/meta`, behind the
+credential, is where a page reads the version, the default model and which
+features this daemon serves.
+
+The screens are sessions, models, skills, activity and a run viewer, plus a
+command palette and a quick chat. Tickets, tasks and worktrees are drawn as
+empty states that say what they are waiting for: they need projects, which are
+a later phase. This document is the protocol; how the client is put together is
+in `internal/web/_ui/README.md`.
 
 ## Signing in
 

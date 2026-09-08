@@ -300,6 +300,25 @@ export const STATUS: Record<StatusKey, StatusInfo> = {
 }
 
 /**
+ * States the canvas does not have a key for.
+ *
+ * They are kept out of `STATUS` on purpose: that object is the canvas's `S`,
+ * transcribed, and a test asserts it has exactly those nine keys. These are the
+ * two screens whose subject is not a run - a model that has no credential, a
+ * skill whose project has not been approved - and they are here rather than in
+ * each screen so the glyph and the colour mean the same thing in both.
+ */
+export const MODEL_STATUS: Record<'available' | 'noKey', StatusInfo> = {
+  available: { label: 'Available', icon: '●', color: 'var(--success)' },
+  noKey: { label: 'No key', icon: '×', color: 'var(--danger)' },
+}
+
+export const SKILL_STATUS: Record<'enabled' | 'pending', StatusInfo> = {
+  enabled: { label: 'Enabled', icon: '●', color: 'var(--success)' },
+  pending: { label: 'Pending approval', icon: '◐', color: 'var(--warning)' },
+}
+
+/**
  * A run record's state as one of the dictionary's keys.
  *
  * `waiting` on the wire means "parked on an approval nobody has answered",

@@ -13,6 +13,7 @@ import { EmptyState } from '@/ui/EmptyState'
 import { EventStream } from '@/ui/EventStream'
 import { StatusChip } from '@/ui/StatusChip'
 import { ApprovalCard } from './ApprovalCard'
+import { BlobDialog } from './BlobDialog'
 
 type Props = {
   run: RunView
@@ -45,6 +46,7 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
   // A command chosen in the palette has to land in a composer that is already
   // mounted, which is the ordinary case. Adopted during render rather than from
   // an effect, so the text is never painted a frame late.
+  const [blob, setBlob] = useState<number | null>(null)
   const [adopted, setAdopted] = useState(pendingCommand)
   if (pendingCommand !== adopted) {
     setAdopted(pendingCommand)
@@ -226,7 +228,7 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                 </div>
               </div>
             ) : (
-              <EventStream rows={rows} label="Transcript" live={null} />
+              <EventStream rows={rows} label="Transcript" live={null} onOpenBlob={setBlob} />
             )}
 
             {/* The region is permanent and only the card inside it appears:
@@ -281,6 +283,9 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
           </>
         )}
       </div>
+      {blob !== null && runId && (
+        <BlobDialog runId={runId} seq={blob} onClose={() => setBlob(null)} />
+      )}
     </div>
   )
 }
