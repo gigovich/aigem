@@ -412,7 +412,10 @@ Up go the client's operations, one JSON document per frame:
 
 `step_mode` is the toggle a person sees, and `on` means "ask me about every tool
 call" - the inverse of the session's auto mode. The run's current setting is the
-`step` field of its record, absent when it is off.
+`step` field of its record, absent when it is off, and changing it publishes
+`run.updated` like every other change to a run. It has to: an applied operation
+is answered with silence, so a client that re-read the record instead would be
+racing the socket it had just written to.
 
 `command` runs a slash command inside the conversation. The daemon registers
 none yet - every one of them comes back refused as unknown - and the catalog a
