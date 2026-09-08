@@ -31,11 +31,7 @@ type Props = {
  * one a person steers; in phase one only the second exists, and this is it.
  */
 export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
-  const { runs, live, text } = useApp((s) => ({
-    runs: s.runs,
-    live: s.runs.filter((r) => r.live).length,
-    text: s.draft,
-  }))
+  const { runs, text } = useApp((s) => ({ runs: s.runs, text: s.draft }))
   const record = runs.find((r) => r.id === runId)
 
   const rows = useMemo(() => toRows(run.events), [run.events])
@@ -92,7 +88,7 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
           <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
             Sessions
           </h2>
-          <span className="font-mono text-[10px] text-fg-subtle">{live}</span>
+          <span className="font-mono text-[10px] text-fg-subtle">{runs.length}</span>
           <button
             type="button"
             onClick={onNew}
@@ -169,22 +165,18 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                   </button>
                 </div>
               </div>
-              <div className="mt-[9px] flex flex-wrap gap-x-4 gap-y-[6px] font-mono text-[10.5px] whitespace-nowrap text-fg-subtle">
-                <span>
-                  model <span className="text-fg-muted">{run.model || record.model || '—'}</span>
-                </span>
-                <span>
-                  root <span className="text-fg-muted">{record.root ?? '—'}</span>
-                </span>
-                <span>
-                  mode <span className="text-fg-muted">{record.mode}</span>
-                </span>
-                <span>
-                  context{' '}
-                  <span className="text-fg-muted">
-                    {run.ctxSize ? `${percent(run.contextTokens, run.ctxSize)}%` : '—'}
-                  </span>
-                </span>
+              {/* Every value here is something the daemon chose, and two of
+                  them - a model reference and a working directory - are as long
+                  as the machine makes them. Each cell is clipped on its own so
+                  one long path cannot push the rest off the row. */}
+              <div className="mt-[9px] flex flex-wrap gap-x-4 gap-y-[6px] font-mono text-[10.5px] text-fg-subtle">
+                <Meta label="model" value={run.model || record.model || '—'} />
+                <Meta label="root" value={record.root ?? '—'} />
+                <Meta label="mode" value={record.mode} />
+                <Meta
+                  label="context"
+                  value={run.ctxSize ? `${percent(run.contextTokens, run.ctxSize)}%` : '—'}
+                />
               </div>
             </div>
 
@@ -246,6 +238,17 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
         )}
       </div>
     </div>
+  )
+}
+
+function Meta({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex min-w-0 max-w-full items-baseline gap-1 whitespace-nowrap">
+      {label}
+      <span title={value} className="min-w-0 overflow-hidden text-ellipsis text-fg-muted">
+        {value}
+      </span>
+    </span>
   )
 }
 
