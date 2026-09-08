@@ -1,11 +1,12 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { ago, percent } from '@/lib/format'
 import { navigate } from '@/lib/route'
 import { runStatus } from '@/lib/wire'
 import type { Decision, Run, RunOp } from '@/lib/wire'
-import { setActiveRun, setDraft, useApp } from '@/state/app'
-import { toRows } from '@/state/eventrow'
+import { refresh, setActiveRun, useApp } from '@/state/app'
+
 import { usePublishInspector } from '@/state/inspector'
+import { liveStatus } from '@/state/run'
 import type { RunView } from '@/state/run'
 import type { RunSocketState } from '@/lib/socket'
 import { EmptyState } from '@/ui/EmptyState'
@@ -31,10 +32,26 @@ type Props = {
  * one a person steers; in phase one only the second exists, and this is it.
  */
 export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
-  const { runs, text } = useApp((s) => ({ runs: s.runs, text: s.draft }))
+  const { runs, pendingCommand } = useApp((s) => ({
+    runs: s.runs,
+    pendingCommand: s.pendingCommand,
+  }))
   const record = runs.find((r) => r.id === runId)
 
-  const rows = useMemo(() => toRows(run.events), [run.events])
+  // The composer's own text. Kept here rather than in the application store,
+  // which the shell subscribes to whole: a store that moved on every keystroke
+  // would re-render the shell, the palette and the transcript per character.
+  const [text, setText] = useState('')
+  // A command chosen in the palette has to land in a composer that is already
+  // mounted, which is the ordinary case. Adopted during render rather than from
+  // an effect, so the text is never painted a frame late.
+  const [adopted, setAdopted] = useState(pendingCommand)
+  if (pendingCommand !== adopted) {
+    setAdopted(pendingCommand)
+    if (pendingCommand) setText(pendingCommand)
+  }
+
+  const rows = run.rows
   const pending = run.pending[0]
 
   const panel = useMemo(() => {
@@ -43,7 +60,7 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
       kind: 'session',
       id: record.id,
       title: run.title || record.title || 'Untitled session',
-      status: runStatus(record),
+      status: liveStatus(record, run),
       fields: [
         { key: 'model', value: run.model || record.model || '—' },
         { key: 'mode', value: record.mode },
@@ -66,16 +83,21 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
   }, [record, run])
   usePublishInspector(panel)
 
+  // The composer is cleared only once the socket has actually taken the
+  // message. `send` drops an operation while the socket is down - queueing one
+  // would replay it into a conversation the person has since left - and a
+  // composer that emptied anyway would be destroying what they typed.
   const submit = () => {
     const value = text.trim()
     if (!value) return
+    let sent: boolean
     if (value.startsWith('/')) {
       const [name, ...args] = value.slice(1).split(' ')
-      if (name) send({ op: 'command', name, args: args.join(' ') })
+      sent = name ? send({ op: 'command', name, args: args.join(' ') }) : false
     } else {
-      send({ op: 'submit', text: value })
+      sent = send({ op: 'submit', text: value })
     }
-    setDraft('')
+    if (sent) setText('')
   }
 
   const decide = (id: string, decision: Decision) =>
@@ -98,16 +120,21 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
             New
           </button>
         </div>
-        <div role="listbox" aria-label="Sessions" className="flex-1 overflow-y-auto py-1">
-          {runs.map((r) => (
-            <SessionRow
-              key={r.id}
-              run={r}
-              active={r.id === runId}
-              onOpen={() => setActiveRun(r.id)}
-              onClose={() => onClose(r.id)}
-            />
-          ))}
+        {/* A list of links and not a listbox: each row carries a second control
+            - the close button - and an option is a leaf in the accessibility
+            tree, so a button inside one is unreachable from the keyboard. */}
+        <div className="flex-1 overflow-y-auto py-1">
+          <ul aria-label="Sessions" className="m-0 list-none p-0">
+            {runs.map((r) => (
+              <SessionRow
+                key={r.id}
+                run={r}
+                active={r.id === runId}
+                onOpen={() => setActiveRun(r.id)}
+                onClose={() => onClose(r.id)}
+              />
+            ))}
+          </ul>
           {runs.length === 0 && <EmptyState inline title="No sessions in this project yet." />}
         </div>
       </div>
@@ -126,7 +153,7 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                 <h1 className="m-0 text-[15px] font-semibold tracking-[-0.015em]">
                   {run.title || record.title || 'Untitled session'}
                 </h1>
-                <StatusChip status={runStatus(record)} />
+                <StatusChip status={liveStatus(record, run)} />
                 {state !== 'open' && (
                   <span className="font-mono text-[10.5px] text-warning" role="status">
                     {state === 'gone' ? 'stream ended' : 'reconnecting'}
@@ -135,7 +162,15 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                 <div className="ml-auto flex flex-none gap-[6px]">
                   <button
                     type="button"
-                    onClick={() => send({ op: 'step_mode', on: !record.step })}
+                    onClick={() => {
+                      // Step mode is read off the live session when a record is
+                      // built, and the daemon announces a record only when the
+                      // conversation is opened, named, switched or closed - so
+                      // the answer to this op arrives nowhere unless it is
+                      // asked for. Without the reread the button never comes
+                      // back off.
+                      if (send({ op: 'step_mode', on: !record.step })) void refresh.runs()
+                    }}
                     title="Pause before each tool call"
                     className="h-[26px] cursor-pointer rounded-md border px-[10px] text-[11.5px] whitespace-nowrap"
                     style={{
@@ -194,17 +229,26 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
               <EventStream rows={rows} label="Transcript" live={null} />
             )}
 
-            {pending && (
-              <div className="flex-none px-[18px] pb-2">
-                <div className="max-w-[84ch]">
+            {/* The region is permanent and only the card inside it appears:
+                a live region inserted together with its content is announced by
+                nothing, and this is the one moment the agent stops and waits
+                for a person. */}
+            <div
+              role="region"
+              aria-live="assertive"
+              aria-label="Approval"
+              className="flex-none px-[18px]"
+            >
+              {pending && (
+                <div className="max-w-[84ch] pb-2">
                   <ApprovalCard
                     approval={pending.approval}
                     onDecide={(d) => decide(pending.id, d)}
                     disabled={state !== 'open'}
                   />
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             <div className="flex-none border-t border-line bg-shell px-[18px] pt-[10px] pb-3">
               <div className="max-w-[84ch]">
@@ -213,7 +257,7 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                     data-composer
                     rows={2}
                     value={text}
-                    onChange={(e) => setDraft(e.target.value)}
+                    onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
                       e.preventDefault()
@@ -265,50 +309,48 @@ function SessionRow({
 }) {
   const status = runStatus(run)
   return (
-    <div
-      role="option"
-      aria-selected={active}
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return
-        e.preventDefault()
-        onOpen()
-      }}
-      className={`cursor-default border-l-2 py-[7px] pr-[10px] pl-3 hover:bg-s0 focus-visible:bg-s0 focus-visible:outline-none ${
-        active ? 'border-l-primary bg-s0' : 'border-l-transparent'
-      }`}
+    <li
+      className={`border-l-2 ${active ? 'border-l-primary bg-s0' : 'border-l-transparent'} hover:bg-s0`}
     >
-      <div className="flex items-center gap-[7px]">
-        <StatusChip status={status} compact />
-        <span
-          className="min-w-0 overflow-hidden text-[12px] text-ellipsis whitespace-nowrap"
-          style={{ color: active ? 'var(--fg)' : 'var(--fg-muted)', fontWeight: active ? 500 : 400 }}
-        >
-          {run.title || 'Untitled session'}
-        </span>
-        {run.waiting && (
-          <span className="flex-none rounded-[3px] border border-attention px-1 font-mono text-[9px] text-attention">
-            wait
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-current={active ? 'true' : undefined}
+        className="w-full cursor-default py-[7px] pr-[10px] pl-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+      >
+        <span className="flex items-center gap-[7px]">
+          <StatusChip status={status} compact />
+          <span
+            className="min-w-0 overflow-hidden text-[12px] text-ellipsis whitespace-nowrap"
+            style={{
+              color: active ? 'var(--fg)' : 'var(--fg-muted)',
+              fontWeight: active ? 500 : 400,
+            }}
+          >
+            {run.title || 'Untitled session'}
           </span>
-        )}
-      </div>
-      <div className="mt-[2px] flex items-baseline gap-2 font-mono text-[10px] text-fg-subtle">
-        <span>{run.mode}</span>
-        <span className="ml-auto">{ago(run.updated)}</span>
+          {run.waiting && (
+            <span className="flex-none rounded-[3px] border border-attention px-1 font-mono text-[9px] text-attention">
+              wait
+            </span>
+          )}
+        </span>
+        <span className="mt-[2px] flex items-baseline gap-2 font-mono text-[10px] text-fg-subtle">
+          <span>{run.mode}</span>
+          <span className="ml-auto">{ago(run.updated)}</span>
+        </span>
+      </button>
+      <div className="flex justify-end px-[10px] pb-1">
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            onClose()
-          }}
+          onClick={onClose}
           aria-label={`Close ${run.title || run.id}`}
           title="Close session"
-          className="grid size-[14px] cursor-pointer place-items-center text-[11px] text-fg-subtle hover:text-danger"
+          className="grid size-[14px] cursor-pointer place-items-center text-[11px] text-fg-subtle hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
         >
           <span aria-hidden="true">×</span>
         </button>
       </div>
-    </div>
+    </li>
   )
 }

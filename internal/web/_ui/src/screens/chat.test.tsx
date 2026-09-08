@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 import { EventKind } from '@/lib/wire'
@@ -87,6 +87,89 @@ test('an approval offers exactly the options the request carries', async () => {
     id: 'a-1',
     decision: 'once',
   })
+})
+
+// The button that refuses has to refuse. This is the security boundary of the
+// product: a Forbid that sends "once" grants what the person just denied, and
+// nothing about the screen would look wrong.
+test('each approval button sends the decision it is labelled with', async () => {
+  for (const [label, decision] of [
+    ['Forbid', 'deny'],
+    ['Always', 'always'],
+    ['Approve & run', 'once'],
+  ] as const) {
+    const user = userEvent.setup()
+    const h = await attached()
+    h.emit(APPROVAL)
+    const card = await screen.findByRole('group', { name: 'Approval required' })
+
+    await user.click(within(card).getByRole('button', { name: label }))
+    await waitFor(() => expect(h.runSocket()?.sent).toHaveLength(1))
+    expect(JSON.parse(h.runSocket()?.sent[0] ?? '{}'), label).toMatchObject({
+      op: 'resolve',
+      id: 'a-1',
+      decision,
+    })
+    cleanup()
+    vi.unstubAllGlobals()
+  }
+})
+
+// A decision written into a socket that is not open goes nowhere, and a live
+// button says it went somewhere.
+test('the approval buttons are dead while the socket is', async () => {
+  const h = await mountApp({ runs: [RUN] })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+  h.emit(APPROVAL)
+  await screen.findByRole('group', { name: 'Approval required' })
+
+  act(() => h.runSocket()?.drop())
+  await waitFor(() => {
+    const card = screen.getByRole('group', { name: 'Approval required' })
+    expect(within(card).getByRole('button', { name: 'Approve & run' })).toBeDisabled()
+  })
+  const card = screen.getByRole('group', { name: 'Approval required' })
+  expect(within(card).getByRole('button', { name: 'Forbid' })).toBeDisabled()
+  expect(within(card).getByRole('button', { name: 'Always' })).toBeDisabled()
+})
+
+// A long command with one hostile line at the end is the shape an attacker
+// wants approved, and a box showing nine of its sixty lines is the mechanism.
+test('shows the whole command being approved, and says how long it is', async () => {
+  const h = await attached()
+  const command = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n')
+  h.emit({
+    ...APPROVAL,
+    approval: { ...APPROVAL.approval!, args: { command } },
+  })
+
+  const card = await screen.findByRole('group', { name: 'Approval required' })
+  expect(card).toHaveTextContent('line 39')
+  expect(card).toHaveTextContent(/lines — read to the end/)
+})
+
+// A path carrying a bidi override displays as one name and is another, and this
+// is the screen where that decides whether a script runs.
+test('a path that lies about its name is shown as what it is', async () => {
+  const h = await attached()
+  h.emit({
+    ...APPROVAL,
+    approval: {
+      kind: 'path',
+      tool: 'write_file',
+      path: '/home/dev/report\u202Ehs.txt',
+      write: true,
+      options: [
+        { value: 'once', label: 'Once' },
+        { value: 'deny', label: 'Deny' },
+      ],
+    },
+  })
+
+  const card = await screen.findByRole('group', { name: 'Approval required' })
+  expect(card).toHaveTextContent('\\u202e')
+  expect(card.textContent).not.toContain('\u202E')
 })
 
 test('a path approval shows only what the daemon offered for it', async () => {

@@ -24,12 +24,19 @@ test('notifies subscribers when the snapshot changes, and not when it does not',
 // mutate the collection under the iteration.
 test('a subscriber may unsubscribe from inside its own notification', () => {
   const store = createStore(0)
-  const stop = store.subscribe(() => stop())
-  const other = vi.fn()
-  store.subscribe(other)
+  const seen: string[] = []
+  const stop = store.subscribe(() => {
+    seen.push('first')
+    stop()
+  })
+  store.subscribe(() => seen.push('second'))
 
-  expect(() => store.set(1)).not.toThrow()
-  expect(other).toHaveBeenCalledTimes(1)
+  // Every listener present when the change was published is still called - the
+  // one that left included - and the one that left is not called again.
+  store.set(1)
+  expect(seen).toEqual(['first', 'second'])
+  store.set(2)
+  expect(seen).toEqual(['first', 'second', 'second'])
 })
 
 test('a component re-renders only when its own slice moves', () => {

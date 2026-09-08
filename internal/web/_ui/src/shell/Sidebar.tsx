@@ -1,8 +1,10 @@
 import { navigate } from '@/lib/route'
 import type { Route, Screen } from '@/lib/route'
-import { useApp } from '@/state/app'
+import type { Feature } from '@/lib/wire'
+import { runCounts, useApp } from '@/state/app'
+import type { AppState } from '@/state/app'
 
-type Item = { screen: Screen; label: string; icon: string; count?: number | '' ; feature?: string }
+type Item = { screen: Screen; label: string; icon: string; feature?: Feature }
 
 const TOP: Item[] = [
   { screen: 'tickets', label: 'Tickets', icon: '▤' },
@@ -26,21 +28,23 @@ type Props = { route: Route; onNewProject: () => void }
  * activity feed, and offering the screen would be offering one that can never
  * hold anything.
  */
+function countsOf(s: AppState): Partial<Record<Screen, number>> {
+  return { chat: runCounts(s).live, models: s.models.length, skills: s.skills.items.length }
+}
+
 export function Sidebar({ route, onNewProject }: Props) {
   const { narrow, features, counts } = useApp((s) => ({
     narrow: s.narrow,
     features: s.meta?.features ?? {},
-    counts: {
-      chat: s.runs.filter((r) => r.live).length,
-      models: s.models.length,
-      skills: s.skills.items.length,
-    },
+    // Partial on purpose: three of the rows have nothing to count, and a full
+    // record would need a zero for each - which the row would then draw.
+    counts: countsOf(s),
   }))
 
   const row = (item: Item) => {
     if (item.feature && features[item.feature] !== true) return null
     const active = route.screen === item.screen
-    const count = counts[item.screen as keyof typeof counts]
+    const count = counts[item.screen]
     return (
       <button
         key={item.screen}

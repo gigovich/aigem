@@ -35,7 +35,7 @@ type Session = {
 
 const fresh = (id: string | undefined): Session => ({
   id,
-  view: emptyRun,
+  view: emptyRun(),
   state: 'connecting',
   reason: '',
   refusal: '',
@@ -61,7 +61,7 @@ export function useRunEvents(id: string | undefined): UseRun {
       onEvents: (events) =>
         setSession((s) => {
           if (s.id !== id) return s
-          return { ...s, view: events.length === 0 ? emptyRun : applyAll(s.view, events) }
+          return { ...s, view: events.length === 0 ? emptyRun() : applyAll(s.view, events) }
         }),
       onRefusal: (err) => merge({ refusal: err.error }),
       onStatus: (state, why) =>

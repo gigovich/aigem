@@ -1,4 +1,4 @@
-import { useApp } from '@/state/app'
+import { runCounts, useApp } from '@/state/app'
 
 /**
  * The 24px footer: what the appearance is set to, what is happening, and the
@@ -10,11 +10,10 @@ import { useApp } from '@/state/app'
  * that before they wonder why nothing is updating.
  */
 export function StatusBar() {
-  const { theme, density, running, attention, control } = useApp((s) => ({
+  const { theme, density, counts, control } = useApp((s) => ({
     theme: s.theme,
     density: s.density,
-    running: s.runs.filter((r) => r.running).length,
-    attention: s.runs.filter((r) => r.waiting).length,
+    counts: runCounts(s),
     control: s.control,
   }))
 
@@ -23,13 +22,12 @@ export function StatusBar() {
       <span>
         {theme} · {density}
       </span>
-      <span style={{ color: 'var(--running)' }}>● {running} running</span>
-      <span style={{ color: 'var(--attention)' }}>! {attention} needs attention</span>
-      {control !== 'open' && (
-        <span style={{ color: 'var(--warning)' }} role="status">
-          ◐ reconnecting
-        </span>
-      )}
+      <span style={{ color: 'var(--running)' }}>● {counts.running} running</span>
+      <span style={{ color: 'var(--attention)' }}>! {counts.waiting} needs attention</span>
+      {/* The region is permanent; only the sentence inside it appears. */}
+      <span role="status" aria-live="polite" style={{ color: 'var(--warning)' }}>
+        {control === 'open' ? '' : '◐ reconnecting'}
+      </span>
       <span className="ml-auto">⌘K commands · ⌘J quick chat · / filter</span>
     </footer>
   )

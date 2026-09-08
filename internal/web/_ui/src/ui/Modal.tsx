@@ -13,8 +13,41 @@ type Props = {
   width?: number
 }
 
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+const FOCUSABLE = [
+  'a[href]',
+  'area[href]',
+  'button:not([disabled])',
+  // Hidden inputs match every other input selector and can never take focus.
+  // A dialog whose first control is one focuses nothing, focus stays on <body>,
+  // and Escape - which is handled on the panel - then does not close it either.
+  'input:not([disabled]):not([type="hidden"])',
+  'textarea:not([disabled])',
+  'select:not([disabled])',
+  'details > summary',
+  'audio[controls]',
+  'video[controls]',
+  'iframe',
+  '[contenteditable]:not([contenteditable="false"])',
+  '[tabindex]:not([tabindex="-1"])',
+]
+  .map((sel) => `${sel}:not([hidden])`)
+  .join(', ')
+
+/**
+ * The focusable elements inside the dialog.
+ *
+ * The filter is structural - `hidden` and `inert`, including on an ancestor -
+ * rather than a layout test. `offsetParent` and `getClientRects` are the
+ * thorough answer and both are always empty without a layout engine, so a trap
+ * built on them collapses to "nothing is focusable" everywhere but a real
+ * browser. What is not caught: an element hidden purely by CSS, which this
+ * dialog never has.
+ */
+function focusable(root: HTMLElement | null): HTMLElement[] {
+  return [...(root?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter(
+    (el) => !el.closest('[hidden], [inert]'),
+  )
+}
 
 /**
  * A layer with the focus inside it.
@@ -42,7 +75,7 @@ export function Modal({
 
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null
-    const first = panel.current?.querySelector<HTMLElement>(FOCUSABLE)
+    const first = focusable(panel.current)[0]
     ;(first ?? panel.current)?.focus()
     return () => opener?.focus?.()
   }, [])
@@ -54,7 +87,7 @@ export function Modal({
       return
     }
     if (e.key !== 'Tab') return
-    const nodes = [...(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])]
+    const nodes = focusable(panel.current)
     if (nodes.length === 0) return
     const first = nodes[0]
     const last = nodes[nodes.length - 1]

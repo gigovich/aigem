@@ -12,10 +12,11 @@ import { api, ApiError } from '@/lib/api'
 import { connectControl } from '@/lib/control'
 import type { ControlState } from '@/lib/control'
 import { createStore, useStore } from '@/lib/store'
-import { ControlKind } from '@/lib/wire'
+import { CLIENT_ERROR, ControlKind } from '@/lib/wire'
 import type {
   Activity,
   Command,
+  Feature,
   Meta,
   Model,
   ProviderUsage,
@@ -25,13 +26,6 @@ import type {
 
 export type Theme = 'mocha' | 'latte'
 export type Density = 'dense' | 'comfortable'
-
-/** What the inspector is describing, or nothing. */
-export type Selection =
-  | { kind: 'run'; id: string }
-  | { kind: 'model'; id: string }
-  | { kind: 'skill'; id: string }
-  | null
 
 export type AppState = {
   meta: Meta | null
@@ -52,7 +46,6 @@ export type AppState = {
   density: Density
   narrow: boolean
   inspectorOpen: boolean
-  selection: Selection
   paletteOpen: boolean
   quickOpen: boolean
   toast: string
@@ -65,15 +58,14 @@ export type AppState = {
    */
   activeRun: string
   /**
-   * The composer's text.
+   * A command the palette chose, for the composer to pick up.
    *
-   * It lives here rather than in the chat screen because the palette writes to
-   * it: a command chosen there has to land in a composer that is already
-   * mounted, and a one-shot handover would only reach one that mounts after.
-   * Keeping it here also means the half-written message survives a look at the
-   * models screen.
+   * It is a handover and not the composer's value: binding the text itself to
+   * the store would move the store on every keystroke, and the shell subscribes
+   * to all of it. The chat screen adopts this when it changes and keeps its own
+   * text from then on.
    */
-  draft: string
+  pendingCommand: string
 }
 
 const EMPTY_SKILLS: Skills = { items: [] }
@@ -134,13 +126,12 @@ export function initialState(): AppState {
     // The design opens with the inspector shown, and closed below the
     // breakpoint where there is no room for it.
     inspectorOpen: window.innerWidth >= NARROW_AT,
-    selection: null,
     paletteOpen: false,
     quickOpen: false,
     toast: '',
     banner: '',
     activeRun: '',
-    draft: '',
+    pendingCommand: '',
   }
 }
 
@@ -154,7 +145,26 @@ function patch(next: Partial<AppState>) {
   store.set((s) => ({ ...s, ...next }))
 }
 
-export function has(feature: string): boolean {
+/**
+ * The three run counts the chrome shows.
+ *
+ * Derived here rather than at each of the five places that needed them, because
+ * `live`, `running` and `waiting` are three separate flags on the record and
+ * what each means is the daemon's to change.
+ */
+export function runCounts(s: AppState): { live: number; running: number; waiting: number } {
+  let live = 0
+  let running = 0
+  let waiting = 0
+  for (const r of s.runs) {
+    if (r.live) live++
+    if (r.running) running++
+    if (r.waiting) waiting++
+  }
+  return { live, running, waiting }
+}
+
+export function has(feature: Feature): boolean {
   // Read through rather than indexed: a daemon that answered without a feature
   // map at all must leave the page with no screens, not with no page.
   const features = store.get().meta?.features
@@ -168,7 +178,7 @@ export function has(feature: string): boolean {
  * page with errors about screens it correctly does not offer.
  */
 async function load<K extends keyof AppState>(
-  feature: string,
+  feature: Feature,
   key: K,
   fetcher: () => Promise<AppState[K]>,
 ) {
@@ -177,7 +187,7 @@ async function load<K extends keyof AppState>(
     patch({ [key]: await fetcher() })
   } catch (err) {
     if (err instanceof ApiError && err.status === 501) return
-    setBanner(describe(err))
+    setBanner(explain(err))
   }
 }
 
@@ -187,10 +197,39 @@ export const refresh = {
   skills: () => load('skills', 'skills', () => api.skills()),
   commands: () => load('commands', 'commands', () => api.commands()),
   usage: () => load('usage', 'usage', () => api.usage()),
-  // Newest first is what the design draws, and the feed is written oldest
-  // first, so the reversal happens once here rather than in the screen.
-  activity: () =>
-    load('activity', 'activity', async () => (await api.activity(0, 200)).reverse()),
+  activity: () => load('activity', 'activity', readActivityTail),
+}
+
+/** How much of the feed a page holds; the screen shows the recent end of it. */
+const ACTIVITY_SHOWN = 200
+const ACTIVITY_PAGE = 1000
+
+/**
+ * The end of the activity feed, newest first.
+ *
+ * `since` is a cursor and `limit` takes the first N after it, so asking for two
+ * hundred from zero is the two hundred *oldest* entries - which is a screen
+ * that stops updating the moment the feed passes two hundred, and never says
+ * so. There is no "last N" on this API, so the way to the end is to page to it.
+ * The daemon trims the feed at thirty days on startup, which is what bounds
+ * this loop; the page size is the route's own cap.
+ */
+async function readActivityTail(): Promise<Activity[]> {
+  const tail: Activity[] = []
+  let since = 0
+  for (;;) {
+    const page = await api.activity(since, ACTIVITY_PAGE)
+    if (page.length === 0) break
+    tail.push(...page)
+    if (tail.length > ACTIVITY_SHOWN) tail.splice(0, tail.length - ACTIVITY_SHOWN)
+    const last = page[page.length - 1]
+    if (!last?.seq || last.seq <= since) break
+    since = last.seq
+    // A page that came back short is the end; this API has no "more" marker.
+    if (page.length < ACTIVITY_PAGE) break
+  }
+  // The design draws newest first and the feed is written oldest first.
+  return tail.reverse()
 }
 
 /** Read everything this daemon offers. It is the gap recovery and the boot. */
@@ -201,10 +240,13 @@ export async function refreshAll() {
 /**
  * What to show a person about an error.
  *
+ * Named `explain` and not `describe`: the latter is Vitest's own global, in
+ * scope in every test file in this tree, and a shadowed import there type-checks.
+ *
  * A 400 from this API is a sentence written to be read; a 500 carries nothing,
  * and inventing a detail for it would be worse than saying the daemon failed.
  */
-export function describe(err: unknown): string {
+export function explain(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.detail) return err.detail
     if (err.status === 503) return 'The daemon is at capacity. Close a run and try again.'
@@ -254,14 +296,8 @@ export function setInspector(open: boolean) {
   patch({ inspectorOpen: open })
 }
 
-export function select(selection: Selection) {
-  store.set((s) => ({
-    ...s,
-    selection,
-    // Selecting something with the inspector closed is how a person opens it;
-    // below the breakpoint there is no room, and it stays shut.
-    inspectorOpen: selection && !s.narrow ? true : s.inspectorOpen,
-  }))
+export function toggleInspector() {
+  store.set((s) => ({ ...s, inspectorOpen: !s.inspectorOpen }))
 }
 
 export function setPalette(open: boolean) {
@@ -276,16 +312,20 @@ export function setActiveRun(id: string) {
   patch({ activeRun: id })
 }
 
-export function setDraft(draft: string) {
-  patch({ draft })
+export function setPendingCommand(pendingCommand: string) {
+  patch({ pendingCommand })
 }
 
-/** The design's breakpoint: below it the inspector closes and stays closed. */
+/**
+ * The design's breakpoint: below it there is no room for the inspector.
+ *
+ * Widening brings it back rather than leaving it shut. Closing it below the
+ * breakpoint is a decision the layout made, not one the person made, and a
+ * window dragged narrow and back should not cost them the panel.
+ */
 export function applyWidth(width: number) {
   const narrow = width < NARROW_AT
-  store.set((s) =>
-    s.narrow === narrow ? s : { ...s, narrow, inspectorOpen: narrow ? false : s.inspectorOpen },
-  )
+  store.set((s) => (s.narrow === narrow ? s : { ...s, narrow, inspectorOpen: !narrow }))
 }
 
 /**
@@ -324,6 +364,11 @@ export function start(): () => void {
         case ControlKind.ActivityUpdated:
           void refresh.activity()
           break
+        case CLIENT_ERROR:
+          // Not a state change: it is this connection's own mistake coming
+          // back. Refetching every collection over it is the cost the gap rule
+          // exists to avoid.
+          break
         default:
           // A kind this build does not know is still a mutation: the collection
           // it named has moved, and reading everything is the honest answer.
@@ -348,7 +393,7 @@ export function start(): () => void {
       }
     })
     .catch((err: unknown) => {
-      if (!store.get().meta) patch({ loading: false, fatal: describe(err) })
+      if (!store.get().meta) patch({ loading: false, fatal: explain(err) })
     })
 
   return () => {

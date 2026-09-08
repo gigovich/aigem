@@ -1,6 +1,7 @@
 import { shortVersion } from '@/lib/format'
+import { runCounts } from '@/state/app'
 import { LiveDot } from '@/ui/StatusChip'
-import { setPalette, setQuick, toggleDensity, toggleTheme, useApp } from '@/state/app'
+import { setPalette, setQuick, toggleDensity, toggleInspector, toggleTheme, useApp } from '@/state/app'
 import { navigate } from '@/lib/route'
 import type { Route } from '@/lib/route'
 
@@ -15,14 +16,14 @@ type Props = { crumbs: { label: string; route?: Route }[] }
  * and they are what has to survive.
  */
 export function Header({ crumbs }: Props) {
-  const { version, theme, density, narrow, quickOpen, running, agents } = useApp((s) => ({
+  const { version, theme, density, narrow, quickOpen, inspectorOpen, counts } = useApp((s) => ({
     version: s.meta?.version ?? '',
     theme: s.theme,
     density: s.density,
     narrow: s.narrow,
     quickOpen: s.quickOpen,
-    running: s.runs.filter((r) => r.running).length,
-    agents: s.runs.filter((r) => r.live).length,
+    inspectorOpen: s.inspectorOpen,
+    counts: runCounts(s),
   }))
 
   return (
@@ -82,7 +83,7 @@ export function Header({ crumbs }: Props) {
             <div className="flex h-[22px] items-center gap-[6px] rounded-full border border-line px-2 font-mono text-[10.5px] whitespace-nowrap text-fg-muted">
               <LiveDot />
               <span>
-                {running} running · {agents} open
+                {counts.running} running · {counts.live} open
               </span>
             </div>
           )}
@@ -100,6 +101,16 @@ export function Header({ crumbs }: Props) {
               ▭
             </span>
             <span>Chat</span>
+          </button>
+          <button
+            type="button"
+            onClick={toggleInspector}
+            title="Inspector"
+            aria-pressed={inspectorOpen}
+            aria-label={`Inspector: ${inspectorOpen ? 'shown' : 'hidden'}`}
+            className="grid size-[24px] cursor-pointer place-items-center rounded-[5px] border border-line text-[11px] text-fg-muted hover:border-line-strong hover:text-fg"
+          >
+            <span aria-hidden="true">▤</span>
           </button>
           <button
             type="button"

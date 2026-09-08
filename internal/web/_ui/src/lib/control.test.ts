@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { backoff, connectControl } from './control'
+import type { ControlState } from './control'
 import type { Meta } from './wire'
 import { FakeSocket, installFakeSocket } from '@/test/fakesocket'
 
@@ -9,14 +10,16 @@ type Handlers = {
   hellos: Meta[]
   deltas: { kind: string; data: unknown }[]
   gaps: number
+  states: ControlState[]
 }
 
 function connect() {
-  const seen: Handlers = { hellos: [], deltas: [], gaps: 0 }
+  const seen: Handlers = { hellos: [], deltas: [], gaps: 0, states: [] }
   const conn = connectControl({
     onHello: (m) => seen.hellos.push(m),
     onDelta: (kind, data) => seen.deltas.push({ kind, data }),
     onGap: () => seen.gaps++,
+    onStatus: (s) => seen.states.push(s),
   })
   return { seen, conn }
 }
@@ -136,4 +139,80 @@ test('backs off exponentially and never below the floor or above the ceiling', (
   expect(backoff(30, () => 0)).toBe(500)
   // Jitter, not a constant: two draws from the same attempt differ.
   expect(backoff(5, () => 0.25)).not.toBe(backoff(5, () => 0.75))
+})
+
+// The refusal frame is this connection's own mistake coming back, not a state
+// change. It is a delta with a payload, so without a case of its own the page
+// would refetch every collection over it.
+test('the refusal frame carries a payload and is still not a mutation', () => {
+  const { seen, conn } = connect()
+  FakeSocket.last.open()
+  FakeSocket.last.deliver({ type: 'hello', rev: 12, data: meta })
+  FakeSocket.last.deliver({
+    type: 'client_error',
+    rev: 12,
+    data: { op: 'subscribe', error: 'the control stream is read-only' },
+  })
+
+  expect(seen.gaps).toBe(0)
+  expect(seen.deltas).toEqual([
+    { kind: 'client_error', data: { op: 'subscribe', error: 'the control stream is read-only' } },
+  ])
+  conn.close()
+})
+
+// A frame the page cannot decode is a frame whose meaning it missed. Going
+// quietly stale over one is the failure the revision counter exists to prevent.
+test('a frame it cannot parse is a gap', () => {
+  const { seen, conn } = connect()
+  FakeSocket.last.open()
+  FakeSocket.last.deliver({ type: 'hello', rev: 12, data: meta })
+  FakeSocket.last.deliver('{ not json')
+
+  expect(seen.gaps).toBe(1)
+  conn.close()
+})
+
+// One frame arriving out of order must not lower the watermark: every frame
+// after it would then be judged against a number the client has passed, which
+// is either a refetch storm or a real gap swallowed.
+test('the revision it holds never goes backwards', () => {
+  const { seen, conn } = connect()
+  FakeSocket.last.open()
+  FakeSocket.last.deliver({ type: 'hello', rev: 12, data: meta })
+  FakeSocket.last.deliver({ type: 'run.updated', rev: 13, data: { id: 'r1' } })
+  FakeSocket.last.deliver({ type: 'run.updated', rev: 11, data: { id: 'r1' } })
+  FakeSocket.last.deliver({ type: 'run.updated', rev: 14, data: { id: 'r1' } })
+
+  expect(seen.gaps).toBe(0)
+  conn.close()
+})
+
+// The backoff has to come back down, or a daemon that blipped three times early
+// makes every later reconnection wait the full fifteen seconds for the life of
+// the tab.
+test('a successful connection resets the backoff', () => {
+  const { conn } = connect()
+  for (let i = 0; i < 4; i++) {
+    FakeSocket.last.open()
+    FakeSocket.last.deliver({ type: 'hello', rev: 1, data: meta })
+    FakeSocket.last.drop()
+    // Well under the ceiling: if the attempt counter had kept climbing, the
+    // next socket would not exist yet.
+    vi.advanceTimersByTime(1000)
+    expect(FakeSocket.instances).toHaveLength(i + 2)
+  }
+  conn.close()
+})
+
+// The status bar reads this. A stream that never reports its own disconnection
+// leaves the page looking live while it has stopped hearing anything.
+test('reports that it disconnected', () => {
+  const { seen, conn } = connect()
+  FakeSocket.last.open()
+  expect(seen.states).toContain('open')
+
+  FakeSocket.last.drop()
+  expect(seen.states).toContain('closed')
+  conn.close()
 })

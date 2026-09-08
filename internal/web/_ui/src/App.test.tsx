@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 import App from './App'
 import { installDaemon, META, mountApp, RUN } from '@/test/harness'
+import { navigate } from '@/lib/route'
 import { EventKind } from '@/lib/wire'
 
 afterEach(() => {
@@ -140,4 +141,20 @@ test('shows a refused operation as a notice, not as an event', async () => {
   const log = screen.getByRole('log')
   expect(log).toHaveTextContent('rotate them')
   expect(log).not.toHaveTextContent('approval already decided')
+})
+
+// A socket left attached after the component is gone writes operations into a
+// conversation nobody is looking at.
+test('lets go of the run socket when the run changes', async () => {
+  const h = await mountApp({ runs: [RUN, { ...RUN, id: 'r-2', title: 'Another' }] })
+  const { FakeSocket } = await import('@/test/fakesocket')
+  // The shell attaches to the newest run, which is r-2.
+  await waitFor(() => expect(h.runSocket()?.url).toContain('/api/runs/r-2/socket'))
+  const first = h.runSocket()
+  if (!first) throw new Error('no run socket')
+  act(() => first.open())
+
+  act(() => navigate({ screen: 'run', id: 'r-1' }))
+  await waitFor(() => expect(h.runSocket()?.url).toContain('/api/runs/r-1/socket'))
+  expect(first.readyState).toBe(FakeSocket.CLOSED)
 })

@@ -1,3 +1,5 @@
+import { count } from '@/lib/format'
+import { useRoving } from './roving'
 import type { AgentNode } from '@/state/run'
 
 type Props = {
@@ -14,14 +16,24 @@ type Props = {
  * is what fills the panel beside it.
  */
 export function AgentTree({ nodes, selected, onSelect }: Props) {
+  const { container, active, setActive, onKeyDown: rovingKeys } = useRoving(nodes.length)
   return (
-    <div role="listbox" aria-label="Agent tree" className="py-[6px]">
-      {nodes.map((n) => (
+    <div
+      ref={container}
+      role="listbox"
+      tabIndex={-1}
+      aria-label="Agent tree"
+      onKeyDown={onSelect ? rovingKeys : undefined}
+      className="py-[6px]"
+    >
+      {nodes.map((n, i) => (
         <div
           key={n.id}
           role="option"
           aria-selected={n.id === selected}
-          tabIndex={onSelect ? 0 : undefined}
+          data-roving={onSelect ? '' : undefined}
+          tabIndex={onSelect ? (i === active ? 0 : -1) : undefined}
+          onFocus={onSelect ? () => setActive(i) : undefined}
           onClick={onSelect ? () => onSelect(n.id) : undefined}
           onKeyDown={
             onSelect
@@ -32,7 +44,7 @@ export function AgentTree({ nodes, selected, onSelect }: Props) {
                 }
               : undefined
           }
-          className={`flex min-h-[28px] cursor-default items-center gap-2 px-3 hover:bg-s0 focus-visible:bg-s0 focus-visible:outline-none ${
+          className={`flex min-h-[28px] cursor-default items-center gap-2 px-3 hover:bg-s0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary ${
             n.id === selected ? 'bg-s0' : ''
           }`}
           style={{ paddingLeft: `${12 + n.level * 14}px` }}
@@ -56,7 +68,7 @@ export function AgentTree({ nodes, selected, onSelect }: Props) {
           <span className="sr-only">{n.running ? 'running' : 'finished'}</span>
           {n.tokens ? (
             <span className="ml-auto font-mono text-[10px] text-fg-subtle">
-              {n.tokens.toLocaleString('en-US')} tok
+              {count(n.tokens)} tok
             </span>
           ) : null}
         </div>

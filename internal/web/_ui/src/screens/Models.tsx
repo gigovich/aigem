@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from 'react'
 import { api } from '@/lib/api'
 import { compact } from '@/lib/format'
-import { describe, flash, refresh, select, setBanner, useApp } from '@/state/app'
+import { navigate } from '@/lib/route'
+import { explain, flash, refresh, setBanner, useApp } from '@/state/app'
 import type { Model } from '@/lib/wire'
 import { DataGrid } from '@/ui/DataGrid'
 import type { Column } from '@/ui/DataGrid'
@@ -18,11 +19,11 @@ function state(m: Model): { label: string; icon: string; color: string } {
   return { label: 'No key', icon: '×', color: 'var(--danger)' }
 }
 
-export function Models() {
-  const { models, runs, selected, defaultModel } = useApp((s) => ({
+export function Models({ selected }: { selected?: string }) {
+  const { models, runs, usage, defaultModel } = useApp((s) => ({
     models: s.models,
     runs: s.runs,
-    selected: s.selection?.kind === 'model' ? s.selection.id : '',
+    usage: s.usage,
     defaultModel: s.meta?.defaultModel ?? '',
   }))
   const [confirming, setConfirming] = useState<Model | null>(null)
@@ -39,12 +40,16 @@ export function Models() {
       // should not have to wait for its own change to come back around.
       await refresh.models()
     } catch (err) {
-      setBanner(describe(err))
+      setBanner(explain(err))
     }
   }
 
   const chosen = models.find((m) => m.ref === selected)
   const askDefault = useCallback((m: Model) => setConfirming(m), [])
+  // The provider's quota, if it has reported one. It belongs beside the model
+  // rather than on a screen of its own: what a person wants to know about a
+  // limit is whether the model they are about to choose is near it.
+  const quota = usage.find((u) => u.provider === chosen?.provider)
 
   // Memoised because it is the publish effect's dependency: a fresh object per
   // render would republish the panel on every keystroke elsewhere on the page.
@@ -63,6 +68,12 @@ export function Models() {
         { key: 'status', value: s.label, color: s.color },
         { key: 'default', value: chosen.default ? 'yes' : 'no' },
       ],
+      listTitle: quota ? `${quota.provider} usage` : undefined,
+      list: (quota?.windows ?? []).map((w) => ({
+        icon: '·',
+        text: w.name,
+        meta: w.remaining || (w.usedPercent ? `${Math.round(w.usedPercent)}%` : ''),
+      })),
       actions: [
         ...(chosen.default ? [] : [{ label: 'Make default', onClick: () => askDefault(chosen) }]),
         ...(chosen.needsAuth && !chosen.authenticated
@@ -70,7 +81,7 @@ export function Models() {
           : []),
       ],
     }
-  }, [chosen, askDefault])
+  }, [chosen, quota, askDefault])
   usePublishInspector(panel)
 
   const columns: Column<Model>[] = [
@@ -172,7 +183,7 @@ export function Models() {
         rowKey={(m) => m.ref}
         minWidth={720}
         selected={(m) => m.ref === selected}
-        onSelect={(m) => select({ kind: 'model', id: m.ref })}
+        onSelect={(m) => navigate({ screen: 'models', id: m.ref })}
         empty={
           <EmptyState
             title="No models are configured."

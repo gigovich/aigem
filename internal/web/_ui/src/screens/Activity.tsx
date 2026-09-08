@@ -9,7 +9,7 @@ function mark(kind: string): { glyph: string; color: string } {
   if (kind.includes('approv') || kind.includes('trust')) {
     return { glyph: '!', color: 'var(--attention)' }
   }
-  if (kind.includes('open') || kind.includes('start')) {
+  if (kind.includes('open') || kind.includes('start') || kind.includes('creat')) {
     return { glyph: '●', color: 'var(--running)' }
   }
   if (kind.includes('close') || kind.includes('stop')) {

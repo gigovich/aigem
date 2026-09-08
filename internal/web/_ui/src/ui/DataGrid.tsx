@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useRoving } from './roving'
 
 export type Column<T> = {
   key: string
@@ -46,9 +47,19 @@ export function DataGrid<T>({
   empty,
 }: Props<T>) {
   const template = columns.map((c) => c.width).join(' ')
+  const { container, active, setActive, onKeyDown: rovingKeys } = useRoving(rows.length)
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <div role="grid" aria-label={label} style={minWidth ? { minWidth: `${minWidth}px` } : undefined}>
+      <div
+        ref={container}
+        role="grid"
+        tabIndex={-1}
+        aria-label={label}
+        aria-rowcount={rows.length + 1}
+        aria-colcount={columns.length}
+        onKeyDown={onSelect ? rovingKeys : undefined}
+        style={minWidth ? { minWidth: `${minWidth}px` } : undefined}
+      >
         <div
           role="row"
           className="sticky top-0 z-[2] grid gap-3 border-b border-line bg-surface px-[18px] pt-[9px] pb-[6px] text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase"
@@ -60,15 +71,26 @@ export function DataGrid<T>({
             </div>
           ))}
         </div>
-        {rows.map((row) => {
+        {rows.map((row, i) => {
           const isSelected = selected?.(row) ?? false
           return (
             <div
               key={rowKey(row)}
               role="row"
+              aria-rowindex={i + 2}
               aria-selected={onSelect ? isSelected : undefined}
-              tabIndex={onSelect ? 0 : undefined}
-              onClick={onSelect ? () => onSelect(row) : undefined}
+              data-roving={onSelect ? '' : undefined}
+              // One tab stop for the table; the arrows move inside it.
+              tabIndex={onSelect ? (i === active ? 0 : -1) : undefined}
+              onFocus={onSelect ? () => setActive(i) : undefined}
+              onClick={
+                onSelect
+                  ? () => {
+                      setActive(i)
+                      onSelect(row)
+                    }
+                  : undefined
+              }
               onKeyDown={
                 onSelect
                   ? (e) => {
@@ -79,7 +101,7 @@ export function DataGrid<T>({
                   : undefined
               }
               className={`grid min-h-row items-center gap-3 border-b border-line px-[18px] ${
-                onSelect ? 'cursor-default hover:bg-s0 focus-visible:bg-s0 focus-visible:outline-none' : ''
+                onSelect ? 'cursor-default hover:bg-s0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary' : ''
               } ${isSelected ? 'bg-s0' : ''}`}
               style={{ gridTemplateColumns: template }}
             >

@@ -7,7 +7,9 @@ import type { RunView } from '@/state/run'
 type Props = {
   run: RunView
   runId: string
-  onSubmit: (text: string) => void
+  /** Reports whether the socket took it; false leaves the text where it is. */
+  onSubmit: (text: string) => boolean
+  ready: boolean
 }
 
 /**
@@ -17,7 +19,7 @@ type Props = {
  * matter should be continuable, and "Open session" is that - the transcript is
  * already the run's, so continuing it is a navigation and not a hand-off.
  */
-export function QuickChat({ run, runId, onSubmit }: Props) {
+export function QuickChat({ run, runId, onSubmit, ready }: Props) {
   const [text, setText] = useState('')
   const feed = useRef<HTMLDivElement>(null)
 
@@ -33,8 +35,7 @@ export function QuickChat({ run, runId, onSubmit }: Props) {
   const send = () => {
     const value = text.trim()
     if (!value || !runId) return
-    onSubmit(value)
-    setText('')
+    if (onSubmit(value)) setText('')
   }
 
   return (
@@ -74,7 +75,11 @@ export function QuickChat({ run, runId, onSubmit }: Props) {
       <div ref={feed} className="flex-1 overflow-y-auto px-[11px] py-[10px]">
         {rows.length === 0 && (
           <p className="m-0 text-[12px] text-fg-subtle">
-            {runId ? 'Nothing said yet.' : 'Start a session to ask anything.'}
+            {!runId
+              ? 'Start a session to ask anything.'
+              : ready
+                ? 'Nothing said yet.'
+                : 'This conversation is not connected.'}
           </p>
         )}
         {rows.map((e) => {
@@ -108,7 +113,7 @@ export function QuickChat({ run, runId, onSubmit }: Props) {
               e.preventDefault()
               send()
             }}
-            disabled={!runId}
+            disabled={!runId || !ready}
             placeholder="Ask anything, or say what to do…"
             aria-label="Ask anything, or say what to do"
             className="h-[28px] min-w-0 flex-1 rounded-md border border-line bg-bg px-[9px] text-[12px] outline-none focus:border-primary disabled:opacity-50"
@@ -116,7 +121,7 @@ export function QuickChat({ run, runId, onSubmit }: Props) {
           <button
             type="button"
             onClick={send}
-            disabled={!runId || !text.trim()}
+            disabled={!runId || !ready || !text.trim()}
             className="h-[28px] flex-none rounded-md border border-line bg-s0 px-[11px] text-[11.5px] enabled:cursor-pointer enabled:hover:bg-s1 disabled:opacity-50"
           >
             Send

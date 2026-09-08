@@ -5,7 +5,7 @@ import { runStatus } from '@/lib/wire'
 import type { RunOp } from '@/lib/wire'
 import type { RunSocketState } from '@/lib/socket'
 import { useApp } from '@/state/app'
-import { toRows } from '@/state/eventrow'
+import { visibleRows } from '@/state/eventrow'
 import { agentTree } from '@/state/run'
 import type { RunView } from '@/state/run'
 import { AgentTree } from '@/ui/AgentTree'
@@ -41,7 +41,10 @@ export function Run({ run, runId, state, send }: Props) {
   const [follow, setFollow] = useState(true)
   const [detail, setDetail] = useState(true)
 
-  const rows = useMemo(() => toRows(run.events, detail), [run.events, detail])
+  // Not memoised: the fold appends to `run.rows` in place, so the array is the
+  // same object from one event to the next and a memo on it would never
+  // recompute. The filter itself is a walk over rows that are already built.
+  const rows = visibleRows(run.rows, detail)
   const tree = useMemo(() => agentTree(run), [run])
 
   if (!record) {
@@ -175,6 +178,7 @@ export function Run({ run, runId, state, send }: Props) {
                   >
                     {f.created ? '+' : '~'}
                   </span>
+                  <span className="sr-only">{f.created ? 'created' : 'modified'}</span>
                   <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
                     {f.path}
                   </span>

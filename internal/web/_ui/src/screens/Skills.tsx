@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '@/lib/api'
 import { navigate } from '@/lib/route'
-import { describe, flash, refresh, setBanner, useApp } from '@/state/app'
+import { explain, flash, refresh, setBanner, useApp } from '@/state/app'
 import { usePublishInspector } from '@/state/inspector'
 import type { Skill, SkillSummary } from '@/lib/wire'
 import { EmptyState } from '@/ui/EmptyState'
@@ -31,11 +31,8 @@ function scopeOf(s: SkillSummary): string {
  * that block, filled with what the daemon knows: the names it would load and
  * the notices loading them produced.
  */
-export function Skills() {
-  const { skills, selected } = useApp((s) => ({
-    skills: s.skills,
-    selected: s.selection?.kind === 'skill' ? s.selection.id : '',
-  }))
+export function Skills({ selected }: { selected?: string }) {
+  const skills = useApp((s) => s.skills)
   const [asking, setAsking] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -60,7 +57,7 @@ export function Skills() {
       .then((skill) => setLoaded({ name, skill }))
       .catch((err: unknown) => {
         if (abort.signal.aborted) return
-        setBanner(describe(err))
+        setBanner(explain(err))
       })
     return () => abort.abort()
   }, [name])
@@ -78,7 +75,7 @@ export function Skills() {
       for (const notice of result.notices) setBanner(notice)
       await refresh.skills()
     } catch (err) {
-      setBanner(describe(err))
+      setBanner(explain(err))
     } finally {
       setBusy(false)
     }
@@ -117,48 +114,46 @@ export function Skills() {
             {skills.items.length}
           </span>
         </div>
-        <div role="listbox" aria-label="Skills" className="flex-1 overflow-y-auto py-1">
-          {skills.items.map((s) => {
+        <div className="flex-1 overflow-y-auto py-1">
+          <ul aria-label="Skills" className="m-0 list-none p-0">
+            {skills.items.map((s) => {
             const st = state(s, pending)
             const active = s.name === chosen?.name
-            return (
-              <div
-                key={s.name}
-                role="option"
-                aria-selected={active}
-                tabIndex={0}
-                onClick={() => navigate({ screen: 'skills', id: s.name })}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter' && e.key !== ' ') return
-                  e.preventDefault()
-                  navigate({ screen: 'skills', id: s.name })
-                }}
-                className={`cursor-default border-l-2 px-3 py-[7px] hover:bg-s0 focus-visible:bg-s0 focus-visible:outline-none ${
-                  active ? 'border-l-primary bg-s0' : 'border-l-transparent'
-                }`}
-              >
-                <div className="flex items-center gap-[7px]">
-                  <span
-                    className="font-mono text-[11.5px]"
-                    style={{ color: active ? 'var(--fg)' : 'var(--fg-muted)' }}
+              return (
+                <li
+                  key={s.name}
+                  className={`border-l-2 ${active ? 'border-l-primary bg-s0' : 'border-l-transparent'} hover:bg-s0`}
+                >
+                  <button
+                    type="button"
+                    aria-current={active ? 'true' : undefined}
+                    onClick={() => navigate({ screen: 'skills', id: s.name })}
+                    className="w-full cursor-default px-3 py-[7px] text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
                   >
-                    {s.name}
-                  </span>
-                  <span
-                    aria-hidden="true"
-                    className="ml-auto text-[9px]"
-                    style={{ color: st.color }}
-                  >
-                    {st.icon}
-                  </span>
-                  <span className="sr-only">{st.label}</span>
-                </div>
-                <div className="overflow-hidden text-[10.5px] text-ellipsis whitespace-nowrap text-fg-subtle">
-                  {scopeOf(s)}
-                </div>
-              </div>
-            )
-          })}
+                    <span className="flex items-center gap-[7px]">
+                      <span
+                        className="font-mono text-[11.5px]"
+                        style={{ color: active ? 'var(--fg)' : 'var(--fg-muted)' }}
+                      >
+                        {s.name}
+                      </span>
+                      <span
+                        aria-hidden="true"
+                        className="ml-auto text-[9px]"
+                        style={{ color: st.color }}
+                      >
+                        {st.icon}
+                      </span>
+                      <span className="sr-only">{st.label}</span>
+                    </span>
+                    <span className="block overflow-hidden text-[10.5px] text-ellipsis whitespace-nowrap text-fg-subtle">
+                      {scopeOf(s)}
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
           {skills.items.length === 0 && <EmptyState inline title="No skills are loaded." />}
         </div>
       </div>

@@ -15,6 +15,14 @@ type Props<T extends string> = {
  * the five is current instead of reading five unrelated buttons.
  */
 export function SegmentedControl<T extends string>({ segments, value, onChange, label }: Props<T>) {
+  const at = Math.max(0, segments.indexOf(segments.find((s) => s.value === value) ?? segments[0]!))
+  const move = (delta: number, e: React.KeyboardEvent) => {
+    const next = segments[(at + delta + segments.length) % segments.length]
+    if (!next) return
+    e.preventDefault()
+    onChange(next.value)
+    ;(e.currentTarget.parentElement?.children[segments.indexOf(next)] as HTMLElement | undefined)?.focus()
+  }
   return (
     <div
       role="radiogroup"
@@ -27,6 +35,12 @@ export function SegmentedControl<T extends string>({ segments, value, onChange, 
           type="button"
           role="radio"
           aria-checked={s.value === value}
+          // One tab stop for the group; the arrows choose within it.
+          tabIndex={s.value === value ? 0 : -1}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') move(1, e)
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') move(-1, e)
+          }}
           onClick={() => onChange(s.value)}
           className={`h-[24px] cursor-pointer px-[9px] text-[11px] ${
             i > 0 ? 'border-l border-line' : ''

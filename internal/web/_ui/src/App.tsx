@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { api } from '@/lib/api'
 import { canonicalise, getRoute, navigate, resync, subscribeRoute } from '@/lib/route'
 import type { Route } from '@/lib/route'
 import { signIn } from '@/lib/auth'
 import {
   clearBanner,
-  describe,
+  explain,
   flash,
   refresh,
   setActiveRun,
@@ -26,7 +26,7 @@ import { handleKey } from '@/shell/keymap'
 import { QuickChat } from '@/shell/QuickChat'
 import { Sidebar } from '@/shell/Sidebar'
 import { StatusBar } from '@/shell/StatusBar'
-import { ToastHost } from '@/shell/ToastHost'
+import { Toast, ToastHost } from '@/shell/ToastHost'
 import { Activity } from '@/screens/Activity'
 import { Chat } from '@/screens/Chat'
 import { Models } from '@/screens/Models'
@@ -119,7 +119,7 @@ export default function App() {
       setActiveRun(run.id)
       navigate({ screen: 'chat' })
     } catch (err) {
-      setBanner(describe(err))
+      setBanner(explain(err))
     }
   }, [features.runs])
 
@@ -130,7 +130,7 @@ export default function App() {
       await refresh.runs()
       flash('Session closed. Its transcript is still readable.')
     } catch (err) {
-      setBanner(describe(err))
+      setBanner(explain(err))
     }
   }, [])
 
@@ -141,6 +141,15 @@ export default function App() {
   const matches = useMemo(() => ordered(items, query), [items, query])
 
   const layerOpen = paletteOpen || quickOpen || explainProjects || closing !== ''
+
+  // The palette's list and highlight are read through a ref so the window
+  // listener below is registered once. With them in the dependency array it was
+  // torn down and re-added on every keystroke in the palette. Written in an
+  // effect rather than during render: a ref is not part of the render output.
+  const paletteRef = useRef({ matches, index })
+  useEffect(() => {
+    paletteRef.current = { matches, index }
+  }, [matches, index])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -165,11 +174,18 @@ export default function App() {
             setPalette(!store.get().paletteOpen)
           },
           toggleQuick: () => setQuick(!store.get().quickOpen),
-          confirm: () => void closeSession(closing),
+          // Unused: the keymap deliberately does not bind Enter to a
+          // destructive confirm. See handleKey.
+          confirm: () => undefined,
           submitModal: () => setExplainProjects(false),
           paletteMove: (delta) =>
-            setIndex((i) => Math.max(0, Math.min(matches.length - 1, i + delta))),
-          paletteRun: () => matches[index]?.run(),
+            setIndex((i) =>
+              Math.max(0, Math.min(paletteRef.current.matches.length - 1, i + delta)),
+            ),
+          paletteRun: () => {
+            const { matches: shown, index: at } = paletteRef.current
+            shown[at]?.run()
+          },
           focusFilter: () => {
             document.querySelector<HTMLElement>('[data-filter]')?.focus()
           },
@@ -179,7 +195,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [layerOpen, paletteOpen, explainProjects, closing, matches, index, closeSession])
+  }, [layerOpen, paletteOpen, explainProjects, closing])
 
   if (fatal) {
     return (
@@ -254,6 +270,7 @@ export default function App() {
         <QuickChat
           run={conversation.view}
           runId={runId}
+          ready={conversation.state === 'open'}
           onSubmit={(text) => conversation.send({ op: 'submit', text })}
         />
       )}
@@ -284,6 +301,7 @@ export default function App() {
         </Modal>
       )}
       <ToastHost />
+      <Toast />
     </div>
   )
 }
@@ -325,9 +343,9 @@ function Screen({
         />
       )
     case 'models':
-      return <Models />
+      return <Models selected={route.id} />
     case 'skills':
-      return <Skills />
+      return <Skills selected={route.id} />
     case 'activity':
       return <Activity />
     case 'tickets':
@@ -336,6 +354,13 @@ function Screen({
       return <Task />
     case 'repos':
       return <Repos />
+    default: {
+      // Exhaustive: adding a screen to SCREENS without a case here would
+      // otherwise render nothing at all, from a sidebar row that navigates to a
+      // blank panel with no error anywhere.
+      const unreachable: never = route.screen
+      return unreachable
+    }
   }
 }
 

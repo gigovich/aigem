@@ -14,7 +14,13 @@ export type Meta = {
   defaultModel: string
   rev: number
   ui: boolean
-  features: Record<string, boolean>
+  /**
+   * What this daemon serves. Partial rather than a full record: an absent key
+   * means unsupported, which is the daemon's own rule, and typing it as `Feature`
+   * is what stops a misspelt name from compiling into a screen that silently
+   * never appears.
+   */
+  features: Partial<Record<Feature, boolean>>
 }
 
 /** Feature names the daemon publishes. An absent key means unsupported. */

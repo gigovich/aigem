@@ -34,12 +34,15 @@ test('follows only a scheme this page will navigate to', () => {
     <Markdown
       source={
         '[safe](https://example.test/x)\n\n[local](/models)\n\n' +
-        '[bad](javascript:alert(1))\n\n[worse](data:text/html,<script>)'
+        '[bad](javascript:alert(1))\n\n[worse](data:text/html,<script>)\n\n' +
+        // Protocol-relative: it begins with a slash and is not same-origin.
+        '[sneaky](//evil.example/steal)'
       }
     />,
   )
   const links = [...container.querySelectorAll('a')].map((a) => a.getAttribute('href'))
   expect(links).toEqual(['https://example.test/x', '/models'])
+  expect(container.textContent).toContain('//evil.example/steal')
   // The refused ones are still visible, so a reader can see there was a link
   // and that it was not made live.
   expect(container.textContent).toContain('javascript:alert(1)')
@@ -61,4 +64,18 @@ test('an empty document renders nothing rather than failing', () => {
 test('an unterminated code fence still terminates', () => {
   const { container } = render(<Markdown source={'```\nnever closed'} />)
   expect(container.querySelector('pre')).toHaveTextContent('never closed')
+})
+
+// A URL with a space in it is not one URL; treating everything up to the
+// closing paren as the address swallows the sentence after it.
+test('a link stops at whitespace rather than eating the sentence', () => {
+  const { container } = render(<Markdown source="[a](https://example.test/x and more text)" />)
+  expect(container.querySelector('a')).toBeNull()
+  expect(container.textContent).toContain('and more text')
+})
+
+// A fragment is a link within this page and has no scheme to check.
+test('a fragment link is followed', () => {
+  const { container } = render(<Markdown source="[top](#top)" />)
+  expect(container.querySelector('a')).toHaveAttribute('href', '#top')
 })

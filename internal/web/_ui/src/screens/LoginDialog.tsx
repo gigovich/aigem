@@ -1,8 +1,24 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
-import { describe, flash, refresh } from '@/state/app'
+import { safeHref } from '@/lib/text'
+import { explain, flash, refresh } from '@/state/app'
 import type { Login } from '@/lib/wire'
 import { Modal } from '@/ui/Modal'
+
+/**
+ * A callback whose identity never changes, calling whatever the latest one is.
+ *
+ * It is the "latest ref" pattern: an interval that depends on a prop the caller
+ * writes inline restarts on every render of the parent, which for a poll means
+ * it never fires.
+ */
+function useEvent(fn: () => void): () => void {
+  const latest = useRef(fn)
+  useEffect(() => {
+    latest.current = fn
+  }, [fn])
+  return useCallback(() => latest.current(), [])
+}
 
 /**
  * Signing a provider in, from the browser.
@@ -17,6 +33,9 @@ import { Modal } from '@/ui/Modal'
  * meant to read out.
  */
 export function LoginDialog({ provider, onClose }: { provider: string; onClose: () => void }) {
+  // The caller usually passes an inline arrow, which would re-create the poll
+  // below - and reset its clock - on every unrelated re-render of the screen.
+  const close = useEvent(onClose)
   const [login, setLogin] = useState<Login | null>(null)
   const [error, setError] = useState('')
   const [pasted, setPasted] = useState('')
@@ -33,7 +52,7 @@ export function LoginDialog({ provider, onClose }: { provider: string; onClose: 
         setLogin(l)
       })
       .catch((err: unknown) => {
-        if (live) setError(describe(err))
+        if (live) setError(explain(err))
       })
     return () => {
       live = false
@@ -47,30 +66,42 @@ export function LoginDialog({ provider, onClose }: { provider: string; onClose: 
   const state = login?.state
   useEffect(() => {
     if (state !== 'pending' || !id.current) return
+    // A poll that only reports its failures runs for as long as the dialog is
+    // open against a flow that may have gone. Past a handful of consecutive
+    // failures it is the daemon that is not answering, not the person who is
+    // slow, and there is nothing left to wait for.
+    let failures = 0
     const timer = setInterval(() => {
       void api
         .login(id.current)
         .then((l) => {
+          failures = 0
           setLogin(l)
           if (l.state === 'done') {
             id.current = ''
             flash(`Signed in to ${l.provider}`)
             void refresh.models()
             void refresh.usage()
-            onClose()
+            close()
           }
         })
-        .catch((err: unknown) => setError(describe(err)))
+        .catch((err: unknown) => {
+          setError(explain(err))
+          if (++failures >= 5) {
+            clearInterval(timer)
+            setLogin((l) => (l ? { ...l, state: 'failed' } : l))
+          }
+        })
     }, 1500)
     return () => clearInterval(timer)
-  }, [state, onClose])
+  }, [state, close])
 
   const paste = () => {
     if (!id.current || !pasted.trim()) return
     void api
       .pasteLogin(id.current, pasted.trim())
       .then(setLogin)
-      .catch((err: unknown) => setError(describe(err)))
+      .catch((err: unknown) => setError(explain(err)))
   }
 
   return (
@@ -95,9 +126,17 @@ export function LoginDialog({ provider, onClose }: { provider: string; onClose: 
         <>
           <p className="m-0">Open this address and approve the request:</p>
           <p className="mt-2 font-mono text-[11.5px] break-all">
-            <a href={login.url} target="_blank" rel="noreferrer noopener">
-              {login.url}
-            </a>
+            {/* Through the same allow-list the markdown renderer uses. The
+                daemon pins this URL to the provider's own discovery document,
+                but "the one URL on the page that skips the check" is not a
+                property worth having. */}
+            {safeHref(login.url) ? (
+              <a href={safeHref(login.url) ?? ''} target="_blank" rel="noreferrer noopener">
+                {login.url}
+              </a>
+            ) : (
+              login.url
+            )}
           </p>
         </>
       )}

@@ -7,7 +7,7 @@
  * renderer over the same events, and the canvas draws them the same way.
  */
 
-import { bytes as sizeOf, clock } from '@/lib/format'
+import { bytes as sizeOf, clock, count } from '@/lib/format'
 import { EventKind } from '@/lib/wire'
 import type { RunEvent } from '@/lib/wire'
 
@@ -75,6 +75,13 @@ export function toRow(e: RunEvent): EventRow | null {
     case EventKind.TurnStart:
       return { ...base, glyph: '●', color: 'var(--running)', text: 'Agent started', phase: true }
     case EventKind.TurnEnd:
+      // A turn that failed says so on the event that ends it, not on a separate
+      // error event - a provider that could not be dialled, a budget that ran
+      // out. Drawing every turn_end as a tick is how a conversation that never
+      // happened reads as one that did.
+      if (e.error) {
+        return { ...base, glyph: '×', color: 'var(--danger)', text: e.error, phase: true }
+      }
       return {
         ...base,
         glyph: e.interrupted ? '■' : '✓',
@@ -122,7 +129,7 @@ export function toRow(e: RunEvent): EventRow | null {
         glyph: '✓',
         color: 'var(--success)',
         text: `${e.agent || e.name || 'Subagent'} completed`,
-        meta: e.tokens ? `${e.tokens.toLocaleString('en-US')} tok` : '',
+        meta: e.tokens ? `${count(e.tokens)} tok` : '',
         level: 1,
       }
     case EventKind.SubNotice:
@@ -186,14 +193,12 @@ export function toRow(e: RunEvent): EventRow | null {
   }
 }
 
-/** The timeline as rows; `detail` off keeps only the conversation's own steps. */
-export function toRows(events: RunEvent[], detail = true): EventRow[] {
-  const rows: EventRow[] = []
-  for (const e of events) {
-    const row = toRow(e)
-    if (!row) continue
-    if (!detail && row.level > 0) continue
-    rows.push(row)
-  }
-  return rows
+/**
+ * The rows a screen draws: all of them, or only the conversation's own steps.
+ *
+ * The mapping itself happens once per event, in the fold - see RunView.rows.
+ * This is the detail toggle and nothing else.
+ */
+export function visibleRows(rows: EventRow[], detail = true): EventRow[] {
+  return detail ? rows : rows.filter((r) => r.level === 0)
 }

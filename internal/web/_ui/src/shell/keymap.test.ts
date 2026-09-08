@@ -80,25 +80,21 @@ test('Escape closes whatever is open, and nothing when nothing is', () => {
   expect(shut.calls).toEqual([])
 })
 
-// A confirm is asking about something destructive. Enter answers it, and
-// nothing else reaches the page behind it.
-test('a confirm takes Enter and swallows the rest', () => {
+// A dialog opens with focus on Cancel. A global Enter binding here would run
+// the destructive action AND preventDefault the button the person was looking
+// at, so the keystroke that reads as "dismiss this" would end a session. Enter
+// reaches the focused button on its own.
+test('a confirm never runs its action from a global Enter', () => {
   const layers = { ...NOTHING_OPEN, anyOpen: true, confirmOpen: true }
   const a = actions()
-  expect(handleKey(press('Enter'), layers, a)).toBe(true)
-  expect(a.calls).toEqual(['confirm'])
-
-  const b = actions()
-  expect(handleKey(press('/'), layers, b)).toBe(false)
-  expect(b.calls).toEqual([])
+  expect(handleKey(press('Enter'), layers, a)).toBe(false)
+  expect(a.calls).toEqual([])
 })
 
-// ...but not while the person is typing in it: a confirm with a field in it
-// must not fire on the Enter that ends a line.
-test('a confirm ignores Enter from inside a field', () => {
+// Nothing else reaches the page behind a dialog that is asking a question.
+test('a confirm swallows the screen bindings', () => {
   const a = actions()
-  const input = document.createElement('input')
-  handleKey(press('Enter', { target: input }), { ...NOTHING_OPEN, anyOpen: true, confirmOpen: true }, a)
+  expect(handleKey(press('/'), { ...NOTHING_OPEN, anyOpen: true, confirmOpen: true }, a)).toBe(false)
   expect(a.calls).toEqual([])
 })
 
@@ -134,8 +130,10 @@ test('/ focuses the filter, but not from inside a field', () => {
 // answers the confirm rather than running the highlighted command.
 test('the topmost layer wins', () => {
   const a = actions()
+  // With a confirm over the palette, Enter must not run the highlighted
+  // command behind it.
   handleKey(press('Enter'), { anyOpen: true, confirmOpen: true, modalOpen: true, paletteOpen: true }, a)
-  expect(a.calls).toEqual(['confirm'])
+  expect(a.calls).toEqual([])
 })
 
 test('an unhandled key is left for the page', () => {

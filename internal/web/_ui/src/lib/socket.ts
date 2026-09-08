@@ -61,24 +61,34 @@ export function connectRun(
   const status = (state: RunSocketState, reason?: string) => handlers.onStatus?.(state, reason)
 
   /**
-   * Why the socket would not open. A browser cannot read the status of a failed
-   * handshake, so the only way to tell "this run is gone" from "the daemon
-   * restarted" is to ask over HTTP.
+   * Why the socket would not open, and whether it is worth dialling again.
+   *
+   * A browser cannot read the status of a failed handshake, so the only way to
+   * tell "this run is gone" from "the daemon restarted" is to ask over HTTP.
+   *
+   * The answer is in the record's `live`, not in a status code: `GET
+   * /api/runs/{id}` describes a closed run perfectly well and answers 200 for
+   * it - only the routes that need the session (the socket, the artifacts)
+   * answer 409. Waiting for a 409 here is waiting for something this route
+   * never sends, which is a tab redialling a closed conversation for as long as
+   * it is open. Every run is closed after a daemon restart, so that is the
+   * ordinary case and not the edge.
    */
   const diagnose = async () => {
     try {
-      await api.run(id)
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
+      const run = await api.run(id)
+      // Compared against false rather than tested for truth: `live` is the one
+      // boolean this API always sends, and a record that somehow arrived
+      // without it must not end the stream on an absence.
+      if (run.live === false) {
         stopped = true
-        status('gone', 'this run no longer exists')
+        status('gone', 'this conversation is closed; its transcript still reads')
         return true
       }
-      // 409 is a closed session: the timeline still reads, and there is nothing
-      // to reconnect to. Anything else is worth retrying.
-      if (err instanceof ApiError && err.status === 409) {
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
         stopped = true
-        status('gone', 'this run has no live session')
+        status('gone', err.status === 404 ? 'this run no longer exists' : err.detail)
         return true
       }
     }
@@ -155,7 +165,12 @@ export function connectRun(
       }
     }
     if (stopped) return
-    const ws = new WebSocket(socketURL(`/api/runs/${encodeURIComponent(id)}/socket`, { since }))
+    const ws = new WebSocket(
+      // The label is what the presence event shows the other tabs; without it
+      // a terminal and a browser on the same run cannot say who is attached,
+      // which is the whole reason presence exists.
+      socketURL(`/api/runs/${encodeURIComponent(id)}/socket`, { since, label: options.label }),
+    )
     socket = ws
     ws.onopen = () => {
       attempt = 0

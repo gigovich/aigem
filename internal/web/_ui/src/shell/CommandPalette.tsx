@@ -58,12 +58,18 @@ export function CommandPalette({ matches, query, onQuery, index, onIndex, groupe
           <span aria-hidden="true" className="font-mono text-[12px] text-fg-subtle">
             ›
           </span>
+          {/* The combobox pattern, declared rather than implied: without the
+              role a screen reader never enters list-following mode, so the
+              highlight moves visibly and silently as the arrows are pressed. */}
           <input
             ref={input}
             value={query}
             onChange={(e) => onQuery(e.target.value)}
             placeholder="Type a command or search…"
             aria-label="Type a command or search"
+            role="combobox"
+            aria-expanded="true"
+            aria-autocomplete="list"
             aria-controls="palette-list"
             aria-activedescendant={shown ? `palette-${shown.id}` : undefined}
             className="h-[42px] flex-1 border-none bg-transparent text-[13.5px] outline-none"
@@ -79,9 +85,14 @@ export function CommandPalette({ matches, query, onQuery, index, onIndex, groupe
         <div id="palette-list" role="listbox" aria-label="Commands" className="flex-1 overflow-y-auto p-[5px]">
           {withHeaders.map(({ item, header }, i) => {
             return (
-              <div key={item.id}>
+              // Presentational: a listbox owns options, and a wrapper div
+              // between them breaks that ownership.
+              <div key={item.id} role="presentation">
                 {header && (
-                  <div className="px-[9px] pt-2 pb-1 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+                  <div
+                    role="presentation"
+                    className="px-[9px] pt-2 pb-1 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase"
+                  >
                     {header}
                   </div>
                 )}
@@ -111,7 +122,10 @@ export function CommandPalette({ matches, query, onQuery, index, onIndex, groupe
             )
           })}
           {matches.length === 0 && (
-            <div className="px-[10px] py-5 text-center text-[12px] text-fg-subtle">
+            <div
+              role="presentation"
+              className="px-[10px] py-5 text-center text-[12px] text-fg-subtle"
+            >
               No matching command.
             </div>
           )}

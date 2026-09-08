@@ -27,7 +27,7 @@ test('every control on the shell has a name that can be read out', async () => {
 // anything that is not looking at it.
 test('a status is readable without its colour', async () => {
   await mountApp({ runs: [RUN] })
-  const list = await screen.findByRole('listbox', { name: 'Sessions' })
+  const list = await screen.findByRole('list', { name: 'Sessions' })
   // RUN is live with nothing in flight, which is the dictionary's "Waiting".
   expect(list).toHaveTextContent('Waiting')
 })
@@ -59,9 +59,12 @@ test('a confirmation announces itself', async () => {
   await screen.findByRole('dialog', { name: 'Command palette' })
   await user.keyboard('toggle theme{Enter}')
 
-  // Named by its text rather than by the role alone: the status bar's
-  // reconnect notice is a live region too, and both are correct.
-  const toast = (await screen.findByText('Theme: latte')).closest('[role="status"]')
+  // The announcement is the region that was already in the document, not the
+  // visible plate beside it: a region inserted together with its text is
+  // announced by nothing.
+  const regions = await screen.findAllByRole('status')
+  const toast = regions.find((r) => r.textContent === 'Theme: latte')
+  expect(toast).toBeDefined()
   expect(toast).toHaveAttribute('aria-live', 'polite')
 })
 
@@ -84,4 +87,13 @@ test('the context bar reports its value', async () => {
   const bar = await screen.findByRole('progressbar')
   expect(bar).toHaveAttribute('aria-valuenow', '25')
   expect(bar).toHaveAccessibleName(/50,000 \/ 200,000 tokens/)
+})
+
+// The region has to be in the document before the text arrives. This is the
+// check that keeps a future "return null when empty" from silencing the toast.
+test('the announcement region is present before there is anything to announce', async () => {
+  await mountApp()
+  const regions = screen.getAllByRole('status')
+  expect(regions.some((r) => r.getAttribute('aria-live') === 'polite')).toBe(true)
+  expect(regions.every((r) => r.textContent === '')).toBe(true)
 })

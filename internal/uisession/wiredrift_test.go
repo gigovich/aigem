@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -135,6 +136,116 @@ func browserEventKinds(t *testing.T) []string {
 	}
 	sort.Strings(kinds)
 	return kinds
+}
+
+// The kinds are only half of the vocabulary. An event's *fields* are the other
+// half, and renaming a JSON tag is exactly the failure this file exists to
+// catch: the browser goes on reading `ctx`, `approval` or `from`, finds
+// nothing, and draws a conversation with no context window, no approval dialog
+// and a desync it cannot recover from - with every test on both sides green.
+func TestTheBrowserKnowsThisPackagesEventFields(t *testing.T) {
+	got := browserEventFields(t)
+	want := goJSONTags(t, "Event")
+
+	for _, field := range want {
+		if !contains(got, field) {
+			t.Errorf("the browser's RunEvent has no %q; add it to %s", field, browserWire)
+		}
+	}
+	for _, field := range got {
+		if !contains(want, field) {
+			t.Errorf("the browser's RunEvent reads %q, which uisession.Event does not write; "+
+				"remove it from %s", field, browserWire)
+		}
+	}
+}
+
+// The approval a person answers, and the answer they give. Both cross the wire
+// inside an event, and both are read by name in the browser.
+func TestTheBrowserKnowsTheApprovalFields(t *testing.T) {
+	for _, name := range []string{"Approval", "Option", "Client"} {
+		want := goJSONTags(t, name)
+		source := readBrowserWire(t)
+		for _, field := range want {
+			// Matched as a property declaration - preceded by a brace, a
+			// semicolon or whitespace - so a field that only appears inside a
+			// longer word or in prose does not pass. A one-line object type is
+			// as valid a declaration as an indented one.
+			if !regexp.MustCompile(`[{;\s]` + regexp.QuoteMeta(field) + `\??:`).MatchString(source) {
+				t.Errorf("the browser does not read %s.%s; add it to %s", name, field, browserWire)
+			}
+		}
+	}
+}
+
+// goJSONTags reads the json tag names off one struct in this package.
+func goJSONTags(t *testing.T, name string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	pkg, err := parser.ParseDir(fset, ".", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing the package: %v", err)
+	}
+	var out []string
+	for _, p := range pkg {
+		for _, file := range p.Files {
+			ast.Inspect(file, func(n ast.Node) bool {
+				spec, ok := n.(*ast.TypeSpec)
+				if !ok || spec.Name.Name != name {
+					return true
+				}
+				st, ok := spec.Type.(*ast.StructType)
+				if !ok {
+					return true
+				}
+				for _, f := range st.Fields.List {
+					if f.Tag == nil {
+						continue
+					}
+					tag := reflect.StructTag(strings.Trim(f.Tag.Value, "`")).Get("json")
+					field, _, _ := strings.Cut(tag, ",")
+					if field != "" && field != "-" {
+						out = append(out, field)
+					}
+				}
+				return false
+			})
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("found no json tags on %s", name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+var browserFieldLine = regexp.MustCompile(`^\s+([a-z_]+)\??:`)
+
+// browserEventFields reads the property names off the browser's RunEvent.
+func browserEventFields(t *testing.T) []string {
+	t.Helper()
+	source := readBrowserWire(t)
+	const open = "export type RunEvent = {"
+	start := strings.Index(source, open)
+	if start < 0 {
+		t.Fatalf("%s does not declare %s", browserWire, open)
+	}
+	rest := source[start+len(open):]
+	end := strings.Index(rest, "\n}")
+	if end < 0 {
+		t.Fatalf("%s: the RunEvent type is not closed", browserWire)
+	}
+	var fields []string
+	for _, line := range strings.Split(rest[:end], "\n") {
+		if m := browserFieldLine.FindStringSubmatch(line); m != nil {
+			fields = append(fields, m[1])
+		}
+	}
+	if len(fields) < 10 {
+		t.Fatalf("found only %d fields on the browser's RunEvent", len(fields))
+	}
+	sort.Strings(fields)
+	return fields
 }
 
 func readBrowserWire(t *testing.T) string {

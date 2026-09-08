@@ -44,7 +44,7 @@ test('keeps Tab inside itself, in both directions', async () => {
 
   await user.tab({ shift: true })
   expect(confirm).toHaveFocus()
-  expect(cancel).not.toHaveFocus()
+  expect(cancel).toBeInTheDocument()
 })
 
 // Returning focus is the other half: without it the person is left standing on
@@ -78,8 +78,16 @@ test('closes on Escape and on the backdrop, and not on the panel', async () => {
   await user.click(screen.getByText('body'))
   expect(onClose).not.toHaveBeenCalled()
 
+  // Escape first: it is handled on the panel, where the focus trap keeps the
+  // focus, and clicking the backdrop takes the focus out of it.
   await user.keyboard('{Escape}')
   expect(onClose).toHaveBeenCalledTimes(1)
+
+  // Clicking past a dialog is how most people dismiss one.
+  const backdrop = screen.getByRole('dialog').parentElement
+  if (!backdrop) throw new Error('the dialog has no backdrop')
+  await user.click(backdrop)
+  expect(onClose).toHaveBeenCalledTimes(2)
 })
 
 test('runs the confirm and honours a disabled one', async () => {
@@ -100,4 +108,25 @@ test('runs the confirm and honours a disabled one', async () => {
   )
   await user.click(screen.getByRole('button', { name: 'Do it' }))
   expect(onClick).toHaveBeenCalledTimes(1)
+})
+
+// A hidden input matches every other input selector and can never take focus.
+// A dialog whose first control is one focuses nothing, focus stays on <body>,
+// and Escape - handled on the panel - then does not close it either.
+test('does not try to focus something that cannot be focused', async () => {
+  const user = userEvent.setup()
+  const onClose = vi.fn()
+  render(
+    <Modal title="Pick one" onClose={onClose}>
+      <input type="hidden" value="x" readOnly />
+      <button type="button" hidden>
+        never
+      </button>
+      <button type="button">real</button>
+    </Modal>,
+  )
+
+  expect(screen.getByRole('button', { name: 'real' })).toHaveFocus()
+  await user.keyboard('{Escape}')
+  expect(onClose).toHaveBeenCalledTimes(1)
 })

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { safeHref } from '@/lib/text'
 
 /**
  * Markdown, rendered into elements rather than into HTML.
@@ -17,16 +18,6 @@ import type { ReactNode } from 'react'
  * The one place a URL is honoured is a link, and only `http`, `https` and
  * `mailto` - which is what keeps `javascript:` and `data:` out.
  */
-
-const SAFE_SCHEME = /^(https?:|mailto:)/i
-
-function href(url: string): string | null {
-  const trimmed = url.trim()
-  // A relative link is same-origin and cannot carry a scheme, so it is safe by
-  // construction; anything absolute has to name a scheme this page allows.
-  if (trimmed.startsWith('/') || trimmed.startsWith('#')) return trimmed
-  return SAFE_SCHEME.test(trimmed) ? trimmed : null
-}
 
 // Inline spans, in the order they are tried: code first, because its content is
 // never re-parsed.
@@ -51,7 +42,7 @@ function inline(text: string, key: string): ReactNode[] {
     } else if (token.startsWith('[')) {
       const split = token.indexOf('](')
       const label = token.slice(1, split)
-      const url = href(token.slice(split + 2, -1))
+      const url = safeHref(token.slice(split + 2, -1))
       out.push(
         url ? (
           <a key={id} href={url} rel="noreferrer noopener" target="_blank">

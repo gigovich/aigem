@@ -29,18 +29,25 @@ const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 }
 
 function attach(since = 0) {
   const events: RunEvent[] = []
+  // Batches, not just their contents: the empty batch IS the message - it is
+  // how the stream says "drop what you were holding" - and an assertion on a
+  // flat accumulator cannot tell it from no call at all.
+  const batches: RunEvent[][] = []
   const refusals: string[] = []
   const states: [string, string][] = []
   const conn = connectRun(
     'r1',
     {
-      onEvents: (batch) => events.push(...batch),
+      onEvents: (batch) => {
+        batches.push(batch)
+        events.push(...batch)
+      },
       onRefusal: (e) => refusals.push(e.error),
       onStatus: (s, why) => states.push([s, why ?? '']),
     },
     { since, random: () => 0 },
   )
-  return { events, refusals, states, conn }
+  return { events, batches, refusals, states, conn }
 }
 
 beforeEach(() => {
@@ -175,13 +182,66 @@ test('reloads the timeline from the start when the history is gone', async () =>
     }
     return ok([])
   })
-  const { events, conn } = attach(90)
+  const { batches, conn } = attach(90)
   await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
 
   expect(paths[0]).toBe('/api/runs/r1/events?since=90')
-  // The empty batch is the instruction to drop what was held.
-  expect(events).toHaveLength(0)
+  // The empty batch is the instruction to drop what was held; without it the
+  // reloaded timeline is appended to the one that is already there.
+  expect(batches).toEqual([[]])
   expect(FakeSocket.last.url).toContain('since=0')
+  conn.close()
+})
+
+// A live event has to move the cursor, or every reconnect asks the daemon to
+// replay a tail this client already applied and the transcript doubles.
+test('a live event moves the cursor a reconnection resumes from', async () => {
+  vi.useFakeTimers()
+  stubFetch((path) => (path.includes('/events') ? ok([]) : ok({ id: 'r1', live: true })))
+  const { conn } = attach(0)
+  await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+  FakeSocket.last.open()
+  FakeSocket.last.deliver(event(7))
+  FakeSocket.last.drop()
+
+  await vi.advanceTimersByTimeAsync(2000)
+  await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
+  expect(FakeSocket.last.url).toContain('since=7')
+  conn.close()
+})
+
+// A page that came back full is the signal to ask again; this API has no "more"
+// marker. Stopping at the first page loses the middle of a long conversation
+// and then dials the socket from a stale cursor.
+test('pages until the catch-up runs out', async () => {
+  const full = Array.from({ length: 2000 }, (_, i) => event(i + 1))
+  const paths = stubFetch((path) => {
+    if (!path.includes('/events')) return ok({ id: 'r1', live: true })
+    return ok(path.endsWith('since=0') ? full : [event(2001)])
+  })
+  const { events, conn } = attach(0)
+  await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+
+  expect(paths.filter((p) => p.includes('/events'))).toEqual([
+    '/api/runs/r1/events?since=0',
+    '/api/runs/r1/events?since=2000',
+  ])
+  expect(events).toHaveLength(2001)
+  expect(FakeSocket.last.url).toContain('since=2001')
+  conn.close()
+})
+
+// The catch-up learns the run is gone before the socket ever gets a chance to
+// fail, and must not go on to open one.
+test('does not dial a run the catch-up already found gone', async () => {
+  vi.useFakeTimers()
+  stubFetch((path) =>
+    path.includes('/events') ? new Response('no such run', { status: 404 }) : ok({ live: true }),
+  )
+  const { states, conn } = attach(0)
+  await vi.waitFor(() => expect(states.some(([s]) => s === 'gone')).toBe(true))
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(FakeSocket.instances).toHaveLength(0)
   conn.close()
 })
 
@@ -194,4 +254,40 @@ test('closing stops it reconnecting', async () => {
   conn.close()
   await vi.advanceTimersByTimeAsync(60_000)
   expect(FakeSocket.instances).toHaveLength(1)
+})
+
+// The record's `live` is the terminal signal, not a status code: GET
+// /api/runs/{id} describes a closed run perfectly well and answers 200 for it.
+// Waiting for a 409 there is waiting for something the route never sends - and
+// every run is closed after a daemon restart, so a tab would redial a closed
+// conversation for as long as it stayed open.
+test('stops dialling a conversation the record says is closed', async () => {
+  vi.useFakeTimers()
+  stubFetch((path) =>
+    path.includes('/events') ? ok([]) : ok({ id: 'r1', live: false, status: 'closed' }),
+  )
+  const { states, conn } = attach(0)
+  await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+  FakeSocket.last.open()
+  FakeSocket.last.drop()
+
+  await vi.waitFor(() => expect(states.some(([s]) => s === 'gone')).toBe(true))
+  expect(states.find(([s]) => s === 'gone')?.[1]).toContain('closed')
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(FakeSocket.instances).toHaveLength(1)
+  conn.close()
+})
+
+// The presence event is what shows the other tabs who is attached; a socket
+// that names nobody makes it useless.
+test('names itself on the socket so the other clients can see it', async () => {
+  stubFetch(() => ok([]))
+  const conn = connectRun(
+    'r1',
+    { onEvents: () => undefined, onRefusal: () => undefined },
+    { label: 'a browser' },
+  )
+  await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+  expect(FakeSocket.last.url).toContain('label=a+browser')
+  conn.close()
 })

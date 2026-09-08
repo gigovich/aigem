@@ -13,6 +13,13 @@ const SIGN_COLOR: Record<string, string> = {
   '@': 'var(--fg-subtle)',
 }
 
+const SIGN_LABEL: Record<string, string> = {
+  '+': 'added',
+  '-': 'removed',
+  '@': 'hunk',
+  ' ': 'context',
+}
+
 function tint(sign: string): string | undefined {
   if (sign === '+') return 'color-mix(in oklab, var(--added) 10%, transparent)'
   if (sign === '-') return 'color-mix(in oklab, var(--deleted) 10%, transparent)'
@@ -44,11 +51,15 @@ export function DiffView({ path, lines, change = '~' }: Props) {
             // different lines, and nothing here reorders.
             key={i}
             className="grid gap-2 px-[10px] py-px font-mono text-[11.5px]"
-            style={{ gridTemplateColumns: '12px 1fr', background: tint(sign) }}
+            style={{ gridTemplateColumns: '12px 0 1fr', background: tint(sign) }}
           >
+            {/* The sign is the content on a diff: a line that reads the same
+                added and removed is a diff with the diff taken out. The glyph
+                is hidden and the word takes its place for a reader. */}
             <span aria-hidden="true" style={{ color: SIGN_COLOR[sign] ?? 'var(--fg-subtle)' }}>
               {sign === '@' ? '' : sign.trim()}
             </span>
+            <span className="sr-only">{SIGN_LABEL[sign] ?? 'context'} </span>
             <span
               className="whitespace-pre-wrap"
               style={{ color: sign === '@' ? 'var(--fg-subtle)' : 'var(--fg-muted)' }}

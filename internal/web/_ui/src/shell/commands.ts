@@ -9,7 +9,16 @@
 
 import { navigate } from '@/lib/route'
 import type { Route } from '@/lib/route'
-import { flash, setDraft, setPalette, setQuick, store, toggleDensity, toggleTheme } from '@/state/app'
+import {
+  flash,
+  setPendingCommand,
+  setPalette,
+  setQuick,
+  store,
+  toggleDensity,
+  toggleInspector,
+  toggleTheme,
+} from '@/state/app'
 import type { AppState } from '@/state/app'
 
 export type PaletteGroup = 'Navigate' | 'Create' | 'Execute' | 'Preferences'
@@ -123,7 +132,7 @@ export function paletteItems(state: AppState, actions: { newSession: () => void 
       group: 'Execute',
       run: () => {
         setPalette(false)
-        setDraft(`${name} `)
+        setPendingCommand(`${name} `)
         navigate({ screen: 'chat' })
         // After the composer has been re-rendered with the text in it: the
         // palette has no reference to it, and the point of choosing a command
@@ -143,6 +152,17 @@ export function paletteItems(state: AppState, actions: { newSession: () => void 
         setPalette(false)
         toggleTheme()
         flash(`Theme: ${store.get().theme}`)
+      },
+    },
+    {
+      id: 'inspector',
+      label: 'Toggle inspector',
+      hint: 'the panel on the right',
+      icon: '▤',
+      group: 'Preferences',
+      run: () => {
+        setPalette(false)
+        toggleInspector()
       },
     },
     {

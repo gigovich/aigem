@@ -1,0 +1,171 @@
+import { expect, test } from 'vitest'
+import { EventKind } from '@/lib/wire'
+import type { RunEvent } from '@/lib/wire'
+import { agentTree, apply, applyAll, emptyRun } from './run'
+import { toRow, visibleRows } from './eventrow'
+
+const ev = (seq: number, kind: string, over: Partial<RunEvent> = {}): RunEvent =>
+  ({ seq, time: '2026-09-08T12:00:00Z', kind, ...over }) as RunEvent
+
+test('a turn in flight and a turn that ended', () => {
+  const view = applyAll(emptyRun(), [ev(1, EventKind.TurnStart)])
+  expect(view.running).toBe(true)
+  expect(applyAll(view, [ev(2, EventKind.TurnEnd)]).running).toBe(false)
+  expect(applyAll(view, [ev(2, EventKind.TurnEnd, { interrupted: true })]).interrupted).toBe(true)
+})
+
+// The daemon reports a failed turn on the event that ends it - a provider that
+// could not be dialled, a budget that ran out - and not as a separate error
+// event. Drawing every turn_end as a tick is a conversation that never happened
+// reading as one that did.
+test('a turn that failed is not drawn as one that finished', () => {
+  const failed = ev(2, EventKind.TurnEnd, { error: 'dial tcp 127.0.0.1:9280: connection refused' })
+  const row = toRow(failed)
+  expect(row?.glyph).toBe('×')
+  expect(row?.text).toContain('connection refused')
+  expect(row?.text).not.toBe('Turn finished')
+
+  expect(applyAll(emptyRun(), [ev(1, EventKind.TurnStart), failed]).error).toContain('refused')
+})
+
+test('an approval is held until the daemon says it was answered', () => {
+  const asked = applyAll(emptyRun(), [
+    ev(1, EventKind.ApprovalRequest, {
+      id: 'a-1',
+      approval: { kind: 'tool', tool: 'run_command', options: [] },
+    }),
+  ])
+  expect(asked.pending.map((p) => p.id)).toEqual(['a-1'])
+
+  // A resolution for something else must not clear it.
+  expect(applyAll(asked, [ev(2, EventKind.ApprovalResolved, { id: 'other' })]).pending).toHaveLength(1)
+  expect(applyAll(asked, [ev(2, EventKind.ApprovalResolved, { id: 'a-1' })]).pending).toHaveLength(0)
+})
+
+test('the context window and its usage come off the stream', () => {
+  const view = applyAll(emptyRun(), [
+    ev(1, EventKind.SessionMeta, { id: 's-1', text: 'A title', name: 'p/m', ctx: 200000 }),
+    ev(2, EventKind.Usage, { tokens: 1234 }),
+  ])
+  expect(view.ctxSize).toBe(200000)
+  expect(view.contextTokens).toBe(1234)
+  expect(view.title).toBe('A title')
+  expect(view.model).toBe('p/m')
+  expect(view.sessionId).toBe('s-1')
+})
+
+// A file named twice is one file changed twice, not two rows.
+test('a file is listed once however often it changes', () => {
+  const view = applyAll(emptyRun(), [
+    ev(1, EventKind.FileChanged, { path: 'a.go', created: true }),
+    ev(2, EventKind.FileChanged, { path: 'a.go' }),
+    ev(3, EventKind.FileChanged, { path: 'b.go' }),
+  ])
+  expect(view.files.map((f) => f.path)).toEqual(['a.go', 'b.go'])
+  expect(view.files[0]?.created).toBe(true)
+})
+
+test('the agent tree is the conversation plus what it delegated to', () => {
+  const view = applyAll(emptyRun(), [
+    ev(1, EventKind.SessionMeta, { name: 'p/m' }),
+    ev(2, EventKind.AgentStart, { id: 'a-1', agent: 'Research' }),
+    ev(3, EventKind.AgentEnd, { id: 'a-1', tokens: 18400 }),
+  ])
+  const tree = agentTree(view)
+  expect(tree[0]?.id).toBe('root')
+  expect(tree[1]?.name).toBe('Research')
+  expect(tree[1]?.running).toBe(false)
+  expect(tree[1]?.tokens).toBe(18400)
+})
+
+// The events that drive state are not steps anybody reads in a timeline, and
+// drawing them would put a presence change between two sentences.
+test('the state-only events never become rows', () => {
+  const view = applyAll(emptyRun(), [
+    ev(1, EventKind.Presence, { clients: [] }),
+    ev(2, EventKind.Usage, { tokens: 1 }),
+    ev(3, EventKind.SessionMeta),
+    ev(4, EventKind.ToolBatch),
+    ev(5, EventKind.Content, { text: 'a delta' }),
+    ev(6, EventKind.AssistantMessage, { text: 'the settled answer' }),
+  ])
+  expect(view.rows.map((r) => r.text)).toEqual(['the settled answer'])
+})
+
+// The detail toggle keeps the conversation's own steps and drops what happened
+// under them.
+test('phases only drops the nested rows', () => {
+  const { rows } = applyAll(emptyRun(), [
+    ev(1, EventKind.TurnStart),
+    ev(2, EventKind.ToolStart, { name: 'read_file' }),
+    ev(3, EventKind.TurnEnd),
+  ])
+  expect(visibleRows(rows, true)).toHaveLength(3)
+  expect(visibleRows(rows, false).map((r) => r.text)).toEqual(['Agent started', 'Turn finished'])
+})
+
+test('an unknown kind is still a row rather than a hole', () => {
+  const row = apply(emptyRun(), ev(1, 'something_new', { text: 'a thing' }))
+  expect(row.events).toHaveLength(1)
+  expect(toRow(ev(1, 'something_new', { text: 'a thing' }))?.text).toBe('a thing')
+})
+
+// Copying the timeline per event is quadratic - measured at 74 seconds of pure
+// copying for forty thousand events. The arrays are appended to in place and
+// the view object around them is replaced, which is what React actually reads.
+test('folding an event does not copy the timeline', () => {
+  const before = applyAll(emptyRun(), [ev(1, EventKind.TurnStart)])
+  const after = apply(before, ev(2, EventKind.TurnEnd))
+  expect(after).not.toBe(before)
+  expect(after.events).toBe(before.events)
+  expect(after.events).toHaveLength(2)
+  expect(after.rows).toBe(before.rows)
+})
+
+// One shared empty view would leak the first conversation's timeline into the
+// second's, because the arrays are appended to.
+test('two conversations do not share a timeline', () => {
+  const a = apply(emptyRun(), ev(1, EventKind.UserMessage, { text: 'first' }))
+  const b = apply(emptyRun(), ev(1, EventKind.UserMessage, { text: 'second' }))
+  expect(a.events).toHaveLength(1)
+  expect(b.events).toHaveLength(1)
+  expect(a.rows[0]?.text).toBe('first')
+})
+
+// An error event is a failure the conversation reported on its own, distinct
+// from a turn that ended badly. Both feed the same field.
+test('an error event is recorded', () => {
+  const view = applyAll(emptyRun(), [ev(1, EventKind.Error, { error: 'the tool exploded' })])
+  expect(view.error).toBe('the tool exploded')
+  expect(toRow(ev(1, EventKind.Error, { error: 'the tool exploded' }))?.glyph).toBe('×')
+})
+
+// A turn stopped by the budget has stopped. Leaving `running` set keeps the
+// spinner and the Interrupt button up on a conversation that is over.
+test('a budget that ran out ends the turn', () => {
+  const view = applyAll(emptyRun(), [
+    ev(1, EventKind.TurnStart),
+    ev(2, EventKind.BudgetExhausted, { text: 'the turn budget ran out' }),
+  ])
+  expect(view.running).toBe(false)
+  expect(view.rows[view.rows.length - 1]?.text).toBe('the turn budget ran out')
+})
+
+// A subagent that delegated further is drawn one level deeper. Flattening the
+// tree loses which agent asked for what.
+test('a nested subagent is drawn under the one that spawned it', () => {
+  const view = applyAll(emptyRun(), [
+    ev(1, EventKind.AgentStart, { id: 'a-1', agent: 'Research' }),
+    ev(2, EventKind.AgentStart, { id: 'a-2', agent: 'Reader', run_id: 'a-1' }),
+  ])
+  const tree = agentTree(view)
+  expect(tree.map((n) => n.level)).toEqual([0, 1, 2])
+})
+
+// A turn that was interrupted is not one that failed, and not one that
+// finished: the design draws it with its own glyph.
+test('an interrupted turn is drawn as neither a success nor a failure', () => {
+  const row = toRow(ev(2, EventKind.TurnEnd, { interrupted: true }))
+  expect(row?.glyph).toBe('■')
+  expect(row?.text).toBe('Interrupted')
+})

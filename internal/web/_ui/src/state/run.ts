@@ -7,8 +7,10 @@
  * same run agree with both.
  */
 
-import { EventKind } from '@/lib/wire'
-import type { Approval, PresenceClient, RunEvent, TodoItem } from '@/lib/wire'
+import { EventKind, runStatus } from '@/lib/wire'
+import type { Approval, PresenceClient, Run, RunEvent, StatusKey, TodoItem } from '@/lib/wire'
+import { toRow } from './eventrow'
+import type { EventRow } from './eventrow'
 
 export type PendingApproval = { id: string; approval: Approval; at: string }
 
@@ -25,7 +27,21 @@ export type AgentNode = {
 export type ChangedFile = { path: string; created: boolean }
 
 export type RunView = {
+  /**
+   * The timeline, and the same events already mapped to rows.
+   *
+   * Both are appended to in place rather than rebuilt. A run is tens of
+   * thousands of events long and copying the array per event is quadratic -
+   * measured at 74 seconds of pure copying for forty thousand events - and
+   * mapping the whole of it to rows per event costs the same again.
+   *
+   * The consequence, which is the price: these two arrays are NOT new objects
+   * when the view changes, so nothing may memoise on their identity. Memoise on
+   * `seq`, which is what actually moves. The view object itself is replaced on
+   * every event, so React still re-renders.
+   */
   events: RunEvent[]
+  rows: EventRow[]
   /** The last sequence applied. It is what a reconnection resumes from. */
   seq: number
   title: string
@@ -44,33 +60,47 @@ export type RunView = {
   error: string
 }
 
-export const emptyRun: RunView = {
-  events: [],
-  seq: 0,
-  title: '',
-  model: '',
-  sessionId: '',
-  ctxSize: 0,
-  contextTokens: 0,
-  running: false,
-  interrupted: false,
-  pending: [],
-  todos: [],
-  agents: [],
-  files: [],
-  clients: [],
-  error: '',
+/**
+ * A conversation nothing has been read into yet.
+ *
+ * A function and not a constant, because the arrays above are appended to: one
+ * shared value would leak the first run's timeline into the second's.
+ */
+export function emptyRun(): RunView {
+  return {
+    events: [],
+    rows: [],
+    seq: 0,
+    title: '',
+    model: '',
+    sessionId: '',
+    ctxSize: 0,
+    contextTokens: 0,
+    running: false,
+    interrupted: false,
+    pending: [],
+    todos: [],
+    agents: [],
+    files: [],
+    clients: [],
+    error: '',
+  }
 }
 
 /**
- * Fold one event in.
+ * Fold one event in, returning a new view.
  *
- * It returns the previous view unchanged when nothing moved, so a stream of
- * content deltas that only append to `events` still produces one new object -
- * and never a new object for an event that changed nothing at all.
+ * Every branch replaces only the collections it touches, so an event that adds
+ * nothing but a line to the timeline leaves `pending`, `agents` and `files` as
+ * the same objects - which is what keeps a component that renders one of them
+ * from re-rendering on every content delta.
  */
 export function apply(view: RunView, e: RunEvent): RunView {
-  const next: RunView = { ...view, events: [...view.events, e], seq: Math.max(view.seq, e.seq ?? 0) }
+  // Appended in place; see the note on RunView.events.
+  view.events.push(e)
+  const row = toRow(e)
+  if (row) view.rows.push(row)
+  const next: RunView = { ...view, seq: Math.max(view.seq, e.seq ?? 0) }
   switch (e.kind) {
     case EventKind.SessionMeta:
       next.sessionId = e.id ?? next.sessionId
@@ -86,6 +116,8 @@ export function apply(view: RunView, e: RunEvent): RunView {
     case EventKind.TurnEnd:
       next.running = false
       next.interrupted = e.interrupted === true
+      // The reason a turn failed arrives on the event that ends it.
+      if (e.error) next.error = e.error
       break
     case EventKind.Usage:
       if (typeof e.tokens === 'number') next.contextTokens = e.tokens
@@ -141,6 +173,23 @@ export function apply(view: RunView, e: RunEvent): RunView {
 
 export function applyAll(view: RunView, events: RunEvent[]): RunView {
   return events.reduce(apply, view)
+}
+
+/**
+ * A run's state as the dictionary's keys, preferring what the stream says.
+ *
+ * The record's `running`, `waiting` and `step` are read off the live session
+ * when the record is built, and the daemon announces a record only when the
+ * conversation is opened, named, switched or closed - never per turn. So a page
+ * that drew the record would show a conversation that never starts and never
+ * stops. The stream has the truth for the run this tab is attached to; the
+ * record is what everything else has.
+ */
+export function liveStatus(record: Run, view: RunView): StatusKey {
+  if (!record.live) return 'stopped'
+  if (view.pending.length > 0) return 'attention'
+  if (view.running) return 'running'
+  return runStatus(record)
 }
 
 /**

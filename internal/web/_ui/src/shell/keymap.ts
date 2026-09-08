@@ -63,12 +63,14 @@ export function handleKey(e: KeyboardEvent, layers: Layers, actions: KeyActions)
     return true
   }
   if (layers.confirmOpen) {
-    // Enter is the confirm. Nothing else reaches the page behind a dialog that
-    // is asking a question about something destructive.
-    if (e.key === 'Enter' && !isTypingTarget(e.target)) {
-      actions.confirm()
-      return true
-    }
+    // Deliberately no Enter binding, against the canvas, which has one.
+    //
+    // A dialog opens with focus on Cancel, and a global Enter here would both
+    // run the destructive action and preventDefault the Cancel button the
+    // person was actually looking at - so the keystroke that reads as "dismiss
+    // this" would end a session instead. Enter reaches the focused button on
+    // its own, which does the safe thing; Escape closes. Nothing else passes to
+    // the page behind a dialog that is asking a question.
     return false
   }
   if (layers.modalOpen) {

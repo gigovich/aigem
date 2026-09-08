@@ -234,7 +234,7 @@ const CLOSED: Run = { ...RUN, id: 'r-2', live: false, status: 'closed', title: '
 
 test('the session list shows both live and closed conversations', async () => {
   await mountApp({ runs: [RUN, CLOSED] })
-  const list = await screen.findByRole('listbox', { name: 'Sessions' })
+  const list = await screen.findByRole('list', { name: 'Sessions' })
   expect(within(list).getByText('Rotate the signing keys')).toBeInTheDocument()
   expect(within(list).getByText('An old one')).toBeInTheDocument()
 })

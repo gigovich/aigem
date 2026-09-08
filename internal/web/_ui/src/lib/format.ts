@@ -1,8 +1,10 @@
 /** Formatting shared by every screen, so a number reads the same everywhere. */
 
+const GROUPED = new Intl.NumberFormat('en-US')
+
 /** `144,208` - grouped, because the design's context label is read at a glance. */
 export function count(n: number): string {
-  return n.toLocaleString('en-US')
+  return GROUPED.format(n)
 }
 
 /** `144,208 / 200,000 tokens`, the context label from the design canvas. */
@@ -17,18 +19,35 @@ export function compact(n: number): string {
   return String(n)
 }
 
+/*
+ * The two clock formatters are built once and reused.
+ *
+ * `toLocaleTimeString(locale, options)` constructs an ICU formatter per call -
+ * measured at about a millisecond each, thirty-five times the cost of the same
+ * call without an options object, which V8 does cache. These run once per row
+ * of a timeline that can be thousands of rows long, so building them here is
+ * the difference between a stream that scrolls and one that blocks.
+ */
+const HMS = new Intl.DateTimeFormat('en-GB', {
+  hour12: false,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+})
+const HM = new Intl.DateTimeFormat('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit' })
+
 /** `14:32:01` - the timestamp column of an event stream. */
 export function clock(at: string | number | Date): string {
   const d = new Date(at)
   if (Number.isNaN(d.getTime())) return ''
-  return d.toLocaleTimeString('en-GB', { hour12: false })
+  return HMS.format(d)
 }
 
 /** `14:32` - the activity feed, which is a minute-resolution record. */
 export function hhmm(at: string | number | Date): string {
   const d = new Date(at)
   if (Number.isNaN(d.getTime())) return ''
-  return d.toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit' })
+  return HM.format(d)
 }
 
 /** `now`, `12m`, `2h`, `3d` - the "updated" column, as the design writes it. */
