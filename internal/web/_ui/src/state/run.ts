@@ -35,10 +35,17 @@ export type RunView = {
    * measured at 74 seconds of pure copying for forty thousand events - and
    * mapping the whole of it to rows per event costs the same again.
    *
-   * The consequence, which is the price: these two arrays are NOT new objects
-   * when the view changes, so nothing may memoise on their identity. Memoise on
-   * `seq`, which is what actually moves. The view object itself is replaced on
-   * every event, so React still re-renders.
+   * Two consequences, which are the price.
+   *
+   * These two arrays are NOT new objects when the view changes, so nothing may
+   * memoise on their identity - `seq` is what actually moves. The view object
+   * itself is replaced on every event, so React still re-renders.
+   *
+   * And `apply` is not pure, so it must never run inside a React state updater:
+   * StrictMode invokes those twice to find exactly this, and React may replay a
+   * queued one when a render is interrupted. Either would fold every event in
+   * twice. `useRunEvents` folds in the socket's callback and hands the updater
+   * the object the fold produced.
    */
   events: RunEvent[]
   rows: EventRow[]
