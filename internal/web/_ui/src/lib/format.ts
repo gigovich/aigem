@@ -68,3 +68,16 @@ export function percent(used: number, total: number): number {
   if (!(total > 0)) return 0
   return Math.max(0, Math.min(100, Math.round((used / total) * 100)))
 }
+
+/**
+ * The version, short enough for the header's logo column.
+ *
+ * `aigem version` reports "v0.4.0-64-g01d54ef (01d54ef, 2026-09-08T09:04:38Z)":
+ * the build's identity followed by where it came from. Only the first part fits
+ * beside the product name, and the header carries the whole string as its title
+ * for anyone who needs the commit.
+ */
+export function shortVersion(version: string): string {
+  const [first] = version.split(' ')
+  return first ?? version
+}

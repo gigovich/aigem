@@ -85,13 +85,19 @@ export default function App() {
   }, [signedIn])
 
   /**
-   * The conversation this tab is attached to: the run in the address bar, or
-   * the one chosen in the session list, or the newest that still has a session.
+   * The conversation this tab is attached to: the run in the address bar, the
+   * one chosen in the session list, or the most recent one there is.
+   *
+   * The fallback prefers a live session and settles for a closed one, because a
+   * restarted daemon finds every run closed and its timeline still reads - a
+   * page that showed "no session yet" over a list of conversations would be
+   * describing the daemon's restart rather than the person's work.
    */
   const runId = useMemo(() => {
     if (route.screen === 'run' && route.id) return route.id
     if (activeRun && runs.some((r) => r.id === activeRun)) return activeRun
-    return [...runs].reverse().find((r) => r.live)?.id ?? ''
+    const newest = [...runs].reverse()
+    return (newest.find((r) => r.live) ?? newest[0])?.id ?? ''
   }, [route, activeRun, runs])
 
   const conversation = useRunEvents(runId || undefined)

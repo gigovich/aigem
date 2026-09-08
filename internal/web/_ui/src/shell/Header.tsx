@@ -1,3 +1,4 @@
+import { shortVersion } from '@/lib/format'
 import { LiveDot } from '@/ui/StatusChip'
 import { setPalette, setQuick, toggleDensity, toggleTheme, useApp } from '@/state/app'
 import { navigate } from '@/lib/route'
@@ -32,7 +33,12 @@ export function Header({ crumbs }: Props) {
       >
         <span aria-hidden="true" className="size-[15px] flex-none rounded-[3px] bg-agent opacity-90" />
         <span className="font-semibold tracking-[-0.01em]">Aigem</span>
-        <span className="ml-auto font-mono text-[10px] text-fg-subtle">{version}</span>
+        <span
+          title={version}
+          className="ml-auto min-w-0 overflow-hidden font-mono text-[10px] text-ellipsis whitespace-nowrap text-fg-subtle"
+        >
+          {shortVersion(version)}
+        </span>
       </div>
 
       <div className="flex min-w-0 flex-1 items-center gap-[10px] px-3">
