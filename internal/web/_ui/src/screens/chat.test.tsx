@@ -340,3 +340,12 @@ test('offers nothing when the daemon kept no body', async () => {
   await screen.findByRole('log')
   expect(screen.queryByRole('button', { name: 'show all' })).not.toBeInTheDocument()
 })
+
+// Presence is what shows the other tabs who is attached. A socket that names
+// nobody makes the whole event useless, and two tabs on one conversation is
+// exactly who it is for.
+test('names the tab on the socket it opens', async () => {
+  const h = await mountApp({ runs: [RUN] })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  expect(h.runSocket()?.url).toMatch(/label=tab\+[a-z0-9]{4}/)
+})
