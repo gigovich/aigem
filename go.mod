@@ -1,6 +1,6 @@
 module github.com/gigovich/aigem
 
-go 1.26
+go 1.26.0
 
 toolchain go1.26.6
 
@@ -12,8 +12,8 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/muesli/termenv v0.16.0
 	github.com/sahilm/fuzzy v0.1.3
-	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/oauth2 v0.37.0
+	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 )
