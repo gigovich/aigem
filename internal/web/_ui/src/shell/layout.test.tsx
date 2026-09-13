@@ -205,3 +205,14 @@ test('the drawer takes focus when it opens and gives it back when it closes', as
   await user.keyboard('{Escape}')
   await waitFor(() => expect(document.activeElement).toBe(menu))
 })
+
+test('crossing the breakpoint without opening the drawer does not steal focus', async () => {
+  await mountApp({ runs: [RUN] })
+  act(() => setViewport(400))
+  expect(document.activeElement).toBe(document.body)
+
+  act(() => setViewport(800))
+  act(() => setViewport(400))
+  const menu = screen.getByRole('button', { name: 'Open navigation' })
+  expect(document.activeElement).not.toBe(menu)
+})

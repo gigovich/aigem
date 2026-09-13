@@ -141,13 +141,15 @@ export default function App() {
   }, [matches, index])
 
   const drawer = useRef<HTMLDivElement>(null)
+  const wasOpen = useRef(false)
   useEffect(() => {
     if (!phone) return
     if (navOpen) {
       drawer.current?.querySelector<HTMLElement>('button')?.focus()
-      return
+    } else if (wasOpen.current) {
+      document.querySelector<HTMLElement>('[aria-label="Open navigation"]')?.focus()
     }
-    document.querySelector<HTMLElement>('[aria-label="Open navigation"]')?.focus()
+    wasOpen.current = navOpen
   }, [phone, navOpen])
 
   useEffect(() => {

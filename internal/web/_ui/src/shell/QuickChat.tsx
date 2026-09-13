@@ -24,7 +24,9 @@ export function QuickChat({ run, runId, onSubmit, ready }: Props) {
   const feed = useRef<HTMLDivElement>(null)
 
   const rows = run.events.filter(
-    (e) => e.kind === EventKind.UserMessage || e.kind === EventKind.AssistantMessage,
+    (e) =>
+      e.kind === EventKind.UserMessage ||
+      (e.kind === EventKind.AssistantMessage && !!e.text?.trim()),
   )
   const last = rows[rows.length - 1]?.seq
 

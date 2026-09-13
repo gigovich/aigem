@@ -50,6 +50,10 @@ test('shows the same conversation the chat screen does', async () => {
   // The tool detail belongs in the transcript, not in a corner panel.
   h.emit({ seq: 3, time: '2026-09-08T12:00:03Z', kind: EventKind.ToolStart, name: 'read_file' })
   expect(panel).not.toHaveTextContent('read_file')
+
+  const before = within(panel).getAllByText('agent').length
+  h.emit({ seq: 4, time: '2026-09-08T12:00:04Z', kind: EventKind.AssistantMessage, text: '   ' })
+  expect(within(panel).getAllByText('agent')).toHaveLength(before)
 })
 
 test('continues into the session it is showing', async () => {
