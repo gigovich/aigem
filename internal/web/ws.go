@@ -52,14 +52,12 @@ const (
 	// out-of-memory the sender pays nothing for.
 	//
 	// The frame bound is the operative one, and it bounds a browser: a page
-	// sends a message as one frame rather than fragmenting it, so 64 KiB is
-	// what a submit may carry. That is ample for typed text and not enough for
-	// a pasted screenshot, which is why the run stream's submit takes images it
-	// cannot yet carry a large one of. Raising it is a decision about how much
-	// memory a signed-in client may hold times maxSockets, and belongs with the
-	// front-end work that would actually send one.
-	wsMaxFrame   = 64 << 10
-	wsMaxMessage = 256 << 10
+	// sends a message as one frame rather than fragmenting it, so this is what
+	// a submit may carry. A megabyte holds typed text and a screenshot the page
+	// has scaled down, and 64 sockets of it is a quarter of a gigabyte on a
+	// daemon that serves one signed-in person.
+	wsMaxFrame   = 1 << 20
+	wsMaxMessage = 4 << 20
 )
 
 // wsConn is one hijacked connection. It serialises writes, because the event

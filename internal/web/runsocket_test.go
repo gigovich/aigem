@@ -413,8 +413,8 @@ func waitFor(t *testing.T, cond func() bool) {
 
 // A submitted message is bounded like everything else a client sends. The bound
 // that bites is the frame one, because a browser sends a message as a single
-// frame: this is what a page may put in one submit, and it is why an image
-// attachment is not yet something this op can carry.
+// frame: this is what a page may put in one submit, and it is why a scaled
+// image attachment has to fit inside it.
 func TestASubmitPastTheFrameBoundEndsTheSocket(t *testing.T) {
 	b := &fakeBackend{}
 	srv := newTestServer(t, Config{Backend: b})
@@ -425,7 +425,10 @@ func TestASubmitPastTheFrameBoundEndsTheSocket(t *testing.T) {
 	waitFor(t, func() bool { return len(b.ops()) == 1 })
 
 	past := dialRunSocket(t, srv, id, "")
-	past.sendRaw([]byte(`{"op":"submit","text":"` + strings.Repeat("x", wsMaxFrame) + `"}`))
+	// The daemon hangs up as soon as it sees the frame is too large, without
+	// draining the rest: the write may fail partway, which is the outcome
+	// under test rather than a problem with it.
+	_ = wsutil.WriteClientText(past.conn, []byte(`{"op":"submit","text":"`+strings.Repeat("x", wsMaxFrame)+`"}`))
 	past.expectHangUp()
 	if n := len(b.ops()); n != 1 {
 		t.Errorf("%d operations reached the backend, want the one inside the bound", n)
