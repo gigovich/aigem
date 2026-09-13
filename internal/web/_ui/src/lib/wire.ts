@@ -276,6 +276,7 @@ export type ControlKind = (typeof ControlKind)[keyof typeof ControlKind]
  */
 export type StatusKey =
   | 'running'
+  | 'waiting'
   | 'attention'
   | 'failed'
   | 'completed'
@@ -289,14 +290,15 @@ export type StatusInfo = { label: string; icon: string; color: string }
 
 export const STATUS: Record<StatusKey, StatusInfo> = {
   running: { label: 'Running', icon: '●', color: 'var(--running)' },
+  waiting: { label: 'Waiting', icon: '◐', color: 'var(--warning)' },
   attention: { label: 'Needs attention', icon: '!', color: 'var(--attention)' },
   failed: { label: 'Failed', icon: '×', color: 'var(--danger)' },
   completed: { label: 'Completed', icon: '✓', color: 'var(--success)' },
   stopped: { label: 'Stopped', icon: '■', color: 'var(--fg-subtle)' },
   blocked: { label: 'Blocked', icon: '◇', color: 'var(--danger)' },
-  planned: { label: 'Planned', icon: '◐', color: 'var(--fg-subtle)' },
+  planned: { label: 'Planned', icon: '○', color: 'var(--fg-subtle)' },
   progress: { label: 'In progress', icon: '◑', color: 'var(--primary)' },
-  idle: { label: 'Idle', icon: '○', color: 'var(--fg-subtle)' },
+  idle: { label: 'Idle', icon: '◦', color: 'var(--fg-subtle)' },
 }
 
 /**

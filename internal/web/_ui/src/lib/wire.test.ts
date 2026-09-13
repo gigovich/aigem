@@ -10,17 +10,18 @@ import type { Run, StatusKey } from './wire'
  */
 const CANVAS: Record<StatusKey, { label: string; icon: string; color: string }> = {
   running: { label: 'Running', icon: '●', color: 'var(--running)' },
+  waiting: { label: 'Waiting', icon: '◐', color: 'var(--warning)' },
   attention: { label: 'Needs attention', icon: '!', color: 'var(--attention)' },
   failed: { label: 'Failed', icon: '×', color: 'var(--danger)' },
   completed: { label: 'Completed', icon: '✓', color: 'var(--success)' },
   stopped: { label: 'Stopped', icon: '■', color: 'var(--fg-subtle)' },
   blocked: { label: 'Blocked', icon: '◇', color: 'var(--danger)' },
-  planned: { label: 'Planned', icon: '◐', color: 'var(--fg-subtle)' },
+  planned: { label: 'Planned', icon: '○', color: 'var(--fg-subtle)' },
   progress: { label: 'In progress', icon: '◑', color: 'var(--primary)' },
   // Not in the canvas, which draws runs and has no state for a session that is
   // attached with nothing in flight. "Waiting" in warning yellow made a healthy
   // run look stuck.
-  idle: { label: 'Idle', icon: '○', color: 'var(--fg-subtle)' },
+  idle: { label: 'Idle', icon: '◦', color: 'var(--fg-subtle)' },
 }
 
 test('the status dictionary is the canvas dictionary plus idle', () => {
