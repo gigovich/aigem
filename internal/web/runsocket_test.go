@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 )
 
@@ -521,5 +522,41 @@ func TestAClosingRunEndsItsSocketsWithoutCuttingAFrame(t *testing.T) {
 			}
 			t.Fatalf("round %d: the stream ended mid-frame: %v", round, err)
 		}
+	}
+}
+
+// A browser that leaves a run sends one Close frame and expects one back. A
+// second one from the daemon is what Chrome reports as "Close received after
+// close" on every run switch.
+func TestAClientCloseIsAnsweredWithExactlyOneCloseFrame(t *testing.T) {
+	b := &fakeBackend{}
+	srv := newTestServer(t, Config{Backend: b})
+	id := openRun(t, srv)
+	c := dialRunSocket(t, srv, id, "")
+
+	closing := ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, ""))
+	closing = ws.MaskFrameInPlace(closing)
+	if err := ws.WriteFrame(c.conn, closing); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(testWait)); err != nil {
+		t.Fatal(err)
+	}
+	var closes int
+	for {
+		hdr, err := ws.ReadHeader(c.read)
+		if err != nil {
+			break
+		}
+		if hdr.OpCode == ws.OpClose {
+			closes++
+		}
+		if _, err := io.CopyN(io.Discard, c.read, hdr.Length); err != nil {
+			break
+		}
+	}
+	if closes != 1 {
+		t.Fatalf("the daemon sent %d close frames after the client's, want exactly 1", closes)
 	}
 }

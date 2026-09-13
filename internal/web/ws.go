@@ -3,10 +3,12 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gobwas/ws"
@@ -79,6 +81,9 @@ type wsConn struct {
 	done chan struct{}
 	once sync.Once
 	mu   sync.Mutex
+	// peerClosed is set once the client has sent its own Close frame. The
+	// control handler answers that frame; close() must not answer it again.
+	peerClosed atomic.Bool
 }
 
 func newWSConn(conn net.Conn, src io.Reader) *wsConn {
@@ -185,7 +190,9 @@ func (c *wsConn) close() {
 	}
 	defer c.mu.Unlock()
 	_ = c.conn.SetWriteDeadline(time.Now().Add(wsCloseWait))
-	_ = ws.WriteFrame(c.conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "")))
+	if !c.peerClosed.Load() {
+		_ = ws.WriteFrame(c.conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "")))
+	}
 	_ = c.conn.SetDeadline(time.Now().Add(-time.Second))
 	_ = c.conn.Close()
 }
@@ -266,6 +273,10 @@ func (c *wsConn) readClientOps(apply func(data []byte) any) {
 			if werr := c.writeFrame(reply.Bytes()); werr != nil {
 				return werr
 			}
+		}
+		var closed wsutil.ClosedError
+		if errors.As(err, &closed) {
+			c.peerClosed.Store(true)
 		}
 		return err
 	}
