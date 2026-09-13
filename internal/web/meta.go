@@ -33,6 +33,9 @@ func featuresFor(b Backend) map[string]bool {
 	if _, ok := b.(ModelsBackend); ok {
 		out["models"] = true
 	}
+	if _, ok := b.(ProjectsBackend); ok {
+		out["projects"] = true
+	}
 	if _, ok := b.(AuthBackend); ok {
 		out["providerLogin"] = true
 	}

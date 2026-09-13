@@ -49,13 +49,13 @@ type AuthBackend interface {
 }
 
 type SkillsBackend interface {
-	Skills(context.Context) (Skills, error)
-	Skill(context.Context, string) (Skill, error)
-	TrustSkills(context.Context) (SkillApproval, error)
+	Skills(ctx context.Context, project string) (Skills, error)
+	Skill(ctx context.Context, project, name string) (Skill, error)
+	TrustSkills(ctx context.Context, project string) (SkillApproval, error)
 }
 
 type CommandsBackend interface {
-	Commands(context.Context) ([]Command, error)
+	Commands(ctx context.Context, project string) ([]Command, error)
 }
 type UsageBackend interface {
 	Usage(context.Context) ([]ProviderUsage, error)
@@ -278,7 +278,7 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	v, err := b.Skills(r.Context())
+	v, err := b.Skills(r.Context(), r.URL.Query().Get("project"))
 	if err != nil {
 		writePhaseError(w, "listing skills", err)
 		return
@@ -321,7 +321,7 @@ func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	v, err := b.Skill(r.Context(), r.PathValue("name"))
+	v, err := b.Skill(r.Context(), r.URL.Query().Get("project"), r.PathValue("name"))
 	if err != nil {
 		writePhaseError(w, "reading a skill", err)
 		return
@@ -343,14 +343,17 @@ func (s *Server) handleSkillTrust(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// This mutation has no options. An empty body and {} are accepted; any field,
-	// second document or oversized body is still a malformed request.
-	var req struct{}
+	// The one option is which project. An empty body and {} mean the daemon's
+	// own directory; any other field, a second document or an oversized body is
+	// still a malformed request.
+	var req struct {
+		Project string `json:"project,omitempty"`
+	}
 	if err := decodeJSON(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	v, err := b.TrustSkills(r.Context())
+	v, err := b.TrustSkills(r.Context(), req.Project)
 	if err != nil {
 		writePhaseError(w, "approving project skills", err)
 		return
@@ -369,7 +372,7 @@ func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	v, err := b.Commands(r.Context())
+	v, err := b.Commands(r.Context(), r.URL.Query().Get("project"))
 	if err != nil {
 		writePhaseError(w, "listing commands", err)
 		return

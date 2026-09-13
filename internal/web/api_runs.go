@@ -299,6 +299,10 @@ func writeRunError(w http.ResponseWriter, doing string, err error) {
 		// escaping into the interface.
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, unprefixed(err.Error()), http.StatusServiceUnavailable)
+	case errors.Is(err, ErrNoProject):
+		http.Error(w, "no such project", http.StatusNotFound)
+	case errors.Is(err, ErrConflict):
+		http.Error(w, unprefixed(err.Error()), http.StatusConflict)
 	case errors.As(err, &refusal):
 		http.Error(w, refusal.Reason, http.StatusBadRequest)
 	default:

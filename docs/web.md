@@ -14,10 +14,10 @@ aigem web --open                 # open it in the default browser too
 credential, is where a page reads the version, the default model and which
 features this daemon serves.
 
-The screens are sessions, models, skills, activity and a run viewer, plus a
-command palette and a quick chat. Tickets, tasks and worktrees are drawn as
-empty states that say what they are waiting for: they need projects, which are
-a later phase. This document is the protocol; how the client is put together is
+The screens are sessions, models, skills, activity, worktrees and a run viewer,
+plus a command palette and a quick chat. Tickets and tasks are drawn as empty
+states that say what they are waiting for: they arrive with the next phase.
+This document is the protocol; how the client is put together is
 in `internal/web/_ui/README.md`.
 
 ## Signing in
@@ -162,6 +162,10 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/commands` | the command palette catalogue from the active environment |
 | `GET /api/usage` | stored provider quota snapshots |
 | `GET /api/activity` | persistent mutation feed, paged with `?since=&limit=` |
+| `GET /api/projects` | the registry, the daemon's own directory first with an empty id |
+| `POST /api/projects` | `{"dir":"/abs/path","name":"optional"}`; 201, or 400 with why not |
+| `DELETE /api/projects/{id}` | forgets the project; 409 while it has an open run; removes no files |
+| `GET /api/projects/{id}/repos` | the git checkouts under the project, discovered on demand |
 | `/api/...`  | reserved; an unknown path here is a 404, never the page, in every build |
 | everything else | the application, which routes in the browser |
 
@@ -228,14 +232,14 @@ otherwise malformed values are rejected.
 `features` in `/api/meta` and in the control stream's `hello` names what this
 daemon can serve, and a page uses it to decide which screens exist at all. The
 keys are `controlSocket`, `runs`, `models`, `providerLogin`, `skills`,
-`commands`, `usage` and `activity`.
+`commands`, `usage`, `activity` and `projects`.
 
 A key is present when the daemon was built with that seam *and* was given what
-the seam needs. Without a state directory there is no activity feed; without a
-loaded project there are no skills or commands. A route whose key is absent
-answers 501, so the map is what a page reads rather than something it has to
-discover by probing, and the two cannot disagree: the routes are gated on the
-same map `/api/meta` returns.
+the seam needs. Without a state directory there is no activity feed and no
+project registry; without a loaded project there are no skills or commands. A
+route whose key is absent answers 501, so the map is what a page reads rather
+than something it has to discover by probing, and the two cannot disagree: the
+routes are gated on the same map `/api/meta` returns.
 
 ## The control stream
 
@@ -255,9 +259,11 @@ is at once it has been read:
 The kinds this daemon publishes are `run.updated`, carrying the record;
 `model.default`, carrying the model that is now the default; `auth.updated`,
 naming the provider whose credentials changed; `skills.updated`, carrying what
-was loaded; and `activity.updated`, naming the kind of entry appended. Each is a
-statement that a collection moved, and what a page does with one is read that
-collection again - the payload is there to say which, not to be applied.
+was loaded; `project.updated`, carrying the project that was added, removed or
+whose environment failed to load; and `activity.updated`, naming the kind of
+entry appended. Each is a statement that a collection moved, and what a page
+does with one is read that collection again - the payload is there to say
+which, not to be applied.
 
 `hello` arrives first and is the client's base - byte for byte the document
 `/api/meta` serves, so a page that has just reconnected does not have to ask
@@ -289,6 +295,36 @@ frame at 1 MiB and one message at 2 MiB. A browser answers the ping itself,
 so a page has nothing to do to stay connected. The daemon holds 64 websockets at
 once across every tab; the 65th handshake is refused with a 503 and a
 `Retry-After`, which is a retry rather than an error to show.
+
+## Projects
+
+A project is a directory on the daemon's machine, registered by the signed-in
+person and kept in `$XDG_STATE_HOME/aigem/projects.json`. Its repositories are
+the direct child directories holding a `.git`, plus the directory itself when it
+is a checkout; `main` on each is the branch a run will merge into, `main` or
+`master`, and absent when the checkout has neither. The daemon's own directory
+is a project with no record: it is listed first with an empty `id`, and it is
+what a run, the skills catalogue and the command catalogue mean when they name
+no project.
+
+Every project has one environment - its skills, hooks, MCP servers and system
+prompt - loaded the first time something needs it and kept for the daemon's
+life. Loading dials the project's MCP servers and runs its SessionStart hook,
+so the first run opened in a project takes as long as those take. A load that
+fails is recorded on the project as `loadError`, announced as
+`project.updated`, and tried again by the next request; until one succeeds the
+project cannot open runs. A project added from the browser is loaded with no
+`--trust-project-*` flag: its hooks and MCP servers stay withheld, and its
+skills go through `POST /api/skills/trust` with `{"project":"PRJ-1"}`.
+
+`POST /api/runs` takes `projectId`, and a run record carries it. `GET
+/api/skills`, `GET /api/skills/{name}` and `GET /api/commands` take
+`?project=`; without it they answer for the daemon's own directory.
+
+`DELETE /api/projects/{id}` forgets the project and closes its environment. It
+is refused with 409 while the project has an open run, and it never removes
+anything from disk - the directory, and in later phases its tickets and
+worktrees, stay where they are.
 
 ## Runs
 
@@ -332,6 +368,8 @@ Statuses a client has to tell apart:
   it, the second says to go on showing the head it already has.
 - `409` - the run has no live session. Its timeline and its artifacts still
   read; its socket does not, because it lives with the session.
+- `409` on `DELETE /api/projects/{id}` - the project has an open run. The body
+  says so; close the run and ask again.
 - `410` - the history no longer reaches the point asked for. Answered by
   reloading, not by retrying.
 - `503` with a `Retry-After` - the daemon is holding as many runs as it will.

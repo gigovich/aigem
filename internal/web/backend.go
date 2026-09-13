@@ -175,6 +175,7 @@ func unprefixed(msg string) string {
 type Run struct {
 	ID        string    `json:"id"`
 	SessionID string    `json:"sessionId,omitempty"`
+	ProjectID string    `json:"projectId,omitempty"`
 	Mode      string    `json:"mode"`
 	Title     string    `json:"title,omitempty"`
 	Model     string    `json:"model,omitempty"`
@@ -209,13 +210,10 @@ type NewRun struct {
 	// Model is a reference in the "provider/id" form the wire uses; empty takes
 	// the daemon's default.
 	Model string `json:"model,omitempty"`
-	// There is deliberately no Root here. A run works in the directory the
-	// daemon was started in, and the Root a record reports is that directory.
-	// Letting a request name one would be the API's first way to reach outside
-	// what the operator pointed the daemon at, and it would have to arrive with
-	// the project model that decides which directories are allowed - which is
-	// phase 2. A field that is on the wire, documented, and ignored is a worse
-	// answer than no field.
+	// ProjectID names the project the run works in; empty is the daemon's own
+	// directory. The run is rooted at the project directory - a request still
+	// cannot name a directory of its own, only a project the person added.
+	ProjectID string `json:"projectId,omitempty"`
 }
 
 // RunEvent is one step of a run's timeline on its way to a client: the event as

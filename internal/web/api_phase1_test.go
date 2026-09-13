@@ -46,18 +46,18 @@ func (b *phaseBackend) PasteLogin(_ context.Context, _ string, raw string) (Logi
 	b.login.Code = raw
 	return b.login, nil
 }
-func (b *phaseBackend) CancelLogin(context.Context, string) error { return nil }
-func (b *phaseBackend) Skills(context.Context) (Skills, error)    { return b.skills, nil }
-func (b *phaseBackend) Skill(_ context.Context, name string) (Skill, error) {
+func (b *phaseBackend) CancelLogin(context.Context, string) error      { return nil }
+func (b *phaseBackend) Skills(context.Context, string) (Skills, error) { return b.skills, nil }
+func (b *phaseBackend) Skill(_ context.Context, _ string, name string) (Skill, error) {
 	if name != b.detail.Name {
 		return Skill{}, ErrNoSkill
 	}
 	return b.detail, nil
 }
-func (b *phaseBackend) TrustSkills(context.Context) (SkillApproval, error) {
+func (b *phaseBackend) TrustSkills(context.Context, string) (SkillApproval, error) {
 	return SkillApproval{}, nil
 }
-func (b *phaseBackend) Commands(context.Context) ([]Command, error) { return nil, b.err }
+func (b *phaseBackend) Commands(context.Context, string) ([]Command, error) { return nil, b.err }
 func (b *phaseBackend) Usage(context.Context) ([]ProviderUsage, error) {
 	return []ProviderUsage{{Provider: "openai"}}, nil
 }

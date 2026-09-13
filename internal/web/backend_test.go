@@ -107,7 +107,8 @@ func (b *fakeBackend) OpenRun(_ context.Context, req NewRun) (Run, error) {
 	id := "RUN-" + strconv.Itoa(b.next)
 	run := Run{
 		ID: id, Mode: "interactive", Title: req.Title, Model: req.Model,
-		Status: "open", Live: true,
+		ProjectID: req.ProjectID,
+		Status:    "open", Live: true,
 		Created: time.Unix(int64(b.next), 0).UTC(),
 		Updated: time.Unix(int64(b.next), 0).UTC(),
 	}
