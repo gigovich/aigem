@@ -199,6 +199,15 @@ export function Skills({ selected }: { selected?: string }) {
                   {phone && <Back label="Skills" to={{ screen: 'skills' }} />}
                   <h1 className="m-0 font-mono text-[14px] font-medium">{chosen.name}</h1>
                   <StatusChip status={state(chosen, pending)} />
+                  {phone && chosen.userInvocable && (
+                    <button
+                      type="button"
+                      onClick={() => compose(`/skill:${chosen.name} `)}
+                      className="ml-auto h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] text-fg-muted hover:border-line-strong hover:text-fg"
+                    >
+                      Run in a session
+                    </button>
+                  )}
                 </div>
                 <p className="mt-[6px] mb-0 text-[12px] text-fg-muted">{chosen.description}</p>
                 <div className="mt-[10px] flex gap-4 font-mono text-[10.5px] text-fg-subtle">

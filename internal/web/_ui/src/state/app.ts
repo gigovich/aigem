@@ -413,6 +413,17 @@ export function compose(text: string) {
   queueMicrotask(() => document.querySelector<HTMLElement>('[data-composer]')?.focus())
 }
 
+/**
+ * The composer that adopts a pending command keeps its own copy from then on.
+ *
+ * Without this, a stale draft would sit in the store and force open the next
+ * unrelated visit to `/chat` that finds it still there - one navigation
+ * "adopting" a command that was actually meant for the one before it.
+ */
+export function clearPendingCommand() {
+  store.set((s) => (s.pendingCommand.text ? { ...s, pendingCommand: { ...s.pendingCommand, text: '' } } : s))
+}
+
 /** The reload is the sign-out: the page comes back with no cookie. */
 export async function signOut() {
   try {

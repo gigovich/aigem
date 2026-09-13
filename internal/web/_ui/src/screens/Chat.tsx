@@ -1,11 +1,11 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ago, percent } from '@/lib/format'
 import { readImage, WIRE_LIMIT } from '@/lib/image'
 import type { Attachment } from '@/lib/image'
 import { navigate } from '@/lib/route'
 import { runStatus } from '@/lib/wire'
 import type { Decision, Run, RunOp } from '@/lib/wire'
-import { explain, setActiveRun, setBanner, useApp } from '@/state/app'
+import { clearPendingCommand, explain, setActiveRun, setBanner, useApp } from '@/state/app'
 import { slash } from '@/state/slash'
 import { tabLabel } from '@/hooks/useRunEvents'
 
@@ -54,7 +54,15 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
   }))
   const record = runs.find((r) => r.id === runId)
   const showList = !phone || !selected
-  const showDetail = !phone || !!selected
+  // A command composed with no id to put in the address bar - a skill run
+  // from its own phone page, say - still has to open on the mount that
+  // receives it, decided once so a later, unrelated visit to `/chat` cannot
+  // reopen on the same stale draft.
+  const [openedByCompose] = useState(() => !selected && !!pendingCommand.text)
+  useEffect(() => {
+    if (pendingCommand.text) clearPendingCommand()
+  }, [pendingCommand.text])
+  const showDetail = !phone || !!selected || openedByCompose
 
   // The composer's own text. Kept here rather than in the application store,
   // which the shell subscribes to whole: a store that moved on every keystroke

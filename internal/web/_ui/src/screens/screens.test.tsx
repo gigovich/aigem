@@ -478,3 +478,24 @@ test('the run screen lists the plan beside the agent tree', async () => {
   expect(await screen.findByRole('heading', { name: 'Plan' })).toBeInTheDocument()
   expect(screen.getByText('rotate the keys')).toBeInTheDocument()
 })
+
+// The inspector holds the action on a wide screen; on a phone the skill's own
+// page is all there is, so the action has to be on it.
+test('on a phone a skill can be run from its page', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN], skills: SKILLS })
+  act(() => setViewport(400))
+  act(() => navigate({ screen: 'skills', id: 'code-review' }))
+  await user.click(await screen.findByRole('button', { name: 'Run in a session' }))
+  await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('/skill:code-review ')
+})
+
+test('on a wide screen the action stays in the inspector alone', async () => {
+  await mountApp({ runs: [RUN], skills: SKILLS })
+  go('skills')
+  await screen.findByRole('heading', { name: 'code-review', level: 1 })
+  const aside = screen.getByRole('complementary', { name: 'Inspector' })
+  expect(within(aside).getByRole('button', { name: 'Run in a session' })).toBeInTheDocument()
+  expect(screen.getAllByRole('button', { name: 'Run in a session' })).toHaveLength(1)
+})
