@@ -568,3 +568,64 @@ func TestAWaiterTakesTheFailedLoadsAnswerRatherThanRetrying(t *testing.T) {
 		}
 	})
 }
+
+func TestAWaiterAfterARemovedProjectDoesNotSeeAStaleLoadError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &loader{}
+		l.fail.Store(true)
+		p := newLoadingProjects(t, l, nil)
+		addProject(t, p, t.TempDir(), "")
+
+		_, err := p.Env(context.Background(), "PRJ-1")
+		if err == nil || !strings.Contains(err.Error(), "SessionStart hook exited 1") {
+			t.Fatalf("the first Env = %v, want the load error", err)
+		}
+		l.fail.Store(false)
+		l.gate = make(chan struct{})
+		l.arrived = make(chan struct{}, 1)
+
+		var wg sync.WaitGroup
+		var leaderErr error
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, leaderErr = p.Env(context.Background(), "PRJ-1")
+		}()
+		<-l.arrived
+		l.arrived = nil
+
+		var waiterErr error
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, waiterErr = p.Env(context.Background(), "PRJ-1")
+		}()
+		// The waiter is parked on the load before Remove runs, so what it does
+		// next is its answer to an abandoned load and not a race.
+		synctest.Wait()
+		if err := p.Remove("PRJ-1"); err != nil {
+			t.Fatal(err)
+		}
+		close(l.gate)
+		wg.Wait()
+
+		if !errors.Is(leaderErr, runner.ErrNoProject) {
+			t.Errorf("the leader after Remove mid-load = %v, want ErrNoProject", leaderErr)
+		}
+		if !errors.Is(waiterErr, runner.ErrNoProject) {
+			t.Errorf("the waiter after Remove mid-load = %v, want ErrNoProject, not a stale load error", waiterErr)
+		}
+	})
+}
+
+func TestRetainOnAnUnknownProjectReturnsAUsableNoOpRelease(t *testing.T) {
+	p := newProjects(t, "", nil)
+	_, release, err := p.Retain(context.Background(), "PRJ-9")
+	if !errors.Is(err, runner.ErrNoProject) {
+		t.Fatalf("Retain on an unknown project = %v, want ErrNoProject", err)
+	}
+	if release == nil {
+		t.Fatal("Retain on error returned a nil release, want a no-op func")
+	}
+	release()
+}

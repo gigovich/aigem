@@ -207,6 +207,20 @@ test('a saved project the daemon no longer lists is forgotten', async () => {
   expect(store.get().project).toBe('')
 })
 
+// A dropped selection is what tells the caller to re-read the catalogues it
+// scoped; a selection that still stands must not trigger that re-read.
+test('refresh.projects reports whether it reset a stale selection', async () => {
+  const paths: string[] = []
+  daemonWith(paths, [{ id: '', name: 'work', dir: '/w' }])
+  store.set((s) => ({ ...s, project: 'PRJ-7' }))
+  const { refresh } = await import('./app')
+  await expect(refresh.projects()).resolves.toBe(true)
+
+  daemonWith(paths, [{ id: 'PRJ-1', name: 'work', dir: '/w' }])
+  store.set((s) => ({ ...s, project: 'PRJ-1' }))
+  await expect(refresh.projects()).resolves.toBe(false)
+})
+
 // A project id nothing answers to would leave every scoped read 404ing with
 // nothing on the screen to say why.
 test('selecting a project the daemon does not list is refused', async () => {

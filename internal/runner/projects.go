@@ -256,12 +256,12 @@ func (p *Projects) open(ctx context.Context, id string, retain bool) (*Env, func
 		p.mu.Lock()
 		if p.closed {
 			p.mu.Unlock()
-			return nil, nil, ErrProjectsClosed
+			return nil, func() {}, ErrProjectsClosed
 		}
 		pr := p.byID[id]
 		if pr == nil {
 			p.mu.Unlock()
-			return nil, nil, ErrNoProject
+			return nil, func() {}, ErrNoProject
 		}
 		if pr.env != nil {
 			env, release := pr.env, p.retainLocked(pr, retain)
@@ -274,7 +274,7 @@ func (p *Projects) open(ctx context.Context, id string, retain bool) (*Env, func
 			select {
 			case <-wait:
 			case <-ctx.Done():
-				return nil, nil, ctx.Err()
+				return nil, func() {}, ctx.Err()
 			}
 			p.mu.Lock()
 			switch {
@@ -285,7 +285,7 @@ func (p *Projects) open(ctx context.Context, id string, retain bool) (*Env, func
 			case pr.loadErr != "":
 				err := fmt.Errorf("could not load project %s: %s", pr.rec.Name, pr.loadErr)
 				p.mu.Unlock()
-				return nil, nil, err
+				return nil, func() {}, err
 			}
 			p.mu.Unlock()
 			continue
@@ -322,21 +322,22 @@ func (p *Projects) open(ctx context.Context, id string, retain bool) (*Env, func
 		abandoned := p.byID[id] != pr
 		closed := p.closed
 		if abandoned || closed {
+			pr.loadErr = ""
 			p.mu.Unlock()
 			if env != nil {
 				env.Close()
 			}
 			if closed {
-				return nil, nil, ErrProjectsClosed
+				return nil, func() {}, ErrProjectsClosed
 			}
-			return nil, nil, ErrNoProject
+			return nil, func() {}, ErrNoProject
 		}
 		if err != nil {
 			pr.loadErr = err.Error()
 			v := p.viewLocked(pr)
 			p.mu.Unlock()
 			p.notify(v)
-			return nil, nil, fmt.Errorf("could not load project %s: %w", name, err)
+			return nil, func() {}, fmt.Errorf("could not load project %s: %w", name, err)
 		}
 		pr.env = env
 		announce := pr.loadErr != ""

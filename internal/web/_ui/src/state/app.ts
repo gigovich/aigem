@@ -282,14 +282,19 @@ export const refresh = {
   commands: () => load('commands', 'commands', () => api.commands(store.get().project)),
   usage: () => load('usage', 'usage', () => api.usage()),
   activity: () => load('activity', 'activity', readActivityTail),
-  projects: async () => {
+  /** Resolves true when a stale selection was reset - the caller's cue to reread its catalogues. */
+  projects: async (): Promise<boolean> => {
     // Only what the daemon listed reconciles the selection: a read that failed
     // listed nothing, and that is not the same as the project being gone.
-    if (!(await load('projects', 'projects', () => api.projects()))) return
+    if (!(await load('projects', 'projects', () => api.projects()))) return false
     // A saved selection the daemon no longer lists - forgotten elsewhere, or a
     // daemon without a registry - falls back to the daemon's own directory.
     const { projects, project } = store.get()
-    if (project && !projects.some((p) => p.id === project)) setProject('')
+    if (project && !projects.some((p) => p.id === project)) {
+      setProject('')
+      return true
+    }
+    return false
   },
 }
 
@@ -565,7 +570,12 @@ export function start(): () => void {
           void refresh.activity()
           break
         case ControlKind.ProjectUpdated:
-          void refresh.projects()
+          void refresh.projects().then((reset) => {
+            if (reset) {
+              void refresh.skills()
+              void refresh.commands()
+            }
+          })
           break
         case CLIENT_ERROR:
           // Not a state change: it is this connection's own mistake coming

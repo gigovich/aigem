@@ -44,6 +44,34 @@ test('a project.updated frame re-reads the list', async () => {
   await waitFor(() => expect(reads()).toBe(before + 1))
 })
 
+// A project.updated frame can arrive after the chosen project was removed
+// elsewhere; the reset selection must pull fresh catalogues behind it, not
+// leave the screen showing the gone project's skills and commands.
+test('a project.updated frame that drops the selection rereads its catalogues', async () => {
+  const user = userEvent.setup()
+  let calls = 0
+  const h = await mountApp({
+    projects: PROJECTS,
+    routes: {
+      '/api/projects': () => {
+        calls++
+        return new Response(JSON.stringify(calls === 1 ? PROJECTS : [DAEMON_PROJECT]), { status: 200 })
+      },
+    },
+  })
+  const list = await screen.findByRole('list', { name: 'Projects' })
+  await user.click(within(list).getByRole('button', { name: /work/ }))
+  await waitFor(() => expect(h.paths).toContain('/api/skills?project=PRJ-1'))
+  const bareSkillReads = () => h.paths.filter((p) => p === '/api/skills').length
+  const before = bareSkillReads()
+
+  h.publish('project.updated', 2, { ...WORK })
+  await waitFor(() => expect(bareSkillReads()).toBe(before + 1))
+  await waitFor(() =>
+    expect(within(list).getByRole('button', { name: /aigem/ })).toHaveAttribute('aria-current', 'true'),
+  )
+})
+
 test('a new project is added from the dialog, and a refusal is shown as text', async () => {
   const user = userEvent.setup()
   const THING: Project = { id: 'PRJ-2', name: 'the thing', dir: '/home/dev/thing' }
