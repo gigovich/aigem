@@ -79,6 +79,8 @@ export type AppState = {
    * and the composer stays empty.
    */
   pendingCommand: { text: string; nth: number }
+  /** The provider a sign-in dialog is open for, or none. */
+  login: string
 }
 
 const EMPTY_SKILLS: Skills = { items: [] }
@@ -146,6 +148,7 @@ export function initialState(): AppState {
     activeRun: '',
     opening: false,
     pendingCommand: { text: '', nth: 0 },
+    login: '',
   }
 }
 
@@ -335,6 +338,34 @@ export function setActiveRun(id: string) {
   patch({ activeRun: id })
 }
 
+export function setLogin(provider: string) {
+  patch({ login: provider })
+}
+
+/**
+ * Open a conversation and go to it.
+ *
+ * Named in the address bar like any other, so it is linkable from the moment it
+ * exists rather than from the first time it is chosen.
+ */
+export async function openSession() {
+  if (!has('runs')) {
+    flash('This daemon does not serve runs.')
+    return
+  }
+  if (!claimOpening()) return
+  try {
+    const run = await api.openRun({})
+    await refresh.runs()
+    setActiveRun(run.id)
+    navigate({ screen: 'chat', id: run.id })
+  } catch (err) {
+    setBanner(explain(err))
+  } finally {
+    releaseOpening()
+  }
+}
+
 /**
  * Claim the right to open a conversation, or report that somebody already has.
  *
@@ -368,18 +399,16 @@ export function compose(text: string) {
   queueMicrotask(() => document.querySelector<HTMLElement>('[data-composer]')?.focus())
 }
 
-/**
- * Forget this browser's session, on the daemon and then here.
- *
- * The reload is the sign-out: the page comes back up with no cookie, the
- * exchange is refused, and the fatal state says how to sign in again.
- */
+/** The reload is the sign-out: the page comes back with no cookie. */
 export async function signOut() {
   try {
     await api.signOut()
   } catch (err) {
-    setBanner(explain(err))
-    return
+    // A cookie the daemon no longer honours is already signed out.
+    if (!(err instanceof ApiError && err.status === 401)) {
+      setBanner(explain(err))
+      return
+    }
   }
   window.location.replace('/')
 }

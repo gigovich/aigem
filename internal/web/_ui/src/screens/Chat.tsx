@@ -4,6 +4,7 @@ import { navigate } from '@/lib/route'
 import { runStatus } from '@/lib/wire'
 import type { Decision, Run, RunOp } from '@/lib/wire'
 import { setActiveRun, useApp } from '@/state/app'
+import { slash } from '@/state/slash'
 import { tabLabel } from '@/hooks/useRunEvents'
 
 import { usePublishInspector } from '@/state/inspector'
@@ -102,13 +103,7 @@ export function Chat({ run, runId, state, reason, send, onNew, onClose }: Props)
   const submit = () => {
     const value = text.trim()
     if (!value) return
-    let sent: boolean
-    if (value.startsWith('/')) {
-      const [name, ...args] = value.slice(1).split(' ')
-      sent = name ? send({ op: 'command', name, args: args.join(' ') }) : false
-    } else {
-      sent = send({ op: 'submit', text: value })
-    }
+    const sent = value.startsWith('/') ? slash(value, send) : send({ op: 'submit', text: value })
     if (sent) setText('')
   }
 

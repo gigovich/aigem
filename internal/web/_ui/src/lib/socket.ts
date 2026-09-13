@@ -61,10 +61,9 @@ export function connectRun(
   const status = (state: RunSocketState, reason?: string) => handlers.onStatus?.(state, reason)
 
   /**
-   * Why the socket would not open, and whether it is worth dialling again.
-   *
-   * A browser cannot read the status of a failed handshake, so the only way to
-   * tell "this run is gone" from "the daemon restarted" is to ask over HTTP.
+   * Whether the run is still worth dialling, read from its record before every
+   * dial: a browser cannot read the status of a refused handshake, and every
+   * run is closed after a daemon restart.
    *
    * The answer is in the record's `live`, not in a status code: `GET
    * /api/runs/{id}` describes a closed run perfectly well and answers 200 for
@@ -83,16 +82,13 @@ export function connectRun(
       if (run.live === false) {
         stopped = true
         status('gone', 'this conversation is closed; its transcript still reads')
-        return true
       }
     } catch (err) {
       if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
         stopped = true
         status('gone', err.status === 404 ? 'this run no longer exists' : err.detail)
-        return true
       }
     }
-    return false
   }
 
   /**
@@ -164,10 +160,8 @@ export function connectRun(
         return
       }
     }
-    // The record is read before the handshake rather than after it fails:
-    // every run is closed after a daemon restart, and a page that dialled
-    // each of them first would log a refused handshake per conversation.
-    if (stopped || (await diagnose())) return
+    await diagnose()
+    if (stopped) return
     const ws = new WebSocket(
       // The label is what the presence event shows the other tabs; without it
       // a terminal and a browser on the same run cannot say who is attached,
@@ -186,9 +180,7 @@ export function connectRun(
       if (socket !== ws) return
       socket = null
       status('closed')
-      void diagnose().then((done) => {
-        if (!done) retry()
-      })
+      retry()
     }
     ws.onerror = () => {}
   }

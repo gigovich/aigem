@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { api } from '@/lib/api'
 import { compact } from '@/lib/format'
 import { navigate } from '@/lib/route'
-import { explain, flash, refresh, setBanner, useApp } from '@/state/app'
+import { explain, flash, refresh, setBanner, setLogin, useApp } from '@/state/app'
 import { MODEL_STATUS } from '@/lib/wire'
 import type { Model, StatusInfo } from '@/lib/wire'
 import { DataGrid } from '@/ui/DataGrid'
@@ -11,7 +11,6 @@ import { EmptyState } from '@/ui/EmptyState'
 import { StatusChip } from '@/ui/StatusChip'
 import { Modal } from '@/ui/Modal'
 import { usePublishInspector } from '@/state/inspector'
-import { LoginDialog } from './LoginDialog'
 
 /** Available / No key, from the shared dictionary rather than a local copy. */
 function state(m: Model): StatusInfo {
@@ -26,7 +25,6 @@ export function Models({ selected }: { selected?: string }) {
     defaultModel: s.meta?.defaultModel ?? '',
   }))
   const [confirming, setConfirming] = useState<Model | null>(null)
-  const [login, setLogin] = useState<string>('')
   const [filter, setFilter] = useState('')
 
   const inUse = (ref: string) => runs.filter((r) => r.live && r.model === ref).length
@@ -213,8 +211,6 @@ export function Models({ selected }: { selected?: string }) {
           they started on.
         </Modal>
       )}
-
-      {login && <LoginDialog provider={login} onClose={() => setLogin('')} />}
 
     </>
   )

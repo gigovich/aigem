@@ -142,6 +142,7 @@ func (rt *webRuntime) openRun(_ context.Context, req runner.RunRequest) (
 			KeepTools:    webKeepTools,
 		},
 	})
+	sess.HandleCommands(rt.env.Skills, rt.env.MCP)
 	// Approving the project's skills has to reach every live conversation, not
 	// just the one that asked.
 	if err := rt.env.Attach(sess); err != nil {

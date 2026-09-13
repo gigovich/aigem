@@ -24,3 +24,17 @@ test('signing out revokes the session on the daemon and reloads without it', asy
   )
   await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
 })
+
+test('a cookie the daemon has already forgotten is signed out all the same', async () => {
+  const user = userEvent.setup()
+  const replace = vi.fn()
+  vi.stubGlobal('location', { ...window.location, replace })
+  await mountApp({
+    routes: { 'DELETE /api/auth/session': () => new Response('unauthorized', { status: 401 }) },
+  })
+
+  await user.click(screen.getByRole('button', { name: 'Sign out' }))
+
+  await waitFor(() => expect(replace).toHaveBeenCalledWith('/'))
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})

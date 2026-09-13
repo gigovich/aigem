@@ -97,7 +97,6 @@ export function Skills({ selected }: { selected?: string }) {
       ],
       listTitle: detail?.allowedTools.length ? 'Allowed tools' : undefined,
       list: detail?.allowedTools.map((t) => ({ icon: '·', text: t })) ?? [],
-      // A skill the model alone may invoke is not something a person can run.
       actions: chosen.userInvocable
         ? [{ label: 'Run in a session', onClick: () => compose(`/skill:${chosen.name} `) }]
         : [],

@@ -154,3 +154,23 @@ test('a command from the palette lands in the composer', async () => {
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('/compact '),
   )
 })
+
+// A command with no browser shape is worse than a short palette.
+test('leaves out the catalogue entries the page cannot carry out', async () => {
+  const user = userEvent.setup()
+  await mountApp({
+    commands: [
+      { name: '/agents', description: 'Browse agents' },
+      { name: '/logout', description: 'Clear a credential' },
+      { name: '/compact', description: 'Summarize' },
+    ],
+  })
+
+  await user.keyboard('{Control>}k{/Control}')
+  await screen.findByRole('dialog', { name: 'Command palette' })
+  const labels = screen.getAllByRole('option').map((o) => o.textContent ?? '')
+
+  expect(labels.some((l) => l.includes('/compact'))).toBe(true)
+  expect(labels.some((l) => l.includes('/agents'))).toBe(false)
+  expect(labels.some((l) => l.includes('/logout'))).toBe(false)
+})

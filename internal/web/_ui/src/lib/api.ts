@@ -89,10 +89,6 @@ function query(params: Record<string, number | string | undefined>): string {
 
 export const api = {
   meta: (signal?: AbortSignal) => json<Meta>('/api/meta', { signal }),
-  /** Revokes this browser's session on the daemon; the cookie dies with it. */
-  signOut: async (signal?: AbortSignal) => {
-    await send('/api/auth/session', { method: 'DELETE', signal })
-  },
 
   runs: (signal?: AbortSignal) => json<Run[]>('/api/runs', { signal }),
   openRun: (req: NewRun, signal?: AbortSignal) =>
@@ -119,6 +115,9 @@ export const api = {
   setDefaultModel: (ref: string, signal?: AbortSignal) =>
     json<Model>('/api/models/default', { ...body({ ref }), signal }),
 
+  signOut: async (signal?: AbortSignal) => {
+    await send('/api/auth/session', { method: 'DELETE', signal })
+  },
   beginLogin: (provider: string, signal?: AbortSignal) =>
     json<Login>('/api/auth/login', { ...body({ provider }), signal }),
   login: (id: string, signal?: AbortSignal) =>

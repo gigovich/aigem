@@ -283,8 +283,8 @@ test('stops dialling once the record of a dropped socket says closed', async () 
   live = false
   FakeSocket.last.drop()
 
-  await vi.waitFor(() => expect(states.some(([s]) => s === 'gone')).toBe(true))
   await vi.advanceTimersByTimeAsync(60_000)
+  expect(states.some(([s]) => s === 'gone')).toBe(true)
   expect(FakeSocket.instances).toHaveLength(1)
   conn.close()
 })
@@ -301,4 +301,20 @@ test('names itself on the socket so the other clients can see it', async () => {
   await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
   expect(FakeSocket.last.url).toContain('label=a+browser')
   conn.close()
+})
+
+// The record is read before the dial, and a page that switched runs during that
+// read must not be left holding a socket nothing will close.
+test('closing during the record read leaves no socket behind', async () => {
+  let answer: ((r: Response) => void) | null = null
+  stubFetch((path) => {
+    if (path.includes('/events')) return ok([])
+    return new Promise<Response>((r) => (answer = r)) as unknown as Response
+  })
+  const { conn } = attach(0)
+  await vi.waitFor(() => expect(answer).not.toBeNull())
+  conn.close()
+  answer!(ok({ id: 'r1', live: true }))
+  await new Promise((r) => setTimeout(r, 10))
+  expect(FakeSocket.instances).toHaveLength(0)
 })

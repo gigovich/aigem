@@ -1,6 +1,7 @@
 package uisession
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -37,5 +38,28 @@ func TestOneLineBoundsDescription(t *testing.T) {
 	}
 	if n := len([]rune(got)); n > 101 {
 		t.Errorf("description is %d runes; it should be capped", n)
+	}
+}
+
+// "skill:review" is one of a family, and a family is one handler: registering
+// a member per skill would go stale the moment the catalogue was reloaded.
+func TestCommandFallsBackToThePrefixHandler(t *testing.T) {
+	l := New(Config{})
+	var got string
+	l.Handle("skill:", func(args string) error {
+		got = args
+		return nil
+	})
+	if err := l.Command("skill:review", "the diff"); err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	if got != "review the diff" {
+		t.Errorf("the prefix handler was given %q, want the member ahead of the args", got)
+	}
+	if err := l.Command("skill:review", ""); err != nil || got != "review" {
+		t.Errorf("without args: err=%v got=%q", err, got)
+	}
+	if err := l.Command("other:thing", ""); !errors.Is(err, ErrUnknownCommand) {
+		t.Errorf("an unregistered family = %v, want ErrUnknownCommand", err)
 	}
 }

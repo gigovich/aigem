@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { api } from '@/lib/api'
-import { canonicalise, getRoute, navigate, resync, subscribeRoute } from '@/lib/route'
+import { canonicalise, getRoute, resync, subscribeRoute } from '@/lib/route'
 import type { Route } from '@/lib/route'
 import { signIn } from '@/lib/auth'
 import {
-  claimOpening,
   clearBanner,
   explain,
   flash,
+  openSession,
   refresh,
-  releaseOpening,
-  setActiveRun,
   setBanner,
+  setLogin,
   setPalette,
   setQuick,
   start,
@@ -31,6 +30,7 @@ import { StatusBar } from '@/shell/StatusBar'
 import { Toast, ToastHost } from '@/shell/ToastHost'
 import { Activity } from '@/screens/Activity'
 import { Chat } from '@/screens/Chat'
+import { LoginDialog } from '@/screens/LoginDialog'
 import { Models } from '@/screens/Models'
 import { Repos, Task, Tickets } from '@/screens/Placeholders'
 import { Run } from '@/screens/Run'
@@ -55,8 +55,7 @@ export default function App() {
   // collection is refetched or a layer opens - never per event of a
   // conversation, which lives in the run hook's own state.
   const app = useApp((s) => s)
-  const { loading, fatal, banner, paletteOpen, quickOpen, activeRun, runs } = app
-  const features = app.meta?.features ?? {}
+  const { loading, fatal, banner, paletteOpen, quickOpen, activeRun, runs, login } = app
   const inspector = useInspectorContent()
   const [signedIn, setSignedIn] = useState(false)
   const [query, setQuery] = useState('')
@@ -113,26 +112,6 @@ export default function App() {
     conversation.dismissRefusal()
   }, [conversation])
 
-  const newSession = useCallback(async () => {
-    if (!features.runs) {
-      flash('This daemon does not serve runs.')
-      return
-    }
-    if (!claimOpening()) return
-    try {
-      const run = await api.openRun({})
-      await refresh.runs()
-      setActiveRun(run.id)
-      // Named in the address bar like any other, so a conversation is linkable
-      // from the moment it exists rather than from the first time it is chosen.
-      navigate({ screen: 'chat', id: run.id })
-    } catch (err) {
-      setBanner(explain(err))
-    } finally {
-      releaseOpening()
-    }
-  }, [features.runs])
-
   const closeSession = useCallback(async (id: string) => {
     setClosing('')
     try {
@@ -144,10 +123,7 @@ export default function App() {
     }
   }, [])
 
-  const items = useMemo(
-    () => paletteItems(app, { newSession: () => void newSession() }),
-    [app, newSession],
-  )
+  const items = useMemo(() => paletteItems(app), [app])
   const matches = useMemo(() => ordered(items, query), [items, query])
 
   const layerOpen = paletteOpen || quickOpen || explainProjects || closing !== ''
@@ -255,7 +231,7 @@ export default function App() {
             route={route}
             runId={runId}
             conversation={conversation}
-            onNew={() => void newSession()}
+            onNew={() => void openSession()}
             onClose={setClosing}
           />
         </main>
@@ -284,6 +260,7 @@ export default function App() {
           onSubmit={(text) => conversation.send({ op: 'submit', text })}
         />
       )}
+      {login && <LoginDialog provider={login} onClose={() => setLogin('')} />}
       {explainProjects && (
         <Modal
           title="Projects arrive in a later phase"

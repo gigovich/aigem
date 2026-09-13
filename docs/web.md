@@ -439,9 +439,13 @@ call" - the inverse of the session's auto mode. The run's current setting is the
 is answered with silence, so a client that re-read the record instead would be
 racing the socket it had just written to.
 
-`command` runs a slash command inside the conversation. The daemon registers
-none yet - every one of them comes back refused as unknown - and the catalog a
-palette would offer arrives with `/api/commands`.
+`command` runs a slash command inside the conversation, and `name` is spelled
+without its slash: `compact`, `skill:review`, `mcp__server__prompt`. The daemon
+handles the ones that are a turn - a compaction, a skill a person may invoke,
+an MCP prompt - and each is refused while a turn is running, as a message would
+be. The rest of the catalogue `/api/commands` lists - `/new`, `/model`,
+`/login`, `/resume`, `/skills`, `/artifacts` - is the page's own to carry out,
+and sending one here comes back refused as unknown.
 
 `switch_model` with `"persist":true` is the one operation whose effect leaves
 the run: it writes the operator's saved model preference, which the next session

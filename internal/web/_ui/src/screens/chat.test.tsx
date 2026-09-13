@@ -610,3 +610,54 @@ test('says why the stream ended, in the socket\'s own words', async () => {
     ),
   )
 })
+
+// The daemon runs the commands that are a turn; the ones that name a
+// navigation or an HTTP call are the page's own, and never go up the socket.
+async function typed(line: string) {
+  const user = userEvent.setup()
+  await user.type(screen.getByRole('textbox', { name: 'Message' }), line)
+  await user.keyboard('{Control>}{Enter}{/Control}')
+}
+
+test('/new opens a conversation instead of asking the daemon to', async () => {
+  const h = await mountApp({
+    runs: [RUN],
+    routes: {
+      'POST /api/runs': () => new Response(JSON.stringify({ ...RUN, id: 'r-9' }), { status: 201 }),
+    },
+  })
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  act(() => h.runSocket()?.open())
+  await typed('/new')
+
+  await waitFor(() => expect(window.location.pathname).toBe('/chat/r-9'))
+  expect(h.runSocket()?.sent ?? []).not.toContainEqual(expect.stringContaining('command'))
+})
+
+test('/model with a reference switches the model; without one it goes to the pool', async () => {
+  const h = await attached()
+  await typed('/model openai/gpt-5')
+  await waitFor(() => expect(h.runSocket()?.sent).toHaveLength(1))
+  expect(JSON.parse(h.runSocket()?.sent[0] ?? '{}')).toEqual({
+    op: 'switch_model',
+    ref: 'openai/gpt-5',
+  })
+
+  await typed('/model')
+  await waitFor(() => expect(window.location.pathname).toBe('/models'))
+  expect(h.runSocket()?.sent).toHaveLength(1)
+})
+
+test('/login names a provider and opens its sign-in', async () => {
+  const h = await attached()
+  await typed('/login openai')
+  expect(await screen.findByRole('dialog', { name: /Sign in to openai/ })).toBeInTheDocument()
+  expect(h.runSocket()?.sent).toHaveLength(0)
+})
+
+test('/skills is a navigation', async () => {
+  const h = await attached()
+  await typed('/skills')
+  await waitFor(() => expect(window.location.pathname).toBe('/skills'))
+  expect(h.runSocket()?.sent).toHaveLength(0)
+})

@@ -12,6 +12,7 @@ import type { Route } from '@/lib/route'
 import {
   compose,
   flash,
+  openSession,
   setPalette,
   setQuick,
   signOut,
@@ -21,6 +22,7 @@ import {
   toggleTheme,
 } from '@/state/app'
 import type { AppState } from '@/state/app'
+import { NOT_HERE } from '@/state/slash'
 
 export type PaletteGroup = 'Navigate' | 'Create' | 'Execute' | 'Preferences'
 
@@ -39,7 +41,7 @@ const go = (route: Route) => () => {
 }
 
 /** The commands this daemon can actually carry out, given its feature map. */
-export function paletteItems(state: AppState, actions: { newSession: () => void }): PaletteItem[] {
+export function paletteItems(state: AppState): PaletteItem[] {
   const features = state.meta?.features ?? {}
   const items: PaletteItem[] = []
 
@@ -60,7 +62,7 @@ export function paletteItems(state: AppState, actions: { newSession: () => void 
       group: 'Create',
       run: () => {
         setPalette(false)
-        actions.newSession()
+        void openSession()
       },
     })
   }
@@ -125,6 +127,7 @@ export function paletteItems(state: AppState, actions: { newSession: () => void 
   // could find by typing its name.
   for (const c of state.commands) {
     const name = c.name.startsWith('/') ? c.name : `/${c.name}`
+    if (NOT_HERE.has(name)) continue
     items.push({
       id: `cmd-${name}`,
       label: name,
