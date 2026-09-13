@@ -166,9 +166,7 @@ export function Run({ run, runId, state, send }: Props) {
               {view === 'events' ? `${rows.length} events` : `${run.files.length} files`}
             </span>
           </div>
-          {view === 'changes' && (
-            <Changes runId={runId} live={record.live} seq={run.writes} />
-          )}
+          {view === 'changes' && <Changes runId={runId} seq={run.writes} />}
           {view === 'events' && (
           <EventStream
             rows={rows}

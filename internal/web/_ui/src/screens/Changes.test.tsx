@@ -50,11 +50,14 @@ test('says so when the daemon would not send both sides', async () => {
   expect(screen.getByRole('main')).toHaveTextContent('4.0 kB to 8.0 kB')
 })
 
-// Artifacts live with the session and not in the journal, so a closed run has
-// nothing to read - and "Reading what changed…" forever is not an answer.
-test('a closed conversation says why it has no changes to show', async () => {
-  await openChanges({}, { ...RUN, live: false, status: 'closed' })
-  expect(await screen.findByText('This conversation is closed.')).toBeInTheDocument()
+// A closed run's artifacts were written beside its journal on every save, so
+// the daemon still answers them - and the page must still read them.
+test('a closed run still shows what it changed', async () => {
+  await openChanges(
+    artifacts([{ path: '/w/a.go', created: false, old: 'x\n', new: 'y\n', oldBytes: 2, newBytes: 2 }]),
+    { ...RUN, status: 'closed', live: false },
+  )
+  expect(await screen.findByText('/w/a.go')).toBeInTheDocument()
 })
 
 test('a run that changed nothing says that', async () => {

@@ -16,7 +16,7 @@ import { EmptyState } from '@/ui/EmptyState'
  * which is why `truncated` is drawn as a statement about the change rather than
  * as an empty diff.
  */
-export function Changes({ runId, live, seq }: { runId: string; live: boolean; seq: number }) {
+export function Changes({ runId, seq }: { runId: string; seq: number }) {
   const [state, setState] = useState<{ runId: string; files: Artifact[] | null; error: string }>({
     runId,
     files: null,
@@ -29,11 +29,6 @@ export function Changes({ runId, live, seq }: { runId: string; live: boolean; se
   const { files, error } = state.runId === runId ? state : { files: null, error: '' }
 
   useEffect(() => {
-    // Artifacts live with the session and not in the journal, so a closed run
-    // has nothing to read. Answered by the early return below rather than here,
-    // where setting state would be a second render for a question that has a
-    // static answer.
-    if (!live) return
     const abort = new AbortController()
     void api
       .runArtifacts(runId, abort.signal)
@@ -46,16 +41,8 @@ export function Changes({ runId, live, seq }: { runId: string; live: boolean; se
     // `seq` is in here so a conversation that goes on writing files is read
     // again: the daemon has no event for "the working tree moved", and a tab
     // left open on this view would otherwise show what was true when it opened.
-  }, [runId, live, seq])
+  }, [runId, seq])
 
-  if (!live) {
-    return (
-      <EmptyState
-        title="This conversation is closed."
-        detail="The files it changed are still on disk; the daemon reads them through the session, which has ended."
-      />
-    )
-  }
   if (error) return <EmptyState title="The changes could not be read." detail={error} />
   if (!files) return <EmptyState title="Reading what changed…" />
   if (files.length === 0) return <EmptyState title="This run has not changed any files." />
