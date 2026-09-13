@@ -283,3 +283,9 @@ test('the rows a person reads as prose say so; tool rows do not', () => {
   expect(toRow(ev(5, EventKind.ToolStart, { name: 'read_file' }))?.prose).toBe(false)
   expect(toRow(ev(6, EventKind.Reasoning, { text: 'thinking' }))?.prose).toBe(false)
 })
+
+test('an assistant message with nothing in it is not a row', () => {
+  expect(toRow(ev(1, EventKind.AssistantMessage, { text: '' }))).toBeNull()
+  expect(toRow(ev(2, EventKind.AssistantMessage, { text: '  \n' }))).toBeNull()
+  expect(toRow(ev(3, EventKind.AssistantMessage, { text: 'hi' }))).not.toBeNull()
+})

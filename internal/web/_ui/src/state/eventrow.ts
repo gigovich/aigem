@@ -107,7 +107,8 @@ export function toRow(e: RunEvent): EventRow | null {
         prose: !e.interrupted && !!e.text?.trim(),
       }
     case EventKind.AssistantMessage:
-      return { ...base, glyph: '', color: MUTED, text: e.text ?? '', prose: true }
+      if (!e.text?.trim()) return null
+      return { ...base, glyph: '', color: MUTED, text: e.text, prose: true }
     case EventKind.Reasoning:
       return { ...base, glyph: '◇', color: 'var(--agent)', text: e.text ?? '', level: 1 }
     case EventKind.ToolStart:
