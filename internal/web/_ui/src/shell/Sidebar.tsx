@@ -1,7 +1,7 @@
 import { navigate } from '@/lib/route'
 import type { Route, Screen } from '@/lib/route'
 import type { Feature } from '@/lib/wire'
-import { runCounts, setNav, signOut, useApp } from '@/state/app'
+import { runCounts, selectProject, setNav, signOut, useApp } from '@/state/app'
 import type { AppState } from '@/state/app'
 
 type Item = { screen: Screen; label: string; icon: string; feature?: Feature }
@@ -33,12 +33,14 @@ function countsOf(s: AppState): Partial<Record<Screen, number>> {
 }
 
 export function Sidebar({ route, onNewProject }: Props) {
-  const { features, counts, phone } = useApp((s) => ({
+  const { features, counts, phone, projects, project } = useApp((s) => ({
     features: s.meta?.features ?? {},
     phone: s.phone,
     // Partial on purpose: three of the rows have nothing to count, and a full
     // record would need a zero for each - which the row would then draw.
     counts: countsOf(s),
+    projects: s.projects,
+    project: s.project,
   }))
 
   const row = (item: Item) => {
@@ -84,19 +86,58 @@ export function Sidebar({ route, onNewProject }: Props) {
           <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
             Projects
           </h2>
-          <button
-            type="button"
-            onClick={onNewProject}
-            aria-label="New project"
-            title="New project"
-            className="ml-auto grid size-[18px] cursor-pointer place-items-center rounded-[4px] text-[13px] text-fg-subtle hover:bg-s0 hover:text-fg"
-          >
-            <span aria-hidden="true">+</span>
-          </button>
+          {features.projects === true && (
+            <button
+              type="button"
+              onClick={onNewProject}
+              aria-label="New project"
+              title="New project"
+              className="ml-auto grid size-[18px] cursor-pointer place-items-center rounded-[4px] text-[13px] text-fg-subtle hover:bg-s0 hover:text-fg"
+            >
+              <span aria-hidden="true">+</span>
+            </button>
+          )}
         </div>
-        {/* Phase one runs against the one directory the daemon was started in;
-            projects are what phase two adds, and the button above says so. */}
-        <p className="m-0 px-2 pb-1 text-[11px] text-fg-subtle">This daemon's directory.</p>
+        {features.projects === true ? (
+          <ul aria-label="Projects" className="m-0 list-none p-0">
+            {projects.map((p) => {
+              const active = p.id === project
+              return (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    aria-current={active ? 'true' : undefined}
+                    title={p.loadError ?? p.dir}
+                    onClick={() => {
+                      selectProject(p.id)
+                      setNav(false)
+                    }}
+                    className={`flex h-[26px] w-full cursor-pointer items-center gap-2 rounded-[5px] px-2 text-left hover:bg-s0 ${
+                      active ? 'bg-s0 font-medium text-fg' : 'text-fg-muted'
+                    }`}
+                  >
+                    <span aria-hidden="true" className="w-[13px] text-center text-[11px] text-fg-subtle">
+                      {p.id ? '▪' : '⌂'}
+                    </span>
+                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+                      {p.name}
+                    </span>
+                    {p.loadError && (
+                      <>
+                        <span aria-hidden="true" className="text-[10px] text-attention">
+                          !
+                        </span>
+                        <span className="sr-only">failed to load</span>
+                      </>
+                    )}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        ) : (
+          <p className="m-0 px-2 pb-1 text-[11px] text-fg-subtle">This daemon's directory.</p>
+        )}
       </div>
 
       <div aria-hidden="true" className="mx-[10px] my-2 h-px bg-line" />

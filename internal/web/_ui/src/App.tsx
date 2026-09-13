@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { api } from '@/lib/api'
-import { canonicalise, getRoute, resync, subscribeRoute } from '@/lib/route'
+import { canonicalise, getRoute, replace, resync, subscribeRoute } from '@/lib/route'
 import type { Route } from '@/lib/route'
 import { signIn } from '@/lib/auth'
 import {
@@ -10,6 +10,7 @@ import {
   flash,
   openSession,
   refresh,
+  selectProject,
   setBanner,
   setLogin,
   setNav,
@@ -34,6 +35,7 @@ import { Activity } from '@/screens/Activity'
 import { Chat } from '@/screens/Chat'
 import { LoginDialog } from '@/screens/LoginDialog'
 import { Models } from '@/screens/Models'
+import { NewProjectDialog } from '@/screens/NewProjectDialog'
 import { Repos, Task, Tickets } from '@/screens/Placeholders'
 import { Run } from '@/screens/Run'
 import { Skills } from '@/screens/Skills'
@@ -65,7 +67,7 @@ export default function App() {
   const [signedIn, setSignedIn] = useState(false)
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
-  const [explainProjects, setExplainProjects] = useState(false)
+  const [newProject, setNewProject] = useState(false)
   const [closing, setClosing] = useState<string>('')
 
   useEffect(() => {
@@ -122,7 +124,7 @@ export default function App() {
   const items = useMemo(() => paletteItems(app), [app])
   const matches = useMemo(() => ordered(items, query), [items, query])
 
-  const layerOpen = paletteOpen || quickOpen || explainProjects || closing !== '' || navOpen
+  const layerOpen = paletteOpen || quickOpen || newProject || closing !== '' || navOpen
 
   // The palette's list and highlight are read through a ref so the window
   // listener below is registered once. With them in the dependency array it was
@@ -155,7 +157,7 @@ export default function App() {
         {
           anyOpen: layerOpen,
           confirmOpen: closing !== '',
-          modalOpen: explainProjects,
+          modalOpen: newProject,
           paletteOpen,
         },
         {
@@ -163,7 +165,7 @@ export default function App() {
             setPalette(false)
             setQuick(false)
             setNav(false)
-            setExplainProjects(false)
+            setNewProject(false)
             setClosing('')
           },
           togglePalette: () => {
@@ -175,7 +177,7 @@ export default function App() {
           // Unused: the keymap deliberately does not bind Enter to a
           // destructive confirm. See handleKey.
           confirm: () => undefined,
-          submitModal: () => setExplainProjects(false),
+          submitModal: () => undefined,
           paletteMove: (delta) =>
             setIndex((i) =>
               Math.max(0, Math.min(paletteRef.current.matches.length - 1, i + delta)),
@@ -193,9 +195,9 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [layerOpen, paletteOpen, explainProjects, closing])
+  }, [layerOpen, paletteOpen, newProject, closing])
 
-  const sidebar = <Sidebar route={route} onNewProject={() => setExplainProjects(true)} />
+  const sidebar = <Sidebar route={route} onNewProject={() => setNewProject(true)} />
 
   if (fatal) {
     return (
@@ -310,18 +312,7 @@ export default function App() {
         />
       )}
       {login && <LoginDialog provider={login} onClose={() => setLogin('')} />}
-      {explainProjects && (
-        <Modal
-          title="Projects arrive in a later phase"
-          onClose={() => setExplainProjects(false)}
-          cancelLabel="Close"
-          width={480}
-        >
-          A project is a workspace directory with repositories under it, and a run works in an
-          isolated worktree of one of them. None of that exists yet: this daemon works in the one
-          directory it was started in, and every conversation shares it.
-        </Modal>
-      )}
+      {newProject && <NewProjectDialog onClose={() => setNewProject(false)} />}
       {closing && (
         <Modal
           title="Close this session?"
@@ -392,6 +383,8 @@ function Screen({
       return <Task />
     case 'repos':
       return <Repos />
+    case 'projects':
+      return <ProjectSelect id={route.id} />
     default: {
       // Exhaustive: adding a screen to SCREENS without a case here would
       // otherwise render nothing at all, from a sidebar row that navigates to a
@@ -400,6 +393,15 @@ function Screen({
       return unreachable
     }
   }
+}
+
+/** `/projects/{id}` is a selection, not a screen: choose the project and go to its sessions. */
+function ProjectSelect({ id }: { id?: string }) {
+  useEffect(() => {
+    selectProject(id ?? '')
+    replace({ screen: 'chat' })
+  }, [id])
+  return null
 }
 
 const TITLES: Record<Route['screen'], string> = {
@@ -411,6 +413,7 @@ const TITLES: Record<Route['screen'], string> = {
   models: 'Models',
   skills: 'Skills',
   activity: 'Activity',
+  projects: 'Projects',
 }
 
 function crumbs(route: Route): { label: string; route?: Route }[] {

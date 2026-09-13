@@ -1,5 +1,5 @@
 /**
- * The router: eight screens, written by hand.
+ * The router: nine screens, written by hand.
  *
  * A library would bring a matcher, a data layer and a build-time convention for
  * a set of routes that fits in the union below and is fixed by the design. The
@@ -18,6 +18,7 @@ export const SCREENS = [
   'models',
   'skills',
   'activity',
+  'projects',
 ] as const
 
 export type Screen = (typeof SCREENS)[number]
@@ -33,7 +34,7 @@ function isScreen(value: string): value is Screen {
 
 /**
  * Parse a pathname. Anything unrecognised is the home screen rather than a
- * "not found" page: this is a local tool with eight screens, and a typo in the
+ * "not found" page: this is a local tool with nine screens, and a typo in the
  * address bar is better answered by showing the application.
  */
 export function parse(pathname: string): Route {
