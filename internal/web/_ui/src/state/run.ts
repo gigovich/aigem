@@ -7,6 +7,7 @@
  * same run agree with both.
  */
 
+import { readable } from '@/lib/text'
 import { EventKind, runStatus } from '@/lib/wire'
 import type { Approval, PresenceClient, Run, RunEvent, StatusKey, TodoItem } from '@/lib/wire'
 import { toRow } from './eventrow'
@@ -217,13 +218,14 @@ export function liveStatus(record: Run, view: RunView): StatusKey {
 /** A plan item as the inspector draws it. The glyph carries the state; the meta repeats it in words. */
 export function planRows(todos: TodoItem[]): InspectorRow[] {
   return todos.map((t) => {
+    const text = readable(t.text)
     switch (t.status) {
       case 'completed':
-        return { icon: '✓', color: 'var(--success)', text: t.text, meta: 'done' }
+        return { icon: '✓', color: 'var(--success)', text, meta: 'done' }
       case 'in_progress':
-        return { icon: '●', color: 'var(--running)', text: t.text, meta: 'doing' }
+        return { icon: '●', color: 'var(--running)', text, meta: 'doing' }
       default:
-        return { icon: '·', text: t.text, meta: '' }
+        return { icon: '·', text, meta: '' }
     }
   })
 }

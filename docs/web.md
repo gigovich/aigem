@@ -285,7 +285,7 @@ silence.
 
 The connection's own contract: the daemon sends a protocol ping every 30
 seconds, hangs up after 90 seconds without a frame from the client, and caps one
-frame at 1 MiB and one message at 4 MiB. A browser answers the ping itself,
+frame at 1 MiB and one message at 2 MiB. A browser answers the ping itself,
 so a page has nothing to do to stay connected. The daemon holds 64 websockets at
 once across every tab; the 65th handshake is refused with a 503 and a
 `Retry-After`, which is a retry rather than an error to show.
@@ -472,9 +472,11 @@ The connection's own contract - the pings, the timeouts, the frame and message
 caps, the 64-socket ceiling - is the control stream's, above. The frame cap is
 the one that bites here: a browser sends a message as a single frame, so a
 submit may carry 1 MiB. `images` is an array of `{"media_type":
-"image/png", "data": "<base64>"}`, and the page scales what it attaches so a
-message stays inside the cap; a submit past it ends the socket, as any
-oversized frame does.
+"image/png", "data": "<base64>"}`, and the page keeps a whole message - typed
+text plus every image's base64 - under 700 KiB as it goes on the wire, below
+the 1 MiB frame cap because base64 runs a third larger than the image it
+encodes. A submit past the frame cap ends the socket, as any oversized frame
+does.
 
 Every response carries a content security policy, `X-Content-Type-Options:
 nosniff` and `Referrer-Policy: no-referrer` - including the page and the bundle,

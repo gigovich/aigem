@@ -33,7 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and activity screens fill the inspector, quick chat continues into the chat,
   a closed run is not dialled, the reason a stream ended is shown, and the
   page can sign out. Below 720px it is one column: the navigation is a drawer
-  and a list and its detail are shown one at a time.
+  and a list and its detail are shown one at a time. The inspector and the
+  run column show the agent's plan. A message can carry images, pasted or
+  attached; the page scales a screenshot and keeps a message under 700 KiB on
+  the wire, below the socket's 1 MiB frame. A turn's final answer is shown on
+  the line that ends it.
 - `make web` builds the browser UI into `internal/web/dist`, where the binary
   embeds it from. It needs Node 22+. **The bundle is not committed and the
   release pipeline does not build it**, so a downloaded release binary and

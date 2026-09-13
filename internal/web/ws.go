@@ -56,8 +56,13 @@ const (
 	// a submit may carry. A megabyte holds typed text and a screenshot the page
 	// has scaled down, and 64 sockets of it is a quarter of a gigabyte on a
 	// daemon that serves one signed-in person.
+	//
+	// The message bound only matters for a client that fragments a send across
+	// continuation frames - a browser never does - so it is really a second,
+	// looser ceiling on a non-browser client; the frame bound above is the real
+	// per-socket limit.
 	wsMaxFrame   = 1 << 20
-	wsMaxMessage = 4 << 20
+	wsMaxMessage = 2 << 20
 )
 
 // wsConn is one hijacked connection. It serialises writes, because the event

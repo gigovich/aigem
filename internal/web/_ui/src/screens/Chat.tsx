@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { ago, percent } from '@/lib/format'
-import { readImage, MESSAGE_LIMIT } from '@/lib/image'
+import { readImage, WIRE_LIMIT } from '@/lib/image'
 import type { Attachment } from '@/lib/image'
 import { navigate } from '@/lib/route'
 import { runStatus } from '@/lib/wire'
@@ -75,15 +75,9 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
   const picker = useRef<HTMLInputElement>(null)
 
   const attach = async (files: Iterable<File>) => {
-    let total = images.reduce((sum, im) => sum + im.bytes, 0)
     for (const file of files) {
       try {
         const image = await readImage(file)
-        if (total + image.bytes > MESSAGE_LIMIT) {
-          setBanner(`${image.name} would put this message past what one send can carry`)
-          continue
-        }
-        total += image.bytes
         setImages((current) => [...current, image])
       } catch (err) {
         setBanner(explain(err))
@@ -148,6 +142,11 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
     if (value.startsWith('/')) {
       sent = slash(value, runId, send)
     } else {
+      const wire = value.length + images.reduce((n, im) => n + im.data.length, 0)
+      if (wire > WIRE_LIMIT) {
+        setBanner('This message is too large to send - remove an attachment.')
+        return
+      }
       sent = send({
         op: 'submit',
         text: value,

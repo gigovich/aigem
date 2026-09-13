@@ -15,6 +15,7 @@ import { EmptyState } from '@/ui/EmptyState'
 import { EventStream } from '@/ui/EventStream'
 import { FieldList } from '@/ui/FieldList'
 import { ProgressBar } from '@/ui/ProgressBar'
+import { Rows } from '@/ui/Rows'
 import { StatusChip } from '@/ui/StatusChip'
 import { BlobDialog } from './BlobDialog'
 import { Changes } from './Changes'
@@ -206,22 +207,7 @@ export function Run({ run, runId, state, send }: Props) {
             {run.todos.length > 0 && (
               <>
                 <div aria-hidden="true" className="h-px bg-line" />
-                <div className="p-3">
-                  <h2 className="mb-2 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
-                    Plan
-                  </h2>
-                  {planRows(run.todos).map((row) => (
-                    <div key={row.text} className="flex h-6 items-center gap-2 font-mono text-[11px]">
-                      <span aria-hidden="true" className="w-2" style={{ color: row.color }}>
-                        {row.icon}
-                      </span>
-                      <span className="sr-only">{row.meta || 'pending'}</span>
-                      <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
-                        {row.text}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <Rows title="Plan" rows={planRows(run.todos)} heading="h2" fallbackMeta="pending" />
               </>
             )}
 

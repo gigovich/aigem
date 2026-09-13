@@ -98,7 +98,7 @@ export function toRow(e: RunEvent): EventRow | null {
         ...base,
         glyph: e.interrupted ? '■' : '✓',
         color: e.interrupted ? MUTED : 'var(--success)',
-        text: e.interrupted ? 'Interrupted' : 'Turn finished',
+        text: e.interrupted ? 'Interrupted' : readable(e.text?.trim() || 'Turn finished'),
         phase: true,
       }
     case EventKind.AssistantMessage:

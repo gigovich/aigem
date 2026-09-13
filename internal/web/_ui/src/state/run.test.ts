@@ -170,6 +170,16 @@ test('an interrupted turn is drawn as neither a success nor a failure', () => {
   expect(row?.text).toBe('Interrupted')
 })
 
+// The line that ends a turn is where the model's own answer becomes visible,
+// rather than a fixed word that says nothing about what happened.
+test('a finished turn carries the model\'s answer, or falls back with none', () => {
+  const withText = toRow(ev(2, EventKind.TurnEnd, { text: 'Done: two files listed.' }))
+  expect(withText?.text).toBe('Done: two files listed.')
+
+  const withoutText = toRow(ev(2, EventKind.TurnEnd))
+  expect(withoutText?.text).toBe('Turn finished')
+})
+
 // The record's booleans are whatever was true when the daemon last announced
 // one. For the conversation this tab is attached to, the stream has said
 // everything the record could and said it sooner.

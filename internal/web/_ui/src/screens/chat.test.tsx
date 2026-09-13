@@ -746,27 +746,31 @@ test('an attachment can be removed before sending, and an image alone can be sen
   })
 })
 
-// Several attachments can add up past the frame even though each one alone
-// fits, and a submit past the cap ends the socket silently rather than
-// telling anyone - so the composer has to refuse before that happens.
-test('a second attachment that would push the message past the cap is refused', async () => {
+// Two attachments can each fit the per-image limit and still add up, in
+// base64, to more than the wire budget - and a submit past the frame cap ends
+// the socket silently rather than telling anyone. So the refusal has to come
+// from Send, not from attaching.
+test('a message whose attachments overflow the wire limit is refused at send', async () => {
   const user = userEvent.setup()
-  await attached()
+  const h = await attached()
   const input = screen.getByLabelText('Attach an image')
   const first = new File([new Uint8Array(IMAGE_LIMIT - 1)], 'first.png', { type: 'image/png' })
   const second = new File([new Uint8Array(IMAGE_LIMIT - 1)], 'second.png', { type: 'image/png' })
 
   await user.upload(input, first)
   expect(await screen.findByText('first.png')).toBeInTheDocument()
-
   await user.upload(input, second)
+  expect(await screen.findByText('second.png')).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() =>
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'second.png would put this message past what one send can carry',
+      'This message is too large to send - remove an attachment.',
     ),
   )
-  expect(screen.queryByText('second.png')).not.toBeInTheDocument()
+  expect(h.runSocket()?.sent ?? []).toHaveLength(0)
   expect(screen.getByText('first.png')).toBeInTheDocument()
+  expect(screen.getByText('second.png')).toBeInTheDocument()
 })
 
 // attach commits each accepted image with a functional setImages update, not

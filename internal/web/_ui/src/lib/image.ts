@@ -11,7 +11,7 @@
 export type Attachment = { name: string; media_type: string; data: string; bytes: number }
 
 export const IMAGE_LIMIT = 700 * 1024
-export const MESSAGE_LIMIT = 900 * 1024
+export const WIRE_LIMIT = 700 * 1024
 const LONG_EDGE = 1568
 const TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 
@@ -37,8 +37,12 @@ async function shrink(file: Blob): Promise<Blob | null> {
   canvas.height = Math.round(bitmap.height * scale)
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
   bitmap.close()
-  const out = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.85))
-  return out && out.size <= IMAGE_LIMIT ? out : null
+  const encode = (quality: number) =>
+    new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', quality))
+  const first = await encode(0.85)
+  if (first && first.size <= IMAGE_LIMIT) return first
+  const second = await encode(0.6)
+  return second && second.size <= IMAGE_LIMIT ? second : null
 }
 
 function base64(blob: Blob): Promise<string> {
