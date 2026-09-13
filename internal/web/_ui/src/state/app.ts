@@ -403,25 +403,24 @@ function setPendingCommand(text: string) {
 /**
  * Put a command in the composer and go there.
  *
+ * The id in the address bar is the same conversation `App.tsx`'s own fallback
+ * would land on: the active run if it still exists, else the newest one,
+ * preferring a live one. Without an id, bare `/chat` is the session list on a
+ * phone rather than a composer - the same reason `newSession`/`openSession`
+ * and a session row always navigate with one.
+ *
  * The focus is deferred until the composer has been re-rendered with the text
  * in it: the caller has no reference to it, and the point of choosing a command
  * is to go on typing its argument.
  */
 export function compose(text: string) {
   setPendingCommand(text)
-  navigate({ screen: 'chat' })
+  const { runs, activeRun } = store.get()
+  const known = activeRun && runs.some((r) => r.id === activeRun) ? activeRun : undefined
+  const newest = [...runs].reverse()
+  const id = known ?? (newest.find((r) => r.live) ?? newest[0])?.id
+  navigate(id ? { screen: 'chat', id } : { screen: 'chat' })
   queueMicrotask(() => document.querySelector<HTMLElement>('[data-composer]')?.focus())
-}
-
-/**
- * The composer that adopts a pending command keeps its own copy from then on.
- *
- * Without this, a stale draft would sit in the store and force open the next
- * unrelated visit to `/chat` that finds it still there - one navigation
- * "adopting" a command that was actually meant for the one before it.
- */
-export function clearPendingCommand() {
-  store.set((s) => (s.pendingCommand.text ? { ...s, pendingCommand: { ...s.pendingCommand, text: '' } } : s))
 }
 
 /** The reload is the sign-out: the page comes back with no cookie. */

@@ -130,7 +130,7 @@ test('a skill a person may invoke can be run from its inspector', async () => {
   go('skills')
   await user.click(await screen.findByRole('button', { name: 'Run in a session' }))
 
-  await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+  await waitFor(() => expect(window.location.pathname).toBe('/chat/r-1'))
   expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('/skill:code-review ')
 })
 
@@ -487,7 +487,7 @@ test('on a phone a skill can be run from its page', async () => {
   act(() => setViewport(400))
   act(() => navigate({ screen: 'skills', id: 'code-review' }))
   await user.click(await screen.findByRole('button', { name: 'Run in a session' }))
-  await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+  await waitFor(() => expect(window.location.pathname).toBe('/chat/r-1'))
   expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('/skill:code-review ')
 })
 

@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { initialState, runCounts, store } from './app'
+import { resync } from '@/lib/route'
+import { compose, initialState, runCounts, store } from './app'
 import type { Run } from '@/lib/wire'
 
 afterEach(() => {
@@ -35,6 +36,37 @@ test('counts the three run states apart', () => {
     ],
   }))
   expect(runCounts(store.get())).toEqual({ live: 5, running: 2, waiting: 1 })
+})
+
+// `compose` puts a command in the address bar as well as the store, and the
+// id it picks has to be the same conversation App.tsx's own fallback would
+// land on - otherwise the composer it navigates to is not the one the person
+// is actually looking at.
+test('compose lands on the conversation the address bar can name', () => {
+  // Off the chat screen: composing from the same route it lands on would
+  // navigate nowhere and leave the address bar exactly as this left it.
+  const reset = () => {
+    window.history.replaceState(null, '', '/models')
+    resync()
+  }
+
+  reset()
+  store.set((s) => ({
+    ...s,
+    runs: [run({ id: 'a', live: true }), run({ id: 'b', live: false, status: 'closed' })],
+  }))
+  compose('/x ')
+  expect(window.location.pathname).toBe('/chat/a')
+
+  reset()
+  store.set((s) => ({ ...s, activeRun: 'b' }))
+  compose('/x ')
+  expect(window.location.pathname).toBe('/chat/b')
+
+  reset()
+  store.set((s) => ({ ...s, runs: [], activeRun: '' }))
+  compose('/x ')
+  expect(window.location.pathname).toBe('/chat')
 })
 
 /**
