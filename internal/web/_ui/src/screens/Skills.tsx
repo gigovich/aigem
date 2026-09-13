@@ -6,6 +6,7 @@ import { usePublishInspector } from '@/state/inspector'
 import { SKILL_STATUS } from '@/lib/wire'
 import type { Skill, SkillSummary, StatusInfo } from '@/lib/wire'
 import { EmptyState } from '@/ui/EmptyState'
+import { FilterInput } from '@/ui/FilterInput'
 import { Markdown } from '@/ui/Markdown'
 import { Modal } from '@/ui/Modal'
 import { StatusChip } from '@/ui/StatusChip'
@@ -34,6 +35,11 @@ export function Skills({ selected }: { selected?: string }) {
   const skills = useApp((s) => s.skills)
   const [asking, setAsking] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [filter, setFilter] = useState('')
+  const needle = filter.trim().toLowerCase()
+  const shown = needle
+    ? skills.items.filter((s) => `${s.name} ${s.description}`.toLowerCase().includes(needle))
+    : skills.items
 
   const pending = useMemo(() => skills.pending?.names ?? [], [skills])
   const chosen = skills.items.find((s) => s.name === selected) ?? skills.items[0]
@@ -115,9 +121,12 @@ export function Skills({ selected }: { selected?: string }) {
             {skills.items.length}
           </span>
         </div>
+        <div className="flex-none border-b border-line px-2 py-[6px]">
+          <FilterInput value={filter} onChange={setFilter} label="Filter skills" className="w-full" />
+        </div>
         <div className="flex-1 overflow-y-auto py-1">
           <ul aria-label="Skills" className="m-0 list-none p-0">
-            {skills.items.map((s) => {
+            {shown.map((s) => {
             const st = state(s, pending)
             const active = s.name === chosen?.name
               return (
@@ -156,6 +165,9 @@ export function Skills({ selected }: { selected?: string }) {
             })}
           </ul>
           {skills.items.length === 0 && <EmptyState inline title="No skills are loaded." />}
+          {skills.items.length > 0 && shown.length === 0 && (
+            <EmptyState inline title="Nothing matches that filter." />
+          )}
         </div>
       </div>
 

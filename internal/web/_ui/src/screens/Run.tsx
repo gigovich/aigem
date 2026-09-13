@@ -6,6 +6,7 @@ import { liveStatus } from '@/state/run'
 import type { RunOp } from '@/lib/wire'
 import type { RunSocketState } from '@/lib/socket'
 import { useApp } from '@/state/app'
+import { usePublishInspector } from '@/state/inspector'
 import { visibleRows } from '@/state/eventrow'
 import { agentTree } from '@/state/run'
 import type { RunView } from '@/state/run'
@@ -58,6 +59,35 @@ export function Run({ run, runId, state, send }: Props) {
     (r) => agent === 'root' || r.event.run_id === agent || r.event.id === agent,
   )
   const tree = useMemo(() => agentTree(run), [run])
+
+  // Below the breakpoint the column is not drawn, and what it held goes to the
+  // inspector instead, which the header can open.
+  const panel = useMemo(() => {
+    if (!narrow || !record) return null
+    return {
+      kind: 'run',
+      id: record.id,
+      title: run.title || record.title || 'Untitled run',
+      status: liveStatus(record, run),
+      fields: [
+        { key: 'mode', value: record.mode },
+        { key: 'model', value: run.model || record.model || '—' },
+        { key: 'status', value: record.status },
+        { key: 'journal', value: run.sessionId || record.sessionId || '—' },
+        { key: 'events', value: String(run.seq) },
+        { key: 'root', value: record.root ?? '—' },
+      ],
+      progress: run.ctxSize > 0 ? { used: run.contextTokens, total: run.ctxSize } : undefined,
+      listTitle: run.files.length > 0 ? 'Files touched' : undefined,
+      list: run.files.map((f) => ({
+        icon: f.created ? '+' : '~',
+        color: f.created ? 'var(--added)' : 'var(--modified)',
+        text: readable(f.path),
+      })),
+      actions: [{ label: 'Steer in chat', onClick: () => navigate({ screen: 'chat', id: record.id }) }],
+    }
+  }, [narrow, record, run])
+  usePublishInspector(panel)
 
   if (!record) {
     return (

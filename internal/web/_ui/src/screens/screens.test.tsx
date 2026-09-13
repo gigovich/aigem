@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { navigate } from '@/lib/route'
 import { EventKind } from '@/lib/wire'
 import type { Model, Run, Skills } from '@/lib/wire'
-import { mountApp, RUN } from '@/test/harness'
+import { mountApp, RUN, setViewport } from '@/test/harness'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -404,4 +404,61 @@ test('a second click while the first is still opening does nothing', async () =>
   await waitFor(() =>
     expect(h.sent.filter((r) => r.method === 'POST' && r.path === '/api/runs')).toHaveLength(1),
   )
+})
+
+test('selecting an activity row fills the inspector, and the filter narrows the feed', async () => {
+  const user = userEvent.setup()
+  await mountApp({
+    runs: [RUN],
+    activity: [
+      { seq: 1, at: '2026-09-08T12:00:00Z', kind: 'run.opened', text: 'older', runRef: 'r-1' },
+      { seq: 2, at: '2026-09-08T12:05:00Z', kind: 'run.closed', text: 'newer' },
+    ],
+  })
+  go('activity')
+
+  await user.click(await screen.findByRole('button', { name: /older/ }))
+  const aside = screen.getByRole('complementary', { name: 'Inspector' })
+  expect(within(aside).getByText('run.opened')).toBeInTheDocument()
+  await user.click(within(aside).getByRole('button', { name: 'Open run' }))
+  expect(window.location.pathname).toBe('/run/r-1')
+
+  go('activity')
+  await user.type(screen.getByRole('textbox', { name: 'Filter activity' }), 'newer')
+  expect(screen.queryByText('older')).not.toBeInTheDocument()
+  expect(screen.getByText('newer')).toBeInTheDocument()
+})
+
+// Below the breakpoint the run's column is not drawn; the inspector is where
+// its fields go, and the header can open it.
+test('a narrow run screen hands its column to the inspector', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN] })
+  act(() => setViewport(900))
+  go('run')
+  act(() => navigate({ screen: 'run', id: 'r-1' }))
+  expect(screen.queryByRole('heading', { name: 'Agent tree' })).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: /Inspector: hidden/ }))
+  const aside = await screen.findByRole('complementary', { name: 'Inspector' })
+  expect(within(aside).getByText('r-1')).toBeInTheDocument()
+  expect(within(aside).getByRole('button', { name: 'Steer in chat' })).toBeInTheDocument()
+})
+
+test('the session and skill lists can be filtered, and / reaches the filter', async () => {
+  const user = userEvent.setup()
+  await mountApp({
+    runs: [RUN, { ...RUN, id: 'r-2', title: 'Write the release notes' }],
+    skills: SKILLS,
+  })
+  await user.keyboard('/')
+  expect(screen.getByRole('textbox', { name: 'Filter sessions' })).toHaveFocus()
+  await user.keyboard('release')
+  const list = within(screen.getByRole('list', { name: 'Sessions' }))
+  expect(list.queryByText('Rotate the signing keys')).not.toBeInTheDocument()
+  expect(list.getByText('Write the release notes')).toBeInTheDocument()
+
+  go('skills')
+  await user.type(await screen.findByRole('textbox', { name: 'Filter skills' }), 'nothing like it')
+  expect(screen.getByText('Nothing matches that filter.')).toBeInTheDocument()
 })

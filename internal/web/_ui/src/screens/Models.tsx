@@ -8,6 +8,7 @@ import type { Model, StatusInfo } from '@/lib/wire'
 import { DataGrid } from '@/ui/DataGrid'
 import type { Column } from '@/ui/DataGrid'
 import { EmptyState } from '@/ui/EmptyState'
+import { FilterInput } from '@/ui/FilterInput'
 import { StatusChip } from '@/ui/StatusChip'
 import { Modal } from '@/ui/Modal'
 import { usePublishInspector } from '@/state/inspector'
@@ -170,14 +171,7 @@ export function Models({ selected }: { selected?: string }) {
           The routing pool available to agents. Select a row to inspect it; the default is what a
           new session starts on{defaultModel ? ` — currently ${defaultModel}` : ''}.
         </p>
-        <input
-          data-filter
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter models…  /"
-          aria-label="Filter models"
-          className="mt-[10px] h-[26px] w-[280px] max-w-full rounded-md border border-line bg-bg px-[10px] text-[12px] outline-none focus:border-primary"
-        />
+        <FilterInput value={filter} onChange={setFilter} label="Filter models" className="mt-[10px] w-[280px]" />
       </div>
       <DataGrid
         label="Models"

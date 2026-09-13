@@ -1,7 +1,11 @@
-import { hhmm } from '@/lib/format'
-import { useApp } from '@/state/app'
-import { EmptyState } from '@/ui/EmptyState'
+import { useMemo, useState } from 'react'
+import { clock, hhmm } from '@/lib/format'
 import { navigate } from '@/lib/route'
+import type { Activity as Entry } from '@/lib/wire'
+import { useApp } from '@/state/app'
+import { usePublishInspector } from '@/state/inspector'
+import { EmptyState } from '@/ui/EmptyState'
+import { FilterInput } from '@/ui/FilterInput'
 
 /** The glyph and colour for one feed entry, by the kind the daemon wrote. */
 function mark(kind: string): { glyph: string; color: string } {
@@ -20,6 +24,8 @@ function mark(kind: string): { glyph: string; color: string } {
   return { glyph: '✓', color: 'var(--success)' }
 }
 
+const keyOf = (a: Entry) => (a.seq !== undefined ? String(a.seq) : `${a.at ?? ''}${a.text}`)
+
 /**
  * What this daemon has done, newest first.
  *
@@ -29,6 +35,31 @@ function mark(kind: string): { glyph: string; color: string } {
  */
 export function Activity() {
   const activity = useApp((s) => s.activity)
+  const [filter, setFilter] = useState('')
+  const [selected, setSelected] = useState('')
+
+  const needle = filter.trim().toLowerCase()
+  const shown = needle
+    ? activity.filter((a) => `${a.kind} ${a.text} ${a.runRef ?? ''}`.toLowerCase().includes(needle))
+    : activity
+  const chosen = activity.find((a) => keyOf(a) === selected)
+
+  const panel = useMemo(() => {
+    if (!chosen) return null
+    const ref = chosen.runRef
+    return {
+      kind: 'activity',
+      id: keyOf(chosen),
+      title: chosen.text,
+      fields: [
+        { key: 'at', value: chosen.at ? clock(chosen.at) : '—' },
+        { key: 'kind', value: chosen.kind },
+        { key: 'run', value: ref ?? '—' },
+      ],
+      actions: ref ? [{ label: 'Open run', onClick: () => navigate({ screen: 'run', id: ref }) }] : [],
+    }
+  }, [chosen])
+  usePublishInspector(panel)
 
   return (
     <>
@@ -38,44 +69,55 @@ export function Activity() {
           Everything this daemon did, newest first. Entries older than thirty days are dropped when
           it restarts.
         </p>
+        <FilterInput value={filter} onChange={setFilter} label="Filter activity" className="mt-[10px] w-[280px]" />
       </div>
       <div className="flex-1 overflow-y-auto pt-2 pb-10">
-        {activity.map((a) => {
+        {shown.map((a) => {
           const m = mark(a.kind)
           const ref = a.runRef
+          const key = keyOf(a)
+          const active = key === selected
           return (
             <div
-              key={a.seq ?? `${a.at ?? ''}${a.text}`}
-              className="grid min-h-row items-center gap-[10px] border-b border-line px-[18px] hover:bg-s0"
-              style={{ gridTemplateColumns: '62px 96px 16px minmax(0,1fr) 100px' }}
+              key={key}
+              className={`flex min-h-row items-center border-b border-line pr-[18px] hover:bg-s0 ${active ? 'bg-s0' : ''}`}
             >
-              <span className="font-mono text-[10.5px] text-fg-subtle">
-                {a.at ? hhmm(a.at) : ''}
+              <button
+                type="button"
+                onClick={() => setSelected(key)}
+                aria-current={active ? 'true' : undefined}
+                className="grid min-h-row min-w-0 flex-1 cursor-default items-center gap-[10px] pl-[18px] text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+                style={{ gridTemplateColumns: '62px 96px 16px minmax(0,1fr)' }}
+              >
+                <span className="font-mono text-[10.5px] text-fg-subtle">{a.at ? hhmm(a.at) : ''}</span>
+                <span className="overflow-hidden font-mono text-[10.5px] text-ellipsis whitespace-nowrap text-fg-subtle">
+                  {a.kind}
+                </span>
+                <span aria-hidden="true" className="text-center text-[10px]" style={{ color: m.color }}>
+                  {m.glyph}
+                </span>
+                <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
+                  {a.text}
+                </span>
+              </button>
+              <span className="w-[100px] flex-none text-right">
+                {ref && (
+                  <button
+                    type="button"
+                    onClick={() => navigate({ screen: 'run', id: ref })}
+                    className="cursor-pointer font-mono text-[10.5px] text-primary hover:underline"
+                  >
+                    {ref}
+                  </button>
+                )}
               </span>
-              <span className="overflow-hidden font-mono text-[10.5px] text-ellipsis whitespace-nowrap text-fg-subtle">
-                {a.kind}
-              </span>
-              <span aria-hidden="true" className="text-center text-[10px]" style={{ color: m.color }}>
-                {m.glyph}
-              </span>
-              <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
-                {a.text}
-              </span>
-              {ref ? (
-                <button
-                  type="button"
-                  onClick={() => navigate({ screen: 'run', id: ref })}
-                  className="cursor-pointer text-right font-mono text-[10.5px] text-primary hover:underline"
-                >
-                  {ref}
-                </button>
-              ) : (
-                <span />
-              )}
             </div>
           )
         })}
         {activity.length === 0 && <EmptyState title="Nothing has run here yet." />}
+        {activity.length > 0 && shown.length === 0 && (
+          <EmptyState inline title="Nothing matches that filter." />
+        )}
       </div>
     </>
   )

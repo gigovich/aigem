@@ -12,6 +12,7 @@ import { liveStatus } from '@/state/run'
 import type { RunView } from '@/state/run'
 import type { RunSocketState } from '@/lib/socket'
 import { EmptyState } from '@/ui/EmptyState'
+import { FilterInput } from '@/ui/FilterInput'
 import { EventStream } from '@/ui/EventStream'
 import { StatusChip } from '@/ui/StatusChip'
 import { ApprovalCard } from './ApprovalCard'
@@ -63,6 +64,11 @@ export function Chat({ run, runId, state, reason, send, onNew, onClose }: Props)
     setText(pendingCommand.text)
   }
   const [blob, setBlob] = useState<number | null>(null)
+  const [filter, setFilter] = useState('')
+  const needle = filter.trim().toLowerCase()
+  const shown = needle
+    ? runs.filter((r) => `${r.title ?? ''} ${r.id} ${r.mode}`.toLowerCase().includes(needle))
+    : runs
 
   const rows = run.rows
   const pending = run.pending[0]
@@ -131,12 +137,15 @@ export function Chat({ run, runId, state, reason, send, onNew, onClose }: Props)
             New
           </button>
         </div>
+        <div className="flex-none border-b border-line px-2 py-[6px]">
+          <FilterInput value={filter} onChange={setFilter} label="Filter sessions" className="w-full" />
+        </div>
         {/* A list of links and not a listbox: each row carries a second control
             - the close button - and an option is a leaf in the accessibility
             tree, so a button inside one is unreachable from the keyboard. */}
         <div className="flex-1 overflow-y-auto py-1">
           <ul aria-label="Sessions" className="m-0 list-none p-0">
-            {runs.map((r) => (
+            {shown.map((r) => (
               <SessionRow
                 key={r.id}
                 run={r}
@@ -153,6 +162,9 @@ export function Chat({ run, runId, state, reason, send, onNew, onClose }: Props)
             ))}
           </ul>
           {runs.length === 0 && <EmptyState inline title="No sessions in this project yet." />}
+          {runs.length > 0 && shown.length === 0 && (
+            <EmptyState inline title="Nothing matches that filter." />
+          )}
         </div>
       </div>
 
