@@ -240,7 +240,7 @@ func (p *Projects) Repositories(id string) ([]Repository, error) {
 	}
 	for _, e := range entries {
 		dir := filepath.Join(v.Dir, e.Name())
-		if e.IsDir() && isCheckout(dir) {
+		if isCheckout(dir) {
 			out = append(out, Repository{Name: e.Name(), Dir: dir, Main: mainBranch(dir)})
 		}
 	}

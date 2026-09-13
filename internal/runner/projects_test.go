@@ -155,6 +155,11 @@ func TestRepositoriesAreTheCheckoutsOneLevelDown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "README"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	target := t.TempDir()
+	gitInit(t, target, "main")
+	if err := os.Symlink(target, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
 	p := newProjects(t, "", nil)
 	addProject(t, p, root, "")
 
@@ -164,9 +169,10 @@ func TestRepositoriesAreTheCheckoutsOneLevelDown(t *testing.T) {
 	}
 	want := []runner.Repository{
 		{Name: "api", Dir: filepath.Join(root, "api"), Main: "main"},
+		{Name: "linked", Dir: filepath.Join(root, "linked"), Main: "main"},
 		{Name: "web", Dir: filepath.Join(root, "web"), Main: "master"},
 	}
-	if len(repos) != 2 || repos[0] != want[0] || repos[1] != want[1] {
+	if len(repos) != 3 || repos[0] != want[0] || repos[1] != want[1] || repos[2] != want[2] {
 		t.Errorf("Repositories = %+v, want %+v", repos, want)
 	}
 	if _, err := p.Repositories("PRJ-9"); !errors.Is(err, runner.ErrNoProject) {
