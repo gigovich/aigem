@@ -73,7 +73,7 @@ export function DiffView({ path, lines, change = '~' }: Props) {
               className="break-all whitespace-pre-wrap"
               style={{ color: sign === '@' ? 'var(--fg-subtle)' : 'var(--fg-muted)' }}
             >
-              {text}
+              {text.replace(/\r/g, '␍')}
             </span>
           </div>
         )

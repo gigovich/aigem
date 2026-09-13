@@ -139,3 +139,13 @@ test('the changed files are a list the keyboard can reach', async () => {
   // The switch between the two views is a radiogroup, which the arrows drive.
   expect(within(main).getByRole('radiogroup', { name: 'What to show' })).toBeInTheDocument()
 })
+
+// A lone carriage return is a character inside a line - a progress bar's
+// output - and the browser must not turn it into a second row.
+test('a carriage return inside a line is drawn as a symbol, on one row', async () => {
+  await openChanges(
+    artifacts([{ path: '/w/p.log', old: '', new: 'step 1\rstep 2\n', oldBytes: 0, newBytes: 14 }]),
+  )
+  const line = await screen.findByText(/step 1/)
+  expect(line.textContent).toBe('step 1␍step 2')
+})

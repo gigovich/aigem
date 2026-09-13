@@ -499,3 +499,13 @@ test('on a wide screen the action stays in the inspector alone', async () => {
   expect(within(aside).getByRole('button', { name: 'Run in a session' })).toBeInTheDocument()
   expect(screen.getAllByRole('button', { name: 'Run in a session' })).toHaveLength(1)
 })
+
+test('the run header counts in the singular when there is one', async () => {
+  const h = await mountApp({ runs: [RUN] })
+  go('run')
+  act(() => navigate({ screen: 'run', id: 'r-1' }))
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  h.runSocket()?.open()
+  h.emit({ seq: 1, time: '2026-09-08T12:00:01Z', kind: EventKind.TurnStart })
+  expect(await screen.findByText('1 event')).toBeInTheDocument()
+})

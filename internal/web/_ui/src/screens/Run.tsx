@@ -163,7 +163,9 @@ export function Run({ run, runId, state, send }: Props) {
               </button>
             )}
             <span className="ml-auto font-mono text-[10.5px] text-fg-subtle">
-              {view === 'events' ? `${rows.length} events` : `${run.files.length} files`}
+              {view === 'events'
+                ? `${rows.length} event${rows.length === 1 ? '' : 's'}`
+                : `${run.files.length} file${run.files.length === 1 ? '' : 's'}`}
             </span>
           </div>
           {view === 'changes' && <Changes runId={runId} seq={run.writes} />}
