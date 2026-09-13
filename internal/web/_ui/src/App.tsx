@@ -38,6 +38,8 @@ import { Run } from '@/screens/Run'
 import { Skills } from '@/screens/Skills'
 import { Modal } from '@/ui/Modal'
 
+const FOCUSABLE = 'button, [href], input, select, textarea'
+
 /**
  * The application shell.
  *
@@ -239,7 +241,28 @@ export default function App() {
               onClick={() => setNav(false)}
               className="fixed inset-0 z-[64] bg-black/40"
             />
-            <div ref={drawer} className="fixed inset-y-0 left-0 z-[65] flex w-[240px] shadow-panel">
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+            <div
+              ref={drawer}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Navigation menu"
+              onKeyDown={(e) => {
+                if (e.key !== 'Tab') return
+                const items = drawer.current?.querySelectorAll<HTMLElement>(FOCUSABLE)
+                if (!items || items.length === 0) return
+                const first = items[0]!
+                const last = items[items.length - 1]!
+                if (e.shiftKey && document.activeElement === first) {
+                  e.preventDefault()
+                  last.focus()
+                } else if (!e.shiftKey && document.activeElement === last) {
+                  e.preventDefault()
+                  first.focus()
+                }
+              }}
+              className="fixed inset-y-0 left-0 z-[65] flex w-[240px] shadow-panel"
+            >
               {sidebar}
             </div>
           </>

@@ -236,3 +236,22 @@ test('widening past the breakpoint while the drawer is open forgets it was open'
   act(() => setViewport(400))
   expect(document.activeElement).not.toBe(screen.getByRole('button', { name: 'Open navigation' }))
 })
+
+// A drawer over the page is a dialog: Tab cycles inside it and never reaches
+// what it covers.
+test('Tab stays inside the open drawer', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN] })
+  act(() => setViewport(400))
+  await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+  const nav = screen.getByRole('navigation', { name: 'Navigation' })
+  const buttons = within(nav).getAllByRole('button')
+  expect(screen.getByRole('dialog', { name: 'Navigation menu' })).toBeInTheDocument()
+
+  buttons[buttons.length - 1]!.focus()
+  await user.tab()
+  expect(document.activeElement).toBe(buttons[0])
+
+  await user.tab({ shift: true })
+  expect(document.activeElement).toBe(buttons[buttons.length - 1])
+})
