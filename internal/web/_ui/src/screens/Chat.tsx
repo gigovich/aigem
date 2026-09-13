@@ -1,9 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ago, percent } from '@/lib/format'
+import { readImage, MESSAGE_LIMIT } from '@/lib/image'
+import type { Attachment } from '@/lib/image'
 import { navigate } from '@/lib/route'
 import { runStatus } from '@/lib/wire'
 import type { Decision, Run, RunOp } from '@/lib/wire'
-import { setActiveRun, useApp } from '@/state/app'
+import { explain, setActiveRun, setBanner, useApp } from '@/state/app'
 import { slash } from '@/state/slash'
 import { tabLabel } from '@/hooks/useRunEvents'
 
@@ -69,6 +71,26 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
     setAdopted(pendingCommand.nth)
     setText(pendingCommand.text)
   }
+  const [images, setImages] = useState<Attachment[]>([])
+  const picker = useRef<HTMLInputElement>(null)
+
+  const attach = async (files: Iterable<File>) => {
+    let list = images
+    for (const file of files) {
+      try {
+        const image = await readImage(file)
+        if (list.reduce((sum, im) => sum + im.bytes, 0) + image.bytes > MESSAGE_LIMIT) {
+          setBanner(`${image.name} would put this message past what one send can carry`)
+          continue
+        }
+        list = [...list, image]
+        setImages(list)
+      } catch (err) {
+        setBanner(explain(err))
+      }
+    }
+  }
+
   const [blob, setBlob] = useState<number | null>(null)
   const [filter, setFilter] = useState('')
   const needle = filter.trim().toLowerCase()
@@ -121,9 +143,23 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
   // composer that emptied anyway would be destroying what they typed.
   const submit = () => {
     const value = text.trim()
-    if (!value) return
-    const sent = value.startsWith('/') ? slash(value, runId, send) : send({ op: 'submit', text: value })
-    if (sent) setText('')
+    if (!value && images.length === 0) return
+    let sent: boolean
+    if (value.startsWith('/')) {
+      sent = slash(value, runId, send)
+    } else {
+      sent = send({
+        op: 'submit',
+        text: value,
+        ...(images.length > 0
+          ? { images: images.map(({ media_type, data }) => ({ media_type, data })) }
+          : {}),
+      })
+    }
+    if (sent) {
+      setText('')
+      setImages([])
+    }
   }
 
   // Labelled with the tab, not with "browser": the point of saying who decided
@@ -352,6 +388,27 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
 
               <div className="flex-none border-t border-line bg-shell px-[18px] pt-[10px] pb-3">
                 <div className="max-w-[84ch]">
+                  {images.length > 0 && (
+                    <ul aria-label="Attachments" className="m-0 mb-2 flex list-none flex-wrap gap-[6px] p-0">
+                      {images.map((im, i) => (
+                        <li
+                          key={`${im.name}-${i}`}
+                          className="flex h-[22px] items-center gap-[6px] rounded-[5px] border border-line bg-bg px-2 font-mono text-[10.5px] text-fg-muted"
+                        >
+                          <span>{im.name}</span>
+                          <span className="text-fg-subtle">{Math.ceil(im.bytes / 1024)}K</span>
+                          <button
+                            type="button"
+                            onClick={() => setImages((list) => list.filter((_, j) => j !== i))}
+                            aria-label={`Remove ${im.name}`}
+                            className="cursor-pointer text-fg-subtle hover:text-fg"
+                          >
+                            <span aria-hidden="true">×</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   <div className="flex gap-2">
                     <textarea
                       data-composer
@@ -363,14 +420,44 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                         e.preventDefault()
                         submit()
                       }}
+                      onPaste={(e) => {
+                        const files = Array.from(e.clipboardData?.files ?? []).filter((f) =>
+                          f.type.startsWith('image/'),
+                        )
+                        if (files.length === 0) return
+                        e.preventDefault()
+                        void attach(files)
+                      }}
                       placeholder="Direct the agent — constraints, corrections, next step. ⌘↵ to send."
                       aria-label="Message"
                       className="min-w-0 flex-1 resize-y rounded-md border border-line bg-bg px-[10px] py-2 text-[12.5px] leading-[1.5] outline-none focus:border-primary"
                     />
+                    <input
+                      ref={picker}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      aria-label="Attach an image"
+                      className="hidden"
+                      onChange={(e) => {
+                        void attach(e.target.files ?? [])
+                        e.target.value = ''
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => picker.current?.click()}
+                      disabled={state !== 'open'}
+                      aria-label="Attach"
+                      title="Attach an image"
+                      className="flex-none self-stretch rounded-md border border-line px-[10px] text-[14px] text-fg-muted enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
+                    >
+                      <span aria-hidden="true">⊕</span>
+                    </button>
                     <button
                       type="button"
                       onClick={submit}
-                      disabled={!text.trim() || state !== 'open'}
+                      disabled={(!text.trim() && images.length === 0) || state !== 'open'}
                       className="flex-none self-stretch rounded-md border border-primary bg-primary px-[14px] text-[12px] font-medium text-bg enabled:cursor-pointer enabled:hover:brightness-110 disabled:opacity-50"
                     >
                       Send

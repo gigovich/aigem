@@ -1,6 +1,7 @@
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
+import { IMAGE_LIMIT } from '@/lib/image'
 import { EventKind } from '@/lib/wire'
 import type { RunEvent } from '@/lib/wire'
 import { mountApp, RUN } from '@/test/harness'
@@ -695,4 +696,73 @@ test('the inspector shows the agent\'s plan as it changes', async () => {
   })
   await waitFor(() => expect(within(aside).queryByText('read the spec')).not.toBeInTheDocument())
   expect(within(aside).getByText('commit')).toBeInTheDocument()
+})
+
+// A pasted screenshot is the ordinary attachment on a phone and a laptop
+// alike; it rides on the same submit as the text.
+test('a pasted image is attached and sent with the message', async () => {
+  const user = userEvent.setup()
+  const h = await attached()
+  const box = screen.getByRole('textbox', { name: 'Message' })
+  const png = new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' })
+  await user.click(box)
+  await user.paste({ getData: () => '', files: [png], items: [], types: ['Files'] } as never)
+
+  expect(await screen.findByText('shot.png')).toBeInTheDocument()
+  await user.type(box, 'what is this?')
+  await user.keyboard('{Control>}{Enter}{/Control}')
+
+  await waitFor(() => expect(h.runSocket()?.sent).toHaveLength(1))
+  expect(JSON.parse(h.runSocket()?.sent[0] ?? '{}')).toEqual({
+    op: 'submit',
+    text: 'what is this?',
+    images: [{ media_type: 'image/png', data: 'iVBORw==' }],
+  })
+  // Sent means gone: the chip and the text both clear.
+  expect(screen.queryByText('shot.png')).not.toBeInTheDocument()
+})
+
+test('an attachment can be removed before sending, and an image alone can be sent', async () => {
+  const user = userEvent.setup()
+  const h = await attached()
+  const png = new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' })
+  const input = screen.getByLabelText('Attach an image')
+  await user.upload(input, png)
+  expect(await screen.findByText('shot.png')).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'Remove shot.png' }))
+  expect(screen.queryByText('shot.png')).not.toBeInTheDocument()
+
+  await user.upload(input, png)
+  await screen.findByText('shot.png')
+  await user.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(h.runSocket()?.sent).toHaveLength(1))
+  expect(JSON.parse(h.runSocket()?.sent[0] ?? '{}')).toEqual({
+    op: 'submit',
+    text: '',
+    images: [{ media_type: 'image/png', data: 'iVBORw==' }],
+  })
+})
+
+// Several attachments can add up past the frame even though each one alone
+// fits, and a submit past the cap ends the socket silently rather than
+// telling anyone - so the composer has to refuse before that happens.
+test('a second attachment that would push the message past the cap is refused', async () => {
+  const user = userEvent.setup()
+  await attached()
+  const input = screen.getByLabelText('Attach an image')
+  const first = new File([new Uint8Array(IMAGE_LIMIT - 1)], 'first.png', { type: 'image/png' })
+  const second = new File([new Uint8Array(IMAGE_LIMIT - 1)], 'second.png', { type: 'image/png' })
+
+  await user.upload(input, first)
+  expect(await screen.findByText('first.png')).toBeInTheDocument()
+
+  await user.upload(input, second)
+  await waitFor(() =>
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'second.png would put this message past what one send can carry',
+    ),
+  )
+  expect(screen.queryByText('second.png')).not.toBeInTheDocument()
+  expect(screen.getByText('first.png')).toBeInTheDocument()
 })
