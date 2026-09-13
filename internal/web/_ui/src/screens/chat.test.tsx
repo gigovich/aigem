@@ -808,3 +808,27 @@ test('removing a chip while a second image is still reading does not resurrect i
   const chips = within(screen.getByRole('list', { name: 'Attachments' })).getAllByRole('listitem')
   expect(chips).toHaveLength(1)
 })
+
+// A long answer is the ordinary case, and a line that ends in an ellipsis is
+// not an answer anybody can read.
+test('the answer a turn ends with wraps and renders its markdown', async () => {
+  const h = await attached()
+  h.emit({
+    seq: 1,
+    time: '2026-09-08T12:00:01Z',
+    kind: EventKind.TurnEnd,
+    text: 'Listed **83 entries**, including:\n\n- `devinlab/`\n- `docs/`',
+  })
+  const log = screen.getByRole('log', { name: 'Transcript' })
+  const strong = await within(log).findByText('83 entries')
+  expect(strong.tagName).toBe('STRONG')
+  expect(within(log).getByRole('list')).toBeInTheDocument()
+  expect(within(log).getByText('devinlab/').closest('[class*="whitespace-nowrap"]')).toBeNull()
+})
+
+test('a tool row stays one line', async () => {
+  const h = await attached()
+  h.emit({ seq: 1, time: '2026-09-08T12:00:01Z', kind: EventKind.ToolStart, name: 'read_file', args: { path: '/a/b' } })
+  const row = await screen.findByText(/read_file/)
+  expect(row.className).toContain('whitespace-nowrap')
+})

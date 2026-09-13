@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { EventRow } from '@/state/eventrow'
+import { Markdown } from './Markdown'
 import { LiveDot } from './StatusChip'
 
 type Props = {
@@ -52,21 +53,28 @@ export function EventStream({ rows, follow = true, live, label, onOpenBlob }: Pr
           >
             {r.glyph}
           </span>
-          <span
+          <div
             className="flex min-w-0 items-baseline gap-2"
             style={{ paddingLeft: `${r.level * 14}px` }}
           >
-            <span
-              className="overflow-hidden text-ellipsis whitespace-nowrap"
-              style={{
-                fontFamily: r.mono ? 'var(--mono)' : 'var(--sans)',
-                fontSize: r.mono ? '11.5px' : '12.5px',
-                fontWeight: r.phase ? 500 : 400,
-                color: r.phase ? 'var(--fg)' : 'var(--fg-muted)',
-              }}
-            >
-              {r.text}
-            </span>
+            {r.prose ? (
+              <Markdown
+                source={r.text}
+                className={`min-w-0 max-w-[84ch] text-[12.5px] text-pretty ${r.phase ? 'font-medium' : ''}`}
+              />
+            ) : (
+              <span
+                className="overflow-hidden text-ellipsis whitespace-nowrap"
+                style={{
+                  fontFamily: r.mono ? 'var(--mono)' : 'var(--sans)',
+                  fontSize: r.mono ? '11.5px' : '12.5px',
+                  fontWeight: r.phase ? 500 : 400,
+                  color: r.phase ? 'var(--fg)' : 'var(--fg-muted)',
+                }}
+              >
+                {r.text}
+              </span>
+            )}
             {r.meta && (
               <span className="flex-none font-mono text-[10px] text-fg-subtle">{r.meta}</span>
             )}
@@ -80,7 +88,7 @@ export function EventStream({ rows, follow = true, live, label, onOpenBlob }: Pr
                 show all
               </button>
             )}
-          </span>
+          </div>
         </div>
       ))}
       {live && (

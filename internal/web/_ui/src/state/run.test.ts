@@ -274,3 +274,12 @@ test('a plan row says its state without relying on colour', () => {
   expect(rows[0]?.color).toBe('var(--success)')
   expect(rows[1]?.color).toBe('var(--running)')
 })
+
+test('the rows a person reads as prose say so; tool rows do not', () => {
+  expect(toRow(ev(1, EventKind.UserMessage, { text: 'hello' }))?.prose).toBe(true)
+  expect(toRow(ev(2, EventKind.AssistantMessage, { text: 'hi' }))?.prose).toBe(true)
+  expect(toRow(ev(3, EventKind.TurnEnd, { text: 'Done: **two** files.' }))?.prose).toBe(true)
+  expect(toRow(ev(4, EventKind.TurnEnd))?.prose).toBe(false)
+  expect(toRow(ev(5, EventKind.ToolStart, { name: 'read_file' }))?.prose).toBe(false)
+  expect(toRow(ev(6, EventKind.Reasoning, { text: 'thinking' }))?.prose).toBe(false)
+})

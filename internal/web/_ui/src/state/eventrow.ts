@@ -24,6 +24,8 @@ export type EventRow = {
   /** A step of the conversation rather than a detail under one. */
   phase: boolean
   mono: boolean
+  /** Wraps and renders Markdown: what a person typed, what the agent said. */
+  prose: boolean
   /** The event this row came from, for the rows that can be opened. */
   event: RunEvent
   /**
@@ -70,6 +72,7 @@ export function toRow(e: RunEvent): EventRow | null {
     level: 0,
     phase: false,
     mono: false,
+    prose: false,
     meta: '',
     event: e,
   }
@@ -83,6 +86,7 @@ export function toRow(e: RunEvent): EventRow | null {
         text: e.text ?? '',
         meta: e.images ? `${e.images} image${e.images > 1 ? 's' : ''}` : '',
         phase: true,
+        prose: true,
       }
     case EventKind.TurnStart:
       return { ...base, glyph: '●', color: 'var(--running)', text: 'Agent started', phase: true }
@@ -100,9 +104,10 @@ export function toRow(e: RunEvent): EventRow | null {
         color: e.interrupted ? MUTED : 'var(--success)',
         text: e.interrupted ? 'Interrupted' : readable(e.text?.trim() || 'Turn finished'),
         phase: true,
+        prose: !e.interrupted && !!e.text?.trim(),
       }
     case EventKind.AssistantMessage:
-      return { ...base, glyph: '', color: MUTED, text: e.text ?? '' }
+      return { ...base, glyph: '', color: MUTED, text: e.text ?? '', prose: true }
     case EventKind.Reasoning:
       return { ...base, glyph: '◇', color: 'var(--agent)', text: e.text ?? '', level: 1 }
     case EventKind.ToolStart:
