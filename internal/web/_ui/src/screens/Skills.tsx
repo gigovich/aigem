@@ -33,7 +33,7 @@ function scopeOf(s: SkillSummary): string {
  * the notices loading them produced.
  */
 export function Skills({ selected }: { selected?: string }) {
-  const { skills, phone } = useApp((s) => ({ skills: s.skills, phone: s.phone }))
+  const { skills, phone, project } = useApp((s) => ({ skills: s.skills, phone: s.phone, project: s.project }))
   const showList = !phone || !selected
   const showDetail = !phone || !!selected
   const [asking, setAsking] = useState(false)
@@ -61,20 +61,20 @@ export function Skills({ selected }: { selected?: string }) {
     if (!name) return
     const abort = new AbortController()
     void api
-      .skill(name, abort.signal)
+      .skill(name, project, abort.signal)
       .then((skill) => setLoaded({ name, skill }))
       .catch((err: unknown) => {
         if (abort.signal.aborted) return
         setBanner(explain(err))
       })
     return () => abort.abort()
-  }, [name])
+  }, [name, project])
 
   const trust = useCallback(async () => {
     setAsking(false)
     setBusy(true)
     try {
-      const result = await api.trustSkills()
+      const result = await api.trustSkills(project)
       flash(
         result.loaded.length === 1
           ? `Loaded ${result.loaded[0]}`
@@ -87,7 +87,7 @@ export function Skills({ selected }: { selected?: string }) {
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [project])
 
   const panel = useMemo(() => {
     if (!chosen) return null

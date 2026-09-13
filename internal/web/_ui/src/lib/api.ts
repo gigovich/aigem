@@ -14,8 +14,11 @@ import type {
   Login,
   Meta,
   Model,
+  NewProject,
   NewRun,
+  Project,
   ProviderUsage,
+  Repository,
   Run,
   RunEvent,
   Skill,
@@ -111,6 +114,15 @@ export const api = {
     return await res.text()
   },
 
+  projects: (signal?: AbortSignal) => json<Project[]>('/api/projects', { signal }),
+  addProject: (req: NewProject, signal?: AbortSignal) =>
+    json<Project>('/api/projects', { ...body(req), signal }),
+  removeProject: async (id: string, signal?: AbortSignal) => {
+    await send(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
+  },
+  projectRepos: (id: string, signal?: AbortSignal) =>
+    json<Repository[]>(`/api/projects/${encodeURIComponent(id)}/repos`, { signal }),
+
   models: (signal?: AbortSignal) => json<Model[]>('/api/models', { signal }),
   setDefaultModel: (ref: string, signal?: AbortSignal) =>
     json<Model>('/api/models/default', { ...body({ ref }), signal }),
@@ -136,13 +148,15 @@ export const api = {
     await send(`/api/auth/login/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
   },
 
-  skills: (signal?: AbortSignal) => json<Skills>('/api/skills', { signal }),
-  skill: (name: string, signal?: AbortSignal) =>
-    json<Skill>(`/api/skills/${encodeURIComponent(name)}`, { signal }),
-  trustSkills: (signal?: AbortSignal) =>
-    json<SkillApproval>('/api/skills/trust', { ...body({}), signal }),
+  skills: (project = '', signal?: AbortSignal) =>
+    json<Skills>(`/api/skills${query({ project })}`, { signal }),
+  skill: (name: string, project = '', signal?: AbortSignal) =>
+    json<Skill>(`/api/skills/${encodeURIComponent(name)}${query({ project })}`, { signal }),
+  trustSkills: (project = '', signal?: AbortSignal) =>
+    json<SkillApproval>('/api/skills/trust', { ...body(project ? { project } : {}), signal }),
 
-  commands: (signal?: AbortSignal) => json<Command[]>('/api/commands', { signal }),
+  commands: (project = '', signal?: AbortSignal) =>
+    json<Command[]>(`/api/commands${query({ project })}`, { signal }),
   usage: (signal?: AbortSignal) => json<ProviderUsage[]>('/api/usage', { signal }),
   activity: (since = 0, limit = 0, signal?: AbortSignal) =>
     json<Activity[]>(`/api/activity${query({ since, limit: limit || undefined })}`, { signal }),

@@ -33,10 +33,12 @@ export type Feature =
   | 'commands'
   | 'usage'
   | 'activity'
+  | 'projects'
 
 export type Run = {
   id: string
   sessionId?: string
+  projectId?: string
   mode: string
   title?: string
   model?: string
@@ -52,7 +54,15 @@ export type Run = {
   seq?: number
 }
 
-export type NewRun = { mode?: string; title?: string; model?: string }
+export type NewRun = { mode?: string; title?: string; model?: string; projectId?: string }
+
+/** A project: a directory on the daemon's machine. The daemon's own has an empty id. */
+export type Project = { id: string; name: string; dir: string; created?: string; loadError?: string }
+
+export type NewProject = { dir: string; name?: string }
+
+/** A git checkout under a project. `name` is empty for the project directory itself. */
+export type Repository = { name: string; dir: string; main?: string }
 
 export type Model = {
   ref: string
@@ -262,6 +272,7 @@ export const ControlKind = {
   AuthUpdated: 'auth.updated',
   SkillsUpdated: 'skills.updated',
   ActivityUpdated: 'activity.updated',
+  ProjectUpdated: 'project.updated',
 } as const
 
 export type ControlKind = (typeof ControlKind)[keyof typeof ControlKind]

@@ -21,6 +21,7 @@ import type {
   Feature,
   Meta,
   Model,
+  Project,
   ProviderUsage,
   Run,
   Skills,
@@ -43,6 +44,9 @@ export type AppState = {
   commands: Command[]
   usage: ProviderUsage[]
   activity: Activity[]
+  projects: Project[]
+  /** The project every list screen reads; empty is the daemon's own directory. Saved per browser. */
+  project: string
 
   theme: Theme
   density: Density
@@ -139,6 +143,8 @@ export function initialState(): AppState {
     commands: [],
     usage: [],
     activity: [],
+    projects: [],
+    project: read('aigem.project') ?? '',
     theme: initialTheme(),
     density: initialDensity(),
     narrow: window.innerWidth < NARROW_AT,
@@ -187,6 +193,24 @@ export function runCounts(s: AppState): { live: number; running: number; waiting
   return { live, running, waiting }
 }
 
+/** The runs that belong to a project; an absent id on a record is the daemon's own directory. */
+export function inProject(runs: Run[], project: string): Run[] {
+  return runs.filter((r) => (r.projectId ?? '') === project)
+}
+
+export function currentProject(s: AppState): Project | undefined {
+  return s.projects.find((p) => p.id === s.project)
+}
+
+/** Choose the project every list screen reads, and fetch what is scoped by it. */
+export function selectProject(id: string) {
+  if (store.get().project === id) return
+  write('aigem.project', id)
+  patch({ project: id })
+  void refresh.skills()
+  void refresh.commands()
+}
+
 /**
  * The conversation a tab means when nothing else names one: the active run if
  * it still exists, else the newest, preferring a live one and settling for a
@@ -199,9 +223,14 @@ export function latestRunId(runs: Run[], activeRun: string): string | undefined 
 }
 
 /** The conversation a tab means: the run the address bar names, else the fallback. */
-export function conversationId(route: Route, runs: Run[], activeRun: string): string | undefined {
+export function conversationId(
+  route: Route,
+  runs: Run[],
+  activeRun: string,
+  project = '',
+): string | undefined {
   if ((route.screen === 'run' || route.screen === 'chat') && route.id) return route.id
-  return latestRunId(runs, activeRun)
+  return latestRunId(inProject(runs, project), activeRun)
 }
 
 export function has(feature: Feature): boolean {
@@ -234,10 +263,17 @@ async function load<K extends keyof AppState>(
 export const refresh = {
   runs: () => load('runs', 'runs', () => api.runs()),
   models: () => load('models', 'models', () => api.models()),
-  skills: () => load('skills', 'skills', () => api.skills()),
-  commands: () => load('commands', 'commands', () => api.commands()),
+  skills: () => load('skills', 'skills', () => api.skills(store.get().project)),
+  commands: () => load('commands', 'commands', () => api.commands(store.get().project)),
   usage: () => load('usage', 'usage', () => api.usage()),
   activity: () => load('activity', 'activity', readActivityTail),
+  projects: async () => {
+    await load('projects', 'projects', () => api.projects())
+    // A saved selection the daemon no longer lists - forgotten elsewhere, or a
+    // daemon without a registry - falls back to the daemon's own directory.
+    const { projects, project } = store.get()
+    if (project && !projects.some((p) => p.id === project)) selectProject('')
+  },
 }
 
 /** How much of the feed a page holds; the screen shows the recent end of it. */
@@ -283,7 +319,15 @@ async function readActivityTail(): Promise<Activity[]> {
 
 /** Read everything this daemon offers. It is the gap recovery and the boot. */
 export async function refreshAll() {
-  await Promise.all(Object.values(refresh).map((fn) => fn()))
+  await refresh.projects()
+  await Promise.all([
+    refresh.runs(),
+    refresh.models(),
+    refresh.skills(),
+    refresh.commands(),
+    refresh.usage(),
+    refresh.activity(),
+  ])
 }
 
 /**
@@ -387,7 +431,8 @@ export async function openSession() {
   }
   if (!claimOpening()) return
   try {
-    const run = await api.openRun({})
+    const project = store.get().project
+    const run = await api.openRun(project ? { projectId: project } : {})
     await refresh.runs()
     setActiveRun(run.id)
     navigate({ screen: 'chat', id: run.id })
@@ -424,8 +469,8 @@ function setPendingCommand(text: string) {
  */
 export function compose(text: string) {
   setPendingCommand(text)
-  const { runs, activeRun } = store.get()
-  const id = conversationId(getRoute(), runs, activeRun)
+  const { runs, activeRun, project } = store.get()
+  const id = conversationId(getRoute(), runs, activeRun, project)
   if (id) {
     setActiveRun(id)
     navigate({ screen: 'chat', id })
@@ -501,6 +546,9 @@ export function start(): () => void {
           break
         case ControlKind.ActivityUpdated:
           void refresh.activity()
+          break
+        case ControlKind.ProjectUpdated:
+          void refresh.projects()
           break
         case CLIENT_ERROR:
           // Not a state change: it is this connection's own mistake coming

@@ -95,8 +95,8 @@ export default function App() {
    * one chosen in the session list, or the most recent one there is.
    */
   const runId = useMemo(
-    () => conversationId(route, runs, activeRun) ?? '',
-    [route, activeRun, runs],
+    () => conversationId(route, runs, activeRun, app.project) ?? '',
+    [route, activeRun, runs, app.project],
   )
 
   const conversation = useRunEvents(runId || undefined)

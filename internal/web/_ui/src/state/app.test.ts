@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { resync } from '@/lib/route'
-import { compose, initialState, latestRunId, runCounts, store } from './app'
+import { compose, inProject, initialState, latestRunId, runCounts, store } from './app'
 import type { Run } from '@/lib/wire'
 
 afterEach(() => {
@@ -154,4 +154,80 @@ test('gives up on a cursor that does not advance', async () => {
   // not because it ran out of patience.
   expect(asked).toHaveLength(2)
   expect(store.get().activity).toHaveLength(200)
+})
+
+function daemonWith(paths: string[], projects: unknown[] = []) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((path: string, init?: RequestInit) => {
+      paths.push(`${init?.method ?? 'GET'} ${path}`)
+      if (path === '/api/projects') return Promise.resolve(new Response(JSON.stringify(projects)))
+      if (path === '/api/runs') return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
+      if (path.startsWith('/api/skills')) return Promise.resolve(new Response('{"items":[]}'))
+      return Promise.resolve(new Response('[]', { status: 200 }))
+    }),
+  )
+  store.set((s) => ({
+    ...s,
+    meta: {
+      version: '',
+      defaultModel: '',
+      rev: 0,
+      ui: true,
+      features: { projects: true, skills: true, commands: true, runs: true },
+    },
+  }))
+}
+
+// The selection is what every list screen reads, so changing it has to bring
+// the project's own catalogues with it - and survive a reload.
+test('selecting a project saves it and reads its skills and commands', async () => {
+  const paths: string[] = []
+  daemonWith(paths)
+  const { selectProject } = await import('./app')
+  selectProject('PRJ-1')
+  await vi.waitFor(() => {
+    expect(paths).toContain('GET /api/skills?project=PRJ-1')
+    expect(paths).toContain('GET /api/commands?project=PRJ-1')
+  })
+  expect(store.get().project).toBe('PRJ-1')
+  expect(window.localStorage.getItem('aigem.project')).toBe('PRJ-1')
+  window.localStorage.removeItem('aigem.project')
+})
+
+// A project forgotten in another tab, or on another day, must not leave this
+// tab asking for catalogues of a project the daemon no longer lists.
+test('a saved project the daemon no longer lists is forgotten', async () => {
+  const paths: string[] = []
+  daemonWith(paths, [{ id: '', name: 'work', dir: '/w' }])
+  store.set((s) => ({ ...s, project: 'PRJ-7' }))
+  const { refresh } = await import('./app')
+  await refresh.projects()
+  expect(store.get().project).toBe('')
+})
+
+test('a new session opens in the current project', async () => {
+  const paths: string[] = []
+  daemonWith(paths)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((path: string, init?: RequestInit) => {
+      paths.push(`${init?.method ?? 'GET'} ${path} ${typeof init?.body === 'string' ? init.body : ''}`)
+      if (path === '/api/runs' && init?.method === 'POST') {
+        return Promise.resolve(new Response('{"id":"RUN-1","status":"open","live":true}', { status: 201 }))
+      }
+      return Promise.resolve(new Response('[]', { status: 200 }))
+    }),
+  )
+  store.set((s) => ({ ...s, project: 'PRJ-1' }))
+  const { openSession } = await import('./app')
+  await openSession()
+  expect(paths).toContain('POST /api/runs {"projectId":"PRJ-1"}')
+})
+
+// Which conversation a tab means depends on the project it is looking at.
+test('the fallback conversation is one in the current project', () => {
+  const runs = [run({ id: 'a', projectId: 'PRJ-1' }), run({ id: 'b' })]
+  expect(inProject(runs, 'PRJ-1').map((r) => r.id)).toEqual(['a'])
+  expect(inProject(runs, '').map((r) => r.id)).toEqual(['b'])
 })

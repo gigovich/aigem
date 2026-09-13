@@ -13,12 +13,13 @@ import { vi } from 'vitest'
 import App from '@/App'
 import { initialState, store } from '@/state/app'
 import { setInspectorContent } from '@/state/inspector'
-import type { Activity, Command, Meta, Model, Run, RunEvent, Skills } from '@/lib/wire'
+import type { Activity, Command, Meta, Model, Project, Run, RunEvent, Skills } from '@/lib/wire'
 import { FakeSocket, installFakeSocket } from './fakesocket'
 
 export type Daemon = {
   meta?: Partial<Meta>
   runs?: Run[]
+  projects?: Project[]
   models?: Model[]
   skills?: Skills
   commands?: Command[]
@@ -57,6 +58,7 @@ export const META: Meta = {
     usage: true,
     activity: true,
     providerLogin: true,
+    projects: true,
   },
 }
 
@@ -73,6 +75,9 @@ export const RUN: Run = {
   live: true,
   seq: 4,
 }
+
+/** The daemon's own directory, as the registry lists it: first, with no id. */
+export const DAEMON_PROJECT: Project = { id: '', name: 'aigem', dir: '/home/dev/aigem' }
 
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
 
@@ -107,6 +112,7 @@ export function installDaemon(daemon: Daemon = {}): Harness {
   installFakeSocket()
   window.history.replaceState(null, '', daemon.path ?? '/')
   Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true })
+  window.localStorage.removeItem('aigem.project')
   store.set(initialState())
   setInspectorContent(null)
 
@@ -123,9 +129,15 @@ export function installDaemon(daemon: Daemon = {}): Harness {
       if (path === '/api/auth/session') return Promise.resolve(new Response(null, { status: 204 }))
       if (path === '/api/meta') return Promise.resolve(ok(meta))
       if (path === '/api/runs') return Promise.resolve(ok(daemon.runs ?? []))
+      if (path === '/api/projects') return Promise.resolve(ok(daemon.projects ?? [DAEMON_PROJECT]))
+      if (/^\/api\/projects\/[^/]+\/repos$/.test(path)) return Promise.resolve(ok([]))
       if (path === '/api/models') return Promise.resolve(ok(daemon.models ?? []))
-      if (path === '/api/skills') return Promise.resolve(ok(daemon.skills ?? { items: [] }))
-      if (path === '/api/commands') return Promise.resolve(ok(daemon.commands ?? []))
+      if (path === '/api/skills' || path.startsWith('/api/skills?')) {
+        return Promise.resolve(ok(daemon.skills ?? { items: [] }))
+      }
+      if (path === '/api/commands' || path.startsWith('/api/commands?')) {
+        return Promise.resolve(ok(daemon.commands ?? []))
+      }
       if (path === '/api/usage') return Promise.resolve(ok([]))
       if (path.startsWith('/api/activity')) return Promise.resolve(ok(daemon.activity ?? []))
       if (path.includes('/events')) return Promise.resolve(ok(daemon.events ?? []))
