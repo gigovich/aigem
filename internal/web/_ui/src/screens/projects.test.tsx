@@ -1,8 +1,9 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { Project } from '@/lib/wire'
-import { DAEMON_PROJECT, mountApp } from '@/test/harness'
+import { navigate } from '@/lib/route'
+import { DAEMON_PROJECT, mountApp, RUN } from '@/test/harness'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -72,4 +73,75 @@ test('without the projects feature the sidebar offers nothing to add', async () 
   await screen.findByRole('navigation', { name: 'Navigation' })
   expect(screen.queryByRole('button', { name: 'New project' })).not.toBeInTheDocument()
   expect(screen.getByText("This daemon's directory.")).toBeInTheDocument()
+})
+
+test('the session list shows the current project, and "All projects" widens it', async () => {
+  const user = userEvent.setup()
+  const theirs = { ...RUN, id: 'r-2', title: 'Theirs', projectId: 'PRJ-1' }
+  await mountApp({ projects: PROJECTS, runs: [RUN, theirs] })
+  const list = await screen.findByRole('list', { name: 'Sessions' })
+  expect(within(list).getByText('Rotate the signing keys')).toBeInTheDocument()
+  expect(within(list).queryByText('Theirs')).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'All projects' }))
+  expect(within(list).getByText('Theirs')).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'All projects' }))
+  const projects = screen.getByRole('list', { name: 'Projects' })
+  await user.click(within(projects).getByRole('button', { name: /work/ }))
+  expect(within(list).getByText('Theirs')).toBeInTheDocument()
+  expect(within(list).queryByText('Rotate the signing keys')).not.toBeInTheDocument()
+})
+
+test('a new session opens in the chosen project', async () => {
+  const user = userEvent.setup()
+  const h = await mountApp({
+    projects: PROJECTS,
+    routes: {
+      'POST /api/runs': () =>
+        new Response(JSON.stringify({ ...RUN, id: 'r-9', projectId: 'PRJ-1' }), { status: 201 }),
+    },
+  })
+  const projects = await screen.findByRole('list', { name: 'Projects' })
+  await user.click(within(projects).getByRole('button', { name: /work/ }))
+  await user.click(screen.getByRole('button', { name: 'New session' }))
+  await waitFor(() =>
+    expect(h.sent.find((r) => r.path === '/api/runs')?.body).toBe('{"projectId":"PRJ-1"}'),
+  )
+})
+
+test('the skills screen reads and trusts the chosen project', async () => {
+  const user = userEvent.setup()
+  const detail = {
+    name: 'review',
+    description: 'd',
+    userInvocable: true,
+    modelInvocable: true,
+    allowedTools: [],
+    disallowedTools: [],
+    paths: [],
+    body: 'x',
+  }
+  const h = await mountApp({
+    projects: PROJECTS,
+    skills: {
+      items: [{ name: 'review', description: 'd', userInvocable: true, modelInvocable: true }],
+      pending: { names: ['theirs'] },
+    },
+    routes: {
+      '/api/skills/review?project=PRJ-1': () => new Response(JSON.stringify(detail), { status: 200 }),
+      '/api/skills/review': () => new Response(JSON.stringify(detail), { status: 200 }),
+      'POST /api/skills/trust': () => new Response('{"loaded":["theirs"],"notices":[]}', { status: 200 }),
+    },
+  })
+  const projects = await screen.findByRole('list', { name: 'Projects' })
+  await user.click(within(projects).getByRole('button', { name: /work/ }))
+  act(() => navigate({ screen: 'skills' }))
+  await waitFor(() => expect(h.paths).toContain('/api/skills/review?project=PRJ-1'))
+
+  await user.click(await screen.findByRole('button', { name: 'Review and load' }))
+  await user.click(await screen.findByRole('button', { name: 'Load them' }))
+  await waitFor(() =>
+    expect(h.sent.find((r) => r.path === '/api/skills/trust')?.body).toBe('{"project":"PRJ-1"}'),
+  )
 })

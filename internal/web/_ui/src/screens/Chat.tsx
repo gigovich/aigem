@@ -5,7 +5,7 @@ import type { Attachment } from '@/lib/image'
 import { navigate } from '@/lib/route'
 import { runStatus } from '@/lib/wire'
 import type { Decision, Run, RunOp } from '@/lib/wire'
-import { explain, setActiveRun, setBanner, useApp } from '@/state/app'
+import { explain, inProject, setActiveRun, setBanner, useApp } from '@/state/app'
 import { slash } from '@/state/slash'
 import { tabLabel } from '@/hooks/useRunEvents'
 
@@ -43,7 +43,7 @@ type Props = {
  * one a person steers; in phase one only the second exists, and this is it.
  */
 export function Chat({ run, runId, state, reason, send, selected, onNew, onClose }: Props) {
-  const { runs, models, pendingCommand, opening, phone } = useApp((s) => ({
+  const { runs, models, pendingCommand, opening, phone, project, hasProjects } = useApp((s) => ({
     runs: s.runs,
     phone: s.phone,
     // Only the ones that can actually be opened: offering a model with no
@@ -51,6 +51,8 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
     models: s.models.filter((m) => !m.needsAuth || m.authenticated),
     pendingCommand: s.pendingCommand,
     opening: s.opening,
+    project: s.project,
+    hasProjects: s.meta?.features.projects === true,
   }))
   const record = runs.find((r) => r.id === runId)
   const showList = !phone || !selected
@@ -87,10 +89,12 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
 
   const [blob, setBlob] = useState<number | null>(null)
   const [filter, setFilter] = useState('')
+  const [all, setAll] = useState(false)
+  const scoped = all || !hasProjects ? runs : inProject(runs, project)
   const needle = filter.trim().toLowerCase()
   const shown = needle
-    ? runs.filter((r) => `${r.title ?? ''} ${r.id} ${r.mode}`.toLowerCase().includes(needle))
-    : runs
+    ? scoped.filter((r) => `${r.title ?? ''} ${r.id} ${r.mode}`.toLowerCase().includes(needle))
+    : scoped
 
   const rows = run.rows
   const pending = run.pending[0]
@@ -177,7 +181,21 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
             <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
               Sessions
             </h2>
-            <span className="font-mono text-[10px] text-fg-subtle">{runs.length}</span>
+            <span className="font-mono text-[10px] text-fg-subtle">{scoped.length}</span>
+            {hasProjects && (
+              <button
+                type="button"
+                aria-pressed={all}
+                aria-label="All projects"
+                title="Show sessions from every project"
+                onClick={() => setAll(!all)}
+                className={`h-5 rounded-[5px] border px-[7px] text-[10.5px] ${
+                  all ? 'border-primary text-fg' : 'border-line text-fg-muted'
+                } cursor-pointer hover:border-line-strong hover:text-fg`}
+              >
+                All
+              </button>
+            )}
             <button
               type="button"
               onClick={onNew}
@@ -217,8 +235,8 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                 />
               ))}
             </ul>
-            {runs.length === 0 && <EmptyState inline title="No sessions in this project yet." />}
-            {runs.length > 0 && shown.length === 0 && (
+            {scoped.length === 0 && <EmptyState inline title="No sessions in this project yet." />}
+            {scoped.length > 0 && shown.length === 0 && (
               <EmptyState inline title="Nothing matches that filter." />
             )}
           </div>
