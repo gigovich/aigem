@@ -1,7 +1,15 @@
 import { shortVersion } from '@/lib/format'
 import { runCounts } from '@/state/app'
 import { LiveDot } from '@/ui/StatusChip'
-import { setPalette, setQuick, toggleDensity, toggleInspector, toggleTheme, useApp } from '@/state/app'
+import {
+  setNav,
+  setPalette,
+  setQuick,
+  toggleDensity,
+  toggleInspector,
+  toggleTheme,
+  useApp,
+} from '@/state/app'
 import { navigate } from '@/lib/route'
 import type { Route } from '@/lib/route'
 
@@ -16,39 +24,60 @@ type Props = { crumbs: { label: string; route?: Route }[] }
  * and they are what has to survive.
  */
 export function Header({ crumbs }: Props) {
-  const { version, theme, density, narrow, quickOpen, inspectorOpen, counts } = useApp((s) => ({
-    version: s.meta?.version ?? '',
-    theme: s.theme,
-    density: s.density,
-    narrow: s.narrow,
-    quickOpen: s.quickOpen,
-    inspectorOpen: s.inspectorOpen,
-    counts: runCounts(s),
-  }))
+  const { version, theme, density, narrow, phone, quickOpen, inspectorOpen, counts } = useApp(
+    (s) => ({
+      version: s.meta?.version ?? '',
+      theme: s.theme,
+      density: s.density,
+      narrow: s.narrow,
+      phone: s.phone,
+      quickOpen: s.quickOpen,
+      inspectorOpen: s.inspectorOpen,
+      counts: runCounts(s),
+    }),
+  )
 
   return (
     <header className="flex h-[38px] flex-none items-stretch border-b border-line bg-shell">
       <div
         className="flex flex-none items-center gap-2 border-r border-line px-[10px]"
-        style={{ width: 'var(--rail)' }}
+        style={{ width: phone ? 'auto' : 'var(--rail)' }}
       >
-        <span aria-hidden="true" className="size-[15px] flex-none rounded-[3px] bg-agent opacity-90" />
+        {phone ? (
+          <button
+            type="button"
+            onClick={() => setNav(true)}
+            aria-label="Open navigation"
+            className="grid size-[24px] cursor-pointer place-items-center rounded-[5px] border border-line text-[13px] text-fg-muted hover:border-line-strong hover:text-fg"
+          >
+            <span aria-hidden="true">☰</span>
+          </button>
+        ) : (
+          <span
+            aria-hidden="true"
+            className="size-[15px] flex-none rounded-[3px] bg-agent opacity-90"
+          />
+        )}
         <span className="font-semibold tracking-[-0.01em]">Aigem</span>
-        <span
-          title={version}
-          className="ml-auto min-w-0 overflow-hidden font-mono text-[10px] text-ellipsis whitespace-nowrap text-fg-subtle"
-        >
-          {shortVersion(version)}
-        </span>
+        {!phone && (
+          <span
+            title={version}
+            className="ml-auto min-w-0 overflow-hidden font-mono text-[10px] text-ellipsis whitespace-nowrap text-fg-subtle"
+          >
+            {shortVersion(version)}
+          </span>
+        )}
       </div>
 
       <div className="flex min-w-0 flex-1 items-center gap-[10px] px-3">
         <button
           type="button"
           onClick={() => setPalette(true)}
-          className="flex h-[24px] flex-none cursor-pointer items-center gap-[7px] rounded-[5px] border border-line bg-surface pr-2 pl-[7px] text-fg-subtle hover:border-line-strong hover:text-fg-muted"
+          className="flex h-[24px] min-w-0 flex-none cursor-pointer items-center gap-[7px] rounded-[5px] border border-line bg-surface pr-2 pl-[7px] text-fg-subtle hover:border-line-strong hover:text-fg-muted"
         >
-          <span className="text-[11px]">Search or run a command</span>
+          <span className="overflow-hidden text-[11px] text-ellipsis whitespace-nowrap">
+            {phone ? 'Search' : 'Search or run a command'}
+          </span>
           <span
             aria-hidden="true"
             className="rounded-[3px] border border-line px-1 py-px font-mono text-[10px]"
@@ -62,20 +91,20 @@ export function Header({ crumbs }: Props) {
             {crumbs.map((c, i) => {
               const to = c.route
               return (
-              <button
-                key={c.label}
-                type="button"
-                disabled={!to}
-                onClick={to ? () => navigate(to) : undefined}
-                className="flex h-[24px] items-center gap-[6px] rounded-[4px] px-[7px] font-mono text-[11px] text-fg-muted enabled:cursor-pointer enabled:hover:bg-s0 enabled:hover:text-fg"
-              >
-                <span>{c.label}</span>
-                {i < crumbs.length - 1 && (
-                  <span aria-hidden="true" className="text-fg-subtle opacity-50">
-                    /
-                  </span>
-                )}
-              </button>
+                <button
+                  key={c.label}
+                  type="button"
+                  disabled={!to}
+                  onClick={to ? () => navigate(to) : undefined}
+                  className="flex h-[24px] items-center gap-[6px] rounded-[4px] px-[7px] font-mono text-[11px] text-fg-muted enabled:cursor-pointer enabled:hover:bg-s0 enabled:hover:text-fg"
+                >
+                  <span>{c.label}</span>
+                  {i < crumbs.length - 1 && (
+                    <span aria-hidden="true" className="text-fg-subtle opacity-50">
+                      /
+                    </span>
+                  )}
+                </button>
               )
             })}
           </nav>

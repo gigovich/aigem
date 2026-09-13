@@ -10,6 +10,8 @@ import { FilterInput } from '@/ui/FilterInput'
 import { Markdown } from '@/ui/Markdown'
 import { Modal } from '@/ui/Modal'
 import { StatusChip } from '@/ui/StatusChip'
+import type { Split } from '@/App'
+import { Back } from '@/ui/Back'
 
 /** Enabled / Pending, from the shared dictionary rather than a local copy. */
 function state(s: SkillSummary, pending: string[]): StatusInfo {
@@ -31,7 +33,7 @@ function scopeOf(s: SkillSummary): string {
  * that block, filled with what the daemon knows: the names it would load and
  * the notices loading them produced.
  */
-export function Skills({ selected }: { selected?: string }) {
+export function Skills({ selected, split }: { selected?: string; split: Split }) {
   const skills = useApp((s) => s.skills)
   const [asking, setAsking] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -104,7 +106,12 @@ export function Skills({ selected }: { selected?: string }) {
       listTitle: detail?.allowedTools.length ? 'Allowed tools' : undefined,
       list: detail?.allowedTools.map((t) => ({ icon: '·', text: t })) ?? [],
       actions: chosen.userInvocable
-        ? [{ label: 'Run in a session', onClick: () => compose(`/skill:${chosen.name} `) }]
+        ? [
+            {
+              label: 'Run in a session',
+              onClick: () => compose(`/skill:${chosen.name} `),
+            },
+          ]
         : [],
     }
   }, [chosen, detail, pending])
@@ -112,156 +119,170 @@ export function Skills({ selected }: { selected?: string }) {
 
   return (
     <div className="flex min-h-0 flex-1">
-      <div className="flex w-[244px] flex-none flex-col overflow-hidden border-r border-line">
-        <div className="flex flex-none items-center gap-2 border-b border-line px-3 py-[11px]">
-          <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
-            Skills
-          </h2>
-          <span className="ml-auto font-mono text-[10px] text-fg-subtle">
-            {skills.items.length}
-          </span>
-        </div>
-        <div className="flex-none border-b border-line px-2 py-[6px]">
-          <FilterInput value={filter} onChange={setFilter} label="Filter skills" className="w-full" />
-        </div>
-        <div className="flex-1 overflow-y-auto py-1">
-          <ul aria-label="Skills" className="m-0 list-none p-0">
-            {shown.map((s) => {
-            const st = state(s, pending)
-            const active = s.name === chosen?.name
-              return (
-                <li
-                  key={s.name}
-                  className={`border-l-2 ${active ? 'border-l-primary bg-s0' : 'border-l-transparent'} hover:bg-s0`}
-                >
-                  <button
-                    type="button"
-                    aria-current={active ? 'true' : undefined}
-                    onClick={() => navigate({ screen: 'skills', id: s.name })}
-                    className="w-full cursor-default px-3 py-[7px] text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+      {split !== 'detail' && (
+        <div
+          className={`flex flex-none flex-col overflow-hidden border-r border-line ${split === 'list' ? 'w-full' : 'w-[244px]'}`}
+        >
+          <div className="flex flex-none items-center gap-2 border-b border-line px-3 py-[11px]">
+            <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+              Skills
+            </h2>
+            <span className="ml-auto font-mono text-[10px] text-fg-subtle">
+              {skills.items.length}
+            </span>
+          </div>
+          <div className="flex-none border-b border-line px-2 py-[6px]">
+            <FilterInput
+              value={filter}
+              onChange={setFilter}
+              label="Filter skills"
+              className="w-full"
+            />
+          </div>
+          <div className="flex-1 overflow-y-auto py-1">
+            <ul aria-label="Skills" className="m-0 list-none p-0">
+              {shown.map((s) => {
+                const st = state(s, pending)
+                const active = s.name === chosen?.name
+                return (
+                  <li
+                    key={s.name}
+                    className={`border-l-2 ${active ? 'border-l-primary bg-s0' : 'border-l-transparent'} hover:bg-s0`}
                   >
-                    <span className="flex items-center gap-[7px]">
-                      <span
-                        className="font-mono text-[11.5px]"
-                        style={{ color: active ? 'var(--fg)' : 'var(--fg-muted)' }}
-                      >
-                        {s.name}
+                    <button
+                      type="button"
+                      aria-current={active ? 'true' : undefined}
+                      onClick={() => navigate({ screen: 'skills', id: s.name })}
+                      className="w-full cursor-default px-3 py-[7px] text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+                    >
+                      <span className="flex items-center gap-[7px]">
+                        <span
+                          className="font-mono text-[11.5px]"
+                          style={{
+                            color: active ? 'var(--fg)' : 'var(--fg-muted)',
+                          }}
+                        >
+                          {s.name}
+                        </span>
+                        <span
+                          aria-hidden="true"
+                          className="ml-auto text-[9px]"
+                          style={{ color: st.color }}
+                        >
+                          {st.icon}
+                        </span>
+                        <span className="sr-only">{st.label}</span>
                       </span>
-                      <span
-                        aria-hidden="true"
-                        className="ml-auto text-[9px]"
-                        style={{ color: st.color }}
-                      >
-                        {st.icon}
+                      <span className="block overflow-hidden text-[10.5px] text-ellipsis whitespace-nowrap text-fg-subtle">
+                        {scopeOf(s)}
                       </span>
-                      <span className="sr-only">{st.label}</span>
-                    </span>
-                    <span className="block overflow-hidden text-[10.5px] text-ellipsis whitespace-nowrap text-fg-subtle">
-                      {scopeOf(s)}
-                    </span>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-          {skills.items.length === 0 && <EmptyState inline title="No skills are loaded." />}
-          {skills.items.length > 0 && shown.length === 0 && (
-            <EmptyState inline title="Nothing matches that filter." />
-          )}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+            {skills.items.length === 0 && <EmptyState inline title="No skills are loaded." />}
+            {skills.items.length > 0 && shown.length === 0 && (
+              <EmptyState inline title="Nothing matches that filter." />
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="min-w-0 flex-1 overflow-y-auto">
-        {chosen ? (
-          <>
-            <div className="border-b border-line px-[18px] pt-[14px] pb-3">
-              <div className="flex items-center gap-[10px]">
-                <h1 className="m-0 font-mono text-[14px] font-medium">{chosen.name}</h1>
-                <StatusChip status={state(chosen, pending)} />
-              </div>
-              <p className="mt-[6px] mb-0 text-[12px] text-fg-muted">{chosen.description}</p>
-              <div className="mt-[10px] flex gap-4 font-mono text-[10.5px] text-fg-subtle">
-                <span>
-                  scope <span className="text-fg-muted">{scopeOf(chosen)}</span>
-                </span>
-                <span>
-                  invoked by <span className="text-fg-muted">{invokers(chosen)}</span>
-                </span>
-                {chosen.conditional && (
+      {split !== 'list' && (
+        <div className="min-w-0 flex-1 overflow-y-auto">
+          {chosen ? (
+            <>
+              <div className="border-b border-line px-[18px] pt-[14px] pb-3">
+                <div className="flex flex-wrap items-center gap-[10px]">
+                  {split === 'detail' && <Back label="Skills" to={{ screen: 'skills' }} />}
+                  <h1 className="m-0 font-mono text-[14px] font-medium">{chosen.name}</h1>
+                  <StatusChip status={state(chosen, pending)} />
+                </div>
+                <p className="mt-[6px] mb-0 text-[12px] text-fg-muted">{chosen.description}</p>
+                <div className="mt-[10px] flex gap-4 font-mono text-[10.5px] text-fg-subtle">
                   <span>
-                    activation <span className="text-fg-muted">conditional</span>
+                    scope <span className="text-fg-muted">{scopeOf(chosen)}</span>
                   </span>
-                )}
+                  <span>
+                    invoked by <span className="text-fg-muted">{invokers(chosen)}</span>
+                  </span>
+                  {chosen.conditional && (
+                    <span>
+                      activation <span className="text-fg-muted">conditional</span>
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
 
-            <div className="max-w-[88ch] px-[18px] pt-[14px] pb-8">
-              {pending.length > 0 && (
-                <>
-                  <h2 className="text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
-                    Pending approval
-                  </h2>
-                  <div className="mt-2 rounded-r-md border border-l-2 border-line border-l-attention bg-bg px-3 py-[10px]">
-                    <div className="flex items-center gap-2 font-mono text-[10.5px] text-fg-subtle">
-                      <span aria-hidden="true" className="text-attention">
-                        !
-                      </span>
-                      <span>
-                        this project defines {pending.length} skill
-                        {pending.length > 1 ? 's' : ''} the daemon has not loaded
-                      </span>
+              <div className="max-w-[88ch] px-[18px] pt-[14px] pb-8">
+                {pending.length > 0 && (
+                  <>
+                    <h2 className="text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+                      Pending approval
+                    </h2>
+                    <div className="mt-2 rounded-r-md border border-l-2 border-line border-l-attention bg-bg px-3 py-[10px]">
+                      <div className="flex items-center gap-2 font-mono text-[10.5px] text-fg-subtle">
+                        <span aria-hidden="true" className="text-attention">
+                          !
+                        </span>
+                        <span>
+                          this project defines {pending.length} skill
+                          {pending.length > 1 ? 's' : ''} the daemon has not loaded
+                        </span>
+                      </div>
+                      <ul className="mt-[6px] mb-0 list-none pl-0 font-mono text-[12px] text-fg">
+                        {pending.map((n) => (
+                          <li key={n}>{n}</li>
+                        ))}
+                      </ul>
+                      {skills.pending?.invalidated && (
+                        <p className="mt-2 mb-0 text-[11.5px] text-fg-subtle">
+                          The definitions changed since they were last approved.
+                        </p>
+                      )}
+                      <div className="mt-3 flex items-center gap-2">
+                        <span className="text-[11.5px] text-fg-subtle">
+                          Loading them lets the agent run what this project's files say.
+                        </span>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setAsking(true)}
+                          className="ml-auto h-[28px] cursor-pointer rounded-md border border-primary bg-primary px-3 text-[12px] font-medium text-bg hover:brightness-110 disabled:opacity-50"
+                        >
+                          Review and load
+                        </button>
+                      </div>
                     </div>
-                    <ul className="mt-[6px] mb-0 list-none pl-0 font-mono text-[12px] text-fg">
-                      {pending.map((n) => (
-                        <li key={n}>{n}</li>
-                      ))}
-                    </ul>
-                    {skills.pending?.invalidated && (
-                      <p className="mt-2 mb-0 text-[11.5px] text-fg-subtle">
-                        The definitions changed since they were last approved.
+                  </>
+                )}
+
+                <h2 className="mt-5 mb-2 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+                  Instructions
+                </h2>
+                {detail ? (
+                  <>
+                    <Markdown source={detail.body} />
+                    {detail.bodyTruncated && (
+                      <p className="mt-3 text-[11.5px] text-fg-subtle">
+                        This skill is longer than the API will send; the rest is on disk.
                       </p>
                     )}
-                    <div className="mt-3 flex items-center gap-2">
-                      <span className="text-[11.5px] text-fg-subtle">
-                        Loading them lets the agent run what this project's files say.
-                      </span>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => setAsking(true)}
-                        className="ml-auto h-[28px] cursor-pointer rounded-md border border-primary bg-primary px-3 text-[12px] font-medium text-bg hover:brightness-110 disabled:opacity-50"
-                      >
-                        Review and load
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              <h2 className="mt-5 mb-2 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
-                Instructions
-              </h2>
-              {detail ? (
-                <>
-                  <Markdown source={detail.body} />
-                  {detail.bodyTruncated && (
-                    <p className="mt-3 text-[11.5px] text-fg-subtle">
-                      This skill is longer than the API will send; the rest is on disk.
-                    </p>
-                  )}
-                </>
-              ) : (
-                <p className="text-[12px] text-fg-subtle">Reading the skill…</p>
-              )}
-            </div>
-          </>
-        ) : (
-          <EmptyState
-            title="No skills are loaded."
-            detail="A skill is a folder with a SKILL.md in it, under this project or your user directory."
-          />
-        )}
-      </div>
+                  </>
+                ) : (
+                  <p className="text-[12px] text-fg-subtle">Reading the skill…</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <EmptyState
+              title="No skills are loaded."
+              detail="A skill is a folder with a SKILL.md in it, under this project or your user directory."
+            />
+          )}
+        </div>
+      )}
 
       {asking && (
         <Modal

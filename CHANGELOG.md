@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cookie working - which makes it the wrong reflex for a token that got out.
   Stop the daemon first: a running one holds the sessions in memory and goes on
   honouring them.
+- The browser UI runs the slash commands: `/compact`, `/skill:<name>` and MCP
+  prompts as turns in the daemon, `/new`, `/model`, `/login`, `/resume`,
+  `/skills` and `/artifacts` in the page. Every list has a `/` filter, the run
+  and activity screens fill the inspector, quick chat continues into the chat,
+  a closed run is not dialled, the reason a stream ended is shown, and the
+  page can sign out. Below 720px it is one column: the navigation is a drawer
+  and a list and its detail are shown one at a time.
 - `make web` builds the browser UI into `internal/web/dist`, where the binary
   embeds it from. It needs Node 22+. **The bundle is not committed and the
   release pipeline does not build it**, so a downloaded release binary and

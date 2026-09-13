@@ -11,6 +11,7 @@ import {
   refresh,
   setBanner,
   setLogin,
+  setNav,
   setPalette,
   setQuick,
   start,
@@ -55,7 +56,8 @@ export default function App() {
   // collection is refetched or a layer opens - never per event of a
   // conversation, which lives in the run hook's own state.
   const app = useApp((s) => s)
-  const { loading, fatal, banner, paletteOpen, quickOpen, activeRun, runs, login } = app
+  const { loading, fatal, banner, paletteOpen, quickOpen, activeRun, runs, login, phone, navOpen } =
+    app
   const inspector = useInspectorContent()
   const [signedIn, setSignedIn] = useState(false)
   const [query, setQuery] = useState('')
@@ -106,6 +108,10 @@ export default function App() {
 
   const conversation = useRunEvents(runId || undefined)
 
+  // A phone shows one column: the list, or the thing chosen from it.
+  const split: Split = !phone ? 'both' : route.id ? 'detail' : 'list'
+  useEffect(() => setNav(false), [route])
+
   useEffect(() => {
     if (!conversation.refusal) return
     setBanner(conversation.refusal)
@@ -126,7 +132,7 @@ export default function App() {
   const items = useMemo(() => paletteItems(app), [app])
   const matches = useMemo(() => ordered(items, query), [items, query])
 
-  const layerOpen = paletteOpen || quickOpen || explainProjects || closing !== ''
+  const layerOpen = paletteOpen || quickOpen || explainProjects || closing !== '' || navOpen
 
   // The palette's list and highlight are read through a ref so the window
   // listener below is registered once. With them in the dependency array it was
@@ -151,6 +157,7 @@ export default function App() {
           closeLayers: () => {
             setPalette(false)
             setQuick(false)
+            setNav(false)
             setExplainProjects(false)
             setClosing('')
           },
@@ -183,6 +190,8 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [layerOpen, paletteOpen, explainProjects, closing])
 
+  const sidebar = <Sidebar route={route} onNewProject={() => setExplainProjects(true)} />
+
   if (fatal) {
     return (
       <main className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
@@ -209,7 +218,20 @@ export default function App() {
     <div className="flex h-full flex-col overflow-hidden bg-bg">
       <Header crumbs={crumbs(route)} />
       <div className="flex min-h-0 flex-1">
-        <Sidebar route={route} onNewProject={() => setExplainProjects(true)} />
+        {!phone && sidebar}
+        {phone && navOpen && (
+          <>
+            <button
+              type="button"
+              aria-label="Close navigation"
+              onClick={() => setNav(false)}
+              className="fixed inset-0 z-[64] bg-black/40"
+            />
+            <div className="fixed inset-y-0 left-0 z-[65] flex w-[240px] shadow-panel">
+              {sidebar}
+            </div>
+          </>
+        )}
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-surface">
           {banner && (
             <div
@@ -231,6 +253,7 @@ export default function App() {
             route={route}
             runId={runId}
             conversation={conversation}
+            split={split}
             onNew={() => void openSession()}
             onClose={setClosing}
           />
@@ -295,16 +318,21 @@ export default function App() {
 
 type Conversation = ReturnType<typeof useRunEvents>
 
+/** Which of a list-and-detail screen's two columns a viewport shows. */
+export type Split = 'both' | 'list' | 'detail'
+
 function Screen({
   route,
   runId,
   conversation,
+  split,
   onNew,
   onClose,
 }: {
   route: Route
   runId: string
   conversation: Conversation
+  split: Split
   onNew: () => void
   onClose: (id: string) => void
 }) {
@@ -317,6 +345,7 @@ function Screen({
           state={conversation.state}
           reason={conversation.reason}
           send={conversation.send}
+          split={split}
           onNew={onNew}
           onClose={onClose}
         />
@@ -333,7 +362,7 @@ function Screen({
     case 'models':
       return <Models selected={route.id} />
     case 'skills':
-      return <Skills selected={route.id} />
+      return <Skills selected={route.id} split={split} />
     case 'activity':
       return <Activity />
     case 'tickets':

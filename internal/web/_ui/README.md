@@ -29,6 +29,11 @@ Imports go one way down this list. Nothing below reaches back up.
 - `src/screens/` - one per route. They own their screen's mutations and publish
   to the inspector.
 
+Two breakpoints, both in `src/state/app.ts`: below 1120px the columns narrow
+and the inspector closes; below 720px there is one column - the navigation is a
+drawer, the inspector a sheet, and a list-and-detail screen shows one or the
+other, chosen by whether the route names an id.
+
 A screen never opens a socket: the shell holds one run stream per tab and hands
 the conversation down, because the daemon allows 64 websockets across every tab
 and a component that opened its own would spend them by being mounted twice.

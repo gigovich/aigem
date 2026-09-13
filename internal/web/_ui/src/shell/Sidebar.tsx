@@ -20,6 +20,7 @@ const BOTTOM: Item[] = [
 
 type Props = { route: Route; onNewProject: () => void }
 
+
 /**
  * The navigation column.
  *
@@ -33,8 +34,9 @@ function countsOf(s: AppState): Partial<Record<Screen, number>> {
 }
 
 export function Sidebar({ route, onNewProject }: Props) {
-  const { features, counts } = useApp((s) => ({
+  const { features, counts, phone } = useApp((s) => ({
     features: s.meta?.features ?? {},
+    phone: s.phone,
     // Partial on purpose: three of the rows have nothing to count, and a full
     // record would need a zero for each - which the row would then draw.
     counts: countsOf(s),
@@ -69,7 +71,7 @@ export function Sidebar({ route, onNewProject }: Props) {
     <nav
       aria-label="Navigation"
       className="flex flex-none flex-col overflow-y-auto border-r border-line bg-shell"
-      style={{ width: 'var(--rail)' }}
+      style={{ width: phone ? '100%' : 'var(--rail)' }}
     >
       <div className="px-[6px] pt-2 pb-[6px]">{TOP.map(row)}</div>
 

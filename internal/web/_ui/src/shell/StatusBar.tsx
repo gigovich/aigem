@@ -10,8 +10,9 @@ import { runCounts, useApp } from '@/state/app'
  * that before they wonder why nothing is updating.
  */
 export function StatusBar() {
-  const { theme, density, counts, control } = useApp((s) => ({
+  const { theme, density, counts, control, phone } = useApp((s) => ({
     theme: s.theme,
+    phone: s.phone,
     density: s.density,
     counts: runCounts(s),
     control: s.control,
@@ -33,7 +34,7 @@ export function StatusBar() {
       >
         {control === 'open' ? '' : '◐ reconnecting'}
       </span>
-      <span className="ml-auto">⌘K commands · ⌘J quick chat · / filter</span>
+      {!phone && <span className="ml-auto">⌘K commands · ⌘J quick chat · / filter</span>}
     </footer>
   )
 }

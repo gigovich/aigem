@@ -46,6 +46,9 @@ export type AppState = {
   theme: Theme
   density: Density
   narrow: boolean
+  /** Below the phone width: one column, the navigation a drawer. */
+  phone: boolean
+  navOpen: boolean
   inspectorOpen: boolean
   paletteOpen: boolean
   quickOpen: boolean
@@ -86,6 +89,7 @@ export type AppState = {
 const EMPTY_SKILLS: Skills = { items: [] }
 
 export const NARROW_AT = 1120
+export const PHONE_AT = 720
 
 function initialTheme(): Theme {
   return read('aigem.theme') === 'latte' ? 'latte' : 'mocha'
@@ -138,6 +142,8 @@ export function initialState(): AppState {
     theme: initialTheme(),
     density: initialDensity(),
     narrow: window.innerWidth < NARROW_AT,
+    phone: window.innerWidth < PHONE_AT,
+    navOpen: false,
     // The design opens with the inspector shown, and closed below the
     // breakpoint where there is no room for it.
     inspectorOpen: window.innerWidth >= NARROW_AT,
@@ -334,6 +340,10 @@ export function setQuick(open: boolean) {
   patch({ quickOpen: open })
 }
 
+export function setNav(open: boolean) {
+  patch({ navOpen: open })
+}
+
 export function setActiveRun(id: string) {
   patch({ activeRun: id })
 }
@@ -422,7 +432,12 @@ export async function signOut() {
  */
 function applyWidth(width: number) {
   const narrow = width < NARROW_AT
-  store.set((s) => (s.narrow === narrow ? s : { ...s, narrow, inspectorOpen: !narrow }))
+  const phone = width < PHONE_AT
+  store.set((s) =>
+    s.narrow === narrow && s.phone === phone
+      ? s
+      : { ...s, narrow, phone, inspectorOpen: !narrow, navOpen: s.navOpen && phone },
+  )
 }
 
 /**

@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 import { mountApp, RUN, setViewport } from '@/test/harness'
@@ -110,4 +110,42 @@ test('the status bar says when the control stream is down', async () => {
   act(() => control?.drop())
 
   await waitFor(() => expect(screen.getByRole('contentinfo')).toHaveTextContent('reconnecting'))
+})
+
+// Below the phone width there is one column. The navigation is a drawer the
+// header opens, and choosing a screen in it closes it.
+test('a phone keeps the navigation in a drawer', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN] })
+  act(() => setViewport(400))
+  await waitFor(() =>
+    expect(screen.queryByRole('navigation', { name: 'Navigation' })).not.toBeInTheDocument(),
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+  const nav = screen.getByRole('navigation', { name: 'Navigation' })
+  await user.click(within(nav).getByRole('button', { name: /Activity/ }))
+
+  expect(window.location.pathname).toBe('/activity')
+  expect(screen.queryByRole('navigation', { name: 'Navigation' })).not.toBeInTheDocument()
+})
+
+// A list beside its detail needs 406px of chrome before any content; a phone
+// shows one or the other, with a way back.
+test('a phone shows the session list or the conversation, not both', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN] })
+  act(() => setViewport(400))
+
+  await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument())
+  const list = screen.getByRole('list', { name: 'Sessions' })
+  await user.click(within(list).getAllByRole('button', { name: /Rotate the signing keys/ })[0]!)
+
+  expect(window.location.pathname).toBe('/chat/r-1')
+  expect(screen.getByRole('textbox', { name: 'Message' })).toBeInTheDocument()
+  expect(screen.queryByRole('list', { name: 'Sessions' })).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: '‹ Sessions' }))
+  expect(window.location.pathname).toBe('/chat')
+  expect(screen.getByRole('list', { name: 'Sessions' })).toBeInTheDocument()
 })

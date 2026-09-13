@@ -11,6 +11,8 @@ import { usePublishInspector } from '@/state/inspector'
 import { liveStatus } from '@/state/run'
 import type { RunView } from '@/state/run'
 import type { RunSocketState } from '@/lib/socket'
+import type { Split } from '@/App'
+import { Back } from '@/ui/Back'
 import { EmptyState } from '@/ui/EmptyState'
 import { FilterInput } from '@/ui/FilterInput'
 import { EventStream } from '@/ui/EventStream'
@@ -25,6 +27,7 @@ type Props = {
   /** Why the stream ended, when the socket could say. */
   reason: string
   send: (op: RunOp) => boolean
+  split: Split
   onNew: () => void
   onClose: (id: string) => void
 }
@@ -37,7 +40,7 @@ type Props = {
  * a later phase a run is a ticket's autonomous execution and a session is the
  * one a person steers; in phase one only the second exists, and this is it.
  */
-export function Chat({ run, runId, state, reason, send, onNew, onClose }: Props) {
+export function Chat({ run, runId, state, reason, send, split, onNew, onClose }: Props) {
   const { runs, models, pendingCommand, opening } = useApp((s) => ({
     runs: s.runs,
     // Only the ones that can actually be opened: offering a model with no
@@ -84,20 +87,26 @@ export function Chat({ run, runId, state, reason, send, onNew, onClose }: Props)
         { key: 'model', value: run.model || record.model || '—' },
         { key: 'mode', value: record.mode },
         { key: 'root', value: record.root ?? '—' },
-        { key: 'journal', value: run.sessionId || record.sessionId || 'not yet written' },
+        {
+          key: 'journal',
+          value: run.sessionId || record.sessionId || 'not yet written',
+        },
         { key: 'events', value: String(run.seq) },
         { key: 'updated', value: ago(record.updated) },
       ],
-      progress: run.ctxSize
-        ? { used: run.contextTokens, total: run.ctxSize }
-        : undefined,
+      progress: run.ctxSize ? { used: run.contextTokens, total: run.ctxSize } : undefined,
       listTitle: run.files.length > 0 ? 'Files touched' : undefined,
       list: run.files.map((f) => ({
         icon: f.created ? '+' : '~',
         color: f.created ? 'var(--added)' : 'var(--modified)',
         text: f.path,
       })),
-      actions: [{ label: 'Open run', onClick: () => navigate({ screen: 'run', id: record.id }) }],
+      actions: [
+        {
+          label: 'Open run',
+          onClick: () => navigate({ screen: 'run', id: record.id }),
+        },
+      ],
     }
   }, [record, run])
   usePublishInspector(panel)
@@ -121,234 +130,254 @@ export function Chat({ run, runId, state, reason, send, onNew, onClose }: Props)
 
   return (
     <div className="flex min-h-0 flex-1">
-      <div className="flex w-[238px] flex-none flex-col overflow-hidden border-r border-line">
-        <div className="flex flex-none items-center gap-2 border-b border-line py-[11px] pr-[10px] pl-3">
-          <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
-            Sessions
-          </h2>
-          <span className="font-mono text-[10px] text-fg-subtle">{runs.length}</span>
-          <button
-            type="button"
-            onClick={onNew}
-            disabled={opening}
-            title="New session"
-            className="ml-auto h-5 rounded-[5px] border border-line px-[7px] text-[10.5px] text-fg-muted enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
-          >
-            New
-          </button>
-        </div>
-        <div className="flex-none border-b border-line px-2 py-[6px]">
-          <FilterInput value={filter} onChange={setFilter} label="Filter sessions" className="w-full" />
-        </div>
-        {/* A list of links and not a listbox: each row carries a second control
+      {split !== 'detail' && (
+        <div
+          className={`flex flex-none flex-col overflow-hidden border-r border-line ${split === 'list' ? 'w-full' : 'w-[238px]'}`}
+        >
+          <div className="flex flex-none items-center gap-2 border-b border-line py-[11px] pr-[10px] pl-3">
+            <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+              Sessions
+            </h2>
+            <span className="font-mono text-[10px] text-fg-subtle">{runs.length}</span>
+            <button
+              type="button"
+              onClick={onNew}
+              disabled={opening}
+              title="New session"
+              className="ml-auto h-5 rounded-[5px] border border-line px-[7px] text-[10.5px] text-fg-muted enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
+            >
+              New
+            </button>
+          </div>
+          <div className="flex-none border-b border-line px-2 py-[6px]">
+            <FilterInput
+              value={filter}
+              onChange={setFilter}
+              label="Filter sessions"
+              className="w-full"
+            />
+          </div>
+          {/* A list of links and not a listbox: each row carries a second control
             - the close button - and an option is a leaf in the accessibility
             tree, so a button inside one is unreachable from the keyboard. */}
-        <div className="flex-1 overflow-y-auto py-1">
-          <ul aria-label="Sessions" className="m-0 list-none p-0">
-            {shown.map((r) => (
-              <SessionRow
-                key={r.id}
-                run={r}
-                active={r.id === runId}
-                // Both: the address bar so the conversation can be linked to,
-              // and the store so it survives a move to a screen that names no
-              // run of its own.
-              onOpen={() => {
-                setActiveRun(r.id)
-                navigate({ screen: 'chat', id: r.id })
-              }}
-                onClose={() => onClose(r.id)}
-              />
-            ))}
-          </ul>
-          {runs.length === 0 && <EmptyState inline title="No sessions in this project yet." />}
-          {runs.length > 0 && shown.length === 0 && (
-            <EmptyState inline title="Nothing matches that filter." />
-          )}
+          <div className="flex-1 overflow-y-auto py-1">
+            <ul aria-label="Sessions" className="m-0 list-none p-0">
+              {shown.map((r) => (
+                <SessionRow
+                  key={r.id}
+                  run={r}
+                  active={r.id === runId}
+                  // Both: the address bar so the conversation can be linked to,
+                  // and the store so it survives a move to a screen that names no
+                  // run of its own.
+                  onOpen={() => {
+                    setActiveRun(r.id)
+                    navigate({ screen: 'chat', id: r.id })
+                  }}
+                  onClose={() => onClose(r.id)}
+                />
+              ))}
+            </ul>
+            {runs.length === 0 && <EmptyState inline title="No sessions in this project yet." />}
+            {runs.length > 0 && shown.length === 0 && (
+              <EmptyState inline title="Nothing matches that filter." />
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {!record ? (
-          <EmptyState
-            title="No session yet."
-            detail="Start one to drive an agent step by step."
-            action={{ label: opening ? 'Starting…' : 'New session', onClick: onNew, busy: opening }}
-          />
-        ) : (
-          <>
-            <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-[11px]">
-              <div className="flex flex-wrap items-center gap-[10px]">
-                <h1 className="m-0 text-[15px] font-semibold tracking-[-0.015em]">
-                  {run.title || record.title || 'Untitled session'}
-                </h1>
-                <StatusChip status={liveStatus(record, run)} />
-                {/* The presence event exists for exactly this: an approval
+      {split !== 'list' && (
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {!record ? (
+            <EmptyState
+              title="No session yet."
+              detail="Start one to drive an agent step by step."
+              action={{
+                label: opening ? 'Starting…' : 'New session',
+                onClick: onNew,
+                busy: opening,
+              }}
+            />
+          ) : (
+            <>
+              <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-[11px]">
+                <div className="flex flex-wrap items-center gap-[10px]">
+                  {split === 'detail' && <Back label="Sessions" to={{ screen: 'chat' }} />}
+                  <h1 className="m-0 text-[15px] font-semibold tracking-[-0.015em]">
+                    {run.title || record.title || 'Untitled session'}
+                  </h1>
+                  <StatusChip status={liveStatus(record, run)} />
+                  {/* The presence event exists for exactly this: an approval
                     blocks the turn, and knowing whether anyone else is here is
                     the difference between "thinking" and "waiting for somebody
                     who walked away". */}
-                {run.clients.length > 1 && (
-                  <span
-                    className="font-mono text-[10.5px] text-fg-subtle"
-                    title={run.clients.map((c) => c.label || c.kind || c.id).join(', ')}
-                  >
-                    {run.clients.length} watching
-                  </span>
-                )}
-                {/* Mounted always, with only the sentence appearing: a live
+                  {run.clients.length > 1 && (
+                    <span
+                      className="font-mono text-[10.5px] text-fg-subtle"
+                      title={run.clients.map((c) => c.label || c.kind || c.id).join(', ')}
+                    >
+                      {run.clients.length} watching
+                    </span>
+                  )}
+                  {/* Mounted always, with only the sentence appearing: a live
                     region inserted together with its text is announced by
                     nothing. */}
-                <span
-                  className="font-mono text-[10.5px] text-warning"
-                  role="status"
-                  aria-live="polite"
-                  aria-label="Stream"
-                >
-                  {state === 'open' ? '' : state === 'gone' ? reason || 'stream ended' : 'reconnecting'}
-                </span>
-                <div className="ml-auto flex flex-none gap-[6px]">
-                  <button
-                    type="button"
-                    // Nothing is read back: the daemon announces the changed
-                    // record, and this tab applies it like any other. Asking
-                    // over HTTP as well would be racing the socket this line
-                    // just wrote to - the request can be answered before the
-                    // operation is applied, and the answer would then arrive
-                    // after the announcement and undo it.
-                    onClick={() => send({ op: 'step_mode', on: !record.step })}
-                    title="Pause before each tool call"
-                    className="h-[26px] cursor-pointer rounded-md border px-[10px] text-[11.5px] whitespace-nowrap"
-                    style={{
-                      background: record.step ? 'var(--s0)' : 'transparent',
-                      borderColor: record.step ? 'var(--primary)' : 'var(--border)',
-                      color: record.step ? 'var(--fg)' : 'var(--fg-muted)',
-                    }}
-                    aria-pressed={record.step === true}
+                  <span
+                    className="font-mono text-[10.5px] text-warning"
+                    role="status"
+                    aria-live="polite"
+                    aria-label="Stream"
                   >
-                    Step mode
-                  </button>
-                  {run.running && (
+                    {state === 'open'
+                      ? ''
+                      : state === 'gone'
+                        ? reason || 'stream ended'
+                        : 'reconnecting'}
+                  </span>
+                  <div className="ml-auto flex flex-none gap-[6px]">
                     <button
                       type="button"
-                      onClick={() => send({ op: 'interrupt' })}
+                      // Nothing is read back: the daemon announces the changed
+                      // record, and this tab applies it like any other. Asking
+                      // over HTTP as well would be racing the socket this line
+                      // just wrote to - the request can be answered before the
+                      // operation is applied, and the answer would then arrive
+                      // after the announcement and undo it.
+                      onClick={() => send({ op: 'step_mode', on: !record.step })}
+                      title="Pause before each tool call"
+                      className="h-[26px] cursor-pointer rounded-md border px-[10px] text-[11.5px] whitespace-nowrap"
+                      style={{
+                        background: record.step ? 'var(--s0)' : 'transparent',
+                        borderColor: record.step ? 'var(--primary)' : 'var(--border)',
+                        color: record.step ? 'var(--fg)' : 'var(--fg-muted)',
+                      }}
+                      aria-pressed={record.step === true}
+                    >
+                      Step mode
+                    </button>
+                    {run.running && (
+                      <button
+                        type="button"
+                        onClick={() => send({ op: 'interrupt' })}
+                        className="h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] whitespace-nowrap text-fg-muted hover:border-line-strong hover:text-fg"
+                      >
+                        Interrupt
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => navigate({ screen: 'run', id: record.id })}
                       className="h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] whitespace-nowrap text-fg-muted hover:border-line-strong hover:text-fg"
                     >
-                      Interrupt
+                      Open run
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => navigate({ screen: 'run', id: record.id })}
-                    className="h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] whitespace-nowrap text-fg-muted hover:border-line-strong hover:text-fg"
-                  >
-                    Open run
-                  </button>
+                  </div>
                 </div>
-              </div>
-              {/* Every value here is something the daemon chose, and two of
+                {/* Every value here is something the daemon chose, and two of
                   them - a model reference and a working directory - are as long
                   as the machine makes them. Each cell is clipped on its own so
                   one long path cannot push the rest off the row. */}
-              <div className="mt-[9px] flex flex-wrap gap-x-4 gap-y-[6px] font-mono text-[10.5px] text-fg-subtle">
-                <label className="flex min-w-0 items-baseline gap-1 whitespace-nowrap">
-                  model
-                  <select
-                    value={run.model || record.model || ''}
-                    disabled={run.running || state !== 'open'}
-                    aria-label="Model for this conversation"
-                    onChange={(e) => send({ op: 'switch_model', ref: e.target.value })}
-                    className="min-w-0 max-w-[28ch] cursor-pointer truncate border-none bg-transparent font-mono text-[10.5px] text-fg-muted outline-none disabled:cursor-not-allowed"
-                  >
-                    {/* The run's own model first, because it may be one the
+                <div className="mt-[9px] flex flex-wrap gap-x-4 gap-y-[6px] font-mono text-[10.5px] text-fg-subtle">
+                  <label className="flex min-w-0 items-baseline gap-1 whitespace-nowrap">
+                    model
+                    <select
+                      value={run.model || record.model || ''}
+                      disabled={run.running || state !== 'open'}
+                      aria-label="Model for this conversation"
+                      onChange={(e) => send({ op: 'switch_model', ref: e.target.value })}
+                      className="min-w-0 max-w-[28ch] cursor-pointer truncate border-none bg-transparent font-mono text-[10.5px] text-fg-muted outline-none disabled:cursor-not-allowed"
+                    >
+                      {/* The run's own model first, because it may be one the
                         registry no longer lists - a model removed from
                         models.json does not end the conversation using it. */}
-                    {!models.some((m) => m.ref === (run.model || record.model)) && (
-                      <option value={run.model || record.model || ''}>
-                        {run.model || record.model || '—'}
-                      </option>
-                    )}
-                    {models.map((m) => (
-                      <option key={m.ref} value={m.ref}>
-                        {m.ref}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <Meta label="root" value={record.root ?? '—'} />
-                <Meta label="mode" value={record.mode} />
-                <Meta
-                  label="context"
-                  value={run.ctxSize ? `${percent(run.contextTokens, run.ctxSize)}%` : '—'}
-                />
-              </div>
-            </div>
-
-            {rows.length === 0 ? (
-              <div className="flex-1 overflow-y-auto px-[18px]">
-                <div className="max-w-[84ch] py-6">
-                  <div className="text-[13px] text-fg-muted">Nothing said yet.</div>
-                  <div className="mt-1 max-w-[56ch] text-[12px] text-pretty text-fg-subtle">
-                    Describe what the agent should do. With step mode on it will stop before every
-                    tool call and wait for you.
-                  </div>
+                      {!models.some((m) => m.ref === (run.model || record.model)) && (
+                        <option value={run.model || record.model || ''}>
+                          {run.model || record.model || '—'}
+                        </option>
+                      )}
+                      {models.map((m) => (
+                        <option key={m.ref} value={m.ref}>
+                          {m.ref}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <Meta label="root" value={record.root ?? '—'} />
+                  <Meta label="mode" value={record.mode} />
+                  <Meta
+                    label="context"
+                    value={run.ctxSize ? `${percent(run.contextTokens, run.ctxSize)}%` : '—'}
+                  />
                 </div>
               </div>
-            ) : (
-              <EventStream rows={rows} label="Transcript" live={null} onOpenBlob={setBlob} />
-            )}
 
-            {/* The region is permanent and only the card inside it appears:
+              {rows.length === 0 ? (
+                <div className="flex-1 overflow-y-auto px-[18px]">
+                  <div className="max-w-[84ch] py-6">
+                    <div className="text-[13px] text-fg-muted">Nothing said yet.</div>
+                    <div className="mt-1 max-w-[56ch] text-[12px] text-pretty text-fg-subtle">
+                      Describe what the agent should do. With step mode on it will stop before every
+                      tool call and wait for you.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <EventStream rows={rows} label="Transcript" live={null} onOpenBlob={setBlob} />
+              )}
+
+              {/* The region is permanent and only the card inside it appears:
                 a live region inserted together with its content is announced by
                 nothing, and this is the one moment the agent stops and waits
                 for a person. */}
-            <div
-              role="region"
-              aria-live="assertive"
-              aria-label="Approval"
-              className="flex-none px-[18px]"
-            >
-              {pending && (
-                <div className="max-w-[84ch] pb-2">
-                  <ApprovalCard
-                    approval={pending.approval}
-                    onDecide={(d) => decide(pending.id, d)}
-                    disabled={state !== 'open'}
-                  />
-                </div>
-              )}
-            </div>
+              <div
+                role="region"
+                aria-live="assertive"
+                aria-label="Approval"
+                className="flex-none px-[18px]"
+              >
+                {pending && (
+                  <div className="max-w-[84ch] pb-2">
+                    <ApprovalCard
+                      approval={pending.approval}
+                      onDecide={(d) => decide(pending.id, d)}
+                      disabled={state !== 'open'}
+                    />
+                  </div>
+                )}
+              </div>
 
-            <div className="flex-none border-t border-line bg-shell px-[18px] pt-[10px] pb-3">
-              <div className="max-w-[84ch]">
-                <div className="flex gap-2">
-                  <textarea
-                    data-composer
-                    rows={2}
-                    value={text}
-                    onChange={(e) => setText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
-                      e.preventDefault()
-                      submit()
-                    }}
-                    placeholder="Direct the agent — constraints, corrections, next step. ⌘↵ to send."
-                    aria-label="Message"
-                    className="min-w-0 flex-1 resize-y rounded-md border border-line bg-bg px-[10px] py-2 text-[12.5px] leading-[1.5] outline-none focus:border-primary"
-                  />
-                  <button
-                    type="button"
-                    onClick={submit}
-                    disabled={!text.trim() || state !== 'open'}
-                    className="flex-none self-stretch rounded-md border border-primary bg-primary px-[14px] text-[12px] font-medium text-bg enabled:cursor-pointer enabled:hover:brightness-110 disabled:opacity-50"
-                  >
-                    Send
-                  </button>
+              <div className="flex-none border-t border-line bg-shell px-[18px] pt-[10px] pb-3">
+                <div className="max-w-[84ch]">
+                  <div className="flex gap-2">
+                    <textarea
+                      data-composer
+                      rows={2}
+                      value={text}
+                      onChange={(e) => setText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
+                        e.preventDefault()
+                        submit()
+                      }}
+                      placeholder="Direct the agent — constraints, corrections, next step. ⌘↵ to send."
+                      aria-label="Message"
+                      className="min-w-0 flex-1 resize-y rounded-md border border-line bg-bg px-[10px] py-2 text-[12.5px] leading-[1.5] outline-none focus:border-primary"
+                    />
+                    <button
+                      type="button"
+                      onClick={submit}
+                      disabled={!text.trim() || state !== 'open'}
+                      className="flex-none self-stretch rounded-md border border-primary bg-primary px-[14px] text-[12px] font-medium text-bg enabled:cursor-pointer enabled:hover:brightness-110 disabled:opacity-50"
+                    >
+                      Send
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </>
-        )}
-      </div>
+            </>
+          )}
+        </div>
+      )}
       {blob !== null && runId && (
         <BlobDialog runId={runId} seq={blob} onClose={() => setBlob(null)} />
       )}

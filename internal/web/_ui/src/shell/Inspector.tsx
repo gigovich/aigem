@@ -13,13 +13,23 @@ import type { InspectorContent } from '@/state/inspector'
  * the model was picked out of.
  */
 export function Inspector({ content }: { content: InspectorContent }) {
-  const open = useApp((s) => s.inspectorOpen)
+  const { open, phone } = useApp((s) => ({
+    open: s.inspectorOpen,
+    phone: s.phone,
+  }))
   if (!open || !content) return null
   return (
     <aside
       aria-label="Inspector"
-      className="flex-none overflow-y-auto border-l border-line bg-shell"
-      style={{ width: 'var(--panel)', animation: 'aigem-sheet .16s ease-out' }}
+      className={`flex-none overflow-y-auto border-l border-line bg-shell ${
+        phone
+          ? 'fixed top-[38px] right-0 bottom-[24px] z-[60] w-full max-w-[360px] shadow-panel'
+          : ''
+      }`}
+      style={{
+        width: phone ? undefined : 'var(--panel)',
+        animation: 'aigem-sheet .16s ease-out',
+      }}
     >
       <div className="flex items-center gap-2 border-b border-line px-3 py-[10px]">
         <span className="font-mono text-[11px] text-fg-subtle">{content.kind}</span>
