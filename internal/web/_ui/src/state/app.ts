@@ -186,6 +186,17 @@ export function runCounts(s: AppState): { live: number; running: number; waiting
   return { live, running, waiting }
 }
 
+/**
+ * The conversation a tab means when nothing else names one: the active run if
+ * it still exists, else the newest, preferring a live one and settling for a
+ * closed one - a restarted daemon finds every run closed.
+ */
+export function latestRunId(runs: Run[], activeRun: string): string | undefined {
+  if (activeRun && runs.some((r) => r.id === activeRun)) return activeRun
+  const newest = [...runs].reverse()
+  return (newest.find((r) => r.live) ?? newest[0])?.id
+}
+
 export function has(feature: Feature): boolean {
   // Read through rather than indexed: a daemon that answered without a feature
   // map at all must leave the page with no screens, not with no page.
@@ -403,11 +414,10 @@ function setPendingCommand(text: string) {
 /**
  * Put a command in the composer and go there.
  *
- * The id in the address bar is the same conversation `App.tsx`'s own fallback
- * would land on: the active run if it still exists, else the newest one,
- * preferring a live one. Without an id, bare `/chat` is the session list on a
- * phone rather than a composer - the same reason `newSession`/`openSession`
- * and a session row always navigate with one.
+ * The id in the address bar is `latestRunId` - the same conversation
+ * `App.tsx`'s own fallback would land on. Without one, bare `/chat` is the
+ * session list on a phone rather than a composer - the same reason
+ * `newSession`/`openSession` and a session row always navigate with one.
  *
  * The focus is deferred until the composer has been re-rendered with the text
  * in it: the caller has no reference to it, and the point of choosing a command
@@ -416,9 +426,7 @@ function setPendingCommand(text: string) {
 export function compose(text: string) {
   setPendingCommand(text)
   const { runs, activeRun } = store.get()
-  const known = activeRun && runs.some((r) => r.id === activeRun) ? activeRun : undefined
-  const newest = [...runs].reverse()
-  const id = known ?? (newest.find((r) => r.live) ?? newest[0])?.id
+  const id = latestRunId(runs, activeRun)
   navigate(id ? { screen: 'chat', id } : { screen: 'chat' })
   queueMicrotask(() => document.querySelector<HTMLElement>('[data-composer]')?.focus())
 }

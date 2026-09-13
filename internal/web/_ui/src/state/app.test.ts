@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { resync } from '@/lib/route'
-import { compose, initialState, runCounts, store } from './app'
+import { compose, initialState, latestRunId, runCounts, store } from './app'
 import type { Run } from '@/lib/wire'
 
 afterEach(() => {
@@ -38,6 +38,15 @@ test('counts the three run states apart', () => {
   expect(runCounts(store.get())).toEqual({ live: 5, running: 2, waiting: 1 })
 })
 
+// The one fallback App.tsx's `runId` and `compose()` both read: prefer the
+// run the tab is already attached to, else the newest, preferring a live one.
+test('latestRunId prefers a live run, then the one the tab is attached to', () => {
+  const runs = [run({ id: 'a', live: true }), run({ id: 'b', live: false, status: 'closed' })]
+  expect(latestRunId(runs, '')).toBe('a')
+  expect(latestRunId(runs, 'b')).toBe('b')
+  expect(latestRunId([], '')).toBeUndefined()
+})
+
 // `compose` puts a command in the address bar as well as the store, and the
 // id it picks has to be the same conversation App.tsx's own fallback would
 // land on - otherwise the composer it navigates to is not the one the person
@@ -51,17 +60,9 @@ test('compose lands on the conversation the address bar can name', () => {
   }
 
   reset()
-  store.set((s) => ({
-    ...s,
-    runs: [run({ id: 'a', live: true }), run({ id: 'b', live: false, status: 'closed' })],
-  }))
+  store.set((s) => ({ ...s, runs: [run({ id: 'a', live: true })] }))
   compose('/x ')
   expect(window.location.pathname).toBe('/chat/a')
-
-  reset()
-  store.set((s) => ({ ...s, activeRun: 'b' }))
-  compose('/x ')
-  expect(window.location.pathname).toBe('/chat/b')
 
   reset()
   store.set((s) => ({ ...s, runs: [], activeRun: '' }))

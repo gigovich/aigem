@@ -7,6 +7,7 @@ import {
   clearBanner,
   explain,
   flash,
+  latestRunId,
   openSession,
   refresh,
   setBanner,
@@ -92,20 +93,13 @@ export default function App() {
   /**
    * The conversation this tab is attached to: the run in the address bar, the
    * one chosen in the session list, or the most recent one there is.
-   *
-   * The fallback prefers a live session and settles for a closed one, because a
-   * restarted daemon finds every run closed and its timeline still reads - a
-   * page that showed "no session yet" over a list of conversations would be
-   * describing the daemon's restart rather than the person's work.
    */
   const runId = useMemo(() => {
     // Both screens that draw a conversation can name one in the address bar,
     // and honouring it on only one of them is a page whose URL, breadcrumb and
     // inspector disagree with what it is actually reading.
     if ((route.screen === 'run' || route.screen === 'chat') && route.id) return route.id
-    if (activeRun && runs.some((r) => r.id === activeRun)) return activeRun
-    const newest = [...runs].reverse()
-    return (newest.find((r) => r.live) ?? newest[0])?.id ?? ''
+    return latestRunId(runs, activeRun) ?? ''
   }, [route, activeRun, runs])
 
   const conversation = useRunEvents(runId || undefined)
