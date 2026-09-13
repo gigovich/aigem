@@ -3,7 +3,6 @@ package web
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -260,6 +259,9 @@ func (c *wsConn) readClientOps(apply func(data []byte) any) {
 	var reply bytes.Buffer
 	control := func(h ws.Header, r io.Reader) error {
 		reply.Reset()
+		if h.OpCode == ws.OpClose {
+			c.peerClosed.Store(true)
+		}
 		err := wsutil.ControlHandler{
 			Src:                 r,
 			Dst:                 &reply,
@@ -273,10 +275,6 @@ func (c *wsConn) readClientOps(apply func(data []byte) any) {
 			if werr := c.writeFrame(reply.Bytes()); werr != nil {
 				return werr
 			}
-		}
-		var closed wsutil.ClosedError
-		if errors.As(err, &closed) {
-			c.peerClosed.Store(true)
 		}
 		return err
 	}

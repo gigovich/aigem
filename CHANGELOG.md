@@ -40,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the line that ends it. Prose in the transcript wraps and renders its
   markdown. A closed run still lists what it changed, from a record its
   session keeps beside the journal. An attached session with nothing in
-  flight is "Idle". On a phone, choosing a row opens the inspector.
+  flight is "Idle". On a phone, choosing a row opens the inspector. A phone
+  can run a skill from the skill's page, and the drawer keeps focus.
 - `make web` builds the browser UI into `internal/web/dist`, where the binary
   embeds it from. It needs Node 22+. **The bundle is not committed and the
   release pipeline does not build it**, so a downloaded release binary and
@@ -59,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a caller that closed on seeing the end of it raced a write it had no way to
   know about. `Close` now waits for the turn to unwind. This was visible as an
   occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
+- The web daemon answered a browser's Close frame twice, which Chrome logged as
+  an error on every run switch.
 
 ### Changed
 

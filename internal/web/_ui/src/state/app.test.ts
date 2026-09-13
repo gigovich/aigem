@@ -40,7 +40,7 @@ test('counts the three run states apart', () => {
 
 // The one fallback App.tsx's `runId` and `compose()` both read: prefer the
 // run the tab is already attached to, else the newest, preferring a live one.
-test('latestRunId prefers a live run, then the one the tab is attached to', () => {
+test('the run the tab is attached to wins, then a live run, then the newest', () => {
   const runs = [run({ id: 'a', live: true }), run({ id: 'b', live: false, status: 'closed' })]
   expect(latestRunId(runs, '')).toBe('a')
   expect(latestRunId(runs, 'b')).toBe('b')
@@ -68,6 +68,20 @@ test('compose lands on the conversation the address bar can name', () => {
   store.set((s) => ({ ...s, runs: [], activeRun: '' }))
   compose('/x ')
   expect(window.location.pathname).toBe('/chat')
+})
+
+// A run screen names a conversation too, and it can be a closed one a live run
+// would otherwise outrank - the address bar says which tab this is, and
+// compose has to honour it rather than the fallback that ignores it.
+test('compose honours the run the address bar names, even over a live one', () => {
+  window.history.replaceState(null, '', '/run/r-9')
+  resync()
+  store.set((s) => ({
+    ...s,
+    runs: [run({ id: 'r-9', live: false, status: 'closed' }), run({ id: 'r-1', live: true })],
+  }))
+  compose('/x ')
+  expect(window.location.pathname).toBe('/chat/r-9')
 })
 
 /**

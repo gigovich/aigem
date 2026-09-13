@@ -5,9 +5,9 @@ import type { Route } from '@/lib/route'
 import { signIn } from '@/lib/auth'
 import {
   clearBanner,
+  conversationId,
   explain,
   flash,
-  latestRunId,
   openSession,
   refresh,
   setBanner,
@@ -39,7 +39,7 @@ import { Run } from '@/screens/Run'
 import { Skills } from '@/screens/Skills'
 import { Modal } from '@/ui/Modal'
 
-const FOCUSABLE = 'button, [href], input, select, textarea'
+const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]), [href], input, select, textarea'
 
 /**
  * The application shell.
@@ -94,13 +94,10 @@ export default function App() {
    * The conversation this tab is attached to: the run in the address bar, the
    * one chosen in the session list, or the most recent one there is.
    */
-  const runId = useMemo(() => {
-    // Both screens that draw a conversation can name one in the address bar,
-    // and honouring it on only one of them is a page whose URL, breadcrumb and
-    // inspector disagree with what it is actually reading.
-    if ((route.screen === 'run' || route.screen === 'chat') && route.id) return route.id
-    return latestRunId(runs, activeRun) ?? ''
-  }, [route, activeRun, runs])
+  const runId = useMemo(
+    () => conversationId(route, runs, activeRun) ?? '',
+    [route, activeRun, runs],
+  )
 
   const conversation = useRunEvents(runId || undefined)
 
@@ -144,7 +141,7 @@ export default function App() {
       return
     }
     if (navOpen) {
-      drawer.current?.querySelector<HTMLElement>('button')?.focus()
+      drawer.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus()
     } else if (wasOpen.current) {
       document.querySelector<HTMLElement>('[aria-label="Open navigation"]')?.focus()
     }
@@ -235,7 +232,8 @@ export default function App() {
               onClick={() => setNav(false)}
               className="fixed inset-0 z-[64] bg-black/40"
             />
-            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions --
+                a dialog is not an interactive role, and the trap must listen where the keys bubble */}
             <div
               ref={drawer}
               role="dialog"

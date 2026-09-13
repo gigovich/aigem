@@ -540,6 +540,35 @@ func TestAClientCloseIsAnsweredWithExactlyOneCloseFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if closes := countCloseFrames(t, c); closes != 1 {
+		t.Fatalf("the daemon sent %d close frames after the client's, want exactly 1", closes)
+	}
+}
+
+// A close frame with a status code outside the range the RFC allows is still a
+// close: the daemon must not let a malformed body stop it from marking the
+// peer closed before it replies, which is what the double close frame above
+// used to come from.
+func TestAClientCloseWithAnInvalidStatusIsStillAnsweredOnce(t *testing.T) {
+	b := &fakeBackend{}
+	srv := newTestServer(t, Config{Backend: b})
+	id := openRun(t, srv)
+	c := dialRunSocket(t, srv, id, "")
+
+	closing := ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusCode(999), ""))
+	closing = ws.MaskFrameInPlace(closing)
+	if err := ws.WriteFrame(c.conn, closing); err != nil {
+		t.Fatal(err)
+	}
+
+	if closes := countCloseFrames(t, c); closes != 1 {
+		t.Fatalf("the daemon sent %d close frames after the client's, want exactly 1", closes)
+	}
+}
+
+// countCloseFrames drains the stream to EOF and counts the Close frames on it.
+func countCloseFrames(t *testing.T, c *controlClient) int {
+	t.Helper()
 	if err := c.conn.SetReadDeadline(time.Now().Add(testWait)); err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +585,5 @@ func TestAClientCloseIsAnsweredWithExactlyOneCloseFrame(t *testing.T) {
 			break
 		}
 	}
-	if closes != 1 {
-		t.Fatalf("the daemon sent %d close frames after the client's, want exactly 1", closes)
-	}
+	return closes
 }

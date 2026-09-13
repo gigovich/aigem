@@ -9,7 +9,8 @@
  */
 
 import { api, ApiError } from '@/lib/api'
-import { navigate } from '@/lib/route'
+import { getRoute, navigate } from '@/lib/route'
+import type { Route } from '@/lib/route'
 import { connectControl } from '@/lib/control'
 import type { ControlState } from '@/lib/control'
 import { createStore, useStore } from '@/lib/store'
@@ -195,6 +196,12 @@ export function latestRunId(runs: Run[], activeRun: string): string | undefined 
   if (activeRun && runs.some((r) => r.id === activeRun)) return activeRun
   const newest = [...runs].reverse()
   return (newest.find((r) => r.live) ?? newest[0])?.id
+}
+
+/** The conversation a tab means: the run the address bar names, else the fallback. */
+export function conversationId(route: Route, runs: Run[], activeRun: string): string | undefined {
+  if ((route.screen === 'run' || route.screen === 'chat') && route.id) return route.id
+  return latestRunId(runs, activeRun)
 }
 
 export function has(feature: Feature): boolean {
@@ -412,22 +419,19 @@ function setPendingCommand(text: string) {
 }
 
 /**
- * Put a command in the composer and go there.
- *
- * The id in the address bar is `latestRunId` - the same conversation
- * `App.tsx`'s own fallback would land on. Without one, bare `/chat` is the
- * session list on a phone rather than a composer - the same reason
- * `newSession`/`openSession` and a session row always navigate with one.
- *
- * The focus is deferred until the composer has been re-rendered with the text
- * in it: the caller has no reference to it, and the point of choosing a command
- * is to go on typing its argument.
+ * Put a command in the composer and go to the conversation the address bar
+ * already names, or the fallback when it names none.
  */
 export function compose(text: string) {
   setPendingCommand(text)
   const { runs, activeRun } = store.get()
-  const id = latestRunId(runs, activeRun)
-  navigate(id ? { screen: 'chat', id } : { screen: 'chat' })
+  const id = conversationId(getRoute(), runs, activeRun)
+  if (id) {
+    setActiveRun(id)
+    navigate({ screen: 'chat', id })
+  } else {
+    navigate({ screen: 'chat' })
+  }
   queueMicrotask(() => document.querySelector<HTMLElement>('[data-composer]')?.focus())
 }
 
