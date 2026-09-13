@@ -164,7 +164,10 @@ export function connectRun(
         return
       }
     }
-    if (stopped) return
+    // The record is read before the handshake rather than after it fails:
+    // every run is closed after a daemon restart, and a page that dialled
+    // each of them first would log a refused handshake per conversation.
+    if (stopped || (await diagnose())) return
     const ws = new WebSocket(
       // The label is what the presence event shows the other tabs; without it
       // a terminal and a browser on the same run cannot say who is attached,

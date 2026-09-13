@@ -140,19 +140,16 @@ test('sends an operation only while the socket is open', async () => {
 // A browser cannot read the status of a failed handshake, so the only way to
 // tell "this run is gone" from "the daemon restarted" is to ask over HTTP -
 // and a page that kept dialling a deleted run would never stop.
-test('stops dialling a run the daemon says is gone', async () => {
+test('never dials a run the daemon says is gone', async () => {
   vi.useFakeTimers()
   stubFetch((path) =>
     path.includes('/events') ? ok([]) : new Response('no such run', { status: 404 }),
   )
   const { states, conn } = attach(0)
-  await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
-  FakeSocket.last.open()
-  FakeSocket.last.drop()
-
   await vi.waitFor(() => expect(states.some(([s]) => s === 'gone')).toBe(true))
+  expect(states.find(([s]) => s === 'gone')?.[1]).toBe('this run no longer exists')
   await vi.advanceTimersByTimeAsync(60_000)
-  expect(FakeSocket.instances).toHaveLength(1)
+  expect(FakeSocket.instances).toHaveLength(0)
   conn.close()
 })
 
@@ -261,18 +258,32 @@ test('closing stops it reconnecting', async () => {
 // Waiting for a 409 there is waiting for something the route never sends - and
 // every run is closed after a daemon restart, so a tab would redial a closed
 // conversation for as long as it stayed open.
-test('stops dialling a conversation the record says is closed', async () => {
+test('never dials a conversation the record says is closed', async () => {
   vi.useFakeTimers()
   stubFetch((path) =>
     path.includes('/events') ? ok([]) : ok({ id: 'r1', live: false, status: 'closed' }),
   )
   const { states, conn } = attach(0)
+  await vi.waitFor(() => expect(states.some(([s]) => s === 'gone')).toBe(true))
+  expect(states.find(([s]) => s === 'gone')?.[1]).toContain('closed')
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(FakeSocket.instances).toHaveLength(0)
+  conn.close()
+})
+
+// The socket handshake itself is the 409 a browser cannot read, and a run that
+// closes while a tab is attached is the ordinary way to reach it.
+test('stops dialling once the record of a dropped socket says closed', async () => {
+  vi.useFakeTimers()
+  let live = true
+  stubFetch((path) => (path.includes('/events') ? ok([]) : ok({ id: 'r1', live })))
+  const { states, conn } = attach(0)
   await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
   FakeSocket.last.open()
+  live = false
   FakeSocket.last.drop()
 
   await vi.waitFor(() => expect(states.some(([s]) => s === 'gone')).toBe(true))
-  expect(states.find(([s]) => s === 'gone')?.[1]).toContain('closed')
   await vi.advanceTimersByTimeAsync(60_000)
   expect(FakeSocket.instances).toHaveLength(1)
   conn.close()

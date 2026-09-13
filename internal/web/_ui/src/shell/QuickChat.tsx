@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { navigate } from '@/lib/route'
 import { EventKind } from '@/lib/wire'
-import { setQuick } from '@/state/app'
+import { setActiveRun, setQuick } from '@/state/app'
 import type { RunView } from '@/state/run'
 
 type Props = {
@@ -55,7 +55,8 @@ export function QuickChat({ run, runId, onSubmit, ready }: Props) {
           disabled={!runId}
           onClick={() => {
             setQuick(false)
-            navigate({ screen: 'run', id: runId })
+            setActiveRun(runId)
+            navigate({ screen: 'chat', id: runId })
           }}
           title="Continue in the session"
           className="ml-auto h-[21px] rounded-[5px] border border-line px-2 text-[10.5px] text-fg-subtle enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"

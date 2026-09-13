@@ -599,3 +599,14 @@ test('an answer to an approval says which tab gave it', async () => {
   const sent = JSON.parse(h.runSocket()?.sent[0] ?? '{}') as { label?: string }
   expect(sent.label).toMatch(/^tab [a-z0-9]{4}$/)
 })
+
+// Every run is closed after a daemon restart, so "why did this stream end" is
+// the ordinary question and not an edge case.
+test('says why the stream ended, in the socket\'s own words', async () => {
+  await mountApp({ runs: [{ ...RUN, status: 'closed', live: false }] })
+  await waitFor(() =>
+    expect(screen.getByRole('status', { name: 'Stream' })).toHaveTextContent(
+      'this conversation is closed; its transcript still reads',
+    ),
+  )
+})

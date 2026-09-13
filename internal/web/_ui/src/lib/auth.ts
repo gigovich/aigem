@@ -18,6 +18,9 @@ export async function signIn(signal?: AbortSignal): Promise<void> {
     signal,
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
+  if (res.status === 401 && !token) {
+    throw new Error('Not signed in. Open the link the daemon printed to sign in.')
+  }
   if (!res.ok) throw new Error(`sign-in refused: ${res.status}`)
   // Only after it was spent. A refused exchange leaves the token where it is,
   // because it is the only credential the page has and a reload is the whole

@@ -124,6 +124,25 @@ test('skills lists the catalogue and the definitions awaiting approval', async (
 
 // Loading a project's skills changes what the agent will do on its own in every
 // conversation this daemon holds. It gets a question, not a button.
+test('a skill a person may invoke can be run from its inspector', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN], skills: SKILLS })
+  go('skills')
+  await user.click(await screen.findByRole('button', { name: 'Run in a session' }))
+
+  await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('/skill:code-review ')
+})
+
+test('a skill only the model may invoke offers nothing to run', async () => {
+  await mountApp({
+    skills: { items: [{ ...SKILLS.items[0]!, userInvocable: false }] },
+  })
+  go('skills')
+  expect(await screen.findByRole('heading', { name: 'code-review', level: 1 })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /in a session/ })).not.toBeInTheDocument()
+})
+
 test('skills asks before it loads a project definition, and only then posts', async () => {
   const user = userEvent.setup()
   const h = await mountApp({

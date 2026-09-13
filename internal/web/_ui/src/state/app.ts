@@ -9,6 +9,7 @@
  */
 
 import { api, ApiError } from '@/lib/api'
+import { navigate } from '@/lib/route'
 import { connectControl } from '@/lib/control'
 import type { ControlState } from '@/lib/control'
 import { createStore, useStore } from '@/lib/store'
@@ -352,6 +353,35 @@ export function releaseOpening() {
 
 export function setPendingCommand(text: string) {
   store.set((s) => ({ ...s, pendingCommand: { text, nth: s.pendingCommand.nth + 1 } }))
+}
+
+/**
+ * Put a command in the composer and go there.
+ *
+ * The focus is deferred until the composer has been re-rendered with the text
+ * in it: the caller has no reference to it, and the point of choosing a command
+ * is to go on typing its argument.
+ */
+export function compose(text: string) {
+  setPendingCommand(text)
+  navigate({ screen: 'chat' })
+  queueMicrotask(() => document.querySelector<HTMLElement>('[data-composer]')?.focus())
+}
+
+/**
+ * Forget this browser's session, on the daemon and then here.
+ *
+ * The reload is the sign-out: the page comes back up with no cookie, the
+ * exchange is refused, and the fatal state says how to sign in again.
+ */
+export async function signOut() {
+  try {
+    await api.signOut()
+  } catch (err) {
+    setBanner(explain(err))
+    return
+  }
+  window.location.replace('/')
 }
 
 /**

@@ -56,7 +56,7 @@ test('continues into the session it is showing', async () => {
   const { user, panel } = await open()
   await user.click(within(panel).getByRole('button', { name: 'Open session' }))
 
-  await waitFor(() => expect(window.location.pathname).toBe('/run/r-1'))
+  await waitFor(() => expect(window.location.pathname).toBe('/chat/r-1'))
   expect(screen.queryByRole('dialog', { name: 'Quick chat' })).not.toBeInTheDocument()
 })
 

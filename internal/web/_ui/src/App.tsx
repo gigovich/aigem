@@ -338,6 +338,7 @@ function Screen({
           run={conversation.view}
           runId={runId}
           state={conversation.state}
+          reason={conversation.reason}
           send={conversation.send}
           onNew={onNew}
           onClose={onClose}

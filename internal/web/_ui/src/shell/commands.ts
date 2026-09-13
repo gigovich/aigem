@@ -10,10 +10,11 @@
 import { navigate } from '@/lib/route'
 import type { Route } from '@/lib/route'
 import {
+  compose,
   flash,
-  setPendingCommand,
   setPalette,
   setQuick,
+  signOut,
   store,
   toggleDensity,
   toggleInspector,
@@ -132,12 +133,7 @@ export function paletteItems(state: AppState, actions: { newSession: () => void 
       group: 'Execute',
       run: () => {
         setPalette(false)
-        setPendingCommand(`${name} `)
-        navigate({ screen: 'chat' })
-        // After the composer has been re-rendered with the text in it: the
-        // palette has no reference to it, and the point of choosing a command
-        // here is to go on typing its argument.
-        queueMicrotask(() => document.querySelector<HTMLElement>('[data-composer]')?.focus())
+        compose(`${name} `)
       },
     })
   }
@@ -175,6 +171,17 @@ export function paletteItems(state: AppState, actions: { newSession: () => void 
         setPalette(false)
         toggleDensity()
         flash(`Density: ${store.get().density}`)
+      },
+    },
+    {
+      id: 'sign-out',
+      label: 'Sign out',
+      hint: 'this browser only',
+      icon: '⏏',
+      group: 'Preferences',
+      run: () => {
+        setPalette(false)
+        void signOut()
       },
     },
   )

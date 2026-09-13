@@ -20,6 +20,8 @@ type Props = {
   run: RunView
   runId: string
   state: RunSocketState
+  /** Why the stream ended, when the socket could say. */
+  reason: string
   send: (op: RunOp) => boolean
   onNew: () => void
   onClose: (id: string) => void
@@ -33,7 +35,7 @@ type Props = {
  * a later phase a run is a ticket's autonomous execution and a session is the
  * one a person steers; in phase one only the second exists, and this is it.
  */
-export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
+export function Chat({ run, runId, state, reason, send, onNew, onClose }: Props) {
   const { runs, models, pendingCommand, opening } = useApp((s) => ({
     runs: s.runs,
     // Only the ones that can actually be opened: offering a model with no
@@ -195,7 +197,7 @@ export function Chat({ run, runId, state, send, onNew, onClose }: Props) {
                   aria-live="polite"
                   aria-label="Stream"
                 >
-                  {state === 'open' ? '' : state === 'gone' ? 'stream ended' : 'reconnecting'}
+                  {state === 'open' ? '' : state === 'gone' ? reason || 'stream ended' : 'reconnecting'}
                 </span>
                 <div className="ml-auto flex flex-none gap-[6px]">
                   <button

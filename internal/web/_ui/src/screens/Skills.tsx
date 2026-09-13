@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '@/lib/api'
 import { navigate } from '@/lib/route'
-import { explain, flash, refresh, setBanner, useApp } from '@/state/app'
+import { compose, explain, flash, refresh, setBanner, useApp } from '@/state/app'
 import { usePublishInspector } from '@/state/inspector'
 import { SKILL_STATUS } from '@/lib/wire'
 import type { Skill, SkillSummary, StatusInfo } from '@/lib/wire'
@@ -97,7 +97,10 @@ export function Skills({ selected }: { selected?: string }) {
       ],
       listTitle: detail?.allowedTools.length ? 'Allowed tools' : undefined,
       list: detail?.allowedTools.map((t) => ({ icon: '·', text: t })) ?? [],
-      actions: [{ label: 'Open in a session', onClick: () => navigate({ screen: 'chat' }) }],
+      // A skill the model alone may invoke is not something a person can run.
+      actions: chosen.userInvocable
+        ? [{ label: 'Run in a session', onClick: () => compose(`/skill:${chosen.name} `) }]
+        : [],
     }
   }, [chosen, detail, pending])
   usePublishInspector(panel)

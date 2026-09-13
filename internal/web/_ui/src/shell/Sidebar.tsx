@@ -1,7 +1,7 @@
 import { navigate } from '@/lib/route'
 import type { Route, Screen } from '@/lib/route'
 import type { Feature } from '@/lib/wire'
-import { runCounts, useApp } from '@/state/app'
+import { runCounts, signOut, useApp } from '@/state/app'
 import type { AppState } from '@/state/app'
 
 type Item = { screen: Screen; label: string; icon: string; feature?: Feature }
@@ -110,6 +110,15 @@ export function Sidebar({ route, onNewProject }: Props) {
           <div className="overflow-hidden text-[11.5px] text-ellipsis whitespace-nowrap">Local</div>
           <div className="font-mono text-[9.5px] text-fg-subtle">local · agent host</div>
         </div>
+        <button
+          type="button"
+          onClick={() => void signOut()}
+          aria-label="Sign out"
+          title="Sign out of this browser"
+          className="ml-auto grid size-[22px] flex-none cursor-pointer place-items-center rounded-[4px] text-[12px] text-fg-subtle hover:bg-s0 hover:text-fg"
+        >
+          <span aria-hidden="true">⏏</span>
+        </button>
       </div>
     </nav>
   )

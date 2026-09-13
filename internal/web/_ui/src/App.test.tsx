@@ -26,7 +26,7 @@ test('signs in, reads the daemon and draws the shell', async () => {
 test('says so when the sign-in is refused', async () => {
   installDaemon({ routes: { '/api/auth/session': () => new Response(null, { status: 401 }) } })
   render(<App />)
-  expect(await screen.findByRole('status')).toHaveTextContent('sign-in refused: 401')
+  expect(await screen.findByRole('status')).toHaveTextContent('Not signed in')
 })
 
 test('says it is connecting before the daemon answers', () => {
