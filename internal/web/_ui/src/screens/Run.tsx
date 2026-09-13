@@ -2,13 +2,12 @@ import { useMemo, useState } from 'react'
 import { clock, elapsed, tokens as tokenLabel } from '@/lib/format'
 import { navigate } from '@/lib/route'
 import { readable } from '@/lib/text'
-import { liveStatus } from '@/state/run'
 import type { RunOp } from '@/lib/wire'
 import type { RunSocketState } from '@/lib/socket'
 import { useApp } from '@/state/app'
 import { usePublishInspector } from '@/state/inspector'
 import { visibleRows } from '@/state/eventrow'
-import { agentTree } from '@/state/run'
+import { agentTree, liveStatus, planRows } from '@/state/run'
 import type { RunView } from '@/state/run'
 import { SegmentedControl } from '@/ui/SegmentedControl'
 import { AgentTree } from '@/ui/AgentTree'
@@ -86,6 +85,7 @@ export function Run({ run, runId, state, send }: Props) {
       title: run.title || record.title || 'Untitled run',
       status: liveStatus(record, run),
       fields: [...fields, { key: 'root', value: record.root ?? '—' }],
+      plan: planRows(run.todos),
       progress: run.ctxSize > 0 ? { used: run.contextTokens, total: run.ctxSize } : undefined,
       listTitle: files.length > 0 ? 'Files touched' : undefined,
       list: files,
@@ -202,6 +202,28 @@ export function Run({ run, runId, state, send }: Props) {
               Agent tree
             </h2>
             <AgentTree nodes={tree} selected={agent} onSelect={setAgent} />
+
+            {run.todos.length > 0 && (
+              <>
+                <div aria-hidden="true" className="h-px bg-line" />
+                <div className="p-3">
+                  <h2 className="mb-2 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+                    Plan
+                  </h2>
+                  {planRows(run.todos).map((row) => (
+                    <div key={row.text} className="flex h-6 items-center gap-2 font-mono text-[11px]">
+                      <span aria-hidden="true" className="w-2" style={{ color: row.color }}>
+                        {row.icon}
+                      </span>
+                      <span className="sr-only">{row.meta || 'pending'}</span>
+                      <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
+                        {row.text}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
 
             <div aria-hidden="true" className="h-px bg-line" />
             <div className="p-3">

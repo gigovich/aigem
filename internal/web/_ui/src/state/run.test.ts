@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import { EventKind } from '@/lib/wire'
 import type { Run, RunEvent } from '@/lib/wire'
-import { agentTree, apply, applyAll, emptyRun, liveStatus } from './run'
+import { agentTree, apply, applyAll, emptyRun, liveStatus, planRows } from './run'
 import { toRow, visibleRows } from './eventrow'
 
 const ev = (seq: number, kind: string, over: Partial<RunEvent> = {}): RunEvent =>
@@ -250,4 +250,17 @@ test('a file written twice counts twice, and is listed once', () => {
   ])
   expect(view.files.map((f) => f.path)).toEqual(['notes.md', 'other.md'])
   expect(view.writes).toBe(3)
+})
+
+test('a plan row says its state without relying on colour', () => {
+  const rows = planRows([
+    { text: 'read the spec', status: 'completed' },
+    { text: 'write the test', status: 'in_progress' },
+    { text: 'commit', status: 'pending' },
+    { text: 'unknown', status: 'later' },
+  ])
+  expect(rows.map((r) => r.icon)).toEqual(['✓', '●', '·', '·'])
+  expect(rows.map((r) => r.meta)).toEqual(['done', 'doing', '', ''])
+  expect(rows[0]?.color).toBe('var(--success)')
+  expect(rows[1]?.color).toBe('var(--running)')
 })

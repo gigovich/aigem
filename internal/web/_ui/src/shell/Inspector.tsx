@@ -3,7 +3,7 @@ import { FieldList } from '@/ui/FieldList'
 import { ProgressBar } from '@/ui/ProgressBar'
 import { StatusChip } from '@/ui/StatusChip'
 import { setInspector, useApp } from '@/state/app'
-import type { InspectorContent } from '@/state/inspector'
+import type { InspectorContent, InspectorRow } from '@/state/inspector'
 
 /**
  * The right-hand panel: what is selected, said once and in full.
@@ -64,32 +64,9 @@ export function Inspector({ content }: { content: InspectorContent }) {
         </div>
       )}
 
+      {content.plan && content.plan.length > 0 && <Rows title="Plan" rows={content.plan} />}
       {content.list && content.list.length > 0 && (
-        <>
-          <Rule />
-          <div className="p-3">
-            <h3 className="mb-[7px] text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
-              {content.listTitle}
-            </h3>
-            {content.list.map((row) => (
-              <div key={row.text} className="flex min-h-[26px] items-center gap-2">
-                <span
-                  aria-hidden="true"
-                  className="text-[10px]"
-                  style={{ color: row.color ?? 'var(--fg-subtle)' }}
-                >
-                  {row.icon}
-                </span>
-                <span className="overflow-hidden text-[11.5px] text-ellipsis whitespace-nowrap text-fg-muted">
-                  {row.text}
-                </span>
-                {row.meta && (
-                  <span className="ml-auto font-mono text-[10px] text-fg-subtle">{row.meta}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </>
+        <Rows title={content.listTitle} rows={content.list} />
       )}
 
       {content.actions && content.actions.length > 0 && (
@@ -115,4 +92,34 @@ export function Inspector({ content }: { content: InspectorContent }) {
 
 function Rule(): ReactNode {
   return <div aria-hidden="true" className="h-px bg-line" />
+}
+
+function Rows({ title, rows }: { title?: string; rows: InspectorRow[] }) {
+  return (
+    <>
+      <Rule />
+      <div className="p-3">
+        <h3 className="mb-[7px] text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+          {title}
+        </h3>
+        {rows.map((row) => (
+          <div key={row.text} className="flex min-h-[26px] items-center gap-2">
+            <span
+              aria-hidden="true"
+              className="text-[10px]"
+              style={{ color: row.color ?? 'var(--fg-subtle)' }}
+            >
+              {row.icon}
+            </span>
+            <span className="overflow-hidden text-[11.5px] text-ellipsis whitespace-nowrap text-fg-muted">
+              {row.text}
+            </span>
+            {row.meta && (
+              <span className="ml-auto font-mono text-[10px] text-fg-subtle">{row.meta}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  )
 }

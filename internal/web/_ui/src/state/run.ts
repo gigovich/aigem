@@ -11,6 +11,7 @@ import { EventKind, runStatus } from '@/lib/wire'
 import type { Approval, PresenceClient, Run, RunEvent, StatusKey, TodoItem } from '@/lib/wire'
 import { toRow } from './eventrow'
 import type { EventRow } from './eventrow'
+import type { InspectorRow } from './inspector'
 
 export type PendingApproval = { id: string; approval: Approval; at: string }
 
@@ -211,6 +212,20 @@ export function liveStatus(record: Run, view: RunView): StatusKey {
   // whose turn has visibly finished goes on being drawn as running.
   if (view.seq > 0) return 'waiting'
   return runStatus(record)
+}
+
+/** A plan item as the inspector draws it. The glyph carries the state; the meta repeats it in words. */
+export function planRows(todos: TodoItem[]): InspectorRow[] {
+  return todos.map((t) => {
+    switch (t.status) {
+      case 'completed':
+        return { icon: '✓', color: 'var(--success)', text: t.text, meta: 'done' }
+      case 'in_progress':
+        return { icon: '●', color: 'var(--running)', text: t.text, meta: 'doing' }
+      default:
+        return { icon: '·', text: t.text, meta: '' }
+    }
+  })
 }
 
 /**

@@ -462,3 +462,19 @@ test('the session and skill lists can be filtered, and / reaches the filter', as
   await user.type(await screen.findByRole('textbox', { name: 'Filter skills' }), 'nothing like it')
   expect(screen.getByText('Nothing matches that filter.')).toBeInTheDocument()
 })
+
+test('the run screen lists the plan beside the agent tree', async () => {
+  const h = await mountApp({ runs: [RUN] })
+  go('run')
+  act(() => navigate({ screen: 'run', id: 'r-1' }))
+  await waitFor(() => expect(h.runSocket()).toBeTruthy())
+  h.runSocket()?.open()
+  h.emit({
+    seq: 1,
+    time: '2026-09-08T12:00:01Z',
+    kind: EventKind.Todo,
+    todos: [{ text: 'rotate the keys', status: 'in_progress' }],
+  })
+  expect(await screen.findByRole('heading', { name: 'Plan' })).toBeInTheDocument()
+  expect(screen.getByText('rotate the keys')).toBeInTheDocument()
+})

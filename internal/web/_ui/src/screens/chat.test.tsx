@@ -668,3 +668,31 @@ test('/artifacts opens the changes of the conversation in the composer', async (
   await waitFor(() => expect(window.location.pathname).toBe('/run/r-1'))
   expect(h.runSocket()?.sent).toHaveLength(0)
 })
+
+// The daemon sends the whole plan on every change; the inspector shows the
+// current one, with each item's state readable without colour.
+test('the inspector shows the agent\'s plan as it changes', async () => {
+  const h = await attached()
+  h.emit({
+    seq: 1,
+    time: '2026-09-08T12:00:01Z',
+    kind: EventKind.Todo,
+    todos: [
+      { text: 'read the spec', status: 'completed' },
+      { text: 'write the test', status: 'in_progress' },
+    ],
+  })
+  const aside = screen.getByRole('complementary', { name: 'Inspector' })
+  await waitFor(() => expect(within(aside).getByText('Plan')).toBeInTheDocument())
+  expect(within(aside).getByText('write the test')).toBeInTheDocument()
+  expect(within(aside).getByText('doing')).toBeInTheDocument()
+
+  h.emit({
+    seq: 2,
+    time: '2026-09-08T12:00:02Z',
+    kind: EventKind.Todo,
+    todos: [{ text: 'commit', status: 'pending' }],
+  })
+  await waitFor(() => expect(within(aside).queryByText('read the spec')).not.toBeInTheDocument())
+  expect(within(aside).getByText('commit')).toBeInTheDocument()
+})

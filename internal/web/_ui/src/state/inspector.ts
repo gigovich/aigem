@@ -31,6 +31,8 @@ export type InspectorContent = {
   progress?: { used: number; total: number }
   listTitle?: string
   list?: InspectorRow[]
+  /** The agent's working plan, drawn above `list` when present. */
+  plan?: InspectorRow[]
   actions?: { label: string; onClick: () => void }[]
 } | null
 

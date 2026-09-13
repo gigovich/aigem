@@ -8,7 +8,7 @@ import { slash } from '@/state/slash'
 import { tabLabel } from '@/hooks/useRunEvents'
 
 import { usePublishInspector } from '@/state/inspector'
-import { liveStatus } from '@/state/run'
+import { liveStatus, planRows } from '@/state/run'
 import type { RunView } from '@/state/run'
 import type { RunSocketState } from '@/lib/socket'
 import { Back } from '@/ui/Back'
@@ -98,6 +98,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
         { key: 'updated', value: ago(record.updated) },
       ],
       progress: run.ctxSize ? { used: run.contextTokens, total: run.ctxSize } : undefined,
+      plan: planRows(run.todos),
       listTitle: run.files.length > 0 ? 'Files touched' : undefined,
       list: run.files.map((f) => ({
         icon: f.created ? '+' : '~',
