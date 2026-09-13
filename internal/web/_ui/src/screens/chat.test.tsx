@@ -1,6 +1,7 @@
 import { act, cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
+import * as image from '@/lib/image'
 import { IMAGE_LIMIT } from '@/lib/image'
 import { EventKind } from '@/lib/wire'
 import type { RunEvent } from '@/lib/wire'
@@ -8,6 +9,7 @@ import { mountApp, RUN } from '@/test/harness'
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 const APPROVAL: RunEvent = {
@@ -765,4 +767,40 @@ test('a second attachment that would push the message past the cap is refused', 
   )
   expect(screen.queryByText('second.png')).not.toBeInTheDocument()
   expect(screen.getByText('first.png')).toBeInTheDocument()
+})
+
+// attach commits each accepted image with a functional setImages update, not
+// a snapshot taken when the loop started - otherwise a chip removed (or a
+// send that clears every chip) while a slower read is still in flight comes
+// back from the dead when that read finally resolves.
+test('removing a chip while a second image is still reading does not resurrect it', async () => {
+  const user = userEvent.setup()
+  await attached()
+  const input = screen.getByLabelText('Attach an image')
+  const first = new File([new Uint8Array([1])], 'first.png', { type: 'image/png' })
+  const second = new File([new Uint8Array([2])], 'second.png', { type: 'image/png' })
+
+  let resolveSecond: (attachment: Awaited<ReturnType<typeof image.readImage>>) => void = () => {}
+  const pending = new Promise<Awaited<ReturnType<typeof image.readImage>>>((r) => {
+    resolveSecond = r
+  })
+  vi.spyOn(image, 'readImage').mockImplementation(async (file) =>
+    file === second
+      ? pending
+      : { name: 'first.png', media_type: 'image/png', data: 'AQ==', bytes: 1 },
+  )
+
+  await user.upload(input, first)
+  await screen.findByText('first.png')
+
+  await user.upload(input, second)
+  await user.click(screen.getByRole('button', { name: 'Remove first.png' }))
+  expect(screen.queryByText('first.png')).not.toBeInTheDocument()
+
+  resolveSecond({ name: 'second.png', media_type: 'image/png', data: 'Ag==', bytes: 1 })
+  await screen.findByText('second.png')
+
+  expect(screen.queryByText('first.png')).not.toBeInTheDocument()
+  const chips = within(screen.getByRole('list', { name: 'Attachments' })).getAllByRole('listitem')
+  expect(chips).toHaveLength(1)
 })

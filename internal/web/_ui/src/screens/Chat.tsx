@@ -75,16 +75,16 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
   const picker = useRef<HTMLInputElement>(null)
 
   const attach = async (files: Iterable<File>) => {
-    let list = images
+    let total = images.reduce((sum, im) => sum + im.bytes, 0)
     for (const file of files) {
       try {
         const image = await readImage(file)
-        if (list.reduce((sum, im) => sum + im.bytes, 0) + image.bytes > MESSAGE_LIMIT) {
+        if (total + image.bytes > MESSAGE_LIMIT) {
           setBanner(`${image.name} would put this message past what one send can carry`)
           continue
         }
-        list = [...list, image]
-        setImages(list)
+        total += image.bytes
+        setImages((current) => [...current, image])
       } catch (err) {
         setBanner(explain(err))
       }
