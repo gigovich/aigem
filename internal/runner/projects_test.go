@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/store"
@@ -17,9 +18,9 @@ import (
 
 func newProjects(t *testing.T, path string, notify func(runner.ProjectView)) *runner.Projects {
 	t.Helper()
-	var file *store.File[[]runner.Project]
+	var file *store.File[runner.ProjectTable]
 	if path != "" {
-		file = store.New[[]runner.Project](path)
+		file = store.New[runner.ProjectTable](path)
 	}
 	p, err := runner.NewProjects(runner.ProjectsConfig{Store: file, Notify: notify})
 	if err != nil {
@@ -74,6 +75,21 @@ func TestAProjectSurvivesARestartAndItsIdIsNeverReused(t *testing.T) {
 	}
 	if v := addProject(t, second, t.TempDir(), ""); v.ID != "PRJ-3" {
 		t.Errorf("the next id after a restart = %q, want PRJ-3", v.ID)
+	}
+}
+
+func TestTheNextIdSurvivesRemovingTheHighestProject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "projects.json")
+	first := newProjects(t, path, nil)
+	addProject(t, first, t.TempDir(), "")
+	addProject(t, first, t.TempDir(), "")
+	if err := first.Remove("PRJ-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	second := newProjects(t, path, nil)
+	if v := addProject(t, second, t.TempDir(), ""); v.ID != "PRJ-3" {
+		t.Errorf("the next id = %q, want PRJ-3: the counter outlives the row it counted", v.ID)
 	}
 }
 
@@ -167,7 +183,7 @@ func TestRepositoriesAreTheCheckoutsOneLevelDown(t *testing.T) {
 	p := newProjects(t, "", nil)
 	addProject(t, p, root, "")
 
-	repos, err := p.Repositories("PRJ-1")
+	repos, err := p.Repositories(context.Background(), "PRJ-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +195,7 @@ func TestRepositoriesAreTheCheckoutsOneLevelDown(t *testing.T) {
 	if len(repos) != 3 || repos[0] != want[0] || repos[1] != want[1] || repos[2] != want[2] {
 		t.Errorf("Repositories = %+v, want %+v", repos, want)
 	}
-	if _, err := p.Repositories("PRJ-9"); !errors.Is(err, runner.ErrNoProject) {
+	if _, err := p.Repositories(context.Background(), "PRJ-9"); !errors.Is(err, runner.ErrNoProject) {
 		t.Errorf("an unknown project = %v, want ErrNoProject", err)
 	}
 }
@@ -191,7 +207,7 @@ func TestAProjectThatIsItselfACheckoutIsListedFirstWithNoName(t *testing.T) {
 	p := newProjects(t, "", nil)
 	addProject(t, p, root, "")
 
-	repos, err := p.Repositories("PRJ-1")
+	repos, err := p.Repositories(context.Background(), "PRJ-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +238,9 @@ func (l *loader) load() func(context.Context, string) (*runner.Env, error) {
 		}
 		if l.gate != nil {
 			<-l.gate
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		l.loads.Add(1)
 		if l.fail.Load() {
@@ -447,4 +466,105 @@ func TestRemovingOrClosingReleasesTheEnvironment(t *testing.T) {
 	if _, err := p.Env(context.Background(), "PRJ-2"); !errors.Is(err, runner.ErrProjectsClosed) {
 		t.Errorf("Env after Close = %v, want ErrProjectsClosed", err)
 	}
+}
+
+func TestARetainedEnvironmentHoldsTheProjectOpen(t *testing.T) {
+	l := &loader{}
+	p := newLoadingProjects(t, l, nil)
+	addProject(t, p, t.TempDir(), "")
+
+	env, release, err := p.Retain(context.Background(), "PRJ-1")
+	if err != nil || env == nil {
+		t.Fatalf("Retain = %v, %v", env, err)
+	}
+	second, releaseSecond, err := p.Retain(context.Background(), "PRJ-1")
+	if err != nil || second != env {
+		t.Fatalf("a second Retain = %v, %v, want the one shared environment", second, err)
+	}
+	if err := p.Remove("PRJ-1"); !errors.Is(err, runner.ErrProjectInUse) {
+		t.Fatalf("Remove while retained = %v, want ErrProjectInUse", err)
+	}
+	releaseSecond()
+	releaseSecond()
+	if err := p.Remove("PRJ-1"); !errors.Is(err, runner.ErrProjectInUse) {
+		t.Fatalf("Remove after a release called twice = %v, want ErrProjectInUse: it decremented twice", err)
+	}
+	release()
+	if err := p.Remove("PRJ-1"); err != nil {
+		t.Fatalf("Remove after the last release = %v", err)
+	}
+	if _, err := env.NewTools(); err == nil {
+		t.Error("the released environment is still open")
+	}
+}
+
+func TestALoadOutlivesTheRequestThatStartedIt(t *testing.T) {
+	l := &loader{gate: make(chan struct{}), arrived: make(chan struct{}, 1)}
+	p := newLoadingProjects(t, l, nil)
+	addProject(t, p, t.TempDir(), "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	var leaderEnv *runner.Env
+	var leaderErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		leaderEnv, leaderErr = p.Env(ctx, "PRJ-1")
+	}()
+	<-l.arrived
+	cancel()
+	close(l.gate)
+	wg.Wait()
+
+	if leaderErr != nil || leaderEnv == nil {
+		t.Fatalf("the leader = %v, %v, want the loaded environment", leaderEnv, leaderErr)
+	}
+	again, err := p.Env(context.Background(), "PRJ-1")
+	if err != nil || again != leaderEnv {
+		t.Fatalf("the next call = %v, %v, want the same environment", again, err)
+	}
+	if l.loads.Load() != 1 {
+		t.Errorf("%d loads, want 1", l.loads.Load())
+	}
+	if v, _ := p.Get("PRJ-1"); v.LoadError != "" {
+		t.Errorf("LoadError = %q, want empty", v.LoadError)
+	}
+}
+
+func TestAWaiterTakesTheFailedLoadsAnswerRatherThanRetrying(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &loader{gate: make(chan struct{}), arrived: make(chan struct{}, 1)}
+		l.fail.Store(true)
+		p := newLoadingProjects(t, l, nil)
+		addProject(t, p, t.TempDir(), "")
+
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		call := func(i int) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, errs[i] = p.Env(context.Background(), "PRJ-1")
+			}()
+		}
+		call(0)
+		<-l.arrived
+		l.arrived = nil
+		call(1)
+		// The waiter is parked on the load before the gate opens, so what it
+		// does next is its answer to a load that failed and not a race.
+		synctest.Wait()
+		close(l.gate)
+		wg.Wait()
+
+		for i, err := range errs {
+			if err == nil || !strings.Contains(err.Error(), "SessionStart hook exited 1") {
+				t.Errorf("caller %d = %v, want the load error", i, err)
+			}
+		}
+		if l.loads.Load() != 1 {
+			t.Errorf("%d loads, want 1: the waiter retried a load that had just failed", l.loads.Load())
+		}
+	})
 }

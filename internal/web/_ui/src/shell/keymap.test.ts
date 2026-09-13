@@ -18,7 +18,6 @@ function actions(): KeyActions & { calls: string[] } {
     togglePalette: note('palette'),
     toggleQuick: note('quick'),
     confirm: note('confirm'),
-    submitModal: note('submit'),
     paletteMove: (d) => calls.push(`move:${d}`),
     paletteRun: note('run'),
     focusFilter: note('filter'),
@@ -98,12 +97,12 @@ test('a confirm swallows the screen bindings', () => {
   expect(a.calls).toEqual([])
 })
 
-test('a modal submits on the modifier and Enter, never on Enter alone', () => {
+test('a modal keeps its keystrokes to itself', () => {
   const layers = { ...NOTHING_OPEN, anyOpen: true, modalOpen: true }
   const a = actions()
-  expect(handleKey(press('Enter', { metaKey: true }), layers, a)).toBe(true)
+  expect(handleKey(press('Enter', { metaKey: true }), layers, a)).toBe(false)
   expect(handleKey(press('Enter'), layers, a)).toBe(false)
-  expect(a.calls).toEqual(['submit'])
+  expect(a.calls).toEqual([])
 })
 
 test('the palette takes the arrows and Enter', () => {

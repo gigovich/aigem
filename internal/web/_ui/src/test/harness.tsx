@@ -132,12 +132,9 @@ export function installDaemon(daemon: Daemon = {}): Harness {
       if (path === '/api/projects') return Promise.resolve(ok(daemon.projects ?? [DAEMON_PROJECT]))
       if (/^\/api\/projects\/[^/]+\/repos$/.test(path)) return Promise.resolve(ok([]))
       if (path === '/api/models') return Promise.resolve(ok(daemon.models ?? []))
-      if (path === '/api/skills' || path.startsWith('/api/skills?')) {
-        return Promise.resolve(ok(daemon.skills ?? { items: [] }))
-      }
-      if (path === '/api/commands' || path.startsWith('/api/commands?')) {
-        return Promise.resolve(ok(daemon.commands ?? []))
-      }
+      const at = (p: string) => path === p || path.startsWith(p + '?')
+      if (at('/api/skills')) return Promise.resolve(ok(daemon.skills ?? { items: [] }))
+      if (at('/api/commands')) return Promise.resolve(ok(daemon.commands ?? []))
       if (path === '/api/usage') return Promise.resolve(ok([]))
       if (path.startsWith('/api/activity')) return Promise.resolve(ok(daemon.activity ?? []))
       if (path.includes('/events')) return Promise.resolve(ok(daemon.events ?? []))

@@ -192,7 +192,7 @@ func runWebCommand(args []string) error {
 	var projects *runner.Projects
 	if stateDir != "" {
 		projects, err = runner.NewProjects(runner.ProjectsConfig{
-			Store: store.New[[]runner.Project](filepath.Join(stateDir, "projects.json")),
+			Store: store.New[runner.ProjectTable](filepath.Join(stateDir, "projects.json")),
 			LoadEnv: func(ctx context.Context, dir string) (*runner.Env, error) {
 				env, _, err := runner.Load(ctx, runner.Options{
 					Cwd: dir, Version: versionString(), Search: searchCfg,

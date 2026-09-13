@@ -183,8 +183,9 @@ function daemonWith(paths: string[], projects: unknown[] = []) {
 // the project's own catalogues with it - and survive a reload.
 test('selecting a project saves it and reads its skills and commands', async () => {
   const paths: string[] = []
-  daemonWith(paths)
-  const { selectProject } = await import('./app')
+  daemonWith(paths, [{ id: 'PRJ-1', name: 'work', dir: '/w' }])
+  const { refresh, selectProject } = await import('./app')
+  await refresh.projects()
   selectProject('PRJ-1')
   await vi.waitFor(() => {
     expect(paths).toContain('GET /api/skills?project=PRJ-1')
@@ -204,6 +205,36 @@ test('a saved project the daemon no longer lists is forgotten', async () => {
   const { refresh } = await import('./app')
   await refresh.projects()
   expect(store.get().project).toBe('')
+})
+
+// A project id nothing answers to would leave every scoped read 404ing with
+// nothing on the screen to say why.
+test('selecting a project the daemon does not list is refused', async () => {
+  const paths: string[] = []
+  daemonWith(paths, [{ id: 'PRJ-1', name: 'work', dir: '/w' }])
+  const { refresh, selectProject } = await import('./app')
+  await refresh.projects()
+  selectProject('PRJ-9')
+  expect(store.get().project).toBe('')
+  expect(store.get().banner).toContain('PRJ-9')
+})
+
+// The reconciliation is against what the daemon listed. A read that failed
+// listed nothing, and forgetting the selection over it would move the page to
+// another project every time the daemon hiccupped.
+test('a failed read of the projects leaves the selection alone', async () => {
+  const paths: string[] = []
+  daemonWith(paths)
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((path: string) =>
+      Promise.resolve(new Response('', { status: path === '/api/projects' ? 500 : 200 })),
+    ),
+  )
+  store.set((s) => ({ ...s, project: 'PRJ-7' }))
+  const { refresh } = await import('./app')
+  await refresh.projects()
+  expect(store.get().project).toBe('PRJ-7')
 })
 
 test('a new session opens in the current project', async () => {

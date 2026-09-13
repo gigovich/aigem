@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"time"
 
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/web"
@@ -11,6 +12,10 @@ import (
 
 // The project half of the backend: the registry's answers translated, and the
 // one question every scoped route asks - which environment a project id means.
+
+// projectReposTimeout bounds one discovery: it stats the project directory and
+// shells out to git once per checkout it finds.
+const projectReposTimeout = 5 * time.Second
 
 func (b *webBackend) Projects(context.Context) ([]web.Project, error) {
 	if b.projects == nil {
@@ -46,25 +51,25 @@ func (b *webBackend) RemoveProject(_ context.Context, id string) error {
 	if b.projects == nil {
 		return web.ErrUnavailable
 	}
-	if b.runs != nil {
-		for _, r := range b.runs.List() {
-			if r.Live && r.ProjectID == id {
-				return web.Conflict("this project has an open run; close it first")
-			}
-		}
-	}
 	if err := b.projects.Remove(id); err != nil {
 		return webProjectError(err)
 	}
+	b.skillMu.Lock()
+	b.forgetPendingLocked(id)
+	b.skillMu.Unlock()
 	b.recordActivity(web.Activity{Kind: "project.removed", Text: "Removed project " + id})
 	return nil
 }
 
-func (b *webBackend) ProjectRepos(_ context.Context, id string) ([]web.Repository, error) {
+func (b *webBackend) ProjectRepos(ctx context.Context, id string) ([]web.Repository, error) {
 	if b.projects == nil {
 		return nil, web.ErrUnavailable
 	}
-	repos, err := b.projects.Repositories(id)
+	// Discovery stats a directory tree and shells out to git per checkout, and
+	// the project directory is whatever the person named.
+	ctx, cancel := context.WithTimeout(ctx, projectReposTimeout)
+	defer cancel()
+	repos, err := b.projects.Repositories(ctx, id)
 	if err != nil {
 		return nil, webProjectError(err)
 	}
@@ -75,23 +80,43 @@ func (b *webBackend) ProjectRepos(_ context.Context, id string) ([]web.Repositor
 	return out, nil
 }
 
-// envFor is the environment a request means: the daemon's own for an empty
-// id, otherwise the project's, loaded on first use.
-func (b *webBackend) envFor(ctx context.Context, project string) (*runner.Env, error) {
-	if project == "" {
-		if b.env == nil {
-			return nil, web.ErrUnavailable
+// projectEnv is the one rule for what a project id means, shared by the read
+// routes and by a run being opened: the daemon's own environment for an empty
+// id, otherwise the project's, loaded on first use. A retained environment
+// holds the project open - Remove refuses it until the returned func is
+// called - and the returned func is safe to call on any path.
+func projectEnv(ctx context.Context, own *runner.Env, projects *runner.Projects, id string, retain bool) (
+	*runner.Env, func(), error,
+) {
+	nothing := func() {}
+	switch {
+	case id == "":
+		if own == nil {
+			return nil, nothing, web.ErrUnavailable
 		}
-		return b.env, nil
+		return own, nothing, nil
+	case projects == nil:
+		return nil, nothing, web.Refuse(errors.New("this daemon serves no projects"))
+	case retain:
+		env, release, err := projects.Retain(ctx, id)
+		if err != nil {
+			return nil, nothing, err
+		}
+		return env, release, nil
+	default:
+		env, err := projects.Env(ctx, id)
+		return env, nothing, err
 	}
-	if b.projects == nil {
-		return nil, web.Refuse(errors.New("this daemon serves no projects"))
-	}
-	env, err := b.projects.Env(ctx, project)
-	if err != nil {
+}
+
+// envFor is projectEnv for a read route, with the registry's answer translated
+// into the statuses internal/web knows.
+func (b *webBackend) envFor(ctx context.Context, project string) (*runner.Env, error) {
+	env, _, err := projectEnv(ctx, b.env, b.projects, project, false)
+	if err != nil && project != "" {
 		return nil, webProjectError(err)
 	}
-	return env, nil
+	return env, err
 }
 
 func webProject(v runner.ProjectView) web.Project {
@@ -102,10 +127,10 @@ func webProject(v runner.ProjectView) web.Project {
 // load that failed are both sentences for the person who typed the path.
 func webProjectError(err error) error {
 	switch {
-	case err == nil:
-		return nil
 	case errors.Is(err, runner.ErrNoProject):
 		return web.ErrNoProject
+	case errors.Is(err, runner.ErrProjectInUse):
+		return web.Conflict("this project has an open run; close it first")
 	case errors.Is(err, runner.ErrProjectsClosed):
 		return err
 	default:

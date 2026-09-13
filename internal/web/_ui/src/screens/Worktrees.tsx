@@ -22,14 +22,17 @@ export function Worktrees() {
       .projectRepos(project, abort.signal)
       .then((items) => setRepos({ project, items }))
       .catch((err: unknown) => {
-        if (!abort.signal.aborted) setBanner(explain(err))
+        if (abort.signal.aborted) return
+        setBanner(explain(err))
+        // An answer, so the screen stops saying it is still reading.
+        setRepos({ project, items: [] })
       })
     return () => abort.abort()
   }, [project])
 
   const columns: Column<Repository>[] = [
     { key: 'name', header: 'Repository', width: '200px', cell: (r) => r.name || `${name} (the project itself)` },
-    { key: 'main', header: 'Main branch', width: '140px', cell: (r) => r.main ?? 'neither main nor master' },
+    { key: 'main', header: 'Main branch', width: '140px', cell: (r) => r.main || 'neither main nor master' },
     { key: 'dir', header: 'Directory', width: 'minmax(200px, 1fr)', cell: (r) => r.dir },
     { key: 'worktrees', header: 'Worktrees', width: '140px', cell: () => 'no worktrees yet' },
   ]
@@ -43,7 +46,10 @@ export function Worktrees() {
       {!project ? (
         <EmptyState
           title="This daemon's directory has no project record."
-          detail="Choose or add a project in the sidebar to list its repositories. Worktrees arrive with runs on tickets."
+          detail={
+            'Choose or add a project in the sidebar to list its repositories. ' +
+            'Worktrees arrive with runs on tickets.'
+          }
         />
       ) : loaded === null ? (
         <p className="px-[18px] py-4 text-[12px] text-fg-subtle">Reading the repositories…</p>

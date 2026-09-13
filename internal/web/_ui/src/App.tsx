@@ -178,7 +178,6 @@ export default function App() {
           // Unused: the keymap deliberately does not bind Enter to a
           // destructive confirm. See handleKey.
           confirm: () => undefined,
-          submitModal: () => undefined,
           paletteMove: (delta) =>
             setIndex((i) =>
               Math.max(0, Math.min(paletteRef.current.matches.length - 1, i + delta)),
@@ -399,7 +398,9 @@ function Screen({
 /** `/projects/{id}` is a selection, not a screen: choose the project and go to its sessions. */
 function ProjectSelect({ id }: { id?: string }) {
   useEffect(() => {
-    selectProject(id ?? '')
+    // The list first: a link is where a project id arrives from outside this
+    // tab, and selecting one refuses an id the page has not been told about.
+    void refresh.projects().then(() => selectProject(id ?? ''))
     replace({ screen: 'chat' })
   }, [id])
   return null

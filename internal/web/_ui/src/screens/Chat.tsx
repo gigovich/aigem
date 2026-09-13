@@ -235,7 +235,9 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                 />
               ))}
             </ul>
-            {scoped.length === 0 && <EmptyState inline title="No sessions in this project yet." />}
+            {scoped.length === 0 && (
+              <EmptyState inline title={all ? 'No sessions yet.' : 'No sessions in this project yet.'} />
+            )}
             {scoped.length > 0 && shown.length === 0 && (
               <EmptyState inline title="Nothing matches that filter." />
             )}

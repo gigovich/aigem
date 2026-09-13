@@ -393,9 +393,6 @@ const maxSkillPreview = 256 << 10
 
 func (b *webBackend) Skills(ctx context.Context, project string) (web.Skills, error) {
 	env, err := b.envFor(ctx, project)
-	if errors.Is(err, web.ErrUnavailable) {
-		return web.Skills{Items: []web.SkillSummary{}}, nil
-	}
 	if err != nil {
 		return web.Skills{}, err
 	}
@@ -422,9 +419,6 @@ func (b *webBackend) Skills(ctx context.Context, project string) (web.Skills, er
 
 func (b *webBackend) Skill(ctx context.Context, project, name string) (web.Skill, error) {
 	env, err := b.envFor(ctx, project)
-	if errors.Is(err, web.ErrUnavailable) {
-		return web.Skill{}, web.ErrNoSkill
-	}
 	if err != nil {
 		return web.Skill{}, err
 	}
@@ -557,9 +551,6 @@ func skillSummary(sk *skill.Skill) web.SkillSummary {
 
 func (b *webBackend) Commands(ctx context.Context, project string) ([]web.Command, error) {
 	env, err := b.envFor(ctx, project)
-	if errors.Is(err, web.ErrUnavailable) {
-		return []web.Command{}, nil
-	}
 	if err != nil {
 		return nil, err
 	}

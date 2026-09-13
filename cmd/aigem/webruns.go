@@ -73,19 +73,18 @@ func (rt *webRuntime) newRuns(stateDir string, notify func(runner.RunView)) (*ru
 func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 	*runner.Session, runner.Opened, error,
 ) {
-	env := rt.env
-	if req.ProjectID != "" {
-		if rt.projects == nil {
-			return nil, runner.Opened{}, errors.New("this daemon serves no projects")
-		}
-		var err error
-		if env, err = rt.projects.Env(ctx, req.ProjectID); err != nil {
-			return nil, runner.Opened{}, err
-		}
+	env, release, err := projectEnv(ctx, rt.env, rt.projects, req.ProjectID, true)
+	if err != nil {
+		return nil, runner.Opened{}, err
 	}
-	if env == nil {
-		return nil, runner.Opened{}, errors.New("no environment is loaded")
-	}
+	// The project stays held from here until the session is detached; every
+	// way out short of that gives it back.
+	opened := false
+	defer func() {
+		if !opened {
+			release()
+		}
+	}()
 	reg, err := env.NewTools()
 	if err != nil {
 		return nil, runner.Opened{}, err
@@ -160,10 +159,11 @@ func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 		sess.Local.Close()
 		return nil, runner.Opened{}, err
 	}
+	opened = true
 	return sess, runner.Opened{
 		Model:   info.Ref(),
 		Root:    env.Cwd,
-		Release: func() { env.Detach(sess) },
+		Release: func() { env.Detach(sess); release() },
 	}, nil
 }
 

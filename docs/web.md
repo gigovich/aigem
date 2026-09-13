@@ -156,10 +156,10 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/auth/login/{id}` | polls that login's `pending`, `done`, `failed` or `cancelled` state |
 | `POST /api/auth/login/{id}/paste` | supplies a redirect URL or code (8 KiB maximum) |
 | `DELETE /api/auth/login/{id}` | cancels a login flow; 204, and the record stays readable |
-| `GET /api/skills` | loaded skill summaries and pending project-skill names |
-| `GET /api/skills/{name}` | static skill metadata and markdown; it runs no dynamic injection |
-| `POST /api/skills/trust` | approves the current project skill set; body is empty or `{}` |
-| `GET /api/commands` | the command palette catalogue from the active environment |
+| `GET /api/skills` | loaded skill summaries and pending project-skill names; takes `?project=` |
+| `GET /api/skills/{name}` | static skill metadata and markdown; it runs no dynamic injection; takes `?project=` |
+| `POST /api/skills/trust` | approves a project's skill set; body is empty, `{}` or `{"project":"PRJ-1"}` |
+| `GET /api/commands` | the command palette catalogue from the active environment; takes `?project=` |
 | `GET /api/usage` | stored provider quota snapshots |
 | `GET /api/activity` | persistent mutation feed, paged with `?since=&limit=` |
 | `GET /api/projects` | the registry, the daemon's own directory first with an empty id |
@@ -300,12 +300,14 @@ once across every tab; the 65th handshake is refused with a 503 and a
 
 A project is a directory on the daemon's machine, registered by the signed-in
 person and kept in `$XDG_STATE_HOME/aigem/projects.json`. Its repositories are
-the direct child directories holding a `.git`, plus the directory itself when it
-is a checkout; `main` on each is the branch a run will merge into, `main` or
-`master`, and absent when the checkout has neither. The daemon's own directory
-is a project with no record: it is listed first with an empty `id`, and it is
-what a run, the skills catalogue and the command catalogue mean when they name
-no project.
+the project directory itself when it is a checkout - listed first, with an empty
+`name` - and then each direct child holding a `.git`, by name; a child that is a
+symlink to a checkout counts as one. `main` on each is the branch a run will
+merge into, `main` or `master`, and absent when the checkout has neither. The
+daemon's own directory is a project with no record: it is listed first with an
+empty `id`, and it is what a run, the skills catalogue and the command catalogue
+mean when they name no project. Having no id of its own, it will never hold
+tickets or worktrees.
 
 Every project has one environment - its skills, hooks, MCP servers and system
 prompt - loaded the first time something needs it and kept for the daemon's
@@ -314,12 +316,20 @@ so the first run opened in a project takes as long as those take. A load that
 fails is recorded on the project as `loadError`, announced as
 `project.updated`, and tried again by the next request; until one succeeds the
 project cannot open runs. A project added from the browser is loaded with no
-`--trust-project-*` flag: its hooks and MCP servers stay withheld, and its
-skills go through `POST /api/skills/trust` with `{"project":"PRJ-1"}`.
+`--trust-project-*` flag: its hooks stay withheld, and its skills go through
+`POST /api/skills/trust` with `{"project":"PRJ-1"}`. MCP servers are not per
+project - they are shared through the per-root runtime - so a project under the
+daemon's own git root inherits that root's trusted servers.
 
 `POST /api/runs` takes `projectId`, and a run record carries it. `GET
 /api/skills`, `GET /api/skills/{name}` and `GET /api/commands` take
-`?project=`; without it they answer for the daemon's own directory.
+`?project=`; without it they answer for the daemon's own directory. The first of
+those reads loads the project's environment, so `GET /api/skills?project=PRJ-1`
+is not free of side effects: a page pays that load on boot, for whichever
+project its saved selection names.
+
+An id no project answers to is a `404`: on `POST /api/runs`, on the `?project=`
+routes, on `DELETE /api/projects/{id}` and on `GET /api/projects/{id}/repos`.
 
 `DELETE /api/projects/{id}` forgets the project and closes its environment. It
 is refused with 409 while the project has an open run, and it never removes
@@ -363,9 +373,11 @@ two tabs pressing the same button is the ordinary case.
 
 Statuses a client has to tell apart:
 
-- `404` - no such run, or, on a blob, an event with no stored body. The two are
-  told apart by the text: the first says the run is gone and the page reloads
-  it, the second says to go on showing the head it already has.
+- `404` - no such run; on a blob, an event with no stored body; or, from a route
+  that names a project, no such project. They are told apart by the text: the
+  first says the run is gone and the page reloads it, the second says to go on
+  showing the head it already has, the third that the project is not one this
+  daemon knows.
 - `409` - the run has no live session. Its timeline and its artifacts still
   read; its socket does not, because it lives with the session.
 - `409` on `DELETE /api/projects/{id}` - the project has an open run. The body

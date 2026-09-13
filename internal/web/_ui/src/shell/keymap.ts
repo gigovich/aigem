@@ -39,7 +39,6 @@ export type KeyActions = {
   togglePalette: () => void
   toggleQuick: () => void
   confirm: () => void
-  submitModal: () => void
   paletteMove: (delta: number) => void
   paletteRun: () => void
   focusFilter: () => void
@@ -74,10 +73,6 @@ export function handleKey(e: KeyboardEvent, layers: Layers, actions: KeyActions)
     return false
   }
   if (layers.modalOpen) {
-    if (mod && e.key === 'Enter') {
-      actions.submitModal()
-      return true
-    }
     return false
   }
   if (layers.paletteOpen) {

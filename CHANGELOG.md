@@ -42,6 +42,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session keeps beside the journal. An attached session with nothing in
   flight is "Idle". On a phone, choosing a row opens the inspector. A phone
   can run a skill from the skill's page, and the drawer keeps focus.
+- Projects. The browser adds a project - a directory on the daemon's machine -
+  and the daemon keeps a registry of them in `$XDG_STATE_HOME/aigem/projects.json`.
+  Each project gets one environment, loaded the first time something reads its
+  skills or opens a run in it, and kept for the daemon's life; a project added
+  from the browser is loaded with no `--trust-project-*` flag, so its hooks stay
+  withheld and its skills are approved per project. A run opens in its
+  project's environment and is rooted at the project directory. A project whose
+  environment fails to load is marked with the reason, tried again on the next
+  request, and cannot open runs until a load succeeds. Forgetting a project is
+  refused while it has an open run and never removes anything from disk. The
+  sidebar chooses the project every list reads, `/projects/{id}` selects one by
+  link, the session list follows the choice with an "All projects" toggle, and
+  the Worktrees screen lists a project's repositories with the branch a run
+  will merge into. The API grew `/api/projects`, a `projects` feature key and a
+  `project.updated` frame; without a state directory the key is absent and the
+  screens are not offered.
 - `make web` builds the browser UI into `internal/web/dist`, where the binary
   embeds it from. It needs Node 22+. **The bundle is not committed and the
   release pipeline does not build it**, so a downloaded release binary and

@@ -56,12 +56,15 @@ are written down. Take them from there rather than inventing them in a screen.
 
 ## Adding a screen
 
-1. A name in `SCREENS` (`src/lib/route.ts`) and a case in `Screen` (`src/App.tsx`) -
-   the switch is exhaustive, so the compiler will ask for the case.
+1. A name in `SCREENS` (`src/lib/route.ts`), a case in `Screen` and a title in
+   `TITLES` (both `src/App.tsx`) - the switch and the record are exhaustive, so
+   the compiler will ask for both.
 2. A row in `src/shell/Sidebar.tsx` and, if it is worth reaching by keyboard, an
    entry in `src/shell/commands.ts`.
 3. A `feature` on both, if the daemon can be built without whatever it shows. A
    screen that can never hold anything must not be offered.
+4. If the screen reads a collection, a route for it in `src/test/harness.tsx` -
+   every test mounts the whole app.
 
 ## What a screen has to keep
 

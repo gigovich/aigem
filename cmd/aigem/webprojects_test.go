@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/web"
 )
@@ -71,9 +72,46 @@ func contains(list []string, want string) bool {
 	return false
 }
 
+// testProjectRuns is the daemon's own rule in miniature: a run opened in a
+// project retains it, and gives it back when the run closes.
+func testProjectRuns(t *testing.T, projects *runner.Projects) *runner.Runs {
+	t.Helper()
+	env, _, err := runner.Load(context.Background(), runner.Options{Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(env.Close)
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(ctx context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			reg, err := env.NewTools()
+			if err != nil {
+				return nil, runner.Opened{}, err
+			}
+			opened := runner.Opened{Model: "test/model", Root: env.Cwd}
+			if req.ProjectID != "" {
+				projectEnv, release, err := projects.Retain(ctx, req.ProjectID)
+				if err != nil {
+					return nil, runner.Opened{}, err
+				}
+				opened.Root, opened.Release = projectEnv.Cwd, release
+			}
+			s := runner.NewSession(runner.Spec{
+				Mode: req.Mode, Tools: reg, Title: req.Title,
+				Backend: llm.NewRef(llm.New("http://127.0.0.1:9", "t")),
+			})
+			return s, opened, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+	return runs
+}
+
 func TestRemovingAProjectWithAnOpenRunIsAConflict(t *testing.T) {
-	runs, _ := testRuns(t)
-	b := newWebBackend(webBackendConfig{runs: runs, projects: testProjects(t, nil)})
+	projects := testProjects(t, nil)
+	b := newWebBackend(webBackendConfig{runs: testProjectRuns(t, projects), projects: projects})
 	added, err := b.AddProject(context.Background(), web.NewProject{Dir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +134,45 @@ func TestRemovingAProjectWithAnOpenRunIsAConflict(t *testing.T) {
 	}
 	if err := b.RemoveProject(context.Background(), added.ID); !errors.Is(err, web.ErrNoProject) {
 		t.Errorf("a second remove = %v, want ErrNoProject", err)
+	}
+}
+
+// A project the daemon could not load is still a project: the row carries the
+// reason, so the person can see what to fix rather than an empty list.
+func TestAProjectThatCannotLoadIsStillListedWithItsReason(t *testing.T) {
+	failing := func(context.Context, string) (*runner.Env, error) {
+		return nil, errors.New("the SessionStart hook exited 1")
+	}
+	b := newWebBackend(webBackendConfig{projects: testProjects(t, failing)})
+	added, err := b.AddProject(context.Background(), web.NewProject{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Skills(context.Background(), added.ID); err == nil {
+		t.Fatal("the skills of a project that cannot load = no error, want the load error")
+	}
+	list, err := b.Projects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].LoadError == "" || list[0].Created.IsZero() {
+		t.Errorf("list = %+v, want the project with its reason and when it was added", list)
+	}
+}
+
+func TestTheAdapterClassifiesWhatTheProjectRegistryReports(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   error
+		want error
+	}{
+		{"no project", runner.ErrNoProject, web.ErrNoProject},
+		{"in use", runner.ErrProjectInUse, web.ErrConflict},
+		{"shutting down", runner.ErrProjectsClosed, runner.ErrProjectsClosed},
+	} {
+		if got := webProjectError(tc.in); !errors.Is(got, tc.want) {
+			t.Errorf("%s: webProjectError(%v) = %v, want %v", tc.name, tc.in, got, tc.want)
+		}
 	}
 }
 

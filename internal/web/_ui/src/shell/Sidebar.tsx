@@ -1,7 +1,7 @@
 import { navigate } from '@/lib/route'
 import type { Route, Screen } from '@/lib/route'
 import type { Feature } from '@/lib/wire'
-import { runCounts, selectProject, setNav, signOut, useApp } from '@/state/app'
+import { inProject, selectProject, setNav, signOut, useApp } from '@/state/app'
 import type { AppState } from '@/state/app'
 
 type Item = { screen: Screen; label: string; icon: string; feature?: Feature }
@@ -29,7 +29,14 @@ type Props = { route: Route; onNewProject: () => void }
  * hold anything.
  */
 function countsOf(s: AppState): Partial<Record<Screen, number>> {
-  return { chat: runCounts(s).live, models: s.models.length, skills: s.skills.items.length }
+  // With projects on, the Sessions screen shows one project at a time, and a
+  // badge counting every run the daemon holds would not match the list below it.
+  const runs = s.meta?.features?.projects === true ? inProject(s.runs, s.project) : s.runs
+  return {
+    chat: runs.filter((r) => r.live).length,
+    models: s.models.length,
+    skills: s.skills.items.length,
+  }
 }
 
 export function Sidebar({ route, onNewProject }: Props) {
@@ -42,6 +49,8 @@ export function Sidebar({ route, onNewProject }: Props) {
     projects: s.projects,
     project: s.project,
   }))
+
+  const hasProjects = features.projects === true
 
   const row = (item: Item) => {
     if (item.feature && features[item.feature] !== true) return null
@@ -86,7 +95,7 @@ export function Sidebar({ route, onNewProject }: Props) {
           <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
             Projects
           </h2>
-          {features.projects === true && (
+          {hasProjects && (
             <button
               type="button"
               onClick={onNewProject}
@@ -98,7 +107,7 @@ export function Sidebar({ route, onNewProject }: Props) {
             </button>
           )}
         </div>
-        {features.projects === true ? (
+        {hasProjects ? (
           <ul aria-label="Projects" className="m-0 list-none p-0">
             {projects.map((p) => {
               const active = p.id === project

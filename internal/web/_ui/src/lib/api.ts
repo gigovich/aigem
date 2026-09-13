@@ -117,9 +117,6 @@ export const api = {
   projects: (signal?: AbortSignal) => json<Project[]>('/api/projects', { signal }),
   addProject: (req: NewProject, signal?: AbortSignal) =>
     json<Project>('/api/projects', { ...body(req), signal }),
-  removeProject: async (id: string, signal?: AbortSignal) => {
-    await send(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
-  },
   projectRepos: (id: string, signal?: AbortSignal) =>
     json<Repository[]>(`/api/projects/${encodeURIComponent(id)}/repos`, { signal }),
 

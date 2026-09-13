@@ -3,11 +3,11 @@ import { EmptyState } from '@/ui/EmptyState'
 /**
  * The screens phase one does not build.
  *
- * They are reachable - the canvas puts Tickets and Worktrees in the navigation,
- * and a person who clicks one is owed an answer - and each says the same true
- * thing: the concept it is about arrives with tickets, which is the next phase.
- * Drawing the tables against fixtures would be worse: a screen that looks
- * finished and does nothing is harder to tell from a broken one.
+ * They are reachable - the canvas puts Tickets in the navigation, and a person
+ * who clicks one is owed an answer - and each says the same true thing: the
+ * concept it is about arrives with tickets, which is the next phase. Drawing
+ * the tables against fixtures would be worse: a screen that looks finished and
+ * does nothing is harder to tell from a broken one.
  */
 
 export function Tickets() {

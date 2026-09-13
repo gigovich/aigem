@@ -126,6 +126,7 @@ func TestTheAdapterClassifiesWhatTheRegistryReports(t *testing.T) {
 		{"no run", runner.ErrNoRun, web.ErrNoRun},
 		{"closed run", runner.ErrRunClosed, web.ErrRunClosed},
 		{"history gone", uisession.ErrTruncated, web.ErrHistoryGone},
+		{"no project", runner.ErrNoProject, web.ErrNoProject},
 		{"shutting down", runner.ErrRunsClosed, runner.ErrRunsClosed},
 	} {
 		if got := webRunError(tc.in); !errors.Is(got, tc.want) {

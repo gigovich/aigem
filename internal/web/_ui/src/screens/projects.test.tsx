@@ -28,22 +28,38 @@ test('the sidebar lists the projects and remembers the chosen one', async () => 
 test('a project whose environment failed to load says so', async () => {
   await mountApp({ projects: [DAEMON_PROJECT, { ...WORK, loadError: 'hook exited 1' }] })
   const list = await screen.findByRole('list', { name: 'Projects' })
-  expect(within(list).getByRole('button', { name: /work/ })).toHaveTextContent('failed to load')
+  const row = within(list).getByRole('button', { name: /work/ })
+  expect(row).toHaveTextContent('failed to load')
+  expect(row).toHaveAttribute('title', 'hook exited 1')
+})
+
+// The frame says the registry moved; the list is read again rather than
+// patched from what the frame carried.
+test('a project.updated frame re-reads the list', async () => {
+  const h = await mountApp({ projects: PROJECTS })
+  await screen.findByRole('list', { name: 'Projects' })
+  const reads = () => h.paths.filter((p) => p === '/api/projects').length
+  const before = reads()
+  h.publish('project.updated', 2, WORK)
+  await waitFor(() => expect(reads()).toBe(before + 1))
 })
 
 test('a new project is added from the dialog, and a refusal is shown as text', async () => {
   const user = userEvent.setup()
+  const THING: Project = { id: 'PRJ-2', name: 'the thing', dir: '/home/dev/thing' }
+  const listed = [...PROJECTS]
   let attempts = 0
   const h = await mountApp({
     projects: PROJECTS,
     routes: {
+      '/api/projects': () => new Response(JSON.stringify(listed), { status: 200 }),
       'POST /api/projects': () => {
         attempts++
-        return attempts === 1
-          ? new Response('cannot add that project: /nope is not a directory', { status: 400 })
-          : new Response(JSON.stringify({ id: 'PRJ-2', name: 'thing', dir: '/home/dev/thing' }), {
-              status: 201,
-            })
+        if (attempts === 1) {
+          return new Response('cannot add that project: /nope is not a directory', { status: 400 })
+        }
+        listed.push(THING)
+        return new Response(JSON.stringify(THING), { status: 201 })
       },
     },
   })
@@ -55,9 +71,12 @@ test('a new project is added from the dialog, and a refusal is shown as text', a
 
   await user.clear(within(dialog).getByRole('textbox', { name: /Directory/ }))
   await user.type(within(dialog).getByRole('textbox', { name: /Directory/ }), '/home/dev/thing')
+  await user.type(within(dialog).getByRole('textbox', { name: /Name/ }), 'the thing')
   await user.click(within(dialog).getByRole('button', { name: 'Add project' }))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New project' })).not.toBeInTheDocument())
-  expect(h.sent.filter((r) => r.path === '/api/projects').pop()?.body).toBe('{"dir":"/home/dev/thing"}')
+  expect(h.sent.filter((r) => r.path === '/api/projects').pop()?.body).toBe(
+    '{"dir":"/home/dev/thing","name":"the thing"}',
+  )
   expect(window.localStorage.getItem('aigem.project')).toBe('PRJ-2')
 })
 

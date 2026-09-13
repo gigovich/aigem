@@ -202,11 +202,25 @@ export function currentProject(s: AppState): Project | undefined {
   return s.projects.find((p) => p.id === s.project)
 }
 
+/**
+ * Save the choice and drop what it scoped. The skills and commands on screen
+ * are the last project's, and leaving them there shows another project's
+ * catalogue as this one's until the reads come back.
+ */
+function setProject(id: string) {
+  write('aigem.project', id)
+  patch({ project: id, skills: EMPTY_SKILLS, commands: [] })
+}
+
 /** Choose the project every list screen reads, and fetch what is scoped by it. */
 export function selectProject(id: string) {
-  if (store.get().project === id) return
-  write('aigem.project', id)
-  patch({ project: id })
+  const { project, projects } = store.get()
+  if (project === id) return
+  if (id && !projects.some((p) => p.id === id)) {
+    setBanner(`No such project: ${id}`)
+    return
+  }
+  setProject(id)
   void refresh.skills()
   void refresh.commands()
 }
@@ -250,13 +264,14 @@ async function load<K extends keyof AppState>(
   feature: Feature,
   key: K,
   fetcher: () => Promise<AppState[K]>,
-) {
-  if (!has(feature)) return
+): Promise<boolean> {
+  if (!has(feature)) return false
   try {
     patch({ [key]: await fetcher() })
+    return true
   } catch (err) {
-    if (err instanceof ApiError && err.status === 501) return
-    setBanner(explain(err))
+    if (!(err instanceof ApiError && err.status === 501)) setBanner(explain(err))
+    return false
   }
 }
 
@@ -268,11 +283,13 @@ export const refresh = {
   usage: () => load('usage', 'usage', () => api.usage()),
   activity: () => load('activity', 'activity', readActivityTail),
   projects: async () => {
-    await load('projects', 'projects', () => api.projects())
+    // Only what the daemon listed reconciles the selection: a read that failed
+    // listed nothing, and that is not the same as the project being gone.
+    if (!(await load('projects', 'projects', () => api.projects()))) return
     // A saved selection the daemon no longer lists - forgotten elsewhere, or a
     // daemon without a registry - falls back to the daemon's own directory.
     const { projects, project } = store.get()
-    if (project && !projects.some((p) => p.id === project)) selectProject('')
+    if (project && !projects.some((p) => p.id === project)) setProject('')
   },
 }
 

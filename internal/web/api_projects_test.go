@@ -12,7 +12,9 @@ import (
 // project each skills call was asked about, so a test can tell the query
 // string reached the seam.
 type projectsBackend struct {
-	*fakeBackend
+	// Every phase-one seam as well, so the feature map this fake produces is
+	// the whole list a daemon offers.
+	*phaseBackend
 	projects []Project
 	repos    map[string][]Repository
 	openRun  string
@@ -97,9 +99,9 @@ func (b *projectsBackend) Commands(_ context.Context, project string) ([]Command
 func newProjectsServer(t *testing.T) (*Server, *projectsBackend) {
 	t.Helper()
 	b := &projectsBackend{
-		fakeBackend: &fakeBackend{},
-		projects:    []Project{{Name: "work", Dir: "/home/dev/work"}},
-		repos:       map[string][]Repository{"PRJ-1": {{Name: "api", Dir: "/p/api", Main: "main"}}},
+		phaseBackend: &phaseBackend{fakeBackend: &fakeBackend{}},
+		projects:     []Project{{Name: "work", Dir: "/home/dev/work"}},
+		repos:        map[string][]Repository{"PRJ-1": {{Name: "api", Dir: "/p/api", Main: "main"}}},
 	}
 	srv := newTestServer(t, Config{Backend: b})
 	return srv, b
@@ -108,8 +110,17 @@ func newProjectsServer(t *testing.T) (*Server, *projectsBackend) {
 func TestTheFeatureMapNamesProjects(t *testing.T) {
 	srv, _ := newProjectsServer(t)
 	_, body := getMeta(t, srv)
-	if !body.Features["projects"] {
-		t.Errorf("features = %v, want projects among them", body.Features)
+	want := []string{
+		"activity", "commands", "controlSocket", "models", "projects", "providerLogin", "runs",
+		"skills", "usage",
+	}
+	for _, name := range want {
+		if !body.Features[name] {
+			t.Errorf("the feature map does not name %q, so a page hides that screen", name)
+		}
+	}
+	if len(body.Features) != len(want) {
+		t.Errorf("features = %v, want exactly %v", body.Features, want)
 	}
 }
 
