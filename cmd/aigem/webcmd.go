@@ -179,12 +179,35 @@ func runWebCommand(args []string) error {
 		fmt.Fprintln(os.Stderr, env.SystemMessage)
 	}
 
-	rt := &webRuntime{env: env, models: defaultModelRegistry()}
 	// The daemon it publishes to does not exist yet, so the notifier is filled
 	// in below rather than at construction. Nothing can be missed in between:
 	// the registry is empty until a request arrives, and no request can arrive
 	// until Serve.
 	var announce notifier
+
+	// The registry before the runs, so its deferred Close runs after theirs: a
+	// session being saved needs the environment its SessionEnd hook runs in.
+	// Without a state directory there is no registry, and the page is told so
+	// through the feature map.
+	var projects *runner.Projects
+	if stateDir != "" {
+		projects, err = runner.NewProjects(runner.ProjectsConfig{
+			Store: store.New[[]runner.Project](filepath.Join(stateDir, "projects.json")),
+			LoadEnv: func(ctx context.Context, dir string) (*runner.Env, error) {
+				env, _, err := runner.Load(ctx, runner.Options{
+					Cwd: dir, Version: versionString(), Search: searchCfg,
+					Notify: func(n runner.Notice) { fmt.Fprintln(os.Stderr, "warning:", dir+":", n.Text) },
+				})
+				return env, err
+			},
+			Notify: announce.publishProject,
+		})
+		if err != nil {
+			return err
+		}
+		defer projects.Close()
+	}
+	rt := &webRuntime{env: env, models: defaultModelRegistry(), projects: projects}
 	runs, err := rt.newRuns(stateDir, announce.publishRun)
 	if err != nil {
 		return err
@@ -211,7 +234,7 @@ func runWebCommand(args []string) error {
 	}
 	backend := newWebBackend(webBackendConfig{
 		version: versionString(), models: rt.models, runs: runs,
-		env: env, activity: activity, notify: announce.publish,
+		env: env, projects: projects, activity: activity, notify: announce.publish,
 	})
 	srv, err := web.New(web.Config{
 		Addr:       *addr,

@@ -30,8 +30,9 @@ type webBackend struct {
 	models *llm.Registry
 	// runs is the daemon's conversations. Everything under /api/runs is this
 	// registry, translated.
-	runs *runner.Runs
-	env  *runner.Env
+	runs     *runner.Runs
+	env      *runner.Env
+	projects *runner.Projects
 
 	activity   *store.Log[web.Activity]
 	activityMu sync.Mutex
@@ -50,14 +51,20 @@ type webBackend struct {
 	beginFlow    func(context.Context, string) (*auth.Flow, error)
 
 	skillMu sync.Mutex
-	// pending memoises what the project's skills are waiting on. Answering it
-	// means reading and hashing every SKILL.md, and how many there are is the
-	// project's choice, so a page polling the listing would otherwise pay for
-	// the whole tree once a second. Short enough that a skill added by hand
-	// shows up while the person is still looking at the screen.
-	pendingAt  time.Time
-	pendingVal *skill.PendingSkills
-	closeMu    sync.Mutex
+	// pending memoises what each project's skills are waiting on, keyed by
+	// project id ("" for the daemon's own). Answering it means reading and
+	// hashing every SKILL.md, and how many there are is the project's choice,
+	// so a page polling the listing would otherwise pay for the whole tree once
+	// a second. Short enough that a skill added by hand shows up while the
+	// person is still looking at the screen.
+	pending map[string]pendingMemo
+	closeMu sync.Mutex
+}
+
+// pendingMemo is what a project's skills are waiting on, and when that was read.
+type pendingMemo struct {
+	at  time.Time
+	val *skill.PendingSkills
 }
 
 // The interfaces internal/web declares are satisfied here or nowhere: the
@@ -72,6 +79,7 @@ var (
 	_ web.AuthBackend     = (*webBackend)(nil)
 	_ web.SkillsBackend   = (*webBackend)(nil)
 	_ web.CommandsBackend = (*webBackend)(nil)
+	_ web.ProjectsBackend = (*webBackend)(nil)
 	_ web.UsageBackend    = (*webBackend)(nil)
 	_ web.ActivityBackend = (*webBackend)(nil)
 	_ web.FeatureBackend  = (*webBackend)(nil)
@@ -87,6 +95,7 @@ type webBackendConfig struct {
 	models   *llm.Registry
 	runs     *runner.Runs
 	env      *runner.Env
+	projects *runner.Projects
 	activity *store.Log[web.Activity]
 	notify   func(string, any)
 	// beginFlow starts a provider login. It is here so that a test can drive the
@@ -104,9 +113,9 @@ func newWebBackend(cfg webBackendConfig) *webBackend {
 	}
 	flowCtx, flowCancel := context.WithCancel(context.Background())
 	return &webBackend{
-		version: cfg.version, models: cfg.models, runs: cfg.runs, env: cfg.env,
+		version: cfg.version, models: cfg.models, runs: cfg.runs, env: cfg.env, projects: cfg.projects,
 		activity: cfg.activity, notify: cfg.notify,
-		flows: map[string]*auth.Flow{}, flowStarting: map[string]int{},
+		flows: map[string]*auth.Flow{}, flowStarting: map[string]int{}, pending: map[string]pendingMemo{},
 		beginFlow: cfg.beginFlow, flowCtx: flowCtx, flowCancel: flowCancel,
 	}
 }
@@ -125,6 +134,9 @@ func (b *webBackend) Unavailable() []string {
 	}
 	if b.runs == nil {
 		out = append(out, "runs")
+	}
+	if b.projects == nil {
+		out = append(out, "projects")
 	}
 	return out
 }
@@ -185,9 +197,10 @@ func (b *webBackend) OpenRun(ctx context.Context, req web.NewRun) (web.Run, erro
 		return web.Run{}, err
 	}
 	v, err := b.runs.Create(ctx, runner.RunRequest{
-		Mode:  runner.Mode(req.Mode),
-		Title: req.Title,
-		Model: req.Model,
+		Mode:      runner.Mode(req.Mode),
+		Title:     req.Title,
+		Model:     req.Model,
+		ProjectID: req.ProjectID,
 	})
 	if err != nil {
 		return web.Run{}, webRunError(err)
@@ -388,7 +401,7 @@ func (s *runStream) encode(events <-chan uisession.Event) {
 
 func webRun(v runner.RunView) web.Run {
 	return web.Run{
-		ID: v.ID, SessionID: v.SessionID, Mode: string(v.Mode), Title: v.Title,
+		ID: v.ID, SessionID: v.SessionID, ProjectID: v.ProjectID, Mode: string(v.Mode), Title: v.Title,
 		Model: v.Model, Root: v.Root, Status: string(v.Status),
 		Created: v.Created, Updated: v.Updated,
 		Live: v.Live, Running: v.Running, Waiting: v.Waiting, Step: v.Step, Seq: v.Seq,
@@ -424,6 +437,8 @@ func webRunError(err error) error {
 		return web.ErrRunClosed
 	case errors.Is(err, uisession.ErrTruncated):
 		return web.ErrHistoryGone
+	case errors.Is(err, runner.ErrNoProject):
+		return web.ErrNoProject
 	case errors.Is(err, runner.ErrTooManyRuns):
 		// The sentinel decides the status code and the text says how many are
 		// open, which is what tells the person to close one rather than to wait.

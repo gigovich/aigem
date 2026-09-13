@@ -48,8 +48,9 @@ const (
 // gets of its own is the tools registry and the model handle, which is exactly
 // what internal/runner says must never be shared.
 type webRuntime struct {
-	env    *runner.Env
-	models *llm.Registry
+	env      *runner.Env
+	models   *llm.Registry
+	projects *runner.Projects
 }
 
 // newRuns builds the daemon's run table. stateDir is where the table is kept;
@@ -69,13 +70,23 @@ func (rt *webRuntime) newRuns(stateDir string, notify func(runner.RunView)) (*ru
 // deliberately the same shape: the same runner.Spec, built by the same package,
 // so the two front-ends cannot drift into holding conversations that behave
 // differently.
-func (rt *webRuntime) openRun(_ context.Context, req runner.RunRequest) (
+func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 	*runner.Session, runner.Opened, error,
 ) {
-	// A registry belongs to one conversation: it carries the session's approval
-	// function and its path grants, and sharing one would route a second
-	// person's question to the first person's browser.
-	reg, err := rt.env.NewTools()
+	env := rt.env
+	if req.ProjectID != "" {
+		if rt.projects == nil {
+			return nil, runner.Opened{}, errors.New("this daemon serves no projects")
+		}
+		var err error
+		if env, err = rt.projects.Env(ctx, req.ProjectID); err != nil {
+			return nil, runner.Opened{}, err
+		}
+	}
+	if env == nil {
+		return nil, runner.Opened{}, errors.New("no environment is loaded")
+	}
+	reg, err := env.NewTools()
 	if err != nil {
 		return nil, runner.Opened{}, err
 	}
@@ -105,13 +116,13 @@ func (rt *webRuntime) openRun(_ context.Context, req runner.RunRequest) (
 	// the injected files in this run's own registry, so read_file returns a
 	// note instead of re-emitting what is already in the prompt.
 	buildSystem := func() string {
-		sp, injected := rt.env.SystemPrompt()
+		sp, injected := env.SystemPrompt()
 		reg.MarkInContext(injected)
 		return sp
 	}
 	title := req.Title
 	if title == "" {
-		title = rt.env.SessionTitle
+		title = env.SessionTitle
 	}
 	backendRef := webModelRef(backend)
 	sess := runner.NewSession(runner.Spec{
@@ -119,16 +130,16 @@ func (rt *webRuntime) openRun(_ context.Context, req runner.RunRequest) (
 		Tools:   reg,
 		Backend: backendRef,
 		Models:  rt.models,
-		Agents:  rt.env.Agents,
-		Skills:  rt.env.Skills,
-		Hooks:   rt.env.Hooks,
-		Project: rt.env.Project,
+		Agents:  env.Agents,
+		Skills:  env.Skills,
+		Hooks:   env.Hooks,
+		Project: env.Project,
 		System:  buildSystem(),
 		Title:   title,
 		// A conversation started in a browser runs the person's own hooks, and
 		// a hook that is told nothing about where it is running would resolve
 		// paths against wherever the daemon happens to have been started.
-		Cwd:           rt.env.Cwd,
+		Cwd:           env.Cwd,
 		RebuildSystem: buildSystem,
 		Temp:          webTemp,
 		MaxTokens:     defaultMaxTokens,
@@ -142,17 +153,17 @@ func (rt *webRuntime) openRun(_ context.Context, req runner.RunRequest) (
 			KeepTools:    webKeepTools,
 		},
 	})
-	sess.HandleCommands(rt.env.Skills, rt.env.MCP)
+	sess.HandleCommands(env.Skills, env.MCP)
 	// Approving the project's skills has to reach every live conversation, not
 	// just the one that asked.
-	if err := rt.env.Attach(sess); err != nil {
+	if err := env.Attach(sess); err != nil {
 		sess.Local.Close()
 		return nil, runner.Opened{}, err
 	}
 	return sess, runner.Opened{
 		Model:   info.Ref(),
-		Root:    rt.env.Cwd,
-		Release: func() { rt.env.Detach(sess) },
+		Root:    env.Cwd,
+		Release: func() { env.Detach(sess) },
 	}, nil
 }
 
@@ -197,3 +208,6 @@ func (n *notifier) publish(kind string, data any) {
 // publishRun is the registry's own callback shape: it takes the runner's view
 // and names the one kind a run change is ever announced as.
 func (n *notifier) publishRun(v runner.RunView) { n.publish("run.updated", webRun(v)) }
+
+// publishProject is the projects registry's own callback shape, the same way.
+func (n *notifier) publishProject(v runner.ProjectView) { n.publish("project.updated", webProject(v)) }

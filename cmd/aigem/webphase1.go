@@ -14,6 +14,7 @@ import (
 	"github.com/gigovich/aigem/internal/auth"
 	"github.com/gigovich/aigem/internal/config"
 	"github.com/gigovich/aigem/internal/llm"
+	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/skill"
 	"github.com/gigovich/aigem/internal/uisession"
 	"github.com/gigovich/aigem/internal/web"
@@ -390,22 +391,26 @@ func (b *webBackend) CloseBackend() {
 
 const maxSkillPreview = 256 << 10
 
-func (b *webBackend) Skills(context.Context) (web.Skills, error) {
-	if b.env == nil {
+func (b *webBackend) Skills(ctx context.Context, project string) (web.Skills, error) {
+	env, err := b.envFor(ctx, project)
+	if errors.Is(err, web.ErrUnavailable) {
 		return web.Skills{Items: []web.SkillSummary{}}, nil
+	}
+	if err != nil {
+		return web.Skills{}, err
 	}
 	b.skillMu.Lock()
 	defer b.skillMu.Unlock()
-	out := web.Skills{Items: skillSummaries(b.env.Skills)}
+	out := web.Skills{Items: skillSummaries(env.Skills)}
 	// Read from the project rather than from Env.Pending for the same reason
 	// TrustSkills does: the snapshot is from startup, and a page that cannot see
 	// a skill added since then has no way to ask for it. Memoised, because this
 	// is a listing a page polls and the read behind it is the whole skill tree.
 	// A discovery error is not worth failing the listing over - the catalog
 	// above it is still true - so it is reported as nothing pending and logged.
-	pending, err := b.pendingSkillsLocked()
+	pending, err := b.pendingSkillsLocked(project, env)
 	if err != nil {
-		slog.Warn("the project's pending skills could not be read", "err", err)
+		slog.Warn("the project's pending skills could not be read", "project", project, "err", err)
 	}
 	if pending != nil {
 		out.Pending = &web.PendingSkills{
@@ -415,13 +420,17 @@ func (b *webBackend) Skills(context.Context) (web.Skills, error) {
 	return out, nil
 }
 
-func (b *webBackend) Skill(_ context.Context, name string) (web.Skill, error) {
-	if b.env == nil {
+func (b *webBackend) Skill(ctx context.Context, project, name string) (web.Skill, error) {
+	env, err := b.envFor(ctx, project)
+	if errors.Is(err, web.ErrUnavailable) {
 		return web.Skill{}, web.ErrNoSkill
+	}
+	if err != nil {
+		return web.Skill{}, err
 	}
 	b.skillMu.Lock()
 	defer b.skillMu.Unlock()
-	sk, ok := b.env.Skills.Get(name)
+	sk, ok := env.Skills.Get(name)
 	if !ok {
 		return web.Skill{}, web.ErrNoSkill
 	}
@@ -445,9 +454,10 @@ func (b *webBackend) Skill(_ context.Context, name string) (web.Skill, error) {
 	}, nil
 }
 
-func (b *webBackend) TrustSkills(context.Context) (web.SkillApproval, error) {
-	if b.env == nil {
-		return web.SkillApproval{}, web.Refuse(errors.New("no project environment is loaded"))
+func (b *webBackend) TrustSkills(ctx context.Context, project string) (web.SkillApproval, error) {
+	env, err := b.envFor(ctx, project)
+	if err != nil {
+		return web.SkillApproval{}, err
 	}
 	// The same lock protects every web read above and the full approval. The Env
 	// synchronizes attached sessions internally; together they prevent a list or
@@ -466,16 +476,16 @@ func (b *webBackend) TrustSkills(context.Context) (web.SkillApproval, error) {
 	//
 	// Not memoised, unlike the listing: this is the mutation, and it must not
 	// approve against an answer from a moment ago.
-	pending, err := skill.Pending(b.env.Cwd)
+	pending, err := skill.Pending(env.Cwd)
 	if err != nil {
 		return web.SkillApproval{}, err
 	}
-	b.forgetPendingLocked()
+	b.forgetPendingLocked(project)
 	if pending == nil {
 		return web.SkillApproval{}, web.Refuse(
 			errors.New("this project has no skills awaiting approval"))
 	}
-	res, err := b.env.ApproveProjectSkills()
+	res, err := env.ApproveProjectSkills()
 	if err != nil {
 		// web.ErrBusy rather than a refusal: the request was fine and the answer
 		// is to ask again, which is what 503 and Retry-After say and what 400
@@ -507,22 +517,22 @@ func (b *webBackend) TrustSkills(context.Context) (web.SkillApproval, error) {
 
 // pendingSkillsLocked answers from the memo when it is fresh. Held under
 // skillMu, which is also what serialises it against an approval.
-func (b *webBackend) pendingSkillsLocked() (*skill.PendingSkills, error) {
-	if !b.pendingAt.IsZero() && time.Since(b.pendingAt) < pendingSkillsTTL {
-		return b.pendingVal, nil
+func (b *webBackend) pendingSkillsLocked(project string, env *runner.Env) (*skill.PendingSkills, error) {
+	if m, ok := b.pending[project]; ok && time.Since(m.at) < pendingSkillsTTL {
+		return m.val, nil
 	}
-	got, err := skill.Pending(b.env.Cwd)
+	got, err := skill.Pending(env.Cwd)
 	if err != nil {
 		return nil, err
 	}
-	b.pendingVal, b.pendingAt = got, time.Now()
+	b.pending[project] = pendingMemo{at: time.Now(), val: got}
 	return got, nil
 }
 
 // forgetPendingLocked drops the memo, so the answer after an approval is the
 // one the approval produced rather than the one it replaced.
-func (b *webBackend) forgetPendingLocked() {
-	b.pendingVal, b.pendingAt = nil, time.Time{}
+func (b *webBackend) forgetPendingLocked(project string) {
+	delete(b.pending, project)
 }
 
 func skillSummaries(reg *skill.Registry) []web.SkillSummary {
@@ -545,12 +555,16 @@ func skillSummary(sk *skill.Skill) web.SkillSummary {
 	}
 }
 
-func (b *webBackend) Commands(context.Context) ([]web.Command, error) {
-	if b.env == nil {
+func (b *webBackend) Commands(ctx context.Context, project string) ([]web.Command, error) {
+	env, err := b.envFor(ctx, project)
+	if errors.Is(err, web.ErrUnavailable) {
 		return []web.Command{}, nil
 	}
+	if err != nil {
+		return nil, err
+	}
 	b.skillMu.Lock()
-	cmds := uisession.Commands(b.env.Skills, b.env.MCP)
+	cmds := uisession.Commands(env.Skills, env.MCP)
 	b.skillMu.Unlock()
 	out := make([]web.Command, 0, len(cmds))
 	for _, c := range cmds {

@@ -91,7 +91,7 @@ func TestSkillDetailIsStaticAndContainsNoAbsoluteSourcePaths(t *testing.T) {
 		t.Fatal(errs)
 	}
 	b := newWebBackend(webBackendConfig{version: "test", env: &runner.Env{Skills: reg}})
-	got, err := b.Skill(context.Background(), "inspect")
+	got, err := b.Skill(context.Background(), "", "inspect")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,13 +227,13 @@ func TestSkillReadsAndApprovalAreSynchronized(t *testing.T) {
 					return
 				default:
 				}
-				_, _ = b.Skills(context.Background())
-				_, _ = b.Commands(context.Background())
+				_, _ = b.Skills(context.Background(), "")
+				_, _ = b.Commands(context.Background(), "")
 			}
 		}()
 	}
 	ready.Wait()
-	approved, err := b.TrustSkills(context.Background())
+	approved, err := b.TrustSkills(context.Background(), "")
 	close(stop)
 	wg.Wait()
 	if err != nil {
@@ -245,7 +245,7 @@ func TestSkillReadsAndApprovalAreSynchronized(t *testing.T) {
 	if len(approved.Notices) != 1 || strings.Contains(strings.Join(approved.Notices, " "), cwd) {
 		t.Fatalf("approval notices exposed a source path: %+v", approved.Notices)
 	}
-	if _, err := b.Skill(context.Background(), "project-one"); err != nil {
+	if _, err := b.Skill(context.Background(), "", "project-one"); err != nil {
 		t.Fatalf("approved skill is not readable: %v", err)
 	}
 }
@@ -262,7 +262,7 @@ func TestApprovingAProjectWithNoSkillsIsRefusedNotFailed(t *testing.T) {
 	t.Cleanup(env.Close)
 	b := newWebBackend(webBackendConfig{version: "test", env: env})
 
-	_, err = b.TrustSkills(context.Background())
+	_, err = b.TrustSkills(context.Background(), "")
 	var refusal *web.Refusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("TrustSkills on a project with no skills = %v, want a refusal", err)
@@ -598,7 +598,7 @@ func TestASkillAddedAfterAnApprovalCanStillBeApproved(t *testing.T) {
 	t.Cleanup(env.Close)
 	b := newWebBackend(webBackendConfig{version: "test", env: env})
 
-	first, err := b.TrustSkills(context.Background())
+	first, err := b.TrustSkills(context.Background(), "")
 	if err != nil {
 		t.Fatalf("the first approval: %v", err)
 	}
@@ -606,33 +606,33 @@ func TestASkillAddedAfterAnApprovalCanStillBeApproved(t *testing.T) {
 		t.Fatalf("the first approval loaded %v, want the one skill", first.Loaded)
 	}
 	// Nothing pending now, so a second press is refused - that is the bound.
-	if _, err := b.TrustSkills(context.Background()); err == nil {
+	if _, err := b.TrustSkills(context.Background(), ""); err == nil {
 		t.Fatal("approving with nothing pending succeeded")
 	}
 
 	writeProjectSkill(t, cwd, "two")
 	// The page has to be able to see it before anyone can press the button.
-	listed, err := b.Skills(context.Background())
+	listed, err := b.Skills(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if listed.Pending == nil || len(listed.Pending.Names) == 0 {
 		t.Fatalf("a skill added after the approval is not reported as pending: %+v", listed.Pending)
 	}
-	second, err := b.TrustSkills(context.Background())
+	second, err := b.TrustSkills(context.Background(), "")
 	if err != nil {
 		t.Fatalf("approving a skill added after the first approval: %v", err)
 	}
 	if len(second.Loaded) != 2 {
 		t.Fatalf("the second approval loaded %v, want both skills", second.Loaded)
 	}
-	if _, err := b.Skill(context.Background(), "two"); err != nil {
+	if _, err := b.Skill(context.Background(), "", "two"); err != nil {
 		t.Fatalf("the newly approved skill is not readable: %v", err)
 	}
 	// The listing is memoised, and an approval is exactly the moment the memo is
 	// wrong: a page refetching after pressing the button must not be shown the
 	// answer from before it.
-	after, err := b.Skills(context.Background())
+	after, err := b.Skills(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
