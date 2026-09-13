@@ -254,17 +254,40 @@ func (p *Projects) Env(ctx context.Context, id string) (*Env, error) {
 		dir, name := pr.rec.Dir, pr.rec.Name
 		p.mu.Unlock()
 
-		env, err := p.loadEnv(ctx, dir)
+		// The handoff (clearing pr.loading and closing done) must run even if
+		// loadEnv panics, or the project is wedged for the daemon's life. The
+		// deferred clear-up is a no-op once the load returns normally: the
+		// critical section below does the same handoff together with deciding
+		// the abandoned/closed answer, which must happen in one lock
+		// acquisition so a waiter never sees loading == nil and env == nil at
+		// once and starts a duplicate load.
+		env, err := func() (env *Env, err error) {
+			loaded := false
+			defer func() {
+				if loaded {
+					return
+				}
+				p.mu.Lock()
+				pr.loading = nil
+				close(done)
+				p.mu.Unlock()
+			}()
+			env, err = p.loadEnv(ctx, dir)
+			loaded = true
+			return
+		}()
 
 		p.mu.Lock()
 		pr.loading = nil
 		close(done)
-		if p.byID[id] != pr || p.closed {
+		abandoned := p.byID[id] != pr
+		closed := p.closed
+		if abandoned || closed {
 			p.mu.Unlock()
 			if env != nil {
 				env.Close()
 			}
-			if p.closed {
+			if closed {
 				return nil, ErrProjectsClosed
 			}
 			return nil, ErrNoProject

@@ -204,16 +204,22 @@ func TestAProjectThatIsItselfACheckoutIsListedFirstWithNoName(t *testing.T) {
 	}
 }
 
-// loader counts how many environments it built, and can be made to fail or to
-// wait, which is how the tests below see the registry share, record and retry.
+// loader counts how many environments it built, and can be made to fail, to
+// wait, or to announce its arrival, which is how the tests below see the
+// registry share, record, retry and abandon a load.
 type loader struct {
-	loads atomic.Int64
-	fail  atomic.Bool
-	gate  chan struct{}
+	loads   atomic.Int64
+	fail    atomic.Bool
+	gate    chan struct{}
+	arrived chan struct{}
+	built   atomic.Pointer[runner.Env]
 }
 
-func (l *loader) load(t *testing.T) func(context.Context, string) (*runner.Env, error) {
+func (l *loader) load() func(context.Context, string) (*runner.Env, error) {
 	return func(ctx context.Context, dir string) (*runner.Env, error) {
+		if l.arrived != nil {
+			l.arrived <- struct{}{}
+		}
 		if l.gate != nil {
 			<-l.gate
 		}
@@ -222,13 +228,16 @@ func (l *loader) load(t *testing.T) func(context.Context, string) (*runner.Env, 
 			return nil, errors.New("the SessionStart hook exited 1")
 		}
 		env, _, err := runner.Load(ctx, runner.Options{Cwd: dir})
+		if env != nil {
+			l.built.Store(env)
+		}
 		return env, err
 	}
 }
 
 func newLoadingProjects(t *testing.T, l *loader, notify func(runner.ProjectView)) *runner.Projects {
 	t.Helper()
-	p, err := runner.NewProjects(runner.ProjectsConfig{LoadEnv: l.load(t), Notify: notify})
+	p, err := runner.NewProjects(runner.ProjectsConfig{LoadEnv: l.load(), Notify: notify})
 	if err != nil {
 		t.Fatalf("NewProjects: %v", err)
 	}
@@ -284,13 +293,19 @@ func TestAFailedLoadIsRecordedAnnouncedAndTriedAgain(t *testing.T) {
 }
 
 func TestCallersThatArriveTogetherShareOneLoad(t *testing.T) {
-	l := &loader{gate: make(chan struct{})}
+	l := &loader{gate: make(chan struct{}), arrived: make(chan struct{}, 1)}
 	p := newLoadingProjects(t, l, nil)
 	addProject(t, p, t.TempDir(), "")
 
 	var wg sync.WaitGroup
 	envs := make([]*runner.Env, 3)
-	for i := range envs {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		envs[0], _ = p.Env(context.Background(), "PRJ-1")
+	}()
+	<-l.arrived
+	for i := 1; i < len(envs); i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -307,6 +322,99 @@ func TestCallersThatArriveTogetherShareOneLoad(t *testing.T) {
 			t.Errorf("caller %d got %p, want the one shared environment %p", i, e, envs[0])
 		}
 	}
+}
+
+func TestAWaiterStopsWhenItsContextEnds(t *testing.T) {
+	l := &loader{gate: make(chan struct{}), arrived: make(chan struct{}, 1)}
+	p := newLoadingProjects(t, l, nil)
+	addProject(t, p, t.TempDir(), "")
+
+	var wg sync.WaitGroup
+	var leaderEnv *runner.Env
+	var leaderErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		leaderEnv, leaderErr = p.Env(context.Background(), "PRJ-1")
+	}()
+	<-l.arrived
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.Env(ctx, "PRJ-1"); !errors.Is(err, context.Canceled) {
+		t.Errorf("a waiter with a cancelled context = %v, want context.Canceled", err)
+	}
+
+	close(l.gate)
+	wg.Wait()
+	if leaderErr != nil {
+		t.Fatalf("the leader = %v, want success", leaderErr)
+	}
+	if leaderEnv == nil {
+		t.Error("the leader got no environment")
+	}
+}
+
+func TestALoadThatOutlivesRemoveOrCloseIsClosed(t *testing.T) {
+	t.Run("Remove", func(t *testing.T) {
+		l := &loader{gate: make(chan struct{}), arrived: make(chan struct{}, 1)}
+		p := newLoadingProjects(t, l, nil)
+		addProject(t, p, t.TempDir(), "")
+
+		var wg sync.WaitGroup
+		var err error
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err = p.Env(context.Background(), "PRJ-1")
+		}()
+		<-l.arrived
+		if rmErr := p.Remove("PRJ-1"); rmErr != nil {
+			t.Fatal(rmErr)
+		}
+		close(l.gate)
+		wg.Wait()
+
+		if !errors.Is(err, runner.ErrNoProject) {
+			t.Errorf("Env after Remove mid-load = %v, want ErrNoProject", err)
+		}
+		env := l.built.Load()
+		if env == nil {
+			t.Fatal("the loader built no environment")
+		}
+		if _, err := env.NewTools(); err == nil {
+			t.Error("the abandoned environment is still open")
+		}
+	})
+
+	t.Run("Close", func(t *testing.T) {
+		l := &loader{gate: make(chan struct{}), arrived: make(chan struct{}, 1)}
+		p := newLoadingProjects(t, l, nil)
+		addProject(t, p, t.TempDir(), "")
+
+		var wg sync.WaitGroup
+		var err error
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err = p.Env(context.Background(), "PRJ-1")
+		}()
+		<-l.arrived
+		p.Close()
+		close(l.gate)
+		wg.Wait()
+
+		if !errors.Is(err, runner.ErrProjectsClosed) {
+			t.Errorf("Env after Close mid-load = %v, want ErrProjectsClosed", err)
+		}
+		env := l.built.Load()
+		if env == nil {
+			t.Fatal("the loader built no environment")
+		}
+		if _, err := env.NewTools(); err == nil {
+			t.Error("the abandoned environment is still open")
+		}
+	})
 }
 
 func TestRemovingOrClosingReleasesTheEnvironment(t *testing.T) {
