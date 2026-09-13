@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -437,6 +438,32 @@ func TestJournalDirRefusesAnIdThatIsAPath(t *testing.T) {
 // pick up after the journal's last entry - otherwise a second event is written
 // under a number the file already uses and "everything after 5" returns halves
 // of two conversations.
+func TestArtifactsAreKeptBesideTheJournal(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	j, err := openJournal("20260913-000000-abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.close()
+	want := map[string]tools.FileChange{
+		"/w/a.go": {Path: "/w/a.go", Old: "x", New: "y"},
+		"/w/b.go": {Path: "/w/b.go", New: "z", Created: true},
+	}
+	if !j.putArtifacts(want) {
+		t.Fatalf("putArtifacts failed: %v", j.err)
+	}
+	got, err := ReadArtifacts("20260913-000000-abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ReadArtifacts = %+v, want %+v", got, want)
+	}
+	if _, err := ReadArtifacts("20260913-000000-nothing"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a session that never wrote artifacts = %v, want fs.ErrNotExist", err)
+	}
+}
+
 func TestResumeContinuesTheSequence(t *testing.T) {
 	l := journalSession(t, 64)
 	ch, stop, err := l.Subscribe(Client{ID: "c"}, 0)

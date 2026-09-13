@@ -330,9 +330,8 @@ Statuses a client has to tell apart:
 - `404` - no such run, or, on a blob, an event with no stored body. The two are
   told apart by the text: the first says the run is gone and the page reloads
   it, the second says to go on showing the head it already has.
-- `409` - the run has no live session. Its timeline still reads; its artifacts
-  and its socket do not, because both live with the session rather than in the
-  journal.
+- `409` - the run has no live session. Its timeline and its artifacts still
+  read; its socket does not, because it lives with the session.
 - `410` - the history no longer reaches the point asked for. Answered by
   reloading, not by retrying.
 - `503` with a `Retry-After` - the daemon is holding as many runs as it will.
@@ -361,8 +360,8 @@ have made anyway.
 What that first request answers is worth being exact about, because getting it
 wrong is a tab that redials for ever. `GET /api/runs/{id}` describes a closed
 run perfectly well and answers `200` with `"live":false`; the `409` belongs to
-the routes that need the session - the socket and the artifacts - and never to
-the record. So the field a client reads there is `live`, not the status code.
+the socket, which needs the session, and never to the record. So the field a
+client reads there is `live`, not the status code.
 
 `?since=` and `?limit=` are non-negative whole numbers. Every cursor on this API
 is one: opaque to the client, compared only for equality and order. A timeline
@@ -388,12 +387,14 @@ charset=utf-8` with the tool's own output and nothing around it. It carries the
 same security headers as every other response, and a front-end must render it as
 text, never as markup.
 
-`GET /api/runs/{id}/artifacts` lists every file the run changed. The content of
-both sides comes with it, but only up to a budget - a run that appended a line
-to a generated file holds both copies of it, and a response carrying them would
-be several more. Past that, `truncated` is set and the content is left out;
-`oldBytes` and `newBytes` are the real sizes either way, so a page can always
-say how big a change is.
+`GET /api/runs/{id}/artifacts` lists every file the run changed. A closed run
+answers from what its session wrote beside its journal on every save, so a run
+that ended with a daemon restart still lists what it changed; one that never
+had a turn answers `[]`. The content of both sides comes with it, but only up
+to a budget - a run that appended a line to a generated file holds both copies
+of it, and a response carrying them would be several more. Past that,
+`truncated` is set and the content is left out; `oldBytes` and `newBytes` are
+the real sizes either way, so a page can always say how big a change is.
 
 Booleans that are false are absent rather than present-and-false, the way Go's
 `omitempty` writes them - `running`, `waiting`, `step` and `seq` all behave that

@@ -207,9 +207,6 @@ func TestAClosedRunRefusesWhatNeedsItsSession(t *testing.T) {
 	if _, _, err := runs.Subscribe(v.ID, uisession.Client{}, 0); !errors.Is(err, runner.ErrRunClosed) {
 		t.Errorf("Subscribe = %v, want ErrRunClosed", err)
 	}
-	if _, err := runs.Artifacts(v.ID); !errors.Is(err, runner.ErrRunClosed) {
-		t.Errorf("Artifacts = %v, want ErrRunClosed", err)
-	}
 	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpInterrupt}); !errors.Is(err, runner.ErrRunClosed) {
 		t.Errorf("Apply = %v, want ErrRunClosed", err)
 	}
@@ -217,6 +214,43 @@ func TestAClosedRunRefusesWhatNeedsItsSession(t *testing.T) {
 	// journal, so this is an empty one rather than a failure.
 	if _, err := runs.Events(v.ID, 0, 0); err != nil {
 		t.Errorf("Events on a closed run = %v, want a readable timeline", err)
+	}
+}
+
+// The changes a run made are worth more after it is over than during it, and
+// a daemon restart is the ordinary way a run ends.
+func TestAClosedRunStillListsWhatItChanged(t *testing.T) {
+	built := &lastSession{}
+	runs := newRunsRecording(t, "", nil, nil, built)
+	v := create(t, runs, runner.RunRequest{})
+	// A turn against the dead backend fails at once, but it is what gives the
+	// session an id and a journal to write beside.
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	l := built.get(t)
+	for deadline := time.Now().Add(5 * time.Second); l.Running() && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	l.RecordFileChange("/w/a.go", "x", "y", false)
+	if err := runs.CloseRun(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	arts, err := runs.Artifacts(v.ID)
+	if err != nil {
+		t.Fatalf("Artifacts of a closed run: %v", err)
+	}
+	if c, ok := arts["/w/a.go"]; !ok || c.New != "y" {
+		t.Errorf("Artifacts = %+v, want the recorded change", arts)
+	}
+
+	// One that never had a turn has nothing, and says so as an empty set.
+	w := create(t, runs, runner.RunRequest{})
+	if err := runs.CloseRun(w.ID); err != nil {
+		t.Fatal(err)
+	}
+	if arts, err := runs.Artifacts(w.ID); err != nil || len(arts) != 0 {
+		t.Errorf("Artifacts of a run with no turn = %+v, %v; want empty and no error", arts, err)
 	}
 }
 

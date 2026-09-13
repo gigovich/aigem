@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/gigovich/aigem/internal/config"
+	"github.com/gigovich/aigem/internal/tools"
 )
 
 // The journal is what a front-end reconnects into. It is kept apart from the
@@ -181,6 +182,65 @@ func (j *journal) putBlob(seq uint64, body string) bool {
 		return false
 	}
 	return true
+}
+
+// putArtifacts replaces the record of what this session changed on disk. It
+// is written whole and renamed into place, so a reader never sees half of it.
+//
+// Unlike putBlob and append, it runs after the journal is closed too: Save is
+// called once a turn has fully unwound, which is after Close has already shut
+// the events writer down, and the artifacts a session made are as true then as
+// they were the moment before. Only a session with no journal at all - one
+// that never reached its first turn - has nothing to write beside.
+func (j *journal) putArtifacts(arts map[string]tools.FileChange) bool {
+	if j == nil {
+		return false
+	}
+	body, err := json.Marshal(arts)
+	if err != nil {
+		j.note(err)
+		return false
+	}
+	f, err := os.CreateTemp(j.dir, "artifacts-*.part")
+	if err != nil {
+		j.note(err)
+		return false
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		j.note(err)
+		return false
+	}
+	if err := f.Close(); err != nil {
+		j.note(err)
+		return false
+	}
+	if err := os.Rename(tmp, filepath.Join(j.dir, "artifacts.json")); err != nil {
+		j.note(err)
+		return false
+	}
+	return true
+}
+
+// ReadArtifacts returns what a session changed on disk, for a session that is
+// closed or belongs to a daemon that has since restarted. A session that never
+// wrote any is the underlying not-exist error.
+func ReadArtifacts(id string) (map[string]tools.FileChange, error) {
+	dir, err := journalDir(id)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "artifacts.json"))
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]tools.FileChange
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("uisession: artifacts of %s: %w", id, err)
+	}
+	return out, nil
 }
 
 // ReadBlob returns the whole body of a tool result whose journalled form was

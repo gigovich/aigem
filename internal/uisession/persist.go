@@ -78,7 +78,13 @@ func (l *Local) Save() error {
 		return nil
 	}
 	s := &session.Session{Meta: l.metaLocked(), Messages: l.ag.Messages()}
+	arts := make(map[string]tools.FileChange, len(l.artifacts))
+	for k, v := range l.artifacts {
+		arts[k] = v
+	}
+	j := l.journal
 	l.mu.Unlock()
+	j.putArtifacts(arts)
 	return session.Save(s, time.Now())
 }
 

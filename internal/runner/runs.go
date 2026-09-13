@@ -556,16 +556,23 @@ func (r *Runs) Subscribe(id string, c uisession.Client, since uint64) (
 // Artifacts reports the files the run changed, with the content before and
 // after.
 func (r *Runs) Artifacts(id string) (map[string]tools.FileChange, error) {
-	_, sess, err := r.row(id)
+	rec, sess, err := r.row(id)
 	if err != nil {
 		return nil, err
 	}
-	if sess == nil {
-		// The artifacts live with the session, not in the journal. A closed run
-		// has none to report rather than an empty set to promise.
-		return nil, ErrRunClosed
+	if sess != nil {
+		return sess.Local.Artifacts(), nil
 	}
-	return sess.Local.Artifacts(), nil
+	// The session is gone; what it changed was written beside its journal on
+	// every save. A run that never had a turn has no journal and changed nothing.
+	if rec.SessionID == "" {
+		return map[string]tools.FileChange{}, nil
+	}
+	arts, err := uisession.ReadArtifacts(rec.SessionID)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]tools.FileChange{}, nil
+	}
+	return arts, err
 }
 
 // RunOp is one operation a client performs on a run. Which fields apply is
