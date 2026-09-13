@@ -106,6 +106,7 @@ func (l *Local) Load(id string) (*session.Session, error) {
 	l.ag.SetSessionID(s.ID)
 	l.id, l.title, l.start = s.ID, s.Title, s.Created
 	l.metaEmitted = true
+	l.artifacts = map[string]tools.FileChange{}
 	l.reopenJournalLocked()
 	l.emitLocked(l.metaEventLocked())
 	return s, nil

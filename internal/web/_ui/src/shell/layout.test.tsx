@@ -180,7 +180,8 @@ test('on a phone, selecting a row opens the inspector', async () => {
   })
   act(() => setViewport(400))
   await user.click(screen.getByRole('button', { name: 'Open navigation' }))
-  await user.click(within(screen.getByRole('navigation', { name: 'Navigation' })).getByRole('button', { name: /Models/ }))
+  const nav = screen.getByRole('navigation', { name: 'Navigation' })
+  await user.click(within(nav).getByRole('button', { name: /Models/ }))
   expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument()
 
   await user.click(await screen.findByRole('row', { name: /GPT-5/ }))
@@ -189,7 +190,8 @@ test('on a phone, selecting a row opens the inspector', async () => {
 
   await user.click(within(aside).getByRole('button', { name: 'Close inspector' }))
   await user.click(screen.getByRole('button', { name: 'Open navigation' }))
-  await user.click(within(screen.getByRole('navigation', { name: 'Navigation' })).getByRole('button', { name: /Activity/ }))
+  const navAgain = screen.getByRole('navigation', { name: 'Navigation' })
+  await user.click(within(navAgain).getByRole('button', { name: /Activity/ }))
   await user.click(await screen.findByRole('button', { name: /older/ }))
   expect(await screen.findByRole('complementary', { name: 'Inspector' })).toHaveTextContent('run.opened')
 })
@@ -215,4 +217,22 @@ test('crossing the breakpoint without opening the drawer does not steal focus', 
   act(() => setViewport(400))
   const menu = screen.getByRole('button', { name: 'Open navigation' })
   expect(document.activeElement).not.toBe(menu)
+})
+
+// Widening past the breakpoint while the drawer is open closes it (applyWidth
+// clears navOpen once the layout is no longer a phone). Coming back to a
+// phone width afterwards must not read that stale open as one to hand focus
+// back from.
+test('widening past the breakpoint while the drawer is open forgets it was open', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN] })
+  act(() => setViewport(400))
+  const menu = screen.getByRole('button', { name: 'Open navigation' })
+  await user.click(menu)
+  const nav = screen.getByRole('navigation', { name: 'Navigation' })
+  await waitFor(() => expect(nav.contains(document.activeElement)).toBe(true))
+
+  act(() => setViewport(800))
+  act(() => setViewport(400))
+  expect(document.activeElement).not.toBe(screen.getByRole('button', { name: 'Open navigation' }))
 })

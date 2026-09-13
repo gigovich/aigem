@@ -138,8 +138,12 @@ const HEADING = {
 
 export function Markdown({ source, className = '' }: { source: string; className?: string }) {
   const blocks = parse(source)
+  // The caller's own text colour wins: two utility classes for the same
+  // property race on stylesheet order, not on where they sit in the string, so
+  // the default is left out rather than trusted to lose.
+  const muted = className.includes('text-fg') ? '' : 'text-fg-muted'
   return (
-    <div className={`max-w-[88ch] text-[12.5px] leading-[1.55] text-pretty text-fg-muted ${className}`}>
+    <div className={`max-w-[88ch] text-[12.5px] leading-[1.55] text-pretty ${muted} ${className}`}>
       {blocks.map((b, i) => {
         const key = `b${i}`
         if (b.kind === 'code') {

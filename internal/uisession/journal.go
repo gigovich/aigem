@@ -21,6 +21,7 @@ import (
 //
 //	<state>/journal/<session-id>/events.jsonl
 //	<state>/journal/<session-id>/blobs/<seq>
+//	<state>/journal/<session-id>/artifacts.json
 //
 // The id is checked rather than trusted. No route hands one straight from a URL
 // today - a request names a run, and the run record supplies the session id -
@@ -209,6 +210,13 @@ func (j *journal) putArtifacts(arts map[string]tools.FileChange) bool {
 	tmp := f.Name()
 	defer os.Remove(tmp)
 	if _, err := f.Write(body); err != nil {
+		f.Close()
+		j.note(err)
+		return false
+	}
+	// Flushed before the rename, as putBlob is: a crash between the two steps
+	// must not leave the name in place over a body that was never written.
+	if err := f.Sync(); err != nil {
 		f.Close()
 		j.note(err)
 		return false

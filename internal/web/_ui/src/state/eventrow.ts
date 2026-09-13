@@ -96,7 +96,7 @@ export function toRow(e: RunEvent): EventRow | null {
       // out. Drawing every turn_end as a tick is how a conversation that never
       // happened reads as one that did.
       if (e.error) {
-        return { ...base, glyph: '×', color: 'var(--danger)', text: e.error, phase: true }
+        return { ...base, glyph: '×', color: 'var(--danger)', text: e.error, phase: true, prose: true }
       }
       return {
         ...base,

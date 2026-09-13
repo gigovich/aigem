@@ -425,6 +425,56 @@ func TestSaveLoadAndReset(t *testing.T) {
 	}
 }
 
+// A conversation's artifacts belong to it alone. Loading a different one must
+// not leave the previous conversation's file changes visible under the newly
+// loaded id.
+func TestLoadClearsArtifacts(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := New(Config{
+		Tools: reg,
+		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
+			return agent.New(&scriptedClient{}, reg, 0.3, confirm, "")
+		},
+		ModelRef: func() string { return "test/model" },
+		Ring:     128,
+	})
+	t.Cleanup(l.Close)
+
+	ch, stop, err := l.Subscribe(Client{ID: "c"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	if err := l.Submit("remember this", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, KindTurnEnd)
+	l.RecordFileChange("f.txt", "old", "new", false)
+	if err := l.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Artifacts()) == 0 {
+		t.Fatal("expected a recorded artifact before Load")
+	}
+
+	other := &session.Session{Meta: session.Meta{ID: session.NewID(time.Now())}}
+	if err := session.Save(other, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := l.Load(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.Artifacts(); len(got) != 0 {
+		t.Fatalf("artifacts after Load = %+v, want empty", got)
+	}
+}
+
 // ---- turns ----
 
 // scriptedClient answers with one tool call, then prose.

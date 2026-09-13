@@ -13,7 +13,7 @@ aigem honors the XDG base directories.
 | `~/.config/aigem/skills/`                 | global skills                                       |
 | `~/.local/state/aigem/auth.json`          | credentials (`0600`)                                |
 | `~/.local/state/aigem/sessions/`          | saved conversations (`0600` in a `0700` directory)  |
-| `~/.local/state/aigem/journal/<id>/`      | one conversation's timeline, plus `blobs/` (`0700`) |
+| `~/.local/state/aigem/journal/<id>/`      | a conversation's timeline, `blobs/`, `artifacts.json` (`0700`) |
 | `~/.local/state/aigem/web-cookies.json`   | browser sign-ins for `aigem web` (`0600`)           |
 | `~/.local/state/aigem/activity.jsonl`     | append-only browser activity feed (`0600`)          |
 | `~/.local/state/aigem/path-grants.json`   | approved read paths outside a working directory     |
@@ -27,8 +27,11 @@ aigem honors the XDG base directories.
 
 A journal is never pruned. `blobs/` holds the whole of each tool result over
 2 KiB that it managed to write - a little over 48 KiB at most, which is where
-the agent clips one before the model sees it. Removing the directory for a
-conversation you are done with costs its timeline and nothing else.
+the agent clips one before the model sees it. `artifacts.json` holds both
+sides of every file the conversation changed, written on every save so a
+closed run can still show its changes. It is unbounded too, and never pruned;
+removing it alone costs only that run's Changes view. Removing the directory
+for a conversation you are done with costs its timeline and nothing else.
 
 `activity.jsonl` is append-only while the daemon runs, and is trimmed to the
 last thirty days when `aigem web` starts - the one moment no page is holding a

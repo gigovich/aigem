@@ -282,6 +282,7 @@ test('the rows a person reads as prose say so; tool rows do not', () => {
   expect(toRow(ev(4, EventKind.TurnEnd))?.prose).toBe(false)
   expect(toRow(ev(5, EventKind.ToolStart, { name: 'read_file' }))?.prose).toBe(false)
   expect(toRow(ev(6, EventKind.Reasoning, { text: 'thinking' }))?.prose).toBe(false)
+  expect(toRow(ev(7, EventKind.TurnEnd, { error: 'provider unreachable' }))?.prose).toBe(true)
 })
 
 test('an assistant message with nothing in it is not a row', () => {
