@@ -1905,3 +1905,25 @@ func TestTheLastWordOnAClosedRunIsThatItIsClosed(t *testing.T) {
 		t.Fatalf("the last word on %s was %+v, want a record with no session", v.ID, last)
 	}
 }
+
+// The project is the request's to name and the record's to keep: which
+// environment it resolves to is Open's business, and the table only has to
+// hand it back, after a restart included.
+func TestARunRemembersItsProject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.json")
+	runs := newRuns(t, path, nil, nil)
+	v := create(t, runs, runner.RunRequest{ProjectID: "PRJ-3"})
+	if v.ProjectID != "PRJ-3" {
+		t.Fatalf("ProjectID = %q, want PRJ-3", v.ProjectID)
+	}
+	if home := create(t, runs, runner.RunRequest{}); home.ProjectID != "" {
+		t.Errorf("a run with no project = %q, want empty", home.ProjectID)
+	}
+	runs.Close()
+
+	again := newRuns(t, path, nil, nil)
+	got, err := again.Get(v.ID)
+	if err != nil || got.ProjectID != "PRJ-3" {
+		t.Errorf("after a restart ProjectID = %q, %v; want PRJ-3", got.ProjectID, err)
+	}
+}

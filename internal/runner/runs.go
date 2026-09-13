@@ -84,8 +84,11 @@ const (
 // walked away from is not worth a file. Reading back a run that never had one
 // is an empty timeline, not an error.
 type Run struct {
-	ID        string    `json:"id"`
-	SessionID string    `json:"sessionId,omitempty"`
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId,omitempty"`
+	// ProjectID names the project the run works in; empty is the daemon's own
+	// directory, which is a project with no record.
+	ProjectID string    `json:"projectId,omitempty"`
 	Mode      Mode      `json:"mode"`
 	Title     string    `json:"title,omitempty"`
 	Model     string    `json:"model,omitempty"`
@@ -129,6 +132,8 @@ type RunRequest struct {
 	// Model is the reference to open, in the "provider/id" form the wire uses.
 	// Empty takes the daemon's default.
 	Model string
+	// ProjectID selects the environment the run opens in. Open resolves it.
+	ProjectID string
 }
 
 // Opened is what OpenRun built. It is reported rather than assumed, because
@@ -384,7 +389,7 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	// at once could be listed in an order their Created fields contradict.
 	now := r.now()
 	rec := Run{
-		ID: id, SessionID: meta.ID, Mode: req.Mode,
+		ID: id, SessionID: meta.ID, ProjectID: req.ProjectID, Mode: req.Mode,
 		Title: meta.Title, Model: opened.Model, Root: opened.Root,
 		Status: RunOpen, Created: now, Updated: now,
 	}
