@@ -5,7 +5,7 @@ import { EmptyState } from '@/ui/EmptyState'
  *
  * They are reachable - the canvas puts Tickets and Worktrees in the navigation,
  * and a person who clicks one is owed an answer - and each says the same true
- * thing: the concept it is about arrives with projects, which is phase two.
+ * thing: the concept it is about arrives with tickets, which is the next phase.
  * Drawing the tables against fixtures would be worse: a screen that looks
  * finished and does nothing is harder to tell from a broken one.
  */
@@ -15,7 +15,7 @@ export function Tickets() {
     <Screen title="Tickets">
       <EmptyState
         title="Tickets need a project."
-        detail="A ticket belongs to a repository inside a project, and this daemon works in the one directory it was started in. Projects, repositories and their tickets arrive in a later phase."
+        detail="A ticket belongs to a repository inside a project. Tickets arrive in the next phase."
       />
     </Screen>
   )
@@ -26,18 +26,7 @@ export function Task() {
     <Screen title="Task">
       <EmptyState
         title="Tasks need a project."
-        detail="Overview, discussion, changes and runs are drawn against a ticket, and tickets arrive with projects in a later phase."
-      />
-    </Screen>
-  )
-}
-
-export function Repos() {
-  return (
-    <Screen title="Repositories & worktrees">
-      <EmptyState
-        title="Worktrees need a project."
-        detail="Every autonomous run gets an isolated worktree under the project directory. Until there are projects, a conversation works in the directory the daemon was started in."
+        detail="Overview, discussion, changes and runs are drawn against a ticket, which arrives in the next phase."
       />
     </Screen>
   )

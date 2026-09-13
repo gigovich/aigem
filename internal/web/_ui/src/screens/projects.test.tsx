@@ -145,3 +145,37 @@ test('the skills screen reads and trusts the chosen project', async () => {
     expect(h.sent.find((r) => r.path === '/api/skills/trust')?.body).toBe('{"project":"PRJ-1"}'),
   )
 })
+
+test('the worktrees screen lists the repositories of the chosen project', async () => {
+  const user = userEvent.setup()
+  await mountApp({
+    projects: PROJECTS,
+    routes: {
+      '/api/projects/PRJ-1/repos': () =>
+        new Response(
+          JSON.stringify([
+            { name: '', dir: '/home/dev/work', main: 'main' },
+            { name: 'api', dir: '/home/dev/work/api' },
+          ]),
+          { status: 200 },
+        ),
+    },
+  })
+  act(() => navigate({ screen: 'repos' }))
+  expect(await screen.findByText(/no project record/)).toBeInTheDocument()
+
+  const projects = screen.getByRole('list', { name: 'Projects' })
+  await user.click(within(projects).getByRole('button', { name: /work/ }))
+  const grid = await screen.findByRole('grid', { name: 'Repositories' })
+  expect(within(grid).getByText('work (the project itself)')).toBeInTheDocument()
+  expect(within(grid).getByText('api')).toBeInTheDocument()
+  expect(within(grid).getByText('main')).toBeInTheDocument()
+  expect(within(grid).getByText('neither main nor master')).toBeInTheDocument()
+  expect(within(grid).getAllByText('no worktrees yet')).toHaveLength(2)
+})
+
+test('the worktrees row is offered only with projects', async () => {
+  await mountApp({ meta: { features: { controlSocket: true, runs: true } } })
+  const nav = await screen.findByRole('navigation', { name: 'Navigation' })
+  expect(within(nav).queryByRole('button', { name: /Worktrees/ })).not.toBeInTheDocument()
+})

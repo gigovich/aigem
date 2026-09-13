@@ -15,7 +15,7 @@ const TOP: Item[] = [
 const BOTTOM: Item[] = [
   { screen: 'models', label: 'Models', icon: '◇', feature: 'models' },
   { screen: 'skills', label: 'Skills', icon: '◈', feature: 'skills' },
-  { screen: 'repos', label: 'Worktrees', icon: '⌥' },
+  { screen: 'repos', label: 'Worktrees', icon: '⌥', feature: 'projects' },
 ]
 
 type Props = { route: Route; onNewProject: () => void }

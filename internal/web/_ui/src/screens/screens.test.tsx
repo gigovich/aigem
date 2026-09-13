@@ -203,7 +203,6 @@ test('every placeholder screen says what it is waiting for', async () => {
   for (const [path, heading] of [
     ['tickets', 'Tickets'],
     ['task', 'Task'],
-    ['repos', 'Repositories & worktrees'],
   ] as const) {
     go(path)
     expect(await screen.findByRole('heading', { name: heading, level: 1 })).toBeInTheDocument()

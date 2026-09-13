@@ -36,9 +36,10 @@ import { Chat } from '@/screens/Chat'
 import { LoginDialog } from '@/screens/LoginDialog'
 import { Models } from '@/screens/Models'
 import { NewProjectDialog } from '@/screens/NewProjectDialog'
-import { Repos, Task, Tickets } from '@/screens/Placeholders'
+import { Task, Tickets } from '@/screens/Placeholders'
 import { Run } from '@/screens/Run'
 import { Skills } from '@/screens/Skills'
+import { Worktrees } from '@/screens/Worktrees'
 import { Modal } from '@/ui/Modal'
 
 const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]), [href], input, select, textarea'
@@ -382,7 +383,7 @@ function Screen({
     case 'task':
       return <Task />
     case 'repos':
-      return <Repos />
+      return <Worktrees />
     case 'projects':
       return <ProjectSelect id={route.id} />
     default: {
