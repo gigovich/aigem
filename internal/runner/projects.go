@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -215,3 +216,49 @@ func (p *Projects) saveLocked() error {
 
 // Close releases every loaded environment. Task 3 fills it in.
 func (p *Projects) Close() {}
+
+type Repository struct {
+	Name string `json:"name"`
+	Dir  string `json:"dir"`
+	Main string `json:"main,omitempty"`
+}
+
+// Repositories discovers the project's git checkouts on demand: the project
+// directory itself when it is one, then each direct child that is, by name.
+func (p *Projects) Repositories(id string) ([]Repository, error) {
+	v, err := p.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	var out []Repository
+	if isCheckout(v.Dir) {
+		out = append(out, Repository{Dir: v.Dir, Main: mainBranch(v.Dir)})
+	}
+	entries, err := os.ReadDir(v.Dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		dir := filepath.Join(v.Dir, e.Name())
+		if e.IsDir() && isCheckout(dir) {
+			out = append(out, Repository{Name: e.Name(), Dir: dir, Main: mainBranch(dir)})
+		}
+	}
+	return out, nil
+}
+
+func isCheckout(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
+// mainBranch is the branch a run will merge into, read once per discovery.
+// Empty when the checkout has neither name.
+func mainBranch(dir string) string {
+	for _, b := range []string{"main", "master"} {
+		if exec.Command("git", "-C", dir, "show-ref", "--verify", "--quiet", "refs/heads/"+b).Run() == nil {
+			return b
+		}
+	}
+	return ""
+}
