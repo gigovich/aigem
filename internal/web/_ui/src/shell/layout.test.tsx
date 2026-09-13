@@ -128,6 +128,15 @@ test('a phone keeps the navigation in a drawer', async () => {
 
   expect(window.location.pathname).toBe('/activity')
   expect(screen.queryByRole('navigation', { name: 'Navigation' })).not.toBeInTheDocument()
+
+  // Choosing the screen already shown is a navigation nowhere, and still closes it.
+  await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+  await user.click(
+    within(screen.getByRole('navigation', { name: 'Navigation' })).getByRole('button', {
+      name: /Activity/,
+    }),
+  )
+  expect(screen.queryByRole('navigation', { name: 'Navigation' })).not.toBeInTheDocument()
 })
 
 // A list beside its detail needs 406px of chrome before any content; a phone

@@ -108,9 +108,6 @@ export default function App() {
 
   const conversation = useRunEvents(runId || undefined)
 
-  // A phone shows one column: the list, or the thing chosen from it.
-  const split: Split = !phone ? 'both' : route.id ? 'detail' : 'list'
-  useEffect(() => setNav(false), [route])
 
   useEffect(() => {
     if (!conversation.refusal) return
@@ -253,7 +250,6 @@ export default function App() {
             route={route}
             runId={runId}
             conversation={conversation}
-            split={split}
             onNew={() => void openSession()}
             onClose={setClosing}
           />
@@ -318,21 +314,16 @@ export default function App() {
 
 type Conversation = ReturnType<typeof useRunEvents>
 
-/** Which of a list-and-detail screen's two columns a viewport shows. */
-export type Split = 'both' | 'list' | 'detail'
-
 function Screen({
   route,
   runId,
   conversation,
-  split,
   onNew,
   onClose,
 }: {
   route: Route
   runId: string
   conversation: Conversation
-  split: Split
   onNew: () => void
   onClose: (id: string) => void
 }) {
@@ -345,7 +336,7 @@ function Screen({
           state={conversation.state}
           reason={conversation.reason}
           send={conversation.send}
-          split={split}
+          selected={route.id}
           onNew={onNew}
           onClose={onClose}
         />
@@ -362,7 +353,7 @@ function Screen({
     case 'models':
       return <Models selected={route.id} />
     case 'skills':
-      return <Skills selected={route.id} split={split} />
+      return <Skills selected={route.id} />
     case 'activity':
       return <Activity />
     case 'tickets':

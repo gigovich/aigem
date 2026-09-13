@@ -7,7 +7,7 @@ export function Back({ label, to }: { label: string; to: Route }) {
     <button
       type="button"
       onClick={() => navigate(to)}
-      className="h-[26px] cursor-pointer rounded-md border border-line px-[8px] text-[11.5px] whitespace-nowrap text-fg-muted hover:border-line-strong hover:text-fg"
+      className="h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] whitespace-nowrap text-fg-muted hover:border-line-strong hover:text-fg"
     >
       ‹ {label}
     </button>

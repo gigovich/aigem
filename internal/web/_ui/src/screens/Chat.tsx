@@ -11,7 +11,6 @@ import { usePublishInspector } from '@/state/inspector'
 import { liveStatus } from '@/state/run'
 import type { RunView } from '@/state/run'
 import type { RunSocketState } from '@/lib/socket'
-import type { Split } from '@/App'
 import { Back } from '@/ui/Back'
 import { EmptyState } from '@/ui/EmptyState'
 import { FilterInput } from '@/ui/FilterInput'
@@ -27,7 +26,8 @@ type Props = {
   /** Why the stream ended, when the socket could say. */
   reason: string
   send: (op: RunOp) => boolean
-  split: Split
+  /** The run the address bar names; a phone shows the list without one. */
+  selected?: string
   onNew: () => void
   onClose: (id: string) => void
 }
@@ -40,9 +40,10 @@ type Props = {
  * a later phase a run is a ticket's autonomous execution and a session is the
  * one a person steers; in phase one only the second exists, and this is it.
  */
-export function Chat({ run, runId, state, reason, send, split, onNew, onClose }: Props) {
-  const { runs, models, pendingCommand, opening } = useApp((s) => ({
+export function Chat({ run, runId, state, reason, send, selected, onNew, onClose }: Props) {
+  const { runs, models, pendingCommand, opening, phone } = useApp((s) => ({
     runs: s.runs,
+    phone: s.phone,
     // Only the ones that can actually be opened: offering a model with no
     // credential is offering a switch that comes back refused.
     models: s.models.filter((m) => !m.needsAuth || m.authenticated),
@@ -50,6 +51,8 @@ export function Chat({ run, runId, state, reason, send, split, onNew, onClose }:
     opening: s.opening,
   }))
   const record = runs.find((r) => r.id === runId)
+  const showList = !phone || !selected
+  const showDetail = !phone || !!selected
 
   // The composer's own text. Kept here rather than in the application store,
   // which the shell subscribes to whole: a store that moved on every keystroke
@@ -118,7 +121,7 @@ export function Chat({ run, runId, state, reason, send, split, onNew, onClose }:
   const submit = () => {
     const value = text.trim()
     if (!value) return
-    const sent = value.startsWith('/') ? slash(value, send) : send({ op: 'submit', text: value })
+    const sent = value.startsWith('/') ? slash(value, runId, send) : send({ op: 'submit', text: value })
     if (sent) setText('')
   }
 
@@ -130,9 +133,9 @@ export function Chat({ run, runId, state, reason, send, split, onNew, onClose }:
 
   return (
     <div className="flex min-h-0 flex-1">
-      {split !== 'detail' && (
+      {showList && (
         <div
-          className={`flex flex-none flex-col overflow-hidden border-r border-line ${split === 'list' ? 'w-full' : 'w-[238px]'}`}
+          className={`flex flex-none flex-col overflow-hidden border-r border-line ${phone ? 'w-full' : 'w-[238px]'}`}
         >
           <div className="flex flex-none items-center gap-2 border-b border-line py-[11px] pr-[10px] pl-3">
             <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
@@ -186,7 +189,7 @@ export function Chat({ run, runId, state, reason, send, split, onNew, onClose }:
         </div>
       )}
 
-      {split !== 'list' && (
+      {showDetail && (
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {!record ? (
             <EmptyState
@@ -202,7 +205,7 @@ export function Chat({ run, runId, state, reason, send, split, onNew, onClose }:
             <>
               <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-[11px]">
                 <div className="flex flex-wrap items-center gap-[10px]">
-                  {split === 'detail' && <Back label="Sessions" to={{ screen: 'chat' }} />}
+                  {phone && <Back label="Sessions" to={{ screen: 'chat' }} />}
                   <h1 className="m-0 text-[15px] font-semibold tracking-[-0.015em]">
                     {run.title || record.title || 'Untitled session'}
                   </h1>

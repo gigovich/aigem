@@ -60,6 +60,22 @@ export function Run({ run, runId, state, send }: Props) {
   )
   const tree = useMemo(() => agentTree(run), [run])
 
+  const fields = record
+    ? [
+        { key: 'mode', value: record.mode },
+        { key: 'model', value: run.model || record.model || '—' },
+        { key: 'status', value: record.status },
+        { key: 'journal', value: run.sessionId || record.sessionId || '—' },
+        { key: 'events', value: String(run.seq) },
+      ]
+    : []
+  const files = run.files.map((f) => ({
+    icon: f.created ? '+' : '~',
+    color: f.created ? 'var(--added)' : 'var(--modified)',
+    text: readable(f.path),
+    created: f.created,
+  }))
+
   // Below the breakpoint the column is not drawn, and what it held goes to the
   // inspector instead, which the header can open.
   const panel = useMemo(() => {
@@ -69,23 +85,13 @@ export function Run({ run, runId, state, send }: Props) {
       id: record.id,
       title: run.title || record.title || 'Untitled run',
       status: liveStatus(record, run),
-      fields: [
-        { key: 'mode', value: record.mode },
-        { key: 'model', value: run.model || record.model || '—' },
-        { key: 'status', value: record.status },
-        { key: 'journal', value: run.sessionId || record.sessionId || '—' },
-        { key: 'events', value: String(run.seq) },
-        { key: 'root', value: record.root ?? '—' },
-      ],
+      fields: [...fields, { key: 'root', value: record.root ?? '—' }],
       progress: run.ctxSize > 0 ? { used: run.contextTokens, total: run.ctxSize } : undefined,
-      listTitle: run.files.length > 0 ? 'Files touched' : undefined,
-      list: run.files.map((f) => ({
-        icon: f.created ? '+' : '~',
-        color: f.created ? 'var(--added)' : 'var(--modified)',
-        text: readable(f.path),
-      })),
+      listTitle: files.length > 0 ? 'Files touched' : undefined,
+      list: files,
       actions: [{ label: 'Steer in chat', onClick: () => navigate({ screen: 'chat', id: record.id }) }],
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fields and files are derived from run and record
   }, [narrow, record, run])
   usePublishInspector(panel)
 
@@ -199,16 +205,7 @@ export function Run({ run, runId, state, send }: Props) {
 
             <div aria-hidden="true" className="h-px bg-line" />
             <div className="p-3">
-              <FieldList
-                keyWidth={78}
-                fields={[
-                  { key: 'mode', value: record.mode },
-                  { key: 'model', value: run.model || record.model || '—' },
-                  { key: 'status', value: record.status },
-                  { key: 'journal', value: run.sessionId || record.sessionId || '—' },
-                  { key: 'events', value: String(run.seq) },
-                ]}
-              />
+              <FieldList keyWidth={78} fields={fields} />
               {run.ctxSize > 0 && (
                 <div className="mt-3">
                   <ProgressBar
@@ -232,18 +229,14 @@ export function Run({ run, runId, state, send }: Props) {
               <div className="mt-2 font-mono text-[11px] text-fg-subtle">
                 {run.files.length} file{run.files.length === 1 ? '' : 's'} touched
               </div>
-              {run.files.map((f) => (
-                <div key={f.path} className="flex h-6 items-center gap-2 font-mono text-[11px]">
-                  <span
-                    aria-hidden="true"
-                    className="w-2"
-                    style={{ color: f.created ? 'var(--added)' : 'var(--modified)' }}
-                  >
-                    {f.created ? '+' : '~'}
+              {files.map((f) => (
+                <div key={f.text} className="flex h-6 items-center gap-2 font-mono text-[11px]">
+                  <span aria-hidden="true" className="w-2" style={{ color: f.color }}>
+                    {f.icon}
                   </span>
                   <span className="sr-only">{f.created ? 'created' : 'modified'}</span>
                   <span className="overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
-                    {readable(f.path)}
+                    {f.text}
                   </span>
                 </div>
               ))}

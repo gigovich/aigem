@@ -1,7 +1,7 @@
 import { navigate } from '@/lib/route'
 import type { Route, Screen } from '@/lib/route'
 import type { Feature } from '@/lib/wire'
-import { runCounts, signOut, useApp } from '@/state/app'
+import { runCounts, setNav, signOut, useApp } from '@/state/app'
 import type { AppState } from '@/state/app'
 
 type Item = { screen: Screen; label: string; icon: string; feature?: Feature }
@@ -19,7 +19,6 @@ const BOTTOM: Item[] = [
 ]
 
 type Props = { route: Route; onNewProject: () => void }
-
 
 /**
  * The navigation column.
@@ -51,7 +50,10 @@ export function Sidebar({ route, onNewProject }: Props) {
         key={item.screen}
         type="button"
         aria-current={active ? 'page' : undefined}
-        onClick={() => navigate({ screen: item.screen })}
+        onClick={() => {
+          navigate({ screen: item.screen })
+          setNav(false)
+        }}
         className={`flex h-[26px] w-full cursor-pointer items-center gap-2 rounded-[5px] px-2 text-left hover:bg-s0 ${
           active ? 'bg-s0 font-medium text-fg' : 'text-fg-muted'
         }`}

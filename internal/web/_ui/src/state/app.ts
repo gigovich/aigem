@@ -46,7 +46,6 @@ export type AppState = {
   theme: Theme
   density: Density
   narrow: boolean
-  /** Below the phone width: one column, the navigation a drawer. */
   phone: boolean
   navOpen: boolean
   inspectorOpen: boolean
@@ -392,7 +391,7 @@ export function releaseOpening() {
   patch({ opening: false })
 }
 
-export function setPendingCommand(text: string) {
+function setPendingCommand(text: string) {
   store.set((s) => ({ ...s, pendingCommand: { text, nth: s.pendingCommand.nth + 1 } }))
 }
 

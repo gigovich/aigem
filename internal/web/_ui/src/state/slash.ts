@@ -9,13 +9,13 @@
 
 import { navigate } from '@/lib/route'
 import type { RunOp } from '@/lib/wire'
-import { flash, openSession, setLogin, store } from './app'
+import { flash, openSession, setLogin } from './app'
 
 /** Commands the daemon lists that have no browser shape at all. */
-export const NOT_HERE = new Set(['/agents', '/logout'])
+export const NOT_HERE = new Set(['/agents', '/logout', '/mcp'])
 
-/** Carry out a typed slash line. Reports whether it was taken. */
-export function slash(line: string, send: (op: RunOp) => boolean): boolean {
+/** Carry out a typed slash line in the conversation `runId`. Reports whether it was taken. */
+export function slash(line: string, runId: string, send: (op: RunOp) => boolean): boolean {
   const [name = '', ...rest] = line.slice(1).split(' ')
   const args = rest.join(' ').trim()
   switch (name) {
@@ -41,11 +41,9 @@ export function slash(line: string, send: (op: RunOp) => boolean): boolean {
     case 'skills':
       navigate({ screen: 'skills' })
       return true
-    case 'artifacts': {
-      const id = store.get().activeRun
-      navigate(id ? { screen: 'run', id } : { screen: 'chat' })
+    case 'artifacts':
+      navigate(runId ? { screen: 'run', id: runId } : { screen: 'chat' })
       return true
-    }
     default:
       return send({ op: 'command', name, args })
   }

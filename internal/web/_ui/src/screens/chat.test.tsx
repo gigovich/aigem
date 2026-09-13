@@ -661,3 +661,10 @@ test('/skills is a navigation', async () => {
   await waitFor(() => expect(window.location.pathname).toBe('/skills'))
   expect(h.runSocket()?.sent).toHaveLength(0)
 })
+
+test('/artifacts opens the changes of the conversation in the composer', async () => {
+  const h = await attached()
+  await typed('/artifacts')
+  await waitFor(() => expect(window.location.pathname).toBe('/run/r-1'))
+  expect(h.runSocket()?.sent).toHaveLength(0)
+})

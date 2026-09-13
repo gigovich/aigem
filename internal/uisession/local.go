@@ -280,19 +280,20 @@ func (l *Local) Handle(name string, fn CommandFunc) {
 	l.commands[name] = fn
 }
 
-// Command runs a named command.
-//
-// A name with a colon in it - "skill:review" - falls back to the handler
-// registered for its prefix, "skill:", which is given the rest of the name
-// ahead of the arguments. A family of commands is one handler, so it stays
-// right when the family's members change under it.
+// Command runs a named command. "skill:review" falls back to the handler for
+// "skill:", and "mcp__x" to the one for "mcp__", given the member ahead of the
+// args - so a family is one handler and stays right as its members change.
 func (l *Local) Command(name, args string) error {
 	l.mu.Lock()
 	fn, ok := l.commands[name]
-	if !ok {
-		if prefix, rest, found := strings.Cut(name, ":"); found {
-			fn, ok = l.commands[prefix+":"]
-			args = strings.TrimSpace(rest + " " + args)
+	for _, sep := range []string{":", "__"} {
+		if ok {
+			break
+		}
+		if prefix, rest, found := strings.Cut(name, sep); found {
+			if fn, ok = l.commands[prefix+sep]; ok {
+				args = strings.TrimSpace(rest + " " + args)
+			}
 		}
 	}
 	l.mu.Unlock()

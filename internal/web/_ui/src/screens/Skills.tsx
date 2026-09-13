@@ -10,7 +10,6 @@ import { FilterInput } from '@/ui/FilterInput'
 import { Markdown } from '@/ui/Markdown'
 import { Modal } from '@/ui/Modal'
 import { StatusChip } from '@/ui/StatusChip'
-import type { Split } from '@/App'
 import { Back } from '@/ui/Back'
 
 /** Enabled / Pending, from the shared dictionary rather than a local copy. */
@@ -33,8 +32,10 @@ function scopeOf(s: SkillSummary): string {
  * that block, filled with what the daemon knows: the names it would load and
  * the notices loading them produced.
  */
-export function Skills({ selected, split }: { selected?: string; split: Split }) {
-  const skills = useApp((s) => s.skills)
+export function Skills({ selected }: { selected?: string }) {
+  const { skills, phone } = useApp((s) => ({ skills: s.skills, phone: s.phone }))
+  const showList = !phone || !selected
+  const showDetail = !phone || !!selected
   const [asking, setAsking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [filter, setFilter] = useState('')
@@ -119,9 +120,9 @@ export function Skills({ selected, split }: { selected?: string; split: Split })
 
   return (
     <div className="flex min-h-0 flex-1">
-      {split !== 'detail' && (
+      {showList && (
         <div
-          className={`flex flex-none flex-col overflow-hidden border-r border-line ${split === 'list' ? 'w-full' : 'w-[244px]'}`}
+          className={`flex flex-none flex-col overflow-hidden border-r border-line ${phone ? 'w-full' : 'w-[244px]'}`}
         >
           <div className="flex flex-none items-center gap-2 border-b border-line px-3 py-[11px]">
             <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
@@ -189,13 +190,13 @@ export function Skills({ selected, split }: { selected?: string; split: Split })
         </div>
       )}
 
-      {split !== 'list' && (
+      {showDetail && (
         <div className="min-w-0 flex-1 overflow-y-auto">
           {chosen ? (
             <>
               <div className="border-b border-line px-[18px] pt-[14px] pb-3">
                 <div className="flex flex-wrap items-center gap-[10px]">
-                  {split === 'detail' && <Back label="Skills" to={{ screen: 'skills' }} />}
+                  {phone && <Back label="Skills" to={{ screen: 'skills' }} />}
                   <h1 className="m-0 font-mono text-[14px] font-medium">{chosen.name}</h1>
                   <StatusChip status={state(chosen, pending)} />
                 </div>

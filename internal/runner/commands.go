@@ -13,7 +13,9 @@ import (
 
 // HandleCommands registers the slash commands that run inside the conversation
 // itself: a compaction, a skill, an MCP prompt. Each is a turn, so it is
-// refused while one is running, like a typed message would be.
+// refused while one is running, like a typed message would be. Skills and
+// prompts are looked up when invoked, so one loaded after the session opened
+// is found.
 //
 // The rest of the catalogue - /new, /model, /login, /resume - is a front-end's
 // own to carry out, and a front-end that sends one here is told it is unknown.
@@ -46,17 +48,18 @@ func (s *Session) HandleCommands(skills *skill.Registry, m *mcp.Manager) {
 				return l.Agent().Run(ctx, body, ev)
 			})
 	})
-	for _, p := range m.PromptCommands() {
-		l.Handle(p.Name, func(args string) error {
-			display := strings.TrimSpace(p.Name + " " + args)
-			return l.Run("/"+display, session.Title("/"+display),
-				func(ctx context.Context, ev agent.Events) (string, error) {
-					body, err := m.RenderPrompt(ctx, p.Name, args)
-					if err != nil {
-						return "", err
-					}
-					return l.Agent().Run(ctx, body, ev)
-				})
-		})
-	}
+	l.Handle("mcp__", func(rest string) error {
+		name, args, _ := strings.Cut(strings.TrimSpace(rest), " ")
+		name = "mcp__" + name
+		args = strings.TrimSpace(args)
+		display := strings.TrimSpace(name + " " + args)
+		return l.Run("/"+display, session.Title("/"+display),
+			func(ctx context.Context, ev agent.Events) (string, error) {
+				body, err := m.RenderPrompt(ctx, name, args)
+				if err != nil {
+					return "", err
+				}
+				return l.Agent().Run(ctx, body, ev)
+			})
+	})
 }

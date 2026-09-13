@@ -62,4 +62,11 @@ func TestCommandFallsBackToThePrefixHandler(t *testing.T) {
 	if err := l.Command("other:thing", ""); !errors.Is(err, ErrUnknownCommand) {
 		t.Errorf("an unregistered family = %v, want ErrUnknownCommand", err)
 	}
+	l.Handle("mcp__", func(args string) error {
+		got = args
+		return nil
+	})
+	if err := l.Command("mcp__srv__prompt", "x"); err != nil || got != "srv__prompt x" {
+		t.Errorf("mcp family: err=%v got=%q", err, got)
+	}
 }
