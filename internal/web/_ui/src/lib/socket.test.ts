@@ -318,3 +318,17 @@ test('closing during the record read leaves no socket behind', async () => {
   await new Promise((r) => setTimeout(r, 10))
   expect(FakeSocket.instances).toHaveLength(0)
 })
+
+// Chrome reports a close on a socket still connecting as an error on the
+// console. Leaving a run before its handshake finished is the ordinary way to
+// reach it, so the close waits for the open.
+test('closing while the handshake is in flight closes after it opens', async () => {
+  stubFetch((path) => (path.includes('/events') ? ok([]) : ok({ id: 'r1', live: true })))
+  const { conn } = attach(0)
+  await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+  const ws = FakeSocket.last
+  conn.close()
+  expect(ws.readyState).toBe(FakeSocket.CONNECTING)
+  ws.open()
+  expect(ws.readyState).toBe(FakeSocket.CLOSED)
+})
