@@ -276,7 +276,6 @@ export type ControlKind = (typeof ControlKind)[keyof typeof ControlKind]
  */
 export type StatusKey =
   | 'running'
-  | 'waiting'
   | 'attention'
   | 'failed'
   | 'completed'
@@ -284,19 +283,20 @@ export type StatusKey =
   | 'blocked'
   | 'planned'
   | 'progress'
+  | 'idle'
 
 export type StatusInfo = { label: string; icon: string; color: string }
 
 export const STATUS: Record<StatusKey, StatusInfo> = {
   running: { label: 'Running', icon: '●', color: 'var(--running)' },
-  waiting: { label: 'Waiting', icon: '◐', color: 'var(--warning)' },
   attention: { label: 'Needs attention', icon: '!', color: 'var(--attention)' },
   failed: { label: 'Failed', icon: '×', color: 'var(--danger)' },
   completed: { label: 'Completed', icon: '✓', color: 'var(--success)' },
   stopped: { label: 'Stopped', icon: '■', color: 'var(--fg-subtle)' },
   blocked: { label: 'Blocked', icon: '◇', color: 'var(--danger)' },
-  planned: { label: 'Planned', icon: '○', color: 'var(--fg-subtle)' },
+  planned: { label: 'Planned', icon: '◐', color: 'var(--fg-subtle)' },
   progress: { label: 'In progress', icon: '◑', color: 'var(--primary)' },
+  idle: { label: 'Idle', icon: '○', color: 'var(--fg-subtle)' },
 }
 
 /**
@@ -322,13 +322,12 @@ export const SKILL_STATUS: Record<'enabled' | 'pending', StatusInfo> = {
  * A run record's state as one of the dictionary's keys.
  *
  * `waiting` on the wire means "parked on an approval nobody has answered",
- * which is the design's `attention` and not its `waiting` - the latter is an
- * open session with nothing in flight, which is what a person sees between
- * turns.
+ * which maps to the design's `attention`. An open session with nothing in
+ * flight is `idle`.
  */
 export function runStatus(run: Run): StatusKey {
   if (!run.live) return 'stopped'
   if (run.waiting) return 'attention'
   if (run.running) return 'running'
-  return 'waiting'
+  return 'idle'
 }

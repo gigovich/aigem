@@ -29,8 +29,8 @@ test('every control on the shell has a name that can be read out', async () => {
 test('a status is readable without its colour', async () => {
   await mountApp({ runs: [RUN] })
   const list = await screen.findByRole('list', { name: 'Sessions' })
-  // RUN is live with nothing in flight, which is the dictionary's "Waiting".
-  expect(list).toHaveTextContent('Waiting')
+  // RUN is live with nothing in flight, which is "Idle".
+  expect(list).toHaveTextContent('Idle')
 })
 
 test('the whole shell can be reached from the keyboard', async () => {

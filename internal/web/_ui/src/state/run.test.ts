@@ -194,7 +194,7 @@ test('the stream outranks the record for the run being watched', () => {
     running: true,
   }
   const finished = applyAll(emptyRun(), [ev(1, EventKind.TurnStart), ev(2, EventKind.TurnEnd)])
-  expect(liveStatus(record, finished)).toBe('waiting')
+  expect(liveStatus(record, finished)).toBe('idle')
 
   // With nothing read yet there is only the record to go on.
   expect(liveStatus(record, emptyRun())).toBe('running')

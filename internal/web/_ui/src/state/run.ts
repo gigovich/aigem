@@ -211,7 +211,7 @@ export function liveStatus(record: Run, view: RunView): StatusKey {
   // With events in hand the stream has said everything the record could, and
   // more recently. Falling through to the record here is how a conversation
   // whose turn has visibly finished goes on being drawn as running.
-  if (view.seq > 0) return 'waiting'
+  if (view.seq > 0) return 'idle'
   return runStatus(record)
 }
 
