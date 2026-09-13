@@ -1,10 +1,14 @@
 package runner_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gigovich/aigem/internal/runner"
@@ -197,5 +201,142 @@ func TestAProjectThatIsItselfACheckoutIsListedFirstWithNoName(t *testing.T) {
 	// Neither main nor master: the branch a run would merge into is unknown.
 	if repos[1].Name != "sub" || repos[1].Main != "" {
 		t.Errorf("a checkout with neither main nor master = %+v, want an empty Main", repos[1])
+	}
+}
+
+// loader counts how many environments it built, and can be made to fail or to
+// wait, which is how the tests below see the registry share, record and retry.
+type loader struct {
+	loads atomic.Int64
+	fail  atomic.Bool
+	gate  chan struct{}
+}
+
+func (l *loader) load(t *testing.T) func(context.Context, string) (*runner.Env, error) {
+	return func(ctx context.Context, dir string) (*runner.Env, error) {
+		if l.gate != nil {
+			<-l.gate
+		}
+		l.loads.Add(1)
+		if l.fail.Load() {
+			return nil, errors.New("the SessionStart hook exited 1")
+		}
+		env, _, err := runner.Load(ctx, runner.Options{Cwd: dir})
+		return env, err
+	}
+}
+
+func newLoadingProjects(t *testing.T, l *loader, notify func(runner.ProjectView)) *runner.Projects {
+	t.Helper()
+	p, err := runner.NewProjects(runner.ProjectsConfig{LoadEnv: l.load(t), Notify: notify})
+	if err != nil {
+		t.Fatalf("NewProjects: %v", err)
+	}
+	t.Cleanup(p.Close)
+	return p
+}
+
+func TestAnEnvironmentIsLoadedOnceAndShared(t *testing.T) {
+	l := &loader{}
+	p := newLoadingProjects(t, l, nil)
+	addProject(t, p, t.TempDir(), "")
+	first, err := p.Env(context.Background(), "PRJ-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.Env(context.Background(), "PRJ-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || l.loads.Load() != 1 {
+		t.Errorf("two calls built %d environments, want one shared", l.loads.Load())
+	}
+	if _, err := p.Env(context.Background(), "PRJ-9"); !errors.Is(err, runner.ErrNoProject) {
+		t.Errorf("an unknown project = %v, want ErrNoProject", err)
+	}
+}
+
+func TestAFailedLoadIsRecordedAnnouncedAndTriedAgain(t *testing.T) {
+	l := &loader{}
+	l.fail.Store(true)
+	var announced []string
+	p := newLoadingProjects(t, l, func(v runner.ProjectView) { announced = append(announced, v.LoadError) })
+	addProject(t, p, t.TempDir(), "")
+
+	_, err := p.Env(context.Background(), "PRJ-1")
+	if err == nil || !strings.Contains(err.Error(), "SessionStart hook exited 1") {
+		t.Fatalf("Env = %v, want the load error", err)
+	}
+	if v, _ := p.Get("PRJ-1"); !strings.Contains(v.LoadError, "SessionStart hook") {
+		t.Errorf("LoadError = %q, want the load error recorded on the project", v.LoadError)
+	}
+	if len(announced) != 2 || announced[1] == "" {
+		t.Errorf("announced %q, want the add and then the failure", announced)
+	}
+
+	l.fail.Store(false)
+	if _, err := p.Env(context.Background(), "PRJ-1"); err != nil {
+		t.Fatalf("the retry = %v, want success", err)
+	}
+	if v, _ := p.Get("PRJ-1"); v.LoadError != "" {
+		t.Errorf("LoadError after a successful retry = %q, want cleared", v.LoadError)
+	}
+}
+
+func TestCallersThatArriveTogetherShareOneLoad(t *testing.T) {
+	l := &loader{gate: make(chan struct{})}
+	p := newLoadingProjects(t, l, nil)
+	addProject(t, p, t.TempDir(), "")
+
+	var wg sync.WaitGroup
+	envs := make([]*runner.Env, 3)
+	for i := range envs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			envs[i], _ = p.Env(context.Background(), "PRJ-1")
+		}()
+	}
+	close(l.gate)
+	wg.Wait()
+	if l.loads.Load() != 1 {
+		t.Errorf("%d loads, want 1", l.loads.Load())
+	}
+	for i, e := range envs {
+		if e == nil || e != envs[0] {
+			t.Errorf("caller %d got %p, want the one shared environment %p", i, e, envs[0])
+		}
+	}
+}
+
+func TestRemovingOrClosingReleasesTheEnvironment(t *testing.T) {
+	l := &loader{}
+	p := newLoadingProjects(t, l, nil)
+	addProject(t, p, t.TempDir(), "")
+	addProject(t, p, t.TempDir(), "")
+	removed, err := p.Env(context.Background(), "PRJ-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, err := p.Env(context.Background(), "PRJ-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Remove("PRJ-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := removed.NewTools(); err == nil {
+		t.Error("the removed project's environment is still open")
+	}
+	if _, err := kept.NewTools(); err != nil {
+		t.Errorf("the other project's environment was closed too: %v", err)
+	}
+
+	p.Close()
+	if _, err := kept.NewTools(); err == nil {
+		t.Error("Close left an environment open")
+	}
+	if _, err := p.Env(context.Background(), "PRJ-2"); !errors.Is(err, runner.ErrProjectsClosed) {
+		t.Errorf("Env after Close = %v, want ErrProjectsClosed", err)
 	}
 }

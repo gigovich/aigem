@@ -17,8 +17,9 @@ import (
 )
 
 var (
-	ErrNoProject  = errors.New("runner: no such project")
-	ErrBadProject = errors.New("runner: cannot add that project")
+	ErrNoProject      = errors.New("runner: no such project")
+	ErrBadProject     = errors.New("runner: cannot add that project")
+	ErrProjectsClosed = errors.New("runner: the project registry is closed")
 )
 
 const projectIDPrefix = "PRJ-"
@@ -214,8 +215,96 @@ func (p *Projects) saveLocked() error {
 	return nil
 }
 
-// Close releases every loaded environment. Task 3 fills it in.
-func (p *Projects) Close() {}
+// Env is the project's environment, loaded on first use and kept for the
+// daemon's life.
+//
+// The load runs without the lock, as OpenRun does: it dials MCP servers and
+// runs the SessionStart hook. Callers that arrive together share one load. A
+// load that failed is recorded on the project, announced, and tried again by
+// the next caller.
+func (p *Projects) Env(ctx context.Context, id string) (*Env, error) {
+	for {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return nil, ErrProjectsClosed
+		}
+		pr := p.byID[id]
+		if pr == nil {
+			p.mu.Unlock()
+			return nil, ErrNoProject
+		}
+		if pr.env != nil {
+			env := pr.env
+			p.mu.Unlock()
+			return env, nil
+		}
+		if pr.loading != nil {
+			wait := pr.loading
+			p.mu.Unlock()
+			select {
+			case <-wait:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		done := make(chan struct{})
+		pr.loading = done
+		dir, name := pr.rec.Dir, pr.rec.Name
+		p.mu.Unlock()
+
+		env, err := p.loadEnv(ctx, dir)
+
+		p.mu.Lock()
+		pr.loading = nil
+		close(done)
+		if p.byID[id] != pr || p.closed {
+			p.mu.Unlock()
+			if env != nil {
+				env.Close()
+			}
+			if p.closed {
+				return nil, ErrProjectsClosed
+			}
+			return nil, ErrNoProject
+		}
+		if err != nil {
+			pr.loadErr = err.Error()
+			v := p.viewLocked(pr)
+			p.mu.Unlock()
+			p.notify(v)
+			return nil, fmt.Errorf("could not load project %s: %w", name, err)
+		}
+		pr.env = env
+		announce := pr.loadErr != ""
+		pr.loadErr = ""
+		v := p.viewLocked(pr)
+		p.mu.Unlock()
+		if announce {
+			p.notify(v)
+		}
+		return env, nil
+	}
+}
+
+// Close releases every loaded environment. It runs after the run registry has
+// closed, so no session still needs one. Calling it twice is safe.
+func (p *Projects) Close() {
+	p.mu.Lock()
+	p.closed = true
+	var envs []*Env
+	for _, pr := range p.byID {
+		if pr.env != nil {
+			envs = append(envs, pr.env)
+			pr.env = nil
+		}
+	}
+	p.mu.Unlock()
+	for _, e := range envs {
+		e.Close()
+	}
+}
 
 type Repository struct {
 	Name string `json:"name"`
