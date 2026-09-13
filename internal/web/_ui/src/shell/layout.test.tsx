@@ -193,3 +193,15 @@ test('on a phone, selecting a row opens the inspector', async () => {
   await user.click(await screen.findByRole('button', { name: /older/ }))
   expect(await screen.findByRole('complementary', { name: 'Inspector' })).toHaveTextContent('run.opened')
 })
+
+test('the drawer takes focus when it opens and gives it back when it closes', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN] })
+  act(() => setViewport(400))
+  const menu = screen.getByRole('button', { name: 'Open navigation' })
+  await user.click(menu)
+  const nav = screen.getByRole('navigation', { name: 'Navigation' })
+  await waitFor(() => expect(nav.contains(document.activeElement)).toBe(true))
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(document.activeElement).toBe(menu))
+})

@@ -140,6 +140,16 @@ export default function App() {
     paletteRef.current = { matches, index }
   }, [matches, index])
 
+  const drawer = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!phone) return
+    if (navOpen) {
+      drawer.current?.querySelector<HTMLElement>('button')?.focus()
+      return
+    }
+    document.querySelector<HTMLElement>('[aria-label="Open navigation"]')?.focus()
+  }, [phone, navOpen])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const handled = handleKey(
@@ -224,7 +234,7 @@ export default function App() {
               onClick={() => setNav(false)}
               className="fixed inset-0 z-[64] bg-black/40"
             />
-            <div className="fixed inset-y-0 left-0 z-[65] flex w-[240px] shadow-panel">
+            <div ref={drawer} className="fixed inset-y-0 left-0 z-[65] flex w-[240px] shadow-panel">
               {sidebar}
             </div>
           </>
