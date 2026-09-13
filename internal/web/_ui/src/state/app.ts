@@ -327,6 +327,11 @@ export function setInspector(open: boolean) {
   patch({ inspectorOpen: open })
 }
 
+/** A selection is the moment the panel is wanted where the layout closed it. */
+export function reveal() {
+  if (store.get().narrow) setInspector(true)
+}
+
 export function toggleInspector() {
   store.set((s) => ({ ...s, inspectorOpen: !s.inspectorOpen }))
 }

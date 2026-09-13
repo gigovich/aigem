@@ -158,3 +158,38 @@ test('a phone shows the session list or the conversation, not both', async () =>
   expect(window.location.pathname).toBe('/chat')
   expect(screen.getByRole('list', { name: 'Sessions' })).toBeInTheDocument()
 })
+
+// A phone starts with the inspector closed; a selection is the moment it is
+// wanted, and a tap that changes nothing visible reads as broken.
+test('on a phone, selecting a row opens the inspector', async () => {
+  const user = userEvent.setup()
+  await mountApp({
+    runs: [RUN],
+    models: [
+      {
+        ref: 'openai/gpt-5',
+        provider: 'openai',
+        name: 'GPT-5',
+        contextWindow: 400000,
+        needsAuth: true,
+        authenticated: true,
+        default: false,
+      },
+    ],
+    activity: [{ seq: 1, at: '2026-09-08T12:00:00Z', kind: 'run.opened', text: 'older', runRef: 'r-1' }],
+  })
+  act(() => setViewport(400))
+  await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+  await user.click(within(screen.getByRole('navigation', { name: 'Navigation' })).getByRole('button', { name: /Models/ }))
+  expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument()
+
+  await user.click(await screen.findByRole('row', { name: /GPT-5/ }))
+  const aside = await screen.findByRole('complementary', { name: 'Inspector' })
+  expect(within(aside).getByRole('button', { name: 'Make default' })).toBeInTheDocument()
+
+  await user.click(within(aside).getByRole('button', { name: 'Close inspector' }))
+  await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+  await user.click(within(screen.getByRole('navigation', { name: 'Navigation' })).getByRole('button', { name: /Activity/ }))
+  await user.click(await screen.findByRole('button', { name: /older/ }))
+  expect(await screen.findByRole('complementary', { name: 'Inspector' })).toHaveTextContent('run.opened')
+})

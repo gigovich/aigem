@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { api } from '@/lib/api'
 import { compact } from '@/lib/format'
 import { navigate } from '@/lib/route'
-import { explain, flash, refresh, setBanner, setLogin, useApp } from '@/state/app'
+import { explain, flash, refresh, reveal, setBanner, setLogin, useApp } from '@/state/app'
 import { MODEL_STATUS } from '@/lib/wire'
 import type { Model, StatusInfo } from '@/lib/wire'
 import { DataGrid } from '@/ui/DataGrid'
@@ -180,7 +180,10 @@ export function Models({ selected }: { selected?: string }) {
         rowKey={(m) => m.ref}
         minWidth={720}
         selected={(m) => m.ref === selected}
-        onSelect={(m) => navigate({ screen: 'models', id: m.ref })}
+        onSelect={(m) => {
+          navigate({ screen: 'models', id: m.ref })
+          reveal()
+        }}
         empty={
           needle ? (
             <EmptyState inline title={`No model matches “${filter.trim()}”.`} />

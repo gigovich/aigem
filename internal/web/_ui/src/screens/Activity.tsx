@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { clock, hhmm } from '@/lib/format'
 import { navigate } from '@/lib/route'
 import type { Activity as Entry } from '@/lib/wire'
-import { useApp } from '@/state/app'
+import { reveal, useApp } from '@/state/app'
 import { usePublishInspector } from '@/state/inspector'
 import { EmptyState } from '@/ui/EmptyState'
 import { FilterInput } from '@/ui/FilterInput'
@@ -84,7 +84,10 @@ export function Activity() {
             >
               <button
                 type="button"
-                onClick={() => setSelected(key)}
+                onClick={() => {
+                  setSelected(key)
+                  reveal()
+                }}
                 aria-current={active ? 'true' : undefined}
                 className="grid min-h-row min-w-0 flex-1 cursor-default items-center gap-[10px] pl-[18px] text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
                 style={{ gridTemplateColumns: '62px 96px 16px minmax(0,1fr)' }}
