@@ -18,6 +18,11 @@ function state(m: Model): StatusInfo {
   return !m.needsAuth || m.authenticated ? MODEL_STATUS.available : MODEL_STATUS.noKey
 }
 
+/** Display names are optional; retain the entire model ID, including its slashes. */
+function modelName(m: Model): string {
+  return m.name || m.ref.slice(m.ref.indexOf('/') + 1)
+}
+
 export function Models({ selected }: { selected?: string }) {
   const { models, runs, usage, defaultModel } = useApp((s) => ({
     models: s.models,
@@ -41,7 +46,7 @@ export function Models({ selected }: { selected?: string }) {
     setConfirming(null)
     try {
       await api.setDefaultModel(m.ref)
-      flash(`${m.name} is the default model`)
+      flash(`${modelName(m)} is the default model`)
       // The daemon announces this on the control stream, but the tab that asked
       // should not have to wait for its own change to come back around.
       await refresh.models()
@@ -65,7 +70,7 @@ export function Models({ selected }: { selected?: string }) {
     return {
       kind: 'model',
       id: chosen.ref,
-      title: chosen.name,
+      title: modelName(chosen),
       fields: [
         { key: 'provider', value: chosen.provider },
         { key: 'context', value: chosen.contextWindow ? compact(chosen.contextWindow) : '—' },
@@ -98,7 +103,7 @@ export function Models({ selected }: { selected?: string }) {
       cell: (m) => (
         <span className="flex min-w-0 items-baseline gap-2">
           <span className="overflow-hidden text-[12.5px] font-medium text-ellipsis whitespace-nowrap">
-            {m.name}
+            {modelName(m)}
           </span>
           <span className="flex-none font-mono text-[10px] text-fg-subtle">{m.provider}</span>
           {m.default && (
@@ -204,7 +209,7 @@ export function Models({ selected }: { selected?: string }) {
           confirm={{ label: 'Set as default', onClick: () => void makeDefault(confirming) }}
         >
           Every session started after this - in a browser or in a terminal - opens on{' '}
-          {confirming.name} unless it names another. Conversations already running keep the model
+          {modelName(confirming)} unless it names another. Conversations already running keep the model
           they started on.
         </Modal>
       )}

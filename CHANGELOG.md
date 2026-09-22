@@ -73,6 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Custom models without a display name now show their model ID in the browser
+  model list, inspector, default-model confirmation, and success notice instead
+  of a blank label.
 - The `bash` tool no longer waits for a command's backgrounded children after
   its context is cancelled. Killing the shell left an orphan holding the output
   pipe, so an interrupted turn ran on for as long as that child lived - thirty
