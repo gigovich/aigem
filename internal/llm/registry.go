@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -117,7 +118,12 @@ type Credential struct {
 // Registry resolves provider/model references from presets overlaid by user and
 // project models.json files.
 type Registry struct {
-	providers []Provider // ordered for stable listing
+	providers   []Provider // ordered for stable listing
+	trusted     []Provider // built-in/user sources, before project overlays
+	localSource Provider
+	files       []string // highest precedence first, including absent sources
+	projectFile string
+	userFile    string
 }
 
 // openAIPresets is the compiled-in curated OpenAI model list (decision: presets
@@ -184,10 +190,15 @@ func NewUserRegistry(local Provider) (*Registry, []string) {
 }
 
 func newRegistry(local Provider, files []string, projectFile string) (*Registry, []string) {
-	r := &Registry{}
-	r.upsert(local, true)
-	r.upsert(openAIPresets(), true)
-	r.upsert(xaiPresets(), true)
+	userFile, _ := config.UserModelsFile()
+	files = slices.Clone(files)
+	if userFile != "" && !slices.Contains(files, userFile) {
+		files = append(files, userFile)
+	}
+	if projectFile != "" && !slices.Contains(files, projectFile) {
+		files = append([]string{projectFile}, files...)
+	}
+	r := registrySources(local, files, projectFile, userFile)
 
 	var warns []string
 	// Apply user first, then project, so project wins (highest precedence applied
@@ -197,13 +208,16 @@ func newRegistry(local Provider, files []string, projectFile string) (*Registry,
 	// which would attach the user's credential to an attacker-chosen host.
 	for i := len(files) - 1; i >= 0; i-- {
 		provs, err := loadModelFile(files[i])
+		if os.IsNotExist(err) {
+			continue
+		}
 		if err != nil {
 			warns = append(warns, fmt.Sprintf("%s: %v", files[i], err))
 			continue
 		}
 		trusted := files[i] != projectFile
 		for _, p := range provs {
-			r.upsert(p, trusted)
+			r.applySource(p, trusted)
 		}
 	}
 	return r, warns
@@ -304,6 +318,7 @@ func (r *Registry) Provider(id string) (Provider, bool) { return r.provider(id) 
 // local-model init changes its URL/model). If no local provider exists yet, p is
 // prepended so the local model stays first in listings and Default().
 func (r *Registry) ReplaceLocal(p Provider) {
+	r.localSource = cloneProvider(p)
 	for i := range r.providers {
 		if r.providers[i].ID == LocalProviderID {
 			r.providers[i] = p

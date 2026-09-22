@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The TUI model picker offers **Add model…**, also available as `/model add`.
+  Register a model on an existing provider or add an OpenAI-compatible endpoint,
+  optionally store a masked API key, then save or save and select without
+  restarting. User configuration is updated atomically without replacing
+  existing models or unrelated fields; project-only endpoints are not promoted
+  into user providers, and credential replacement requires confirmation.
+
 - `aigem web` serves a browser UI on a loopback port. It is the first phase of
   the rewrite promised below: the daemon, the app shell and the build
   integration, with the screens still to come. The printed URL carries a token;

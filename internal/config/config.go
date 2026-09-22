@@ -206,15 +206,23 @@ func ModelsFiles(cwd string) []string {
 // unattended run's model is pinned once and opened later from another cwd) use
 // this.
 func UserModelsFiles() []string {
-	dir, err := configDir()
+	p, err := UserModelsFile()
 	if err != nil {
 		return nil
 	}
-	p := filepath.Join(dir, "models.json")
 	if info, err := os.Stat(p); err != nil || info.IsDir() {
 		return nil
 	}
 	return []string{p}
+}
+
+// UserModelsFile returns the user-level models.json path, whether or not it exists.
+func UserModelsFile() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "models.json"), nil
 }
 
 // ProjectModelsFile returns the project-local models.json path (it may not

@@ -8,6 +8,14 @@ import (
 	"github.com/gigovich/aigem/internal/llm"
 )
 
+// SetModelRegistry makes newly registered models available to future switches.
+// It does not change the active backend, default preference or conversation.
+func (l *Local) SetModelRegistry(models *llm.Registry) {
+	l.mu.Lock()
+	l.models = models
+	l.mu.Unlock()
+}
+
 // SwitchModel points the session at another model. persist records it as the
 // default for later launches; restoring a saved session does not, since
 // resuming an old conversation should not redefine what a new one starts on.

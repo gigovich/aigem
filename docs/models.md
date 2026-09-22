@@ -43,6 +43,45 @@ conversation continues, and the context gauge and compaction window follow the n
 model. `/login [provider]` runs the OAuth flow; `/logout [provider]` clears the
 token.
 
+### Add a model from the TUI
+
+Choose **Add model…** in `/model`, or run `/model add` directly. The action stays
+available even when the picker filter has no matches.
+
+1. Choose an existing built-in/user provider, or **New OpenAI-compatible
+   provider**. Existing providers keep their endpoint and authentication. A new
+   provider needs a unique ID, an HTTP(S) base URL, and `apikey` or `none`
+   authentication.
+2. Enter the model ID (including any `/` in the provider's model name). Display
+   name, context window, and output limit are optional; blank limits use the
+   session's startup fallbacks. Supplied limits must be positive, and the output
+   limit cannot exceed a supplied context window.
+3. Optionally enter a masked API key. It is stored separately in the private
+   `auth.json`, never in `models.json` or input history. Replacing a stored
+   credential, including a subscription login, requires explicit confirmation
+   and affects every model on that provider. Leave the field blank to keep the
+   existing credential/environment behavior.
+4. Review the destination and choose **Save** or **Save & select**. Save returns
+   to the picker with the new model highlighted, without changing the active
+   model or default. Save & select switches the live conversation and remembers
+   the selection for next startup. If authentication prevents selection, the
+   model remains saved and the current model stays active.
+
+Use Enter/Tab to advance, Shift+Tab to go back, and Esc to cancel before saving.
+The review scrolls with Up/Down; Left/Right selects its save action.
+
+Additions go to the user-level `models.json` (respecting `XDG_CONFIG_HOME`) and
+are available immediately and after restart. Existing entries and unknown
+configuration fields are preserved; duplicate model references and malformed
+configuration are refused rather than overwritten. Registration makes no
+network request and does not verify model availability or subscription support.
+
+Project-only providers are not offered for user-level registration: an endpoint
+from a cloned repository must not silently become a destination for saved
+credentials. The managed `local` provider still uses `/model init`; this form
+does not manage additional GGUF installations. The browser UI's model picker is
+unchanged.
+
 ## Which model gets picked
 
 With no `--model`, aigem first reuses **the model you last selected**, if it still

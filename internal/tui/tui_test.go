@@ -226,8 +226,8 @@ func TestPasteReachesTextEntryOverlays(t *testing.T) {
 		if m.models.query != "gpt" {
 			t.Fatalf("paste did not reach the picker filter: query=%q", m.models.query)
 		}
-		if len(m.models.items) != 1 {
-			t.Errorf("pasted filter was not applied: %d items match %q", len(m.models.items), "gpt")
+		if len(m.models.items) != 2 || m.models.items[0].ref != items[0].ref || m.models.items[1].kind != modelItemAdd {
+			t.Errorf("pasted filter should retain matching model plus Add action: %+v", m.models.items)
 		}
 		if m.input.Value() != "" {
 			t.Errorf("the overlay's paste also landed in the chat input: %q", m.input.Value())

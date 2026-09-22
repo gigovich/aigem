@@ -301,8 +301,16 @@ type commandMenu struct {
 	cursor int
 }
 
+type modelItemKind uint8
+
+const (
+	modelItemModel modelItemKind = iota
+	modelItemAdd
+)
+
 // modelItem is one selectable model in the /model picker.
 type modelItem struct {
+	kind     modelItemKind
 	ref      string // provider/id
 	name     string
 	provider string
@@ -432,6 +440,7 @@ type Model struct {
 	agentBr        *agentBrowser
 	mcp            *mcpBrowser
 	models         *modelPicker
+	modelAdd       *modelAddForm
 	localChoice    *localModelChoice // local-model action widget, nil when closed
 	localWiz       *localWizard      // /model init overlay, nil when closed
 	localProgIdx   int               // index of the live local-start progress block, -1 when none
@@ -877,6 +886,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Delivered by the saveSearchCfg tea.Cmd, not the event bridge.
 		m.applyAgentCfg(msg)
 
+	case modelReviewMsg:
+		if m.modelAdd == msg.form {
+			f := m.modelAdd
+			f.checking, f.status = false, ""
+			f.destination, f.replacing = msg.destination, msg.replacing
+			if msg.err != nil {
+				f.destination, f.status = "", msg.err.Error()
+			}
+			m.layout()
+		}
+
+	case modelSavedMsg:
+		cmds = append(cmds, m.applyModelSaved(msg))
+
+	case addedModelSelectedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.blocks = append(m.blocks, block{kind: bkError, text: "Saved, not selected: " + msg.err.Error()})
+			m.openSavedModelPicker(msg.ref)
+		} else {
+			m.model, m.url = msg.info.Ref(), m.backend.Endpoint()
+			m.blocks = append(m.blocks, block{kind: bkNotice, text: "Saved and selected " + msg.info.Ref() + ". Endpoint not verified."})
+		}
+		m.layout()
 	case tea.MouseMsg:
 		cmds = append(cmds, m.handleMouse(msg))
 
@@ -1217,6 +1250,8 @@ func (m *Model) handlePaste(text string) bool {
 		if m.agentBr.saving || !m.agentBr.typeConfigField(text) {
 			return false
 		}
+	case m.modelAdd != nil:
+		m.modelAdd.typeText(text)
 	case m.models != nil:
 		m.models.query += text
 		m.models.filter()
@@ -1262,6 +1297,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	}
 	if m.mcp != nil {
 		return m.handleMcpKey(msg), true
+	}
+	if m.modelAdd != nil {
+		return m.handleModelAddKey(msg), true
 	}
 	if m.localWiz != nil {
 		return m.handleLocalWizardKey(msg), true
@@ -2194,7 +2232,7 @@ func (m *Model) openModelPicker() {
 			locked: locked, current: mi.Ref() == cur,
 		})
 	}
-	mp.items = mp.all
+	mp.filter()
 	for i, it := range mp.all {
 		if it.current {
 			mp.cursor = i
@@ -2222,6 +2260,7 @@ func (mp *modelPicker) filter() {
 	if mp.cursor >= len(mp.items) {
 		mp.cursor = max(0, len(mp.items)-1)
 	}
+	mp.items = append(mp.items, modelItem{kind: modelItemAdd, name: "Add model…"})
 }
 
 func (m *Model) handleModelKey(msg tea.KeyPressMsg) tea.Cmd {
@@ -2242,6 +2281,10 @@ func (m *Model) handleModelKey(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		it := mp.items[mp.cursor]
+		if it.kind == modelItemAdd {
+			m.openModelAdd()
+			return nil
+		}
 		m.models = nil
 		m.layout()
 		if it.locked {
@@ -2260,15 +2303,15 @@ func (m *Model) handleModelKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.layout()
 	case tea.KeyBackspace:
 		if mp.query != "" {
-			mp.query = mp.query[:len(mp.query)-1]
+			mp.query = trimLastRune(mp.query)
 			mp.filter()
-			m.refresh()
+			m.layout()
 		}
 	default:
 		if msg.Text != "" {
 			mp.query += msg.Text
 			mp.filter()
-			m.refresh()
+			m.layout()
 		}
 	}
 	return nil
@@ -2543,6 +2586,9 @@ func (m *Model) handleLocalWizardKey(msg tea.KeyPressMsg) tea.Cmd {
 // runModelCommand handles "/model <sub>"; an unknown subcommand opens the picker.
 func (m *Model) runModelCommand(arg string) tea.Cmd {
 	switch arg {
+	case "add":
+		m.openModelAdd()
+		return nil
 	case "init":
 		m.openLocalWizard()
 		return nil
@@ -2704,7 +2750,7 @@ func (m Model) alertView() string {
 // itself excluded - callers check that separately).
 func (m *Model) anyOverlayOpen() bool {
 	return m.trustAsk || m.skillAsk != nil || m.pending != nil || m.picker != nil || m.browser != nil ||
-		m.agentBr != nil || m.mcp != nil || m.localWiz != nil || m.localChoice != nil || m.models != nil ||
+		m.agentBr != nil || m.mcp != nil || m.modelAdd != nil || m.localWiz != nil || m.localChoice != nil || m.models != nil ||
 		m.artBr != nil || m.cmdMenu != nil || m.fileMenu != nil
 }
 
@@ -2716,7 +2762,7 @@ func (m *Model) anyOverlayOpen() bool {
 // when focus is restored (Focus must be re-armed for the cursor to blink again).
 func (m *Model) reconcileFocus() tea.Cmd {
 	modal := m.trustAsk || m.skillAsk != nil || m.pending != nil || m.alert != nil || m.picker != nil ||
-		m.browser != nil || m.agentBr != nil || m.mcp != nil || m.localWiz != nil ||
+		m.browser != nil || m.agentBr != nil || m.mcp != nil || m.modelAdd != nil || m.localWiz != nil ||
 		m.localChoice != nil || m.models != nil || m.artBr != nil
 	if modal {
 		if m.input.Focused() {
@@ -2751,7 +2797,7 @@ func (m *Model) runLogin(provider, thenSwitch string) tea.Cmd {
 	}
 	if provider != llm.OpenAIProviderID {
 		m.blocks = append(m.blocks, block{kind: bkError,
-			text: "interactive login supports the openai provider only"})
+			text: "interactive login supports the openai provider only; run: aigem auth login " + provider})
 		m.refresh()
 		return nil
 	}
@@ -2778,7 +2824,7 @@ func (m *Model) doLogout(provider string) {
 
 func (m Model) modelPickerView() string {
 	w := m.overlayInnerWidth()
-	const maxRows = 8
+	maxRows := max(1, min(8, m.height-m.input.Height()-9))
 	mp := m.models
 	start := 0
 	if mp.cursor >= maxRows {
@@ -2790,11 +2836,14 @@ func (m Model) modelPickerView() string {
 	if mp.query != "" {
 		rows = append(rows, padLine(overlayTextStyle.Render(" /"+mp.query), w, cSurface0))
 	}
-	if len(mp.items) == 0 {
+	if len(mp.items) == 1 && mp.items[0].kind == modelItemAdd {
 		rows = append(rows, padLine(overlayHintStyle.Render(" (no matches)"), w, cSurface0))
 	}
 	for i := start; i < len(mp.items) && i < start+maxRows; i++ {
 		it := mp.items[i]
+		if it.kind == modelItemAdd {
+			continue // pinned below the scrollable model rows
+		}
 		icon := "  "
 		switch {
 		case it.locked:
@@ -2807,6 +2856,15 @@ func (m Model) modelPickerView() string {
 			rows = append(rows, pickSelStyle.Width(w).MaxWidth(w).Render(line))
 		} else {
 			rows = append(rows, pickRowStyle.Width(w).MaxWidth(w).Render(line))
+		}
+	}
+	for i, it := range mp.items {
+		if it.kind == modelItemAdd {
+			style := pickRowStyle
+			if i == mp.cursor {
+				style = pickSelStyle
+			}
+			rows = append(rows, style.Width(w).MaxWidth(w).Render("   Add model…"))
 		}
 	}
 	return overlayBoxStyle.Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
@@ -3527,6 +3585,8 @@ func (m Model) overlay() string {
 		return m.agentBrowserView()
 	case m.mcp != nil:
 		return m.mcpBrowserView()
+	case m.modelAdd != nil:
+		return m.modelAddView()
 	case m.localWiz != nil:
 		return m.localWizardView()
 	case m.localChoice != nil:
