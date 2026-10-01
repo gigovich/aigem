@@ -1,6 +1,6 @@
 module github.com/gigovich/aigem
 
-go 1.26
+go 1.26.0
 
 toolchain go1.26.6
 
@@ -27,7 +27,7 @@ require (
 
 require (
 	charm.land/bubbles/v2 v2.1.1
-	charm.land/bubbletea/v2 v2.0.8
+	charm.land/bubbletea/v2 v2.0.10
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
