@@ -37,9 +37,9 @@ import { Chat } from '@/screens/Chat'
 import { LoginDialog } from '@/screens/LoginDialog'
 import { Models } from '@/screens/Models'
 import { NewProjectDialog } from '@/screens/NewProjectDialog'
-import { Task } from '@/screens/Placeholders'
 import { Run } from '@/screens/Run'
 import { Skills } from '@/screens/Skills'
+import { Task } from '@/screens/Task'
 import { Tickets } from '@/screens/Tickets'
 import { Worktrees } from '@/screens/Worktrees'
 import { Modal } from '@/ui/Modal'
@@ -391,7 +391,7 @@ function Screen({
     case 'tickets':
       return <Tickets />
     case 'task':
-      return <Task />
+      return <Task id={route.id} />
     case 'repos':
       return <Worktrees />
     case 'projects':

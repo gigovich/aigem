@@ -198,15 +198,14 @@ test('activity draws the feed newest first and links to the run', async () => {
   expect(window.location.pathname).toBe('/run/r-1')
 })
 
-test('every placeholder screen says what it is waiting for', async () => {
+test('the tickets and task screens say they need a project', async () => {
   await mountApp()
-  for (const [path, heading] of [
-    ['tickets', 'Tickets'],
-    ['task', 'Task'],
+  for (const [path, title] of [
+    ['tickets', 'Tickets need a project.'],
+    ['task', 'Tasks need a project.'],
   ] as const) {
     go(path)
-    expect(await screen.findByRole('heading', { name: heading, level: 1 })).toBeInTheDocument()
-    expect(screen.getByText(/need a project/)).toBeInTheDocument()
+    expect(await screen.findByText(title)).toBeInTheDocument()
   }
 })
 

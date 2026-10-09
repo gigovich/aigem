@@ -133,3 +133,74 @@ test('without a project the screen says to choose one', async () => {
   await mountApp({ meta: META_TICKETS, projects: [DAEMON_PROJECT, PRJ], path: '/tickets' })
   expect(await screen.findByText('Tickets need a project.')).toBeInTheDocument()
 })
+
+async function openTask(id: string, tickets: Ticket[], routes: Record<string, () => Response | Promise<Response>> = {}) {
+  const h = await mountApp({
+    meta: META_TICKETS,
+    projects: [DAEMON_PROJECT, PRJ],
+    path: `/task/${id}`,
+    routes: { '/api/projects/PRJ-1/tickets': () => json(tickets), ...routes },
+  })
+  act(() => selectProject('PRJ-1'))
+  await screen.findByRole('heading', { level: 1, name: tickets.find((t) => t.id === id)!.title })
+  return h
+}
+
+test('a subticket page shows its parent, waits, blocks and only allowed moves', async () => {
+  const tickets = [
+    ...PLAN,
+    ticket('TCK-5', { title: 'Trash button', status: 'ready', parent: 'TCK-1', dependsOn: ['TCK-3'] }),
+  ]
+  const h = await openTask('TCK-3', tickets, {
+    'PATCH /api/projects/PRJ-1/tickets/TCK-3': () => json(ticket('TCK-3', { status: 'open' })),
+  })
+  expect(screen.getByRole('button', { name: '‹ TCK-1' })).toBeInTheDocument()
+  expect(screen.getByText(/waits for TCK-4/)).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'TCK-5' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Back to open' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Reopen' })).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Back to open' }))
+  const patchReq = h.sent.find((s) => s.method === 'PATCH')
+  expect(JSON.parse(patchReq!.body)).toEqual({ status: 'open' })
+})
+
+test('adding a dependency that makes a cycle shows the daemon sentence', async () => {
+  await openTask('TCK-4', PLAN, {
+    'PATCH /api/projects/PRJ-1/tickets/TCK-4': () =>
+      new Response('that makes a cycle: TCK-4 -> TCK-3 -> TCK-4', { status: 409 }),
+  })
+  fireEvent.change(screen.getByLabelText('Add dependency'), { target: { value: 'TCK-3' } })
+  expect(await screen.findByRole('alert')).toHaveTextContent('makes a cycle')
+})
+
+test('a parent page lists its subtickets and has no status buttons', async () => {
+  await openTask('TCK-1', PLAN)
+  expect(screen.getByText('1/2 done')).toBeInTheDocument()
+  expect(screen.getByText('HTTP endpoint')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Add subticket' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()
+})
+
+test('a comment is sent and the discussion shows who wrote what', async () => {
+  const withComments = PLAN.map((t) =>
+    t.id === 'TCK-4'
+      ? { ...t, by: 'run RUN-12', comments: [{ at: '2026-10-09T10:00:00Z', by: 'run RUN-12', text: 'Split from TCK-1.' }] }
+      : t,
+  )
+  const h = await openTask('TCK-4', withComments, {
+    'POST /api/projects/PRJ-1/tickets/TCK-4/comments': () =>
+      new Response(JSON.stringify(withComments[3]), { status: 201 }),
+  })
+  expect(screen.getByText(/created by run RUN-12/)).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('radio', { name: /Discussion/ }))
+  expect(screen.getByText('Split from TCK-1.')).toBeInTheDocument()
+  await userEvent.type(screen.getByLabelText('Comment'), 'Keep the 404')
+  await userEvent.click(screen.getByRole('button', { name: 'Send comment' }))
+  await waitFor(() => expect(h.sent.some((s) => s.path.endsWith('/comments'))).toBe(true))
+})
+
+test('an unknown ticket says so', async () => {
+  await mountApp({ meta: META_TICKETS, projects: [DAEMON_PROJECT, PRJ], path: '/task/TCK-99' })
+  act(() => selectProject('PRJ-1'))
+  expect(await screen.findByText('No such ticket.')).toBeInTheDocument()
+})
