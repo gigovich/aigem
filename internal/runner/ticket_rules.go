@@ -142,7 +142,7 @@ func checkDeps(rows []Ticket, t Ticket, deps []string) ([]string, error) {
 		}
 		// A parent's dependencies also hold its subtickets back, so a wait back to one of them is a cycle too.
 		for _, target := range append([]Ticket{t}, subtickets(rows, t.ID)...) {
-			if path := waitPath(rows, d, target.ID, nil); path != nil {
+			if path := waitPath(rows, d, target.ID, map[string]bool{}); path != nil {
 				return nil, refuse("that makes a cycle: %s -> %s", t.ID, strings.Join(path, " -> "))
 			}
 		}
@@ -162,14 +162,14 @@ func waitsOn(rows []Ticket, t Ticket) []string {
 
 // waitPath is the chain of waits from one ticket to another, or nil when there is none.
 // A parent waits for its subtickets, and a subticket for its parent's dependencies.
-func waitPath(rows []Ticket, from, to string, seen []string) []string {
+func waitPath(rows []Ticket, from, to string, seen map[string]bool) []string {
 	if from == to {
 		return []string{to}
 	}
-	if slices.Contains(seen, from) {
+	if seen[from] {
 		return nil
 	}
-	seen = append(seen, from)
+	seen[from] = true
 	i := findTicket(rows, from)
 	if i < 0 {
 		return nil

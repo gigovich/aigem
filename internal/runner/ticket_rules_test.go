@@ -2,8 +2,10 @@ package runner
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func rows(ts ...Ticket) []Ticket { return ts }
@@ -155,4 +157,33 @@ func TestCyclesThroughAParentAreRefused(t *testing.T) {
 	refusal(t, err, "TCK-3 -> TCK-2 -> TCK-3")
 	_, err = checkDeps(all, all[0], []string{"TCK-4"})
 	refusal(t, err, "TCK-1 -> TCK-4 -> TCK-2")
+}
+
+func TestCycleSearchStaysFastOnDeepChainsOfParents(t *testing.T) {
+	const parents = 100
+	var all []Ticket
+	for i := 0; i < parents; i++ {
+		p := tk(fmt.Sprintf("P-%d", i), TicketOpen)
+		if i > 0 {
+			p.DependsOn = []string{fmt.Sprintf("P-%d", i-1)}
+		}
+		all = append(all, p)
+		for k := 0; k < 5; k++ {
+			all = append(all, kid(fmt.Sprintf("P-%d-%d", i, k), p.ID, TicketOpen))
+		}
+	}
+	all = append(all, tk("TOP", TicketOpen, fmt.Sprintf("P-%d", parents-1)), tk("LOW", TicketOpen))
+	low := all[len(all)-1]
+
+	start := time.Now()
+	got, err := checkDeps(all, low, []string{"TOP"})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("checkDeps = %v, %v; want TOP accepted", got, err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("cycle search took %v", d)
+	}
+
+	_, err = checkDeps(all, all[0], []string{"TOP"})
+	refusal(t, err, "that makes a cycle: P-0 -> TOP -> P-99")
 }
