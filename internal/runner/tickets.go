@@ -209,8 +209,12 @@ func (t *Tickets) Comment(project, id, by, text string) (TicketView, error) {
 // maxRunComment caps what a run writes into a ticket's discussion.
 const maxRunComment = 16 << 10
 
+func lastRun(tk Ticket, run string) bool {
+	return len(tk.Runs) > 0 && tk.Runs[len(tk.Runs)-1] == run
+}
+
 // Start hands a ticket to a run. A new run needs a runnable ticket; the run that already
-// drives it takes it back from blocked when a person typed into it.
+// drives it (its last) takes it back from blocked when a person typed into it.
 func (t *Tickets) Start(project, id, run string) (TicketView, error) {
 	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
 		i := findTicket(tab.Tickets, id)
@@ -218,8 +222,10 @@ func (t *Tickets) Start(project, id, run string) (TicketView, error) {
 			return nil, ErrNoTicket
 		}
 		tk := &tab.Tickets[i]
-		owns := slices.Contains(tk.Runs, run)
+		owns := lastRun(*tk, run)
 		switch {
+		case !owns && slices.Contains(tk.Runs, run):
+			return nil, refuse("%s is driven by another run", id)
 		case owns && tk.Status == TicketRunning:
 			return nil, nil
 		case owns && tk.Status == TicketBlocked:
@@ -244,7 +250,8 @@ func (t *Tickets) Start(project, id, run string) (TicketView, error) {
 }
 
 // Finish records how a run left a ticket: done, or blocked with the reason as a comment.
-func (t *Tickets) Finish(project, id, status, comment string, mergePending bool) (TicketView, error) {
+// Only the ticket's last run may do it.
+func (t *Tickets) Finish(project, id, run, status, comment string, mergePending bool) (TicketView, error) {
 	if status != TicketDone && status != TicketBlocked {
 		return TicketView{}, refuse("a run cannot leave a ticket %s", status)
 	}
@@ -257,6 +264,9 @@ func (t *Tickets) Finish(project, id, status, comment string, mergePending bool)
 			return nil, ErrNoTicket
 		}
 		tk := &tab.Tickets[i]
+		if !lastRun(*tk, run) {
+			return nil, refuse("%s is driven by another run", id)
+		}
 		if tk.Status != TicketRunning && tk.Status != TicketBlocked {
 			return nil, refuse("%s is %s; no run drives it", id, tk.Status)
 		}

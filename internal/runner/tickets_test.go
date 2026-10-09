@@ -222,7 +222,7 @@ func TestARunStartsAndFinishesATicket(t *testing.T) {
 	_, err = ts.Start("PRJ-1", a.ID, "RUN-2")
 	refusal(t, err, "TCK-1 is already running")
 
-	v, err = ts.Finish("PRJ-1", a.ID, TicketBlocked, "the main checkout has uncommitted changes", true)
+	v, err = ts.Finish("PRJ-1", a.ID, "RUN-1", TicketBlocked, "the main checkout has uncommitted changes", true)
 	if err != nil || v.Status != TicketBlocked || !v.MergePending || len(v.Comments) != 1 ||
 		v.Comments[0].By != "aigem" {
 		t.Fatalf("blocked = %+v, %v", v, err)
@@ -231,13 +231,13 @@ func TestARunStartsAndFinishesATicket(t *testing.T) {
 	if err != nil || v.Status != TicketRunning || v.MergePending || len(v.Runs) != 1 {
 		t.Fatalf("a second turn = %+v, %v, want running again with the same run", v, err)
 	}
-	v, err = ts.Finish("PRJ-1", a.ID, TicketDone, "Merged.", true)
+	v, err = ts.Finish("PRJ-1", a.ID, "RUN-1", TicketDone, "Merged.", true)
 	if err != nil || v.Status != TicketDone || v.MergePending {
 		t.Fatalf("done = %+v, %v", v, err)
 	}
-	_, err = ts.Finish("PRJ-1", a.ID, TicketBlocked, "late", false)
+	_, err = ts.Finish("PRJ-1", a.ID, "RUN-1", TicketBlocked, "late", false)
 	refusal(t, err, "TCK-1 is done; no run drives it")
-	_, err = ts.Finish("PRJ-1", a.ID, TicketOpen, "x", false)
+	_, err = ts.Finish("PRJ-1", a.ID, "RUN-1", TicketOpen, "x", false)
 	refusal(t, err, "cannot leave a ticket open")
 }
 
@@ -273,11 +273,47 @@ func TestALongRunCommentIsCut(t *testing.T) {
 	if _, err := ts.Start("PRJ-1", a.ID, "RUN-1"); err != nil {
 		t.Fatal(err)
 	}
-	v, err := ts.Finish("PRJ-1", a.ID, TicketBlocked, strings.Repeat("é", 20<<10), false)
+	v, err := ts.Finish("PRJ-1", a.ID, "RUN-1", TicketBlocked, strings.Repeat("é", 20<<10), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c := v.Comments[0].Text; len(c) > 16<<10+len("…") || !strings.HasSuffix(c, "…") {
 		t.Errorf("comment is %d bytes, want at most 16 KiB and a mark that it was cut", len(c))
+	}
+}
+
+func TestOnlyTheLastRunStartsOrFinishesATicket(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	ts, _ := newTestTickets(t, t.TempDir())
+	a := mustCreate(t, ts, NewTicket{Title: "a"})
+	ready := TicketPatch{Status: ptr(TicketReady)}
+	if _, err := ts.Update("PRJ-1", a.ID, ready); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Start("PRJ-1", a.ID, "RUN-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Finish("PRJ-1", a.ID, "RUN-1", TicketBlocked, "stuck", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Update("PRJ-1", a.ID, ready); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Start("PRJ-1", a.ID, "RUN-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ts.Finish("PRJ-1", a.ID, "RUN-1", TicketDone, "late", false)
+	refusal(t, err, "TCK-1 is driven by another run")
+	_, err = ts.Start("PRJ-1", a.ID, "RUN-1")
+	refusal(t, err, "TCK-1 is driven by another run")
+	if _, err := ts.Finish("PRJ-1", a.ID, "RUN-2", TicketBlocked, "stuck", false); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ts.Start("PRJ-1", a.ID, "RUN-1")
+	refusal(t, err, "TCK-1 is driven by another run")
+	v, err := ts.Start("PRJ-1", a.ID, "RUN-2")
+	if err != nil || v.Status != TicketRunning {
+		t.Fatalf("last run take back = %+v, %v", v, err)
 	}
 }
