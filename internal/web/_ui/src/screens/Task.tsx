@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '@/lib/api'
+import { ago } from '@/lib/format'
 import { format, navigate } from '@/lib/route'
 import type { Ticket, TicketStatus } from '@/lib/wire'
 import { currentProject, explain, refresh, setBanner, useApp } from '@/state/app'
@@ -8,7 +9,7 @@ import { Back } from '@/ui/Back'
 import { EmptyState } from '@/ui/EmptyState'
 import { Markdown } from '@/ui/Markdown'
 import { SegmentedControl } from '@/ui/SegmentedControl'
-import { NewTicketDialog, TicketStatusLabel } from './Tickets'
+import { INPUT, NewTicketDialog, TicketStatusLabel } from './Tickets'
 
 const MOVE_LABEL: Record<TicketStatus, string> = {
   open: 'Back to open',
@@ -25,9 +26,10 @@ const BUTTON =
   'h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted hover:border-line-strong hover:text-fg'
 
 export function Task({ id = '' }: { id?: string }) {
-  const { project, tickets, name } = useApp((s) => ({
+  const { project, tickets, loaded, name } = useApp((s) => ({
     project: s.project,
     tickets: s.tickets,
+    loaded: s.ticketsLoaded,
     name: currentProject(s)?.name ?? '',
   }))
   const t = tickets.find((x) => x.id === id)
@@ -36,6 +38,7 @@ export function Task({ id = '' }: { id?: string }) {
   const [adding, setAdding] = useState(false)
 
   if (!project) return <EmptyState title="Tasks need a project." detail="Choose a project in the sidebar." />
+  if (!t && !loaded) return <p className="m-0 px-4.5 py-3.5 text-fg-subtle">Loading tickets…</p>
   if (!t) {
     return (
       <EmptyState
@@ -87,6 +90,8 @@ export function Task({ id = '' }: { id?: string }) {
         </div>
         <div className="mt-1.5 font-mono text-[0.71875rem] text-fg-subtle">
           {t.repo || name} · created by {t.by || 'you'}
+          {t.created && ` · created ${ago(t.created)}`}
+          {t.updated && ` · updated ${ago(t.updated)}`}
         </div>
         {error && (
           <p role="alert" className="m-0 mt-1.5 text-[0.78125rem] text-attention">
@@ -162,50 +167,46 @@ export function Task({ id = '' }: { id?: string }) {
               {t.progress?.done ?? 0} of {t.progress?.total ?? kids.length} done
             </Section>
           )}
-          {!isParent && (
-            <>
-              <Section title="Waits for">
-                {t.dependsOn.map((d) => (
-                  <div key={d} className="flex items-center gap-2 py-0.5">
-                    <TicketLink id={d} all={tickets} />
-                    <button
-                      type="button"
-                      aria-label={`Stop waiting for ${d}`}
-                      title="Remove dependency"
-                      onClick={() => void change({ dependsOn: t.dependsOn.filter((x) => x !== d) })}
-                      className="ml-auto text-fg-subtle hover:text-danger"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-                <label className="mt-1 flex flex-col gap-1 text-fg-subtle">
-                  Add dependency
-                  <select
-                    value=""
-                    onChange={(e) => e.target.value && void change({ dependsOn: [...t.dependsOn, e.target.value] })}
-                    className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-fg"
-                  >
-                    <option value="">choose a ticket…</option>
-                    {tickets
-                      .filter((x) => x.id !== t.id && !t.dependsOn.includes(x.id))
-                      .map((x) => (
-                        <option key={x.id} value={x.id}>
-                          {x.id} {x.title}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-              </Section>
-              <Section title="Blocks">
-                {blocks(t, tickets).map((b) => (
-                  <div key={b.id} className="py-0.5">
-                    <TicketLink id={b.id} all={tickets} />
-                  </div>
-                ))}
-              </Section>
-            </>
-          )}
+          <Section title="Waits for">
+            {t.dependsOn.map((d) => (
+              <div key={d} className="flex items-center gap-2 py-0.5">
+                <TicketLink id={d} all={tickets} />
+                <button
+                  type="button"
+                  aria-label={`Stop waiting for ${d}`}
+                  title="Remove dependency"
+                  onClick={() => void change({ dependsOn: t.dependsOn.filter((x) => x !== d) })}
+                  className="ml-auto text-fg-subtle hover:text-danger"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <label className="mt-1 flex flex-col gap-1 text-fg-subtle">
+              Add dependency
+              <select
+                value=""
+                onChange={(e) => e.target.value && void change({ dependsOn: [...t.dependsOn, e.target.value] })}
+                className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-fg"
+              >
+                <option value="">choose a ticket…</option>
+                {tickets
+                  .filter((x) => x.id !== t.id && !t.dependsOn.includes(x.id))
+                  .map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.id} {x.title}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          </Section>
+          <Section title="Blocks">
+            {blocks(t, tickets).map((b) => (
+              <div key={b.id} className="py-0.5">
+                <TicketLink id={b.id} all={tickets} />
+              </div>
+            ))}
+          </Section>
           <Section title="Repository">{t.repo || name}</Section>
         </aside>
       </div>
@@ -283,7 +284,7 @@ function Discussion({ project, ticket }: { project: string; ticket: Ticket }) {
           }}
           rows={3}
           placeholder="Write a comment… ⌘↵ to send"
-          className="flex-1 rounded-md border border-line bg-bg px-2 py-1 text-[0.8125rem] outline-none focus:border-primary"
+          className={`flex-1 ${INPUT}`}
         />
         <button type="button" onClick={() => void send()} disabled={!text.trim() || busy} className={BUTTON}>
           Send comment

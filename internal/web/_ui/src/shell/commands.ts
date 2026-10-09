@@ -120,6 +120,16 @@ export function paletteItems(state: AppState): PaletteItem[] {
         patchNewTicket(true)
       },
     })
+    for (const t of state.tickets) {
+      items.push({
+        id: `ticket-${t.id}`,
+        label: 'Open ticket',
+        hint: `${t.id} ${t.title}`,
+        icon: '#',
+        group: 'Navigate',
+        run: go({ screen: 'task', id: t.id }),
+      })
+    }
   }
   items.push({
     id: 'quick-chat',

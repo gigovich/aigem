@@ -52,8 +52,11 @@ export function treeRows(tickets: Ticket[], filter: TicketFilter, needle: string
   return rows
 }
 
+/** The unfinished tickets t waits for, its parent's dependencies included. */
 export function waitsFor(t: Ticket, all: Ticket[]): string[] {
-  return t.dependsOn.filter((id) => all.find((x) => x.id === id)?.status !== 'done')
+  const parent = all.find((x) => x.id === t.parent)
+  const deps = new Set([...t.dependsOn, ...(parent?.dependsOn ?? [])])
+  return [...deps].filter((id) => all.find((x) => x.id === id)?.status !== 'done')
 }
 
 export function blocks(t: Ticket, all: Ticket[]): Ticket[] {

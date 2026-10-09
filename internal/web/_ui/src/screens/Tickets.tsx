@@ -12,6 +12,9 @@ import { FilterInput } from '@/ui/FilterInput'
 import { Modal } from '@/ui/Modal'
 import { SegmentedControl } from '@/ui/SegmentedControl'
 
+const PRIMARY =
+  'h-6.5 rounded-md border border-primary bg-primary px-2.5 text-[0.78125rem] font-medium text-bg hover:brightness-110'
+
 export function Tickets() {
   const { project, tickets, name, newOpen } = useApp((s) => ({
     project: s.project,
@@ -88,12 +91,8 @@ export function Tickets() {
                 { value: 'all', label: 'All' },
               ]}
             />
-            <FilterInput value={needle} onChange={setNeedle} label="Filter tickets…" />
-            <button
-              type="button"
-              onClick={() => patchNewTicket(true)}
-              className="ml-auto h-6.5 rounded-md border border-primary bg-primary px-2.5 text-[0.78125rem] font-medium text-bg hover:brightness-110"
-            >
+            <FilterInput value={needle} onChange={setNeedle} label="Filter tickets" />
+            <button type="button" onClick={() => patchNewTicket(true)} className={`ml-auto ${PRIMARY}`}>
               New ticket
             </button>
           </>
@@ -115,7 +114,9 @@ export function Tickets() {
           empty={<EmptyState title="No tickets here." detail="Create one, or choose another filter." />}
         />
       )}
-      {newOpen && project && <NewTicketDialog project={project} tickets={tickets} onClose={() => patchNewTicket(false)} />}
+      {newOpen && project && (
+        <NewTicketDialog project={project} tickets={tickets} onClose={() => patchNewTicket(false)} />
+      )}
     </>
   )
 }
@@ -147,7 +148,7 @@ export function TicketStatusLabel({ ticket }: { ticket: Ticket }) {
   )
 }
 
-const INPUT =
+export const INPUT =
   'rounded-md border border-line bg-bg px-2 py-1 text-[0.8125rem] text-fg outline-none focus:border-primary'
 
 export function NewTicketDialog({
@@ -170,6 +171,7 @@ export function NewTicketDialog({
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const ready = title.trim() !== '' && !busy
+  const waits = deps.filter((d) => d !== parent)
 
   useEffect(() => {
     const abort = new AbortController()
@@ -187,7 +189,7 @@ export function NewTicketDialog({
         ...(repo && { repo }),
         ...(body.trim() && { body }),
         ...(parent && { parent }),
-        ...(deps.length > 0 && { dependsOn: deps }),
+        ...(waits.length > 0 && { dependsOn: waits }),
       })
       await refresh.tickets()
       flash(`Created ${t.id}`)
@@ -248,7 +250,7 @@ export function NewTicketDialog({
             onChange={(e) => setDeps(Array.from(e.target.selectedOptions, (o) => o.value))}
             className={`${INPUT} h-24`}
           >
-            {tickets.map((t) => (
+            {tickets.filter((t) => t.id !== parent).map((t) => (
               <option key={t.id} value={t.id}>
                 {t.id} {t.title}
               </option>

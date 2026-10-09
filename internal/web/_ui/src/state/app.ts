@@ -46,6 +46,8 @@ export type AppState = {
   activity: Activity[]
   projects: Project[]
   tickets: Ticket[]
+  /** The first ticket read for the selected project has finished. */
+  ticketsLoaded: boolean
   newTicketOpen: boolean
   /** The project every list screen reads; empty is the daemon's own directory. Saved per browser. */
   project: string
@@ -142,6 +144,7 @@ export function initialState(): AppState {
     activity: [],
     projects: [],
     tickets: [],
+    ticketsLoaded: false,
     newTicketOpen: false,
     project: read('aigem.project') ?? '',
     theme: initialTheme(),
@@ -207,7 +210,7 @@ export function currentProject(s: AppState): Project | undefined {
  */
 function setProject(id: string) {
   write('aigem.project', id)
-  patch({ project: id, skills: EMPTY_SKILLS, commands: [], tickets: [] })
+  patch({ project: id, skills: EMPTY_SKILLS, commands: [], tickets: [], ticketsLoaded: false })
 }
 
 /** Choose the project every list screen reads, and fetch what is scoped by it. */
@@ -296,6 +299,8 @@ export const refresh = {
     return load('tickets', 'tickets', async () => {
       const tickets = await api.tickets(project)
       return gen === ticketsGen && project === store.get().project ? tickets : store.get().tickets
+    }).finally(() => {
+      if (gen === ticketsGen && project === store.get().project) patch({ ticketsLoaded: true })
     })
   },
   models: () => load('models', 'models', () => api.models()),

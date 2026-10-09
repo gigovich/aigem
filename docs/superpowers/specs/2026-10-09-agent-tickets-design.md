@@ -111,7 +111,9 @@ Moves a person may make in part 1 (anything else is 409):
   or its own subtickets. Every write checks the whole graph for a cycle and refuses one with 409
   naming the path ("TCK-4 already waits for TCK-5").
 - **Runnable** is computed, never stored: status `ready`, not a parent, and every `DependsOn`
-  ticket is `done`. The dispatcher (part 4) reads only this.
+  ticket is `done`; a subticket also needs every `DependsOn` of its parent `done`. The cycle
+  check counts the same waits: a parent waits for its subtickets, and a subticket for its
+  parent's dependencies. The dispatcher (part 4) reads only this.
 - **Delete** is refused with 409 while another ticket depends on it, while it has subtickets, or
   while it is `running`/`planning`. Closing is the normal way out. Deleted ids are not reused.
 
@@ -170,7 +172,7 @@ Activity entries: `ticket.created` and `ticket.closed` only, to keep the feed re
 - A status segmented control: Active (default: everything not `done`/`closed`), Ready, Blocked,
   All; plus the `/` filter on title and id.
 - "New ticket" opens a form: repository (select), title, body, parent (optional, top-level
-  tickets only), depends on (multi-select). Selecting a row fills the inspector.
+  tickets only), depends on (multi-select). Selecting a row opens the ticket page.
 - Live: a `ticket.updated` from another tab or from the daemon refreshes the table, with the
   "latest request wins" guard used for the runs list.
 
@@ -184,7 +186,7 @@ Activity entries: `ticket.created` and `ticket.closed` only, to keep the feed re
 - Right panel: Parent with progress, Waits for (with "+ add dependency" and remove), Blocks
   (tickets that wait for this one), Repository. A refused dependency shows the 409 sentence.
 - On a parent: the Overview tab lists the subtickets as tree rows with "Add subticket"; the panel
-  shows progress instead of dependencies; no status buttons.
+  shows progress next to dependencies; no status buttons.
 - Palette: "New ticket", "Open ticket" (search by id and title).
 
 ### Testing

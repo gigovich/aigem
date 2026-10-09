@@ -224,3 +224,46 @@ test('an unknown ticket says so', async () => {
   act(() => selectProject('PRJ-1'))
   expect(await screen.findByText('No such ticket.')).toBeInTheDocument()
 })
+
+test('a deep link waits for the first read before saying a ticket is missing', async () => {
+  let answer: (r: Response) => void = () => {}
+  await mountApp({
+    meta: META_TICKETS,
+    projects: [DAEMON_PROJECT, PRJ],
+    path: '/task/TCK-99',
+    routes: { '/api/projects/PRJ-1/tickets': () => new Promise<Response>((r) => (answer = r)) },
+  })
+  act(() => selectProject('PRJ-1'))
+  expect(await screen.findByText('Loading tickets…')).toBeInTheDocument()
+  expect(screen.queryByText('No such ticket.')).not.toBeInTheDocument()
+  await act(() => Promise.resolve(answer(json(PLAN))))
+  expect(await screen.findByText('No such ticket.')).toBeInTheDocument()
+})
+
+test("a parent's dependencies show on its page and hold its subtickets back", async () => {
+  const tickets = [
+    ...PLAN.map((t) => (t.id === 'TCK-1' ? { ...t, dependsOn: ['TCK-6'] } : t)),
+    ticket('TCK-6', { title: 'Schema' }),
+  ]
+  await openTask('TCK-1', tickets)
+  expect(screen.getByRole('button', { name: 'Stop waiting for TCK-6' })).toBeInTheDocument()
+  act(() => navigate({ screen: 'task', id: 'TCK-3' }))
+  expect(await screen.findByText('⧗ waits for TCK-4, TCK-6')).toBeInTheDocument()
+})
+
+test('a new subticket cannot wait for its own parent', async () => {
+  await openTask('TCK-4', PLAN)
+  await userEvent.click(screen.getByRole('button', { name: 'Add subticket' }))
+  const waits = screen.getByLabelText('Waits for')
+  expect(Array.from(waits.querySelectorAll('option'), (o) => o.value)).not.toContain('TCK-4')
+})
+
+test('the palette opens a ticket found by its title', async () => {
+  await openTickets(PLAN)
+  await userEvent.keyboard('{Control>}k{/Control}')
+  await screen.findByRole('dialog', { name: 'Command palette' })
+  await userEvent.keyboard('Runner change')
+  expect(screen.getAllByRole('option')[0]).toHaveTextContent('TCK-4 Runner change')
+  await userEvent.keyboard('{Enter}')
+  await waitFor(() => expect(window.location.pathname).toBe('/task/TCK-4'))
+})
