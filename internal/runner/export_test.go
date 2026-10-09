@@ -1,6 +1,9 @@
 package runner
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // SessionStartTimeout reports the shipped bound, so a test can pin the value
 // and not only the mechanism.
@@ -25,30 +28,10 @@ func PauseBetweenBuildAndPublish(during func()) func() {
 }
 
 // CloseRun ends a run's session and keeps its record, which is the state a run
-// reaches after a restart. Tests use it to get a closed run without one.
+// reaches after a restart. A run that is already closed is left as it is.
 func (r *Runs) CloseRun(id string) error {
-	r.mu.Lock()
-	lr := r.byID[id]
-	if lr == nil {
-		r.mu.Unlock()
-		return ErrNoRun
+	if err := r.Stop(id); err != nil && !errors.Is(err, ErrRunClosed) {
+		return err
 	}
-	sess, rel := lr.sess, lr.release
-	lr.sess, lr.release = nil, nil
-	r.mu.Unlock()
-	if sess == nil {
-		return nil
-	}
-	meta := sess.Local.Meta()
-
-	r.mu.Lock()
-	r.markClosedLocked(lr, meta)
-	lr.version++
-	r.saveLocked()
-	rec := lr.rec
-	r.mu.Unlock()
-
-	r.notify(view(rec, nil))
-	closeSession(sess, rel)
 	return nil
 }

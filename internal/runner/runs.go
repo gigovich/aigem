@@ -92,13 +92,17 @@ type Run struct {
 	SessionID string `json:"sessionId,omitempty"`
 	// ProjectID names the project the run works in; empty is the daemon's own
 	// directory, which is a project with no record.
-	ProjectID string    `json:"projectId,omitempty"`
-	Mode      Mode      `json:"mode"`
-	Title     string    `json:"title,omitempty"`
-	Model     string    `json:"model,omitempty"`
-	Root      string    `json:"root,omitempty"`
-	Status    RunStatus `json:"status"`
-	Created   time.Time `json:"created"`
+	ProjectID string `json:"projectId,omitempty"`
+	// TicketID, Worktree and Branch are set on a run that works on a ticket.
+	TicketID string    `json:"ticketId,omitempty"`
+	Worktree string    `json:"worktree,omitempty"`
+	Branch   string    `json:"branch,omitempty"`
+	Mode     Mode      `json:"mode"`
+	Title    string    `json:"title,omitempty"`
+	Model    string    `json:"model,omitempty"`
+	Root     string    `json:"root,omitempty"`
+	Status   RunStatus `json:"status"`
+	Created  time.Time `json:"created"`
 	// Updated is when this record last changed - opened, renamed, switched
 	// model, closed. It is not the last thing that happened in the
 	// conversation: a turn does not rewrite the table.
@@ -138,6 +142,22 @@ type RunRequest struct {
 	Model string
 	// ProjectID selects the environment the run opens in. Open resolves it.
 	ProjectID string
+	// TicketID, Worktree and Branch tie an autonomous run to a ticket. Open roots the
+	// session's tools at Worktree.
+	TicketID, Worktree, Branch string
+	// Tools are registered into the session once it is built, past the mode's tool subset.
+	Tools []tools.Tool
+	// OnTurn is called with every turn_start and turn_end, in order, on a goroutine of the
+	// run's own; a slow call delays only the next one.
+	OnTurn func(uisession.Event)
+}
+
+// Root is where the session's tools are rooted: the ticket's worktree, else dir.
+func (req RunRequest) Root(dir string) string {
+	if req.Worktree != "" {
+		return req.Worktree
+	}
+	return dir
 }
 
 // Opened is what OpenRun built. It is reported rather than assumed, because
@@ -329,10 +349,9 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	if req.Mode == "" {
 		req.Mode = ModeInteractive
 	}
-	if req.Mode != ModeInteractive {
-		// Autonomous runs need a ticket and a dedicated worktree, neither of
-		// which exists yet. Opening one anyway would be a session with the
-		// autonomous policy and none of what the policy assumes.
+	if req.Mode != ModeInteractive && (req.Mode != ModeAutonomous || req.TicketID == "" || req.Worktree == "") {
+		// The autonomous policy approves edits on the assumption that a ticket's worktree is
+		// all the session can reach; without one there is nothing that assumption holds for.
 		return RunView{}, fmt.Errorf("%w: %q", ErrRunMode, req.Mode)
 	}
 
@@ -388,6 +407,9 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 		release(opened.Release)
 		return RunView{}, errors.New("runner: the run was opened without a session")
 	}
+	for _, t := range req.Tools {
+		sess.Tools.Register(t)
+	}
 
 	meta := sess.Local.Meta()
 
@@ -398,6 +420,7 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	now := r.now()
 	rec := Run{
 		ID: id, SessionID: meta.ID, ProjectID: req.ProjectID, Mode: req.Mode,
+		TicketID: req.TicketID, Worktree: req.Worktree, Branch: req.Branch,
 		Title: meta.Title, Model: opened.Model, Root: opened.Root,
 		Status: RunOpen, Created: now, Updated: now,
 	}
@@ -417,6 +440,9 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	r.mu.Unlock()
 
 	r.watch(id, sess)
+	if req.OnTurn != nil {
+		follow(sess, req.OnTurn)
+	}
 	v := view(rec, sess)
 	r.notify(v)
 	return v, nil
@@ -452,6 +478,51 @@ func (r *Runs) watch(id string, sess *Session) {
 			r.announce(id)
 		}
 	}()
+}
+
+// follow hands fn every turn_start and turn_end of the session, in order. It replays from the
+// last event it handed over, so a wake-up that arrives while fn is busy loses nothing.
+func follow(sess *Session, fn func(uisession.Event)) {
+	seen := sess.Local.Seq()
+	woke, stop, err := sess.Local.Watch(uisession.KindTurnStart, uisession.KindTurnEnd)
+	if err != nil {
+		return
+	}
+	go func() {
+		defer stop()
+		for range woke {
+			evs, err := sess.Local.Replay(seen)
+			if err != nil {
+				slog.Warn("a run's turns could not be read back", "err", err)
+				seen = sess.Local.Seq()
+			} else if n := len(evs); n > 0 {
+				seen = evs[n-1].Seq
+			}
+			for _, ev := range turnEvents(evs, err, sess.Local.Running()) {
+				fn(ev)
+			}
+		}
+	}()
+}
+
+// turnEvents picks the turn events out of a replay. A replay that failed while no turn is
+// running stands for the turn_end it may have lost, so a caller waiting on one is not left
+// waiting; mid-turn, the next wake-up reads the end.
+func turnEvents(evs []uisession.Event, err error, running bool) []uisession.Event {
+	if err != nil {
+		if running {
+			return nil
+		}
+		return []uisession.Event{{Kind: uisession.KindTurnEnd,
+			Error: "the run's events could not be read back: " + err.Error()}}
+	}
+	var out []uisession.Event
+	for _, ev := range evs {
+		if ev.Kind == uisession.KindTurnStart || ev.Kind == uisession.KindTurnEnd {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // List reports every run, oldest first.
@@ -813,6 +884,47 @@ func (r *Runs) Remove(id string) error {
 			slog.Error("a deleted run's conversation could not be removed", "run", id, "err", err)
 		}
 	}
+	return nil
+}
+
+// Stop ends a run's session the way a daemon restart would: the turn is interrupted, the
+// conversation saved, and the record and its journal stay.
+func (r *Runs) Stop(id string) error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ErrRunsClosed
+	}
+	lr := r.byID[id]
+	switch {
+	case lr == nil:
+		r.mu.Unlock()
+		return ErrNoRun
+	case lr.sess == nil:
+		r.mu.Unlock()
+		return ErrRunClosed
+	}
+	r.opening.Add(1)
+	defer r.opening.Done()
+	sess, rel := lr.sess, lr.release
+	lr.sess, lr.release = nil, nil
+	r.mu.Unlock()
+
+	meta := sess.Local.Meta()
+	closeSession(sess, rel)
+
+	r.mu.Lock()
+	if r.byID[id] != lr {
+		// Removed while the session was closing; Remove announced it.
+		r.mu.Unlock()
+		return nil
+	}
+	r.markClosedLocked(lr, meta)
+	lr.version++
+	r.saveLocked()
+	rec := lr.rec
+	r.mu.Unlock()
+	r.notify(view(rec, nil))
 	return nil
 }
 

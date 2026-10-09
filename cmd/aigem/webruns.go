@@ -85,7 +85,8 @@ func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 			release()
 		}
 	}()
-	reg, err := env.NewTools()
+	root := req.Root(env.Cwd)
+	reg, err := env.NewToolsAt(root)
 	if err != nil {
 		return nil, runner.Opened{}, err
 	}
@@ -138,7 +139,7 @@ func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 		// A conversation started in a browser runs the person's own hooks, and
 		// a hook that is told nothing about where it is running would resolve
 		// paths against wherever the daemon happens to have been started.
-		Cwd:           env.Cwd,
+		Cwd:           root,
 		RebuildSystem: buildSystem,
 		Temp:          webTemp,
 		MaxTokens:     defaultMaxTokens,
@@ -162,7 +163,7 @@ func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 	opened = true
 	return sess, runner.Opened{
 		Model:   info.Ref(),
-		Root:    env.Cwd,
+		Root:    root,
 		Release: func() { env.Detach(sess); release() },
 	}, nil
 }
