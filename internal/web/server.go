@@ -243,6 +243,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/projects/{id}", methodNotAllowed("DELETE"))
 	s.api("GET /api/projects/{id}/repos", s.handleProjectRepos)
 	s.mux.HandleFunc("/api/projects/{id}/repos", methodNotAllowed("GET, HEAD"))
+	s.api("GET /api/projects/{id}/tickets", s.handleTickets)
+	s.api("POST /api/projects/{id}/tickets", s.handleCreateTicket)
+	s.mux.HandleFunc("/api/projects/{id}/tickets", methodNotAllowed("GET, HEAD, POST"))
+	s.api("GET /api/projects/{id}/tickets/{tid}", s.handleTicket)
+	s.api("PATCH /api/projects/{id}/tickets/{tid}", s.handleUpdateTicket)
+	s.api("DELETE /api/projects/{id}/tickets/{tid}", s.handleDeleteTicket)
+	s.mux.HandleFunc("/api/projects/{id}/tickets/{tid}", methodNotAllowed("GET, HEAD, PATCH, DELETE"))
+	s.api("POST /api/projects/{id}/tickets/{tid}/comments", s.handleCommentTicket)
+	s.mux.HandleFunc("/api/projects/{id}/tickets/{tid}/comments", methodNotAllowed("POST"))
 	s.mux.Handle("/", s.assets)
 }
 

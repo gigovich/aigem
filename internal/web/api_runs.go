@@ -187,7 +187,11 @@ func (s *Server) handleRunArtifacts(w http.ResponseWriter, r *http.Request) {
 // a run is, and no way for its author to find out. It applies to every body,
 // this route's included.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRunBody))
+	return decodeJSONLimit(w, r, v, maxRunBody)
+}
+
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return err
@@ -292,6 +296,8 @@ func writeRunError(w http.ResponseWriter, doing string, err error) {
 		http.Error(w, unprefixed(err.Error()), http.StatusServiceUnavailable)
 	case errors.Is(err, ErrNoProject):
 		http.Error(w, "no such project", http.StatusNotFound)
+	case errors.Is(err, ErrNoTicket):
+		http.Error(w, "no such ticket", http.StatusNotFound)
 	case errors.Is(err, ErrConflict):
 		http.Error(w, unprefixed(err.Error()), http.StatusConflict)
 	case errors.As(err, &refusal):
