@@ -34,6 +34,7 @@ export type Feature =
   | 'usage'
   | 'activity'
   | 'projects'
+  | 'tickets'
 
 export type Run = {
   id: string
@@ -63,6 +64,32 @@ export type NewProject = { dir: string; name?: string }
 
 /** A git checkout under a project. `name` is empty for the project directory itself. */
 export type Repository = { name: string; dir: string; main?: string }
+
+export type TicketStatus = 'open' | 'planning' | 'review' | 'ready' | 'running' | 'blocked' | 'done' | 'closed'
+
+export type TicketComment = { at: string; by: string; text: string }
+
+/** A project's ticket; `runnable` and `progress` are computed by the daemon. */
+export type Ticket = {
+  id: string
+  repo: string
+  title: string
+  body: string
+  status: TicketStatus
+  parent?: string
+  dependsOn: string[]
+  by: string
+  created?: string
+  updated?: string
+  comments: TicketComment[]
+  runs: string[]
+  runnable: boolean
+  progress?: { done: number; total: number }
+}
+
+export type NewTicket = { repo?: string; title: string; body?: string; parent?: string; dependsOn?: string[] }
+
+export type TicketPatch = { status?: TicketStatus; dependsOn?: string[] }
 
 export type Model = {
   ref: string
@@ -273,6 +300,7 @@ export const ControlKind = {
   SkillsUpdated: 'skills.updated',
   ActivityUpdated: 'activity.updated',
   ProjectUpdated: 'project.updated',
+  TicketUpdated: 'ticket.updated',
 } as const
 
 export type ControlKind = (typeof ControlKind)[keyof typeof ControlKind]

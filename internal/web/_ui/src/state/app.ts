@@ -25,6 +25,7 @@ import type {
   ProviderUsage,
   Run,
   Skills,
+  Ticket,
 } from '@/lib/wire'
 
 export type Theme = 'mocha' | 'latte'
@@ -44,6 +45,7 @@ export type AppState = {
   usage: ProviderUsage[]
   activity: Activity[]
   projects: Project[]
+  tickets: Ticket[]
   /** The project every list screen reads; empty is the daemon's own directory. Saved per browser. */
   project: string
 
@@ -138,6 +140,7 @@ export function initialState(): AppState {
     usage: [],
     activity: [],
     projects: [],
+    tickets: [],
     project: read('aigem.project') ?? '',
     theme: initialTheme(),
     narrow: window.innerWidth < NARROW_AT,
@@ -202,7 +205,7 @@ export function currentProject(s: AppState): Project | undefined {
  */
 function setProject(id: string) {
   write('aigem.project', id)
-  patch({ project: id, skills: EMPTY_SKILLS, commands: [] })
+  patch({ project: id, skills: EMPTY_SKILLS, commands: [], tickets: [] })
 }
 
 /** Choose the project every list screen reads, and fetch what is scoped by it. */
@@ -216,6 +219,7 @@ export function selectProject(id: string) {
   setProject(id)
   void refresh.skills()
   void refresh.commands()
+  void refresh.tickets()
 }
 
 /**
@@ -270,6 +274,7 @@ async function load<K extends keyof AppState>(
 
 /** Bumped by every run list read and by dropRun: only the latest read applies. */
 let runsGen = 0
+let ticketsGen = 0
 
 export const refresh = {
   runs: () => {
@@ -277,6 +282,18 @@ export const refresh = {
     return load('runs', 'runs', async () => {
       const runs = await api.runs()
       return gen === runsGen ? runs : store.get().runs
+    })
+  },
+  tickets: () => {
+    const gen = ++ticketsGen
+    const { project } = store.get()
+    if (!project) {
+      patch({ tickets: [] })
+      return Promise.resolve(false)
+    }
+    return load('tickets', 'tickets', async () => {
+      const tickets = await api.tickets(project)
+      return gen === ticketsGen && project === store.get().project ? tickets : store.get().tickets
     })
   },
   models: () => load('models', 'models', () => api.models()),
@@ -349,6 +366,7 @@ export async function refreshAll() {
     refresh.models(),
     refresh.skills(),
     refresh.commands(),
+    refresh.tickets(),
     refresh.usage(),
     refresh.activity(),
   ])
@@ -570,11 +588,15 @@ export function start(): () => void {
         case ControlKind.ActivityUpdated:
           void refresh.activity()
           break
+        case ControlKind.TicketUpdated:
+          void refresh.tickets()
+          break
         case ControlKind.ProjectUpdated:
           void refresh.projects().then((reset) => {
             if (reset) {
               void refresh.skills()
               void refresh.commands()
+              void refresh.tickets()
             }
           })
           break

@@ -143,6 +143,7 @@ export function installDaemon(daemon: Daemon = {}): Harness {
         const run = (daemon.runs ?? []).find((r) => r.id === id)
         return Promise.resolve(run ? ok(run) : new Response('no such run', { status: 404 }))
       }
+      if (/^\/api\/projects\/[^/]+\/tickets$/.test(path)) return Promise.resolve(ok([]))
       return Promise.resolve(new Response('not stubbed: ' + path, { status: 404 }))
     }),
   )

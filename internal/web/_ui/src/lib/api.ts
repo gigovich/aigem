@@ -24,6 +24,9 @@ import type {
   Skill,
   SkillApproval,
   Skills,
+  Ticket,
+  NewTicket,
+  TicketPatch,
 } from './wire'
 
 /**
@@ -119,6 +122,27 @@ export const api = {
     json<Project>('/api/projects', { ...body(req), signal }),
   projectRepos: (id: string, signal?: AbortSignal) =>
     json<Repository[]>(`/api/projects/${encodeURIComponent(id)}/repos`, { signal }),
+  tickets: (project: string, signal?: AbortSignal) =>
+    json<Ticket[]>(`/api/projects/${encodeURIComponent(project)}/tickets`, { signal }),
+  createTicket: (project: string, req: NewTicket, signal?: AbortSignal) =>
+    json<Ticket>(`/api/projects/${encodeURIComponent(project)}/tickets`, { ...body(req), signal }),
+  updateTicket: (project: string, id: string, patch: TicketPatch, signal?: AbortSignal) =>
+    json<Ticket>(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}`, {
+      ...body(patch),
+      method: 'PATCH',
+      signal,
+    }),
+  commentTicket: (project: string, id: string, text: string, signal?: AbortSignal) =>
+    json<Ticket>(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}/comments`, {
+      ...body({ text }),
+      signal,
+    }),
+  deleteTicket: async (project: string, id: string, signal?: AbortSignal) => {
+    await send(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      signal,
+    })
+  },
 
   models: (signal?: AbortSignal) => json<Model[]>('/api/models', { signal }),
   setDefaultModel: (ref: string, signal?: AbortSignal) =>
