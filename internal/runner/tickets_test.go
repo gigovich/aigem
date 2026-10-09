@@ -174,3 +174,31 @@ func TestParallelWritesKeepEveryTicket(t *testing.T) {
 		t.Errorf("tickets = %d, want 20", len(list))
 	}
 }
+
+func TestANewSubticketCannotCloseACycleThroughItsParent(t *testing.T) {
+	ts, _ := newTestTickets(t, "")
+	parent := mustCreate(t, ts, NewTicket{Title: "goal"})
+	x := mustCreate(t, ts, NewTicket{Title: "x", DependsOn: []string{parent.ID}})
+	_, err := ts.Create("PRJ-1", NewTicket{Title: "kid", Parent: parent.ID, DependsOn: []string{x.ID}})
+	refusal(t, err, "that makes a cycle")
+}
+
+func TestAPatchThatChangesNothingIsNotSavedOrAnnounced(t *testing.T) {
+	ts, told := newTestTickets(t, "")
+	a := mustCreate(t, ts, NewTicket{Title: "a"})
+	b := mustCreate(t, ts, NewTicket{Title: "b", DependsOn: []string{a.ID}})
+	ts.now = func() time.Time { return b.Updated.Add(time.Hour) }
+	*told = nil
+	for _, p := range []TicketPatch{{}, {Status: ptr(TicketOpen)}, {DependsOn: &[]string{a.ID}}} {
+		got, err := ts.Update("PRJ-1", b.ID, p)
+		if err != nil || !got.Updated.Equal(b.Updated) {
+			t.Errorf("Update(%+v) = %v, %v, want no change", p, got.Updated, err)
+		}
+	}
+	if len(*told) != 0 {
+		t.Errorf("told = %v, want nothing", *told)
+	}
+	if got, _ := ts.Update("PRJ-1", b.ID, TicketPatch{DependsOn: &[]string{}}); !got.Updated.After(b.Updated) {
+		t.Error("removing a dependency is a change and must bump Updated")
+	}
+}

@@ -120,3 +120,39 @@ func TestRunnableNeedsReadyNoSubticketsAndDoneDependencies(t *testing.T) {
 		t.Error("a ticket without subtickets has no progress")
 	}
 }
+
+func TestASubticketAlsoWaitsForItsParentsDependencies(t *testing.T) {
+	all := rows(
+		tk("TCK-1", TicketReady, "TCK-3"),
+		kid("TCK-2", "TCK-1", TicketReady),
+		tk("TCK-3", TicketReady),
+	)
+	if ticketView(all, all[1]).Runnable {
+		t.Error("TCK-2 is runnable while its parent waits for TCK-3")
+	}
+	all[2].Status = TicketDone
+	if !ticketView(all, all[1]).Runnable {
+		t.Error("TCK-2 is not runnable after its parent's dependency is done")
+	}
+}
+
+func TestCyclesThroughAParentAreRefused(t *testing.T) {
+	all := rows(
+		tk("TCK-1", TicketOpen),
+		kid("TCK-2", "TCK-1", TicketOpen),
+		tk("TCK-3", TicketOpen, "TCK-1"),
+	)
+	_, err := checkDeps(all, all[1], []string{"TCK-3"})
+	refusal(t, err, "TCK-2 -> TCK-3 -> TCK-1 -> TCK-2")
+
+	all = rows(
+		tk("TCK-1", TicketOpen, "TCK-3"),
+		kid("TCK-2", "TCK-1", TicketOpen),
+		tk("TCK-3", TicketOpen),
+		tk("TCK-4", TicketOpen, "TCK-2"),
+	)
+	_, err = checkDeps(all, all[2], []string{"TCK-2"})
+	refusal(t, err, "TCK-3 -> TCK-2 -> TCK-3")
+	_, err = checkDeps(all, all[0], []string{"TCK-4"})
+	refusal(t, err, "TCK-1 -> TCK-4 -> TCK-2")
+}

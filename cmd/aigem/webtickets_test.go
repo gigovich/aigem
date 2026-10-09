@@ -73,21 +73,23 @@ func TestTicketChangesAreAnnouncedAndRecorded(t *testing.T) {
 	tk, _ := b.CreateTicket(ctx, project, web.NewTicket{Title: "t"})
 	closed := "closed"
 	b.UpdateTicket(ctx, project, tk.ID, web.TicketPatch{Status: &closed})
+	b.UpdateTicket(ctx, project, tk.ID, web.TicketPatch{Status: &closed})
 
 	count := map[string]int{}
 	for _, k := range *kinds {
 		count[k]++
 	}
 	if count["ticket.updated"] != 2 {
-		t.Errorf("kinds = %v, want ticket.updated for the create and the close", *kinds)
+		t.Errorf("kinds = %v, want ticket.updated for the create and the close only", *kinds)
 	}
 	feed, _ := b.Activity(ctx, 0, 0)
 	var seen []string
 	for _, a := range feed {
 		seen = append(seen, a.Kind)
+		count[a.Kind]++
 	}
-	if !containsAll(seen, "ticket.created", "ticket.closed") {
-		t.Errorf("activity = %v, want ticket.created and ticket.closed", seen)
+	if !containsAll(seen, "ticket.created", "ticket.closed") || count["ticket.closed"] != 1 {
+		t.Errorf("activity = %v, want ticket.created and one ticket.closed", seen)
 	}
 }
 

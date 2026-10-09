@@ -50,11 +50,12 @@ func (b *webBackend) UpdateTicket(_ context.Context, project, id string, req web
 	if err := b.ticketProject(project); err != nil {
 		return web.Ticket{}, err
 	}
+	before, _ := b.tickets.Get(project, id)
 	v, err := b.tickets.Update(project, id, runner.TicketPatch{Status: req.Status, DependsOn: req.DependsOn})
 	if err != nil {
 		return web.Ticket{}, webTicketError(err)
 	}
-	if req.Status != nil && *req.Status == runner.TicketClosed {
+	if v.Status == runner.TicketClosed && before.Status != runner.TicketClosed {
 		b.recordActivity(web.Activity{Kind: "ticket.closed", Text: "Closed ticket " + v.ID + ": " + v.Title})
 	}
 	return webTicket(v), nil

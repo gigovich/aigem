@@ -128,12 +128,12 @@ func (t *Tickets) Create(project string, n NewTicket) (TicketView, error) {
 			ID: ticketIDPrefix + strconv.Itoa(tab.Next), Repo: n.Repo, Title: title, Body: n.Body,
 			Status: TicketOpen, Parent: n.Parent, By: n.By, Created: now, Updated: now,
 		}
+		tab.Tickets = append(tab.Tickets, tk)
 		deps, err := checkDeps(tab.Tickets, tk, n.DependsOn)
 		if err != nil {
 			return nil, err
 		}
-		tk.DependsOn = deps
-		tab.Tickets = append(tab.Tickets, tk)
+		tab.Tickets[len(tab.Tickets)-1].DependsOn = deps
 		return []string{tk.ID}, nil
 	})
 	if err != nil {
@@ -149,11 +149,13 @@ func (t *Tickets) Update(project, id string, p TicketPatch) (TicketView, error) 
 			return nil, ErrNoTicket
 		}
 		tk := &tab.Tickets[i]
+		changed := false
 		if p.DependsOn != nil {
 			deps, err := checkDeps(tab.Tickets, *tk, *p.DependsOn)
 			if err != nil {
 				return nil, err
 			}
+			changed = !slices.Equal(deps, tk.DependsOn)
 			tk.DependsOn = deps
 		}
 		if p.Status != nil && *p.Status != tk.Status {
@@ -167,12 +169,19 @@ func (t *Tickets) Update(project, id string, p TicketPatch) (TicketView, error) 
 				return nil, err
 			}
 			tk.Status = *p.Status
+			changed = true
+		}
+		if !changed {
+			return nil, nil
 		}
 		tk.Updated = t.now()
 		return []string{id}, nil
 	})
 	if err != nil {
 		return TicketView{}, err
+	}
+	if len(views) == 0 {
+		return t.Get(project, id)
 	}
 	return views[0], nil
 }
@@ -225,7 +234,8 @@ func (t *Tickets) Delete(project, id string) error {
 }
 
 // change applies fn to a copy of the project's table, settles the parents it touched, writes
-// the copy and keeps it only when the write succeeded. Views come back in the order touched.
+// the copy and keeps it only when the write succeeded. Views come back in the order touched;
+// when fn touches nothing, nothing is written or announced.
 func (t *Tickets) change(project string, fn func(*TicketTable) ([]string, error)) ([]TicketView, error) {
 	t.mu.Lock()
 	b, err := t.bookLocked(project)
@@ -235,7 +245,7 @@ func (t *Tickets) change(project string, fn func(*TicketTable) ([]string, error)
 	}
 	next := cloneTable(b.table)
 	touched, err := fn(&next)
-	if err != nil {
+	if err != nil || len(touched) == 0 {
 		t.mu.Unlock()
 		return nil, err
 	}

@@ -95,11 +95,12 @@ func TestTheTicketRoutesAnswerAndFilter(t *testing.T) {
 	if res := api(t, srv, http.MethodGet, "/api/projects/PRJ-9/tickets", ""); res.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown project = %d, want 404", res.StatusCode)
 	}
-	if res := api(t, srv, http.MethodGet, "/api/projects/PRJ-1/tickets/TCK-7", ""); res.StatusCode != http.StatusNotFound {
+	res := api(t, srv, http.MethodGet, "/api/projects/PRJ-1/tickets/TCK-7", "")
+	if res.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown ticket = %d, want 404", res.StatusCode)
 	}
 
-	res := api(t, srv, http.MethodPost, "/api/projects/PRJ-1/tickets", `{"title":"new","dependsOn":["TCK-3"]}`)
+	res = api(t, srv, http.MethodPost, "/api/projects/PRJ-1/tickets", `{"title":"new","dependsOn":["TCK-3"]}`)
 	if res.StatusCode != http.StatusCreated || decode[Ticket](t, res).ID != "TCK-9" {
 		t.Errorf("create = %d", res.StatusCode)
 	}
@@ -141,10 +142,12 @@ func TestTheTicketRoutesAnswerAndFilter(t *testing.T) {
 		t.Errorf("a 17 KiB comment = %d, want 400", res.StatusCode)
 	}
 
-	if res := api(t, srv, http.MethodDelete, "/api/projects/PRJ-1/tickets/TCK-3", ""); res.StatusCode != http.StatusNoContent {
+	res = api(t, srv, http.MethodDelete, "/api/projects/PRJ-1/tickets/TCK-3", "")
+	if res.StatusCode != http.StatusNoContent {
 		t.Errorf("delete = %d, want 204", res.StatusCode)
 	}
-	if res := api(t, srv, http.MethodDelete, "/api/projects/PRJ-1/tickets/TCK-1", ""); res.StatusCode != http.StatusConflict {
+	res = api(t, srv, http.MethodDelete, "/api/projects/PRJ-1/tickets/TCK-1", "")
+	if res.StatusCode != http.StatusConflict {
 		t.Errorf("delete refused = %d, want 409", res.StatusCode)
 	}
 }
@@ -161,7 +164,8 @@ func TestTheTicketRoutesRefuseOtherMethodsAndNeedTheFeature(t *testing.T) {
 		}
 	}
 	projectsOnly, _ := newProjectsServer(t)
-	if res := api(t, projectsOnly, http.MethodGet, "/api/projects/PRJ-1/tickets", ""); res.StatusCode != http.StatusNotImplemented {
+	res := api(t, projectsOnly, http.MethodGet, "/api/projects/PRJ-1/tickets", "")
+	if res.StatusCode != http.StatusNotImplemented {
 		t.Errorf("a backend without the seam = %d, want 501", res.StatusCode)
 	}
 }
