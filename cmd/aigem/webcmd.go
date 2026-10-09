@@ -207,6 +207,10 @@ func runWebCommand(args []string) error {
 		}
 		defer projects.Close()
 	}
+	var tickets *runner.Tickets
+	if stateDir != "" {
+		tickets = runner.NewTickets(runner.TicketsConfig{Dir: stateDir, Notify: announce.publishTicket})
+	}
 	rt := &webRuntime{env: env, models: defaultModelRegistry(), projects: projects}
 	runs, err := rt.newRuns(stateDir, announce.publishRun)
 	if err != nil {
@@ -234,7 +238,7 @@ func runWebCommand(args []string) error {
 	}
 	backend := newWebBackend(webBackendConfig{
 		version: versionString(), models: rt.models, runs: runs,
-		env: env, projects: projects, activity: activity, notify: announce.publish,
+		env: env, projects: projects, tickets: tickets, activity: activity, notify: announce.publish,
 	})
 	srv, err := web.New(web.Config{
 		Addr:       *addr,

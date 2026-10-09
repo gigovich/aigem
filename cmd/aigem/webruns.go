@@ -211,3 +211,9 @@ func (n *notifier) publishRun(v runner.RunView) { n.publish("run.updated", webRu
 
 // publishProject is the projects registry's own callback shape, the same way.
 func (n *notifier) publishProject(v runner.ProjectView) { n.publish("project.updated", webProject(v)) }
+
+// publishTicket names the ticket that changed; a page re-reads its list rather than
+// patching it, so the frame carries the address and not the record.
+func (n *notifier) publishTicket(project string, v runner.TicketView) {
+	n.publish("ticket.updated", map[string]string{"projectId": project, "id": v.ID})
+}

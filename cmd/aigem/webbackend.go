@@ -33,6 +33,7 @@ type webBackend struct {
 	runs     *runner.Runs
 	env      *runner.Env
 	projects *runner.Projects
+	tickets  *runner.Tickets
 
 	activity   *store.Log[web.Activity]
 	activityMu sync.Mutex
@@ -95,6 +96,7 @@ type webBackendConfig struct {
 	runs     *runner.Runs
 	env      *runner.Env
 	projects *runner.Projects
+	tickets  *runner.Tickets
 	activity *store.Log[web.Activity]
 	notify   func(string, any)
 	// beginFlow starts a provider login. It is here so that a test can drive the
@@ -113,6 +115,7 @@ func newWebBackend(cfg webBackendConfig) *webBackend {
 	flowCtx, flowCancel := context.WithCancel(context.Background())
 	return &webBackend{
 		version: cfg.version, models: cfg.models, runs: cfg.runs, env: cfg.env, projects: cfg.projects,
+		tickets:  cfg.tickets,
 		activity: cfg.activity, notify: cfg.notify,
 		flows: map[string]*auth.Flow{}, flowStarting: map[string]int{}, pending: map[string]pendingMemo{},
 		beginFlow: cfg.beginFlow, flowCtx: flowCtx, flowCancel: flowCancel,
@@ -136,6 +139,9 @@ func (b *webBackend) Unavailable() []string {
 	}
 	if b.projects == nil {
 		out = append(out, "projects")
+	}
+	if b.tickets == nil || b.projects == nil {
+		out = append(out, "tickets")
 	}
 	return out
 }
