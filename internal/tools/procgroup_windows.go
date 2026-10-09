@@ -11,11 +11,11 @@ import (
 // group so console signals aimed at aigem do not reach it.
 const createNewProcessGroup = 0x00000200
 
-// configureProcessGroup is the Windows counterpart of the Unix process-group
+// ConfigureProcessGroup is the Windows counterpart of the Unix process-group
 // setup. Windows has no group-wide kill, so cancellation terminates the command
 // itself; the caller's WaitDelay still bounds how long a surviving child can
 // hold the output pipes open.
-func configureProcessGroup(cmd *exec.Cmd) {
+func ConfigureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewProcessGroup}
 	cmd.Cancel = func() error { return cmd.Process.Kill() }
 }
