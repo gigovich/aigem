@@ -2187,3 +2187,55 @@ func TestARemovedRunStaysGoneAfterARestart(t *testing.T) {
 		t.Errorf("the next id is %q, want RUN-3, past the removed %q", next, gone.ID)
 	}
 }
+
+// A Remove that lands while Stop is closing the session deletes the files for good: the
+// closing session's save must not write the conversation back.
+func TestARemoveDuringStopKeepsTheFilesDeleted(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cwd := project(t)
+	model := newFakeModel(t)
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			return runner.NewSession(runner.Spec{Mode: req.Mode, Tools: reg, Backend: model.ref("m")}),
+				runner.Opened{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	v := create(t, runs, runner.RunRequest{})
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, runs, v.ID)
+	got, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := got.SessionID
+	for deadline := time.Now().Add(10 * time.Second); len(remainingFiles(t, sid)) != 2; {
+		if time.Now().After(deadline) {
+			t.Fatalf("before the delete the files on disk are %v, want journal and session",
+				remainingFiles(t, sid))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	defer runner.PauseBetweenDetachAndClose(func() {
+		if err := runs.Remove(v.ID); err != nil {
+			t.Error(err)
+		}
+	})()
+	if err := runs.Stop(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runs.Get(v.ID); !errors.Is(err, runner.ErrNoRun) {
+		t.Errorf("Get after a delete = %v, want ErrNoRun", err)
+	}
+	if left := remainingFiles(t, sid); len(left) != 0 {
+		t.Errorf("files left after a delete during Stop: %v", left)
+	}
+}

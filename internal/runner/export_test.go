@@ -35,3 +35,10 @@ func (r *Runs) CloseRun(id string) error {
 	}
 	return nil
 }
+
+// PauseBetweenDetachAndClose runs during after Stop has taken a run's session off its row and
+// before it closes it, so a test can land a Remove inside that window.
+func PauseBetweenDetachAndClose(during func()) func() {
+	betweenDetachAndClose = during
+	return func() { betweenDetachAndClose = nil }
+}

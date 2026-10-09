@@ -259,6 +259,9 @@ type liveRun struct {
 	// release is Opened.Release, cleared as it is called so that closing a run
 	// twice does not release its environment twice.
 	release func()
+	// closing is the session Stop has detached and is still closing, so a Remove landing
+	// meanwhile can discard it.
+	closing *Session
 	// version counts the changes to this row. It exists so that a view built
 	// outside the lock - which is the only way to build one, since it asks the
 	// session questions - can be discarded when the row moved while it was
@@ -486,19 +489,25 @@ func follow(sess *Session, fn func(uisession.Event)) {
 	seen := sess.Local.Seq()
 	woke, stop, err := sess.Local.Watch(uisession.KindTurnStart, uisession.KindTurnEnd)
 	if err != nil {
+		slog.Warn("a run's turns cannot be followed", "err", err)
 		return
 	}
 	go func() {
 		defer stop()
 		for range woke {
 			evs, err := sess.Local.Replay(seen)
+			running := false
 			if err != nil {
 				slog.Warn("a run's turns could not be read back", "err", err)
-				seen = sess.Local.Seq()
+				// A turn's end and running=false land together, so the Seq read after a
+				// false Running is past that end, and mid-turn seen stays for the next read.
+				if running = sess.Local.Running(); !running {
+					seen = sess.Local.Seq()
+				}
 			} else if n := len(evs); n > 0 {
 				seen = evs[n-1].Seq
 			}
-			for _, ev := range turnEvents(evs, err, sess.Local.Running()) {
+			for _, ev := range turnEvents(evs, err, running) {
 				fn(ev)
 			}
 		}
@@ -862,6 +871,10 @@ func (r *Runs) Remove(id string) error {
 	r.opening.Add(1)
 	defer r.opening.Done()
 	sess, rel := lr.sess, lr.release
+	if sess == nil {
+		// Stop is closing it; discarding it keeps that close's save from writing the files back.
+		sess = lr.closing
+	}
 	lr.sess, lr.release = nil, nil
 	rec := lr.rec
 	rec.Status = RunRemoved
@@ -887,6 +900,10 @@ func (r *Runs) Remove(id string) error {
 	return nil
 }
 
+// betweenDetachAndClose is a seam for the test that lands a Remove while Stop closes a session.
+// It is nil in every build but the test binary's.
+var betweenDetachAndClose func()
+
 // Stop ends a run's session the way a daemon restart would: the turn is interrupted, the
 // conversation saved, and the record and its journal stay.
 func (r *Runs) Stop(id string) error {
@@ -907,15 +924,19 @@ func (r *Runs) Stop(id string) error {
 	r.opening.Add(1)
 	defer r.opening.Done()
 	sess, rel := lr.sess, lr.release
-	lr.sess, lr.release = nil, nil
+	lr.sess, lr.release, lr.closing = nil, nil, sess
 	r.mu.Unlock()
 
+	if betweenDetachAndClose != nil {
+		betweenDetachAndClose()
+	}
 	meta := sess.Local.Meta()
 	closeSession(sess, rel)
 
 	r.mu.Lock()
+	lr.closing = nil
 	if r.byID[id] != lr {
-		// Removed while the session was closing; Remove announced it.
+		// Removed while the session was closing; Remove discarded it and announced it.
 		r.mu.Unlock()
 		return nil
 	}
