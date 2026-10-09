@@ -23,6 +23,10 @@ export function Tickets() {
   const [needle, setNeedle] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
+  useEffect(() => {
+    if (newOpen && !project) patchNewTicket(false)
+  }, [newOpen, project])
+
   const toggle = (id: string) =>
     setCollapsed((s) => {
       const next = new Set(s)
@@ -43,6 +47,8 @@ export function Tickets() {
               type="button"
               aria-label={`${r.open ? 'Collapse' : 'Expand'} ${r.ticket.id}`}
               title={r.open ? 'Collapse' : 'Expand'}
+              tabIndex={-1}
+              onKeyDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation()
                 toggle(r.ticket.id)
@@ -119,7 +125,7 @@ function TitleCell({ row, all }: { row: TicketRow; all: Ticket[] }) {
   const t = row.ticket
   const waits = t.status === 'ready' && !t.runnable ? waitsFor(t, all) : []
   return (
-    <span className={`flex min-w-0 items-baseline gap-2 ${row.depth ? 'pl-4' : ''}`}>
+    <span className="flex min-w-0 items-baseline gap-2">
       <span className={`truncate ${row.depth ? '' : 'font-medium'}`}>{t.title}</span>
       {t.progress && (
         <span className="flex-none text-[0.75rem] text-fg-subtle">

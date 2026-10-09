@@ -90,6 +90,16 @@ test('the tree shows subtickets under their parent with progress and waits', asy
   expect(screen.queryByText('HTTP endpoint')).not.toBeInTheDocument()
 })
 
+test('the collapse button works from the keyboard and does not open the ticket', async () => {
+  await openTickets(PLAN)
+  const button = screen.getByRole('button', { name: 'Collapse TCK-1' })
+  expect(button).toHaveAttribute('tabindex', '-1')
+  button.focus()
+  await userEvent.keyboard('{Enter}')
+  expect(screen.getByRole('button', { name: 'Expand TCK-1' })).toBeInTheDocument()
+  expect(window.location.pathname).toBe('/tickets')
+})
+
 test('a row opens the ticket page', async () => {
   await openTickets(PLAN)
   await userEvent.click(await screen.findByText('Runner change'))
