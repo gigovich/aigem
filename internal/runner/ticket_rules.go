@@ -51,6 +51,9 @@ type Ticket struct {
 	Updated   time.Time `json:"updated"`
 	Comments  []Comment `json:"comments,omitempty"`
 	Runs      []string  `json:"runs,omitempty"`
+	// MergePending marks a blocked ticket whose branch is committed and checked and only waits
+	// for the merge into main.
+	MergePending bool `json:"mergePending,omitempty"`
 }
 
 // TicketTable is one project's saved tickets. Next survives a delete, so an id never comes back.

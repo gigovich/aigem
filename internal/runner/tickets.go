@@ -206,6 +206,73 @@ func (t *Tickets) Comment(project, id, by, text string) (TicketView, error) {
 	return views[0], nil
 }
 
+// maxRunComment caps what a run writes into a ticket's discussion.
+const maxRunComment = 16 << 10
+
+// Start hands a ticket to a run. A new run needs a runnable ticket; the run that already
+// drives it takes it back from blocked when a person typed into it.
+func (t *Tickets) Start(project, id, run string) (TicketView, error) {
+	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
+		i := findTicket(tab.Tickets, id)
+		if i < 0 {
+			return nil, ErrNoTicket
+		}
+		tk := &tab.Tickets[i]
+		owns := slices.Contains(tk.Runs, run)
+		switch {
+		case owns && tk.Status == TicketRunning:
+			return nil, nil
+		case owns && tk.Status == TicketBlocked:
+		case tk.Status == TicketRunning:
+			return nil, refuse("%s is already running", id)
+		case !ticketView(tab.Tickets, *tk).Runnable:
+			return nil, refuse("%s is not runnable", id)
+		}
+		if !owns {
+			tk.Runs = append(tk.Runs, run)
+		}
+		tk.Status, tk.MergePending, tk.Updated = TicketRunning, false, t.now()
+		return []string{id}, nil
+	})
+	if err != nil {
+		return TicketView{}, err
+	}
+	if len(views) == 0 {
+		return t.Get(project, id)
+	}
+	return views[0], nil
+}
+
+// Finish records how a run left a ticket: done, or blocked with the reason as a comment.
+func (t *Tickets) Finish(project, id, status, comment string, mergePending bool) (TicketView, error) {
+	if status != TicketDone && status != TicketBlocked {
+		return TicketView{}, refuse("a run cannot leave a ticket %s", status)
+	}
+	if len(comment) > maxRunComment {
+		comment = strings.ToValidUTF8(comment[:maxRunComment], "") + "…"
+	}
+	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
+		i := findTicket(tab.Tickets, id)
+		if i < 0 {
+			return nil, ErrNoTicket
+		}
+		tk := &tab.Tickets[i]
+		if tk.Status != TicketRunning && tk.Status != TicketBlocked {
+			return nil, refuse("%s is %s; no run drives it", id, tk.Status)
+		}
+		now := t.now()
+		tk.Status, tk.MergePending, tk.Updated = status, mergePending && status == TicketBlocked, now
+		if comment != "" {
+			tk.Comments = append(tk.Comments, Comment{At: now, By: "aigem", Text: comment})
+		}
+		return []string{id}, nil
+	})
+	if err != nil {
+		return TicketView{}, err
+	}
+	return views[0], nil
+}
+
 func (t *Tickets) Delete(project, id string) error {
 	_, err := t.change(project, func(tab *TicketTable) ([]string, error) {
 		i := findTicket(tab.Tickets, id)
