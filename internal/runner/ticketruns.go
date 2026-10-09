@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gigovich/aigem/internal/gitx"
 	"github.com/gigovich/aigem/internal/tools"
@@ -18,6 +20,18 @@ import (
 
 const ticketRule = "Work in this worktree. When the work is complete, call ticket_done with a short " +
 	"summary. If you are stuck or need a decision, explain why and stop without calling it."
+
+var ErrNoWorktree = errors.New("runner: no such worktree")
+
+// closeTurnsWait bounds how long Close waits for the deliveries it cancelled.
+const closeTurnsWait = 30 * time.Second
+
+// Worktree is one aigem/<ticket> branch in a project's repository. State is running while
+// the ticket's run is live, merged once the branch is in main and its worktree gone, and kept
+// otherwise.
+type Worktree struct {
+	Repo, Name, Path, Ticket, Run, State string
+}
 
 type TicketRunsConfig struct {
 	Runs     *Runs
@@ -101,6 +115,8 @@ func (t *TicketRuns) Start(ctx context.Context, project, id string) (RunView, er
 	switch {
 	case tk.Status == TicketRunning:
 		return RunView{}, refuse("%s is already running", id)
+	case len(tk.Runs) > 0 && t.live(tk.Runs[len(tk.Runs)-1]):
+		return RunView{}, refuse("%s has a live run %s; stop it first", id, tk.Runs[len(tk.Runs)-1])
 	case !tk.Runnable:
 		return RunView{}, refuse("%s is not runnable", id)
 	}
@@ -196,6 +212,166 @@ func (t *TicketRuns) Recover() {
 	}
 }
 
+// Close stops every delivery in flight - a check is killed, a merge that has begun finishes -
+// and waits for them, bounded. A ticket left running is blocked by Recover on the next start.
+func (t *TicketRuns) Close() {
+	t.mu.Lock()
+	t.closed = true
+	trs := make([]*ticketRun, 0, len(t.byRun))
+	for _, tr := range t.byRun {
+		trs = append(trs, tr)
+	}
+	t.mu.Unlock()
+	for _, tr := range trs {
+		tr.cancel()
+	}
+	if !waitFor(&t.turns, closeTurnsWait) {
+		slog.Warn("a ticket run was still delivering when the daemon stopped waiting for it")
+	}
+}
+
+// Stop ends a run's session and keeps its record; a ticket it drove becomes blocked. The ticket
+// is blocked first, so the end of the interrupted turn finds the run already let go.
+func (t *TicketRuns) Stop(run string) error {
+	drove := t.detach(run, "stopped by a person")
+	err := t.runs.Stop(run)
+	if drove && errors.Is(err, ErrRunClosed) {
+		// It finished its ticket, which ends the run, while this was waiting for it.
+		return nil
+	}
+	return err
+}
+
+// Remove deletes a run; a ticket it drove becomes blocked.
+func (t *TicketRuns) Remove(run string) error {
+	t.detach(run, "the run was deleted")
+	return t.runs.Remove(run)
+}
+
+// detach lets go of a run's ticket and reports whether the run drove one.
+func (t *TicketRuns) detach(run, reason string) bool {
+	tr := t.forget(run)
+	if tr == nil {
+		return false
+	}
+	tr.cancel()
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.gone {
+		return true
+	}
+	tr.gone = true
+	v, err := t.tickets.Get(tr.project, tr.ticket)
+	if err == nil && (v.Status == TicketRunning || v.Status == TicketBlocked) {
+		t.finish(tr.project, tr.ticket, run, TicketBlocked, reason, v.MergePending)
+	}
+	return true
+}
+
+// Merge repeats the merge for a ticket blocked on one; a refusal carries the same reasons. It
+// is not tied to the request that asked: a merge is not cancelled once it begins.
+func (t *TicketRuns) Merge(ctx context.Context, project, id string) (TicketView, error) {
+	ctx = context.WithoutCancel(ctx)
+	v, err := t.tickets.Get(project, id)
+	if err != nil {
+		return TicketView{}, err
+	}
+	waiting := func(v TicketView) bool { return v.Status == TicketBlocked && v.MergePending && len(v.Runs) > 0 }
+	if !waiting(v) {
+		return TicketView{}, refuse("%s is not waiting for a merge", id)
+	}
+	run := v.Runs[len(v.Runs)-1]
+	pl, err := t.place(ctx, project, v.Ticket)
+	if err != nil {
+		return TicketView{}, err
+	}
+	sha, reason := t.merge(ctx, pl, func() bool {
+		v, err := t.tickets.Get(project, id)
+		return err == nil && waiting(v) && lastRun(v.Ticket, run)
+	})
+	switch {
+	case reason != "":
+		return TicketView{}, refuse("%s", reason)
+	case sha == "":
+		return TicketView{}, refuse("%s is not waiting for a merge", id)
+	}
+	if tr := t.forget(run); tr != nil {
+		tr.cancel()
+		tr.mu.Lock()
+		tr.gone = true
+		tr.mu.Unlock()
+	}
+	t.complete(project, id, pl, merged(pl, sha), run)
+	return t.tickets.Get(project, id)
+}
+
+// Worktrees lists the aigem/* branches of every repository in the project.
+func (t *TicketRuns) Worktrees(ctx context.Context, project string) ([]Worktree, error) {
+	repos, err := t.projects.Repositories(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	views, err := t.tickets.List(project)
+	if err != nil {
+		return nil, err
+	}
+	out := []Worktree{}
+	for _, r := range repos {
+		branches, err := gitx.Branches(ctx, r.Dir, "aigem")
+		if err != nil {
+			return nil, err
+		}
+		paths, err := gitx.Worktrees(ctx, r.Dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range branches {
+			w := Worktree{Repo: r.Name, Name: strings.TrimPrefix(b, "aigem/"), Path: paths[b], State: "kept"}
+			if i := slices.IndexFunc(views, func(v TicketView) bool { return v.ID == w.Name }); i >= 0 {
+				w.Ticket = w.Name
+				if n := len(views[i].Runs); n > 0 {
+					w.Run = views[i].Runs[n-1]
+				}
+			}
+			switch {
+			case t.live(w.Run):
+				w.State = "running"
+			case w.Path == "" && r.Main != "" && gitx.IsMerged(ctx, r.Dir, b, r.Main):
+				w.State = "merged"
+			}
+			out = append(out, w)
+		}
+	}
+	return out, nil
+}
+
+// Discard removes a ticket's worktree, changes and all, and its branch, unless its run is live.
+func (t *TicketRuns) Discard(ctx context.Context, project, name string) error {
+	pv, err := t.projects.Get(project)
+	if err != nil {
+		return err
+	}
+	list, err := t.Worktrees(ctx, project)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(list, func(w Worktree) bool { return w.Name == name })
+	if i < 0 {
+		return ErrNoWorktree
+	}
+	w := list[i]
+	if w.State == "running" {
+		return refuse("%s is worked on by the live run %s; stop it first", name, w.Run)
+	}
+	repo := filepath.Join(pv.Dir, w.Repo)
+	if w.Path != "" {
+		if err := gitx.WorktreeRemove(ctx, repo, w.Path, true); err != nil {
+			return err
+		}
+	}
+	return gitx.BranchDelete(ctx, repo, "aigem/"+name)
+}
+
 func (t *TicketRuns) onTurn(tr *ticketRun, ev uisession.Event) {
 	t.mu.Lock()
 	if t.closed {
@@ -250,12 +426,15 @@ func (t *TicketRuns) deliver(tr *ticketRun, title, summary string) {
 		block(reason, false)
 		return
 	}
-	if ctx.Err() != nil {
-		return
-	}
-	sha, reason := t.merge(ctx, pl)
+	sha, reason := t.merge(ctx, pl, func() bool {
+		tk, err := t.tickets.Get(tr.project, tr.ticket)
+		return ctx.Err() == nil && err == nil && tk.Status == TicketRunning && lastRun(tk.Ticket, tr.run)
+	})
 	if reason != "" {
 		block(reason+"\n\nThe agent's summary: "+summary, true)
+		return
+	}
+	if sha == "" {
 		return
 	}
 	tr.gone = true
@@ -267,7 +446,9 @@ func (t *TicketRuns) deliver(tr *ticketRun, title, summary string) {
 // merge brings the ticket's branch into main in the repository's own checkout, one merge per
 // repository at a time. Once begun it is not cancelled - a merge killed half-way would leave
 // the person's checkout mid-merge - and each git command is bounded by gitx.Timeout instead.
-func (t *TicketRuns) merge(ctx context.Context, pl ticketPlace) (string, string) {
+// It merges nothing and returns no reason when still, asked under the lock, says the ticket
+// no longer waits for this merge.
+func (t *TicketRuns) merge(ctx context.Context, pl ticketPlace, still func() bool) (string, string) {
 	ctx = context.WithoutCancel(ctx)
 	t.mu.Lock()
 	mu := t.merging[pl.repo]
@@ -278,6 +459,9 @@ func (t *TicketRuns) merge(ctx context.Context, pl ticketPlace) (string, string)
 	t.mu.Unlock()
 	mu.Lock()
 	defer mu.Unlock()
+	if !still() {
+		return "", ""
+	}
 
 	clean, err := gitx.IsClean(ctx, pl.repo)
 	if err != nil {

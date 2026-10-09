@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -540,4 +541,270 @@ func TestADuplicateTurnEndChangesNothing(t *testing.T) {
 	if runGit(t, f.repo, "rev-parse", "main") != head {
 		t.Error("a duplicate turn end merged twice")
 	}
+}
+
+func TestStoppingTheDrivingRunBlocksTheTicketOnce(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.ready("long")
+	f.script.then(hold())
+	v := f.start(id)
+	waitUntil(t, func() bool { rv, _ := f.runs.Get(v.ID); return rv.Running })
+
+	if err := f.tr.Stop(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.tickets.Get(f.project, id)
+	if got.Status != TicketBlocked || len(got.Comments) != 1 || lastComment(got) != "stopped by a person" {
+		t.Fatalf("ticket = %s %v", got.Status, got.Comments)
+	}
+	if rv, _ := f.runs.Get(v.ID); rv.Live || rv.Status != RunClosed {
+		t.Errorf("run = %+v, want closed", rv)
+	}
+	if !pathExists(f.worktree(id)) {
+		t.Error("Stop removed the worktree")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if again, _ := f.tickets.Get(f.project, id); len(again.Comments) != 1 {
+		t.Errorf("a late turn end wrote %q", lastComment(again))
+	}
+}
+
+func TestStoppingDuringTheCheckKillsItAndLeavesOneComment(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	commitCheck(t, f.repo, "sleep 30")
+	id := f.ready("slow check")
+	f.script.then(edit(filepath.Join(f.worktree(id), "s.txt"), "s\n", done("Slow.")), say("ok"))
+	v := f.start(id)
+	waitUntil(t, func() bool {
+		out, _ := exec.Command("git", "-C", f.repo, "log", "-1", "--format=%s", "aigem/"+id).Output()
+		return strings.HasPrefix(string(out), "aigem: ")
+	})
+
+	began := time.Now()
+	if err := f.tr.Stop(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(began); took > 10*time.Second {
+		t.Errorf("Stop during a check took %s", took)
+	}
+	got, _ := f.tickets.Get(f.project, id)
+	if got.Status != TicketBlocked || len(got.Comments) != 1 || lastComment(got) != "stopped by a person" {
+		t.Fatalf("ticket = %s %v", got.Status, got.Comments)
+	}
+}
+
+func TestStoppingDuringAMergeLeavesMainConsistent(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	marker := filepath.Join(t.TempDir(), "merging")
+	hooks := filepath.Join(f.repo, ".git", "hooks")
+	writeFile(t, hooks, "pre-merge-commit", "#!/bin/sh\ntouch '"+marker+"'\nsleep 2\n")
+	if err := os.Chmod(filepath.Join(hooks, "pre-merge-commit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, f.repo, "config", "core.hooksPath", hooks)
+	id := f.ready("slow merge")
+	f.script.then(edit(filepath.Join(f.worktree(id), "m.txt"), "m\n", done("Merged slowly.")), say("ok"))
+	v := f.start(id)
+	waitUntil(t, func() bool { return pathExists(marker) })
+
+	if err := f.tr.Stop(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"MERGE_HEAD", "index.lock"} {
+		if pathExists(filepath.Join(f.repo, ".git", name)) {
+			t.Errorf("%s was left in the main checkout", name)
+		}
+	}
+	got, _ := f.tickets.Get(f.project, id)
+	merged := runGit(t, f.repo, "rev-list", "--count", "main") != "1"
+	if merged != (got.Status == TicketDone) {
+		t.Errorf("main merged = %v, but the ticket is %s", merged, got.Status)
+	}
+}
+
+func TestDeletingTheDrivingRunBlocksTheTicket(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.ready("ask")
+	f.script.then(hold())
+	v := f.start(id)
+	waitUntil(t, func() bool { rv, _ := f.runs.Get(v.ID); return rv.Running })
+
+	if err := f.tr.Remove(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.tickets.Get(f.project, id)
+	if got.Status != TicketBlocked || len(got.Comments) != 1 || lastComment(got) != "the run was deleted" {
+		t.Fatalf("ticket = %s %v", got.Status, got.Comments)
+	}
+	if _, err := f.runs.Get(v.ID); !errors.Is(err, ErrNoRun) {
+		t.Errorf("run after delete = %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if again, _ := f.tickets.Get(f.project, id); len(again.Comments) != 1 {
+		t.Errorf("a late turn end wrote %q", lastComment(again))
+	}
+}
+
+func TestRetryMergeWaitsForACleanCheckout(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, gitRepo(t, "main"))
+	writeFile(t, f.repo, "scratch.txt", "mine\n")
+	id := f.ready("retry")
+	f.script.then(edit(filepath.Join(f.worktree(id), "r.txt"), "r\n", done("Wrote r.")), say("ok"))
+	v := f.start(id)
+	f.next(id, 0)
+
+	_, err := f.tr.Merge(ctx, f.project, id)
+	refusal(t, err, "the main checkout has uncommitted changes")
+	if err := os.Remove(filepath.Join(f.repo, "scratch.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, f.worktree(id), "stray.txt", "a person's edit\n")
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	got, err := f.tr.Merge(cancelled, f.project, id)
+	if err != nil || got.Status != TicketDone ||
+		!strings.HasPrefix(lastComment(got), "Merged aigem/TCK-1 into main as ") {
+		t.Fatalf("retry = %s %q, %v", got.Status, lastComment(got), err)
+	}
+	if !strings.Contains(lastComment(got), "The worktree was kept at ") || !pathExists(f.worktree(id)) {
+		t.Errorf("a worktree with changes was not kept: %q", lastComment(got))
+	}
+	if rv, _ := f.runs.Get(v.ID); rv.Live {
+		t.Error("the run is still live after the retried merge")
+	}
+	_, err = f.tr.Merge(ctx, f.project, id)
+	refusal(t, err, "TCK-1 is not waiting for a merge")
+}
+
+func TestAMergedBranchIsListedAsMerged(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.ready("merge me")
+	f.script.then(edit(filepath.Join(f.worktree(id), "a.txt"), "a\n", done("A.")), say("ok"))
+	v := f.start(id)
+	f.next(id, 0)
+	list, err := f.tr.Worktrees(ctx, f.project)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("worktrees = %+v, %v", list, err)
+	}
+	if w := list[0]; w.State != "merged" || w.Path != "" || w.Run != v.ID {
+		t.Errorf("worktree = %+v, want the kept branch as merged", w)
+	}
+}
+
+func TestWorktreesAreListedAndDiscardedOnceTheirRunIsGone(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.ready("discard me")
+	f.script.then(say("Stuck."))
+	v := f.start(id)
+	f.next(id, 0)
+
+	list, err := f.tr.Worktrees(ctx, f.project)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("worktrees = %+v, %v", list, err)
+	}
+	if w := list[0]; w.Name != id || w.Ticket != id || w.Run != v.ID || w.State != "running" || w.Path == "" {
+		t.Fatalf("worktree = %+v", w)
+	}
+	refusal(t, f.tr.Discard(ctx, f.project, id), "stop it first")
+	if err := f.tr.Stop(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = f.tr.Worktrees(ctx, f.project); list[0].State != "kept" {
+		t.Errorf("state after Stop = %q, want kept", list[0].State)
+	}
+	if err := f.tr.Discard(ctx, f.project, id); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = f.tr.Worktrees(ctx, f.project); len(list) != 0 || pathExists(f.worktree(id)) {
+		t.Errorf("after discard = %+v", list)
+	}
+	if err := f.tr.Discard(ctx, f.project, "TCK-9"); !errors.Is(err, ErrNoWorktree) {
+		t.Errorf("discard of an unknown name = %v", err)
+	}
+
+	if _, err := f.tickets.Update(f.project, id, TicketPatch{Status: ptr(TicketReady)}); err != nil {
+		t.Fatal(err)
+	}
+	f.script.then(say("Stuck again."))
+	if again := f.start(id); again.ID == v.ID {
+		t.Error("a new Run reused the old run")
+	}
+}
+
+func TestCloseKillsADeliveryInFlightAndLeavesTheTicketForRecovery(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	commitCheck(t, f.repo, "sleep 30")
+	id := f.ready("closing")
+	f.script.then(edit(filepath.Join(f.worktree(id), "c.txt"), "c\n", done("Closing.")), say("ok"))
+	f.start(id)
+	waitUntil(t, func() bool {
+		out, _ := exec.Command("git", "-C", f.repo, "log", "-1", "--format=%s", "aigem/"+id).Output()
+		return strings.HasPrefix(string(out), "aigem: ")
+	})
+
+	began := time.Now()
+	f.tr.Close()
+	if took := time.Since(began); took > 10*time.Second {
+		t.Errorf("Close waited %s for a check", took)
+	}
+	if got, _ := f.tickets.Get(f.project, id); got.Status != TicketRunning || len(got.Comments) != 0 {
+		t.Fatalf("after Close = %s %v, want running and untouched", got.Status, got.Comments)
+	}
+	if _, err := f.tr.Start(context.Background(), f.project, f.ready("late")); !errors.Is(err, ErrRunsClosed) {
+		t.Errorf("Start after Close = %v", err)
+	}
+	f.runs.Close()
+	f.tr.Recover()
+	got, _ := f.tickets.Get(f.project, id)
+	if got.Status != TicketBlocked || lastComment(got) != "the daemon restarted" {
+		t.Errorf("after recovery = %s %q", got.Status, lastComment(got))
+	}
+}
+
+func TestATicketThatLeftRunningDuringTheCheckIsNotMerged(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	release := filepath.Join(t.TempDir(), "release")
+	commitCheck(t, f.repo, "while [ ! -f "+release+" ]; do sleep 0.05; done")
+	id := f.ready("left")
+	f.script.then(edit(filepath.Join(f.worktree(id), "l.txt"), "l\n", done("Left.")), say("ok"))
+	v := f.start(id)
+	tr := f.ticketRun(v.ID)
+	waitUntil(t, func() bool {
+		out, _ := exec.Command("git", "-C", f.repo, "log", "-1", "--format=%s", "aigem/"+id).Output()
+		return strings.HasPrefix(string(out), "aigem: ")
+	})
+
+	if _, err := f.tickets.Finish(f.project, id, v.ID, TicketBlocked, "a person took it", false); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Dir(release), "release", "")
+	waitUntil(t, func() bool {
+		if !tr.mu.TryLock() {
+			return false
+		}
+		tr.mu.Unlock()
+		return true
+	})
+	if runGit(t, f.repo, "rev-list", "--count", "main") != "2" {
+		t.Error("a ticket that left running was merged")
+	}
+	if got, _ := f.tickets.Get(f.project, id); got.Status != TicketBlocked || len(got.Comments) != 1 {
+		t.Errorf("ticket = %s %v", got.Status, got.Comments)
+	}
+}
+
+func TestRunRefusesATicketWhoseLastRunIsLive(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.ready("stuck")
+	f.script.then(say("Stuck."))
+	v := f.start(id)
+	f.next(id, 0)
+	if _, err := f.tickets.Update(f.project, id, TicketPatch{Status: ptr(TicketReady)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.tr.Start(context.Background(), f.project, id)
+	refusal(t, err, id+" has a live run "+v.ID+"; stop it first")
 }
