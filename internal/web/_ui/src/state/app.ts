@@ -268,8 +268,17 @@ async function load<K extends keyof AppState>(
   }
 }
 
+/** Bumped by every run list read and by dropRun: only the latest read applies. */
+let runsGen = 0
+
 export const refresh = {
-  runs: () => load('runs', 'runs', () => api.runs()),
+  runs: () => {
+    const gen = ++runsGen
+    return load('runs', 'runs', async () => {
+      const runs = await api.runs()
+      return gen === runsGen ? runs : store.get().runs
+    })
+  },
   models: () => load('models', 'models', () => api.models()),
   skills: () => load('skills', 'skills', () => api.skills(store.get().project)),
   commands: () => load('commands', 'commands', () => api.commands(store.get().project)),
@@ -357,7 +366,7 @@ export async function refreshAll() {
 export function explain(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.detail) return err.detail
-    if (err.busy) return 'The daemon is at capacity. Close a run and try again.'
+    if (err.busy) return 'The daemon is at capacity. Delete a session and try again.'
     return `The daemon answered ${err.status}.`
   }
   if (err instanceof Error) return err.message
@@ -417,6 +426,16 @@ export function setNav(open: boolean) {
 
 export function setActiveRun(id: string) {
   patch({ activeRun: id })
+}
+
+/** Forgets a deleted run locally, so a failed or stale refresh cannot leave it selectable. */
+export function dropRun(id: string) {
+  runsGen++
+  store.set((s) => ({
+    ...s,
+    runs: s.runs.filter((r) => r.id !== id),
+    activeRun: s.activeRun === id ? '' : s.activeRun,
+  }))
 }
 
 export function setLogin(provider: string) {

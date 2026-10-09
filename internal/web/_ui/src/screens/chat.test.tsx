@@ -5,6 +5,7 @@ import * as image from '@/lib/image'
 import { IMAGE_LIMIT } from '@/lib/image'
 import { EventKind } from '@/lib/wire'
 import type { RunEvent } from '@/lib/wire'
+import { refresh } from '@/state/app'
 import { mountApp, RUN } from '@/test/harness'
 
 afterEach(() => {
@@ -265,23 +266,213 @@ test('interrupt appears only while a turn is running', async () => {
   )
 })
 
-// Closing a session ends it for every client of that run, and it cannot be
-// continued afterwards. It gets a question.
-test('closing a session asks first, and only then deletes', async () => {
+const CLOSED = { ...RUN, id: 'r-2', title: 'Fix the flaky test', live: false, status: 'closed' }
+
+test('every session row offers Delete and none offers Close', async () => {
+  await mountApp({ runs: [RUN, CLOSED] })
+
+  const list = await screen.findByRole('list', { name: 'Sessions' })
+  await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(2))
+  expect(within(list).getByRole('button', { name: 'Delete Rotate the signing keys' })).toBeInTheDocument()
+  expect(within(list).getByRole('button', { name: 'Delete Fix the flaky test' })).toBeInTheDocument()
+  expect(within(list).queryByRole('button', { name: /^Close / })).not.toBeInTheDocument()
+})
+
+// Deleting cannot be undone, so it gets a question first.
+test('deleting a session asks first, then removes the row and leaves its view', async () => {
   const user = userEvent.setup()
+  let runs = [RUN, CLOSED]
   const h = await mountApp({
-    runs: [RUN],
-    routes: { 'DELETE /api/runs/r-1': () => new Response(null, { status: 204 }) },
+    runs,
+    path: '/chat/r-1',
+    routes: {
+      'GET /api/runs': () => new Response(JSON.stringify(runs), { status: 200 }),
+      'DELETE /api/runs/r-1': () => {
+        runs = [CLOSED]
+        return new Response(null, { status: 204 })
+      },
+    },
   })
 
-  await user.click(await screen.findByRole('button', { name: /Close Rotate the signing keys/ }))
+  await user.click(await screen.findByRole('button', { name: 'Delete Rotate the signing keys' }))
   expect(h.sent.filter((r) => r.method === 'DELETE')).toHaveLength(0)
 
-  const dialog = await screen.findByRole('dialog', { name: 'Close this session?' })
-  await user.click(within(dialog).getByRole('button', { name: 'Close session' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Delete this session?' })
+  expect(dialog).toHaveTextContent('This cannot be undone.')
+  await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+
   await waitFor(() => {
     expect(h.sent.filter((r) => r.method === 'DELETE' && r.path === '/api/runs/r-1')).toHaveLength(1)
   })
+  await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+  const list = screen.getByRole('list', { name: 'Sessions' })
+  await waitFor(() =>
+    expect(within(list).queryByRole('button', { name: 'Delete Rotate the signing keys' })).not.toBeInTheDocument(),
+  )
+  expect(within(list).getByRole('button', { name: 'Delete Fix the flaky test' })).toBeInTheDocument()
+})
+
+async function deleteRow(user: ReturnType<typeof userEvent.setup>, title: string) {
+  await user.click(await screen.findByRole('button', { name: `Delete ${title}` }))
+  const dialog = await screen.findByRole('dialog', { name: 'Delete this session?' })
+  await user.click(within(dialog).getByRole('button', { name: 'Delete' }))
+}
+
+test('deleting another session keeps the open one and says it is done', async () => {
+  const user = userEvent.setup()
+  let runs = [RUN, CLOSED]
+  const h = await mountApp({
+    runs,
+    path: '/chat/r-1',
+    routes: {
+      'GET /api/runs': () => new Response(JSON.stringify(runs), { status: 200 }),
+      'DELETE /api/runs/r-2': () => {
+        runs = [RUN]
+        return new Response(null, { status: 204 })
+      },
+    },
+  })
+
+  await deleteRow(user, 'Fix the flaky test')
+  await waitFor(() => expect(h.sent.filter((r) => r.method === 'DELETE')).toHaveLength(1))
+  expect(await screen.findByRole('status', { name: 'Notifications' })).toHaveTextContent('Session deleted.')
+  expect(window.location.pathname).toBe('/chat/r-1')
+})
+
+// Another tab deleted it first: what the person asked for has happened.
+test('a session already deleted elsewhere counts as deleted', async () => {
+  const user = userEvent.setup()
+  let runs = [RUN, CLOSED]
+  await mountApp({
+    runs,
+    path: '/runs/r-1',
+    routes: {
+      'GET /api/runs': () => new Response(JSON.stringify(runs), { status: 200 }),
+      'DELETE /api/runs/r-1': () => {
+        runs = [CLOSED]
+        return new Response('no such run', { status: 404 })
+      },
+    },
+  })
+
+  await deleteRow(user, 'Rotate the signing keys')
+  await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+  expect(screen.getByRole('status', { name: 'Notifications' })).toHaveTextContent('Session deleted.')
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+// The delete is done once acknowledged; a refresh that fails must not keep the row.
+test('a deleted session leaves the list even when the refresh fails', async () => {
+  const user = userEvent.setup()
+  let deleted = false
+  await mountApp({
+    runs: [RUN, CLOSED],
+    path: '/chat/r-1',
+    routes: {
+      'GET /api/runs': () =>
+        deleted
+          ? new Response('the daemon is busy', { status: 500 })
+          : new Response(JSON.stringify([RUN, CLOSED]), { status: 200 }),
+      'DELETE /api/runs/r-1': () => {
+        deleted = true
+        return new Response(null, { status: 204 })
+      },
+    },
+  })
+
+  await deleteRow(user, 'Rotate the signing keys')
+  await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+  const list = screen.getByRole('list', { name: 'Sessions' })
+  expect(within(list).queryByRole('button', { name: 'Delete Rotate the signing keys' })).not.toBeInTheDocument()
+  expect(within(list).getByRole('button', { name: 'Delete Fix the flaky test' })).toBeInTheDocument()
+})
+
+// A list read before the delete that answers after it must not bring the row back.
+test('a deleted session stays gone when an older list answers late', async () => {
+  const user = userEvent.setup()
+  let runs = [RUN, CLOSED]
+  let stale: Promise<Response> | undefined
+  let answerStale = () => {}
+  await mountApp({
+    runs,
+    path: '/chat/r-1',
+    routes: {
+      'GET /api/runs': () => stale ?? new Response(JSON.stringify(runs), { status: 200 }),
+      'DELETE /api/runs/r-1': () => {
+        runs = [CLOSED]
+        return new Response(null, { status: 204 })
+      },
+    },
+  })
+
+  const old = new Response(JSON.stringify(runs), { status: 200 })
+  stale = new Promise((resolve) => (answerStale = () => resolve(old)))
+  const staleRefresh = refresh.runs()
+  stale = undefined
+  await deleteRow(user, 'Rotate the signing keys')
+  await waitFor(() => expect(window.location.pathname).toBe('/chat'))
+  answerStale()
+  await act(() => staleRefresh)
+
+  const list = screen.getByRole('list', { name: 'Sessions' })
+  expect(within(list).queryByRole('button', { name: 'Delete Rotate the signing keys' })).not.toBeInTheDocument()
+})
+
+// Another tab's delete arrives as run.updated; an older read answering last must not undo it.
+test('a session deleted in another tab stays gone when an older list answers late', async () => {
+  let runs = [RUN, CLOSED]
+  let stale: Promise<Response> | undefined
+  let answerStale = () => {}
+  const h = await mountApp({
+    runs,
+    path: '/chat/r-1',
+    routes: { 'GET /api/runs': () => stale ?? new Response(JSON.stringify(runs), { status: 200 }) },
+  })
+
+  const old = new Response(JSON.stringify(runs), { status: 200 })
+  stale = new Promise((resolve) => (answerStale = () => resolve(old)))
+  const staleRefresh = refresh.runs()
+  stale = undefined
+  runs = [RUN]
+  h.publish('run.updated', 2, { id: 'r-2', status: 'removed' })
+  const list = screen.getByRole('list', { name: 'Sessions' })
+  await waitFor(() =>
+    expect(within(list).queryByRole('button', { name: 'Delete Fix the flaky test' })).not.toBeInTheDocument(),
+  )
+  answerStale()
+  await act(() => staleRefresh)
+
+  expect(within(list).queryByRole('button', { name: 'Delete Fix the flaky test' })).not.toBeInTheDocument()
+})
+
+test('a failed delete says why and stays where it was', async () => {
+  const user = userEvent.setup()
+  await mountApp({
+    runs: [RUN],
+    path: '/chat/r-1',
+    routes: {
+      'DELETE /api/runs/r-1': () => new Response('the daemon is shutting down', { status: 503 }),
+    },
+  })
+
+  await deleteRow(user, 'Rotate the signing keys')
+  expect(await screen.findByRole('alert')).toHaveTextContent('the daemon is shutting down')
+  expect(window.location.pathname).toBe('/chat/r-1')
+  expect(screen.getByRole('status', { name: 'Notifications' })).not.toHaveTextContent('Session deleted.')
+})
+
+test('cancelling the delete question sends nothing and keeps the row', async () => {
+  const user = userEvent.setup()
+  const h = await mountApp({ runs: [RUN], path: '/chat/r-1' })
+
+  await user.click(await screen.findByRole('button', { name: 'Delete Rotate the signing keys' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Delete this session?' })
+  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(h.sent.filter((r) => r.method === 'DELETE')).toHaveLength(0)
+  expect(window.location.pathname).toBe('/chat/r-1')
+  expect(screen.getByRole('button', { name: 'Delete Rotate the signing keys' })).toBeInTheDocument()
 })
 
 test('starting a session posts a run and shows it', async () => {
@@ -308,7 +499,7 @@ test('shows the daemon\'s sentence when a session cannot be opened', async () =>
     runs: [],
     routes: {
       'POST /api/runs': () =>
-        new Response('32 conversations are already open; close one first', { status: 503 }),
+        new Response('32 conversations are already open; delete one first', { status: 503 }),
     },
   })
 

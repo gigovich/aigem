@@ -98,7 +98,7 @@ export const api = {
     json<Run>('/api/runs', { ...body(req), signal }),
   run: (id: string, signal?: AbortSignal) =>
     json<Run>(`/api/runs/${encodeURIComponent(id)}`, { signal }),
-  closeRun: async (id: string, signal?: AbortSignal) => {
+  removeRun: async (id: string, signal?: AbortSignal) => {
     await send(`/api/runs/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
   },
   runEvents: (id: string, since = 0, limit = 0, signal?: AbortSignal) =>

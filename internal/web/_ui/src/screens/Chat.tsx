@@ -31,7 +31,7 @@ type Props = {
   /** The run the address bar names; a phone shows the list without one. */
   selected?: string
   onNew: () => void
-  onClose: (id: string) => void
+  onRemove: (id: string) => void
 }
 
 /**
@@ -42,7 +42,7 @@ type Props = {
  * a later phase a run is a ticket's autonomous execution and a session is the
  * one a person steers; in phase one only the second exists, and this is it.
  */
-export function Chat({ run, runId, state, reason, send, selected, onNew, onClose }: Props) {
+export function Chat({ run, runId, state, reason, send, selected, onNew, onRemove }: Props) {
   const { runs, models, pendingCommand, opening, phone, project, hasProjects } = useApp((s) => ({
     runs: s.runs,
     phone: s.phone,
@@ -217,7 +217,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
             />
           </div>
           {/* A list of links and not a listbox: each row carries a second control
-            - the close button - and an option is a leaf in the accessibility
+            - the delete button - and an option is a leaf in the accessibility
             tree, so a button inside one is unreachable from the keyboard. */}
           <div className="flex-1 overflow-y-auto py-1">
             <ul aria-label="Sessions" className="m-0 list-none p-0">
@@ -233,7 +233,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                     setActiveRun(r.id)
                     navigate({ screen: 'chat', id: r.id })
                   }}
-                  onClose={() => onClose(r.id)}
+                  onRemove={() => onRemove(r.id)}
                 />
               ))}
             </ul>
@@ -512,12 +512,12 @@ function SessionRow({
   run,
   active,
   onOpen,
-  onClose,
+  onRemove,
 }: {
   run: Run
   active: boolean
   onOpen: () => void
-  onClose: () => void
+  onRemove: () => void
 }) {
   const status = runStatus(run)
   return (
@@ -560,12 +560,21 @@ function SessionRow({
       <div className="flex justify-end px-2.5 pb-1">
         <button
           type="button"
-          onClick={onClose}
-          aria-label={`Close ${run.title || run.id}`}
-          title="Close session"
-          className="grid size-6 place-items-center text-[0.75rem] text-fg-subtle hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+          onClick={onRemove}
+          aria-label={`Delete ${run.title || run.id}`}
+          title="Delete session"
+          className="grid size-5 place-items-center rounded-[0.25rem] text-fg-subtle hover:bg-s0 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
         >
-          <span aria-hidden="true">×</span>
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 16 16"
+            className="size-3.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+          >
+            <path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.75 6.5v4.5M9.25 6.5v4.5" />
+          </svg>
         </button>
       </div>
     </li>

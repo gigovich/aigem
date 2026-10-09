@@ -5,11 +5,11 @@ import { Modal } from './Modal'
 
 test('is a dialog, named by its title', () => {
   render(
-    <Modal title="Close this session?" onClose={vi.fn()}>
+    <Modal title="Delete this session?" onClose={vi.fn()}>
       body
     </Modal>,
   )
-  expect(screen.getByRole('dialog', { name: 'Close this session?' })).toHaveAttribute(
+  expect(screen.getByRole('dialog', { name: 'Delete this session?' })).toHaveAttribute(
     'aria-modal',
     'true',
   )

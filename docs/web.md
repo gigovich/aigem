@@ -145,7 +145,7 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/runs` | the conversations this daemon knows about, oldest first |
 | `POST /api/runs` | opens one; answers 201 with the record |
 | `GET /api/runs/{id}` | one record |
-| `DELETE /api/runs/{id}` | saves the conversation and ends its session |
+| `DELETE /api/runs/{id}` | ends its session and deletes the run and its files; 204 |
 | `GET /api/runs/{id}/events` | a page of the timeline, `?since=&limit=` |
 | `GET /api/runs/{id}/socket` | the run stream, `?since=` |
 | `GET /api/runs/{id}/blobs/{seq}` | the whole body of a tool result the timeline trimmed |
@@ -347,29 +347,43 @@ A record outlives the daemon; a session does not. `status` is `open` while there
 is a session and `closed` once there is not, and `live` is the field a page
 reads before it opens a socket. A restarted daemon finds every run closed: the
 record and the timeline are still there to read, and nothing is left claiming a
-session that went with the process.
+session that went with the process. A third status, `removed`, appears only on
+the `run.updated` that announces a deletion.
 
 A conversation names itself on its first message, and the record catches up
 then - so a run listed after a restart carries the name it gave itself and the
 id its journal is under.
 
 One daemon holds 32 open runs. The 33rd `POST` is answered `503` with a
-`Retry-After` and a body saying how many are open, and closing one gives its
+`Retry-After` and a body saying how many are open, and deleting one gives its
 place back: a run is a tools registry, a model handle and an event ring, and a
 client looping on create would otherwise be an out-of-memory with nothing in the
-way of it. The record of a closed run is not counted and is never removed.
+way of it. The record of a closed run is not counted; it stays until it is
+deleted.
 
 Every change to a run - opened, named by its conversation, switched model,
-closed - is announced on the control stream as `run.updated`, carrying the
-record. Most of them do not happen during a request: a conversation takes its
-name on its first message, which arrives up the run socket, so a page that
-listened only for the answers to its own requests would show that run as
-untitled until something else moved.
+deleted - is announced on the control stream as `run.updated`, carrying the
+record (status `removed` for a deleted run). Most of them do not happen during a
+request: a conversation takes its name on its first message, which arrives up
+the run socket, so a page that listened only for the answers to its own requests
+would show that run as untitled until something else moved.
 
-`DELETE` is that transition and not a deletion. It saves the conversation and
-ends the session, and the record and the journal stay, because a run somebody is
-done with is one they can still look back at. Doing it twice is not an error:
-two tabs pressing the same button is the ordinary case.
+`DELETE` deletes the run, live or closed. It ends the session if there is one,
+removes the record, and deletes the conversation from disk: the journal (events,
+blobs, artifacts) and the saved session with its `.precompact-<n>.json` backups,
+so it is gone from the terminal's `/resume` too. It answers `204` with no body,
+and `404` for a run that does not exist or is already deleted, so a second tab
+pressing the same button gets a `404`. Every tab hears `run.updated` and drops the
+row; a tab still showing the deleted run gets the `404` and says the run no
+longer exists. The activity feed records it as `run.removed`, with no link to
+the run. A deleted run's id is never given to a new run. A `DELETE` that arrives
+while the daemon is shutting down is answered `500`, as a create is then. So is
+one whose run table cannot be written; the run then stays, and the delete can be
+retried.
+
+There is no lock between processes. If a terminal has `/resume`d the same
+conversation while the browser deletes it, the terminal keeps working, and its
+next save writes the session file back. Deleting does not stop that.
 
 Statuses a client has to tell apart:
 
@@ -381,12 +395,12 @@ Statuses a client has to tell apart:
 - `409` - the run has no live session. Its timeline and its artifacts still
   read; its socket does not, because it lives with the session.
 - `409` on `DELETE /api/projects/{id}` - the project has an open run. The body
-  says so; close the run and ask again.
+  says so; delete the run and ask again.
 - `410` - the history no longer reaches the point asked for. Answered by
   reloading, not by retrying.
 - `503` with a `Retry-After` - the daemon is holding as many runs as it will.
   The one refusal here that is worth retrying: nothing about the request is
-  wrong, and closing a run makes room.
+  wrong, and deleting a run makes room.
 - `400` - a sentence meant to be shown. It is written for a person, and a
   front-end must render it as text, never as markup. It may name a model, a
   provider or a path on the machine the daemon runs on: this daemon serves one

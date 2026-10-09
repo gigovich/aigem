@@ -25,9 +25,10 @@ aigem honors the XDG base directories.
 | `~/.local/state/aigem/mcp-oauth/`         | MCP OAuth tokens, one file per server (`0600`)      |
 | `~/.local/state/aigem/browser-profile/`   | the isolated Chrome profile for browser search      |
 
-A journal is never pruned. `blobs/` holds the whole of each tool result over
-2 KiB that it managed to write - a little over 48 KiB at most, which is where
-the agent clips one before the model sees it. `artifacts.json` holds both
+A journal is never pruned on its own. Deleting a session in the browser removes
+its journal and its saved conversation. `blobs/` holds the whole of each tool
+result over 2 KiB that it managed to write - a little over 48 KiB at most, which
+is where the agent clips one before the model sees it. `artifacts.json` holds both
 sides of every file the conversation changed, written on every save so a
 closed run can still show its changes. It is unbounded too, and never pruned;
 removing it alone costs only that run's Changes view. Removing the directory

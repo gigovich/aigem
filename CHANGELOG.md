@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the page trades it for an `HttpOnly; SameSite=Strict` cookie and takes it back
   out of the address bar. Browser sign-ins survive a restart in
   `$XDG_STATE_HOME/aigem/web-cookies.json`.
+- The browser UI deletes a session from the trash button on its row, after a
+  confirm: a live one is ended first. Its journal and saved conversation go too,
+  so it is gone from `/resume` as well (`DELETE /api/runs/{id}`, `204`).
 - `aigem web --origin https://name.example.ts.net` states the public URL the
   daemon is reached at, which is what lets it bind an address the network can
   reach. Without it the bind is refused: an origin check needs a name a person

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import { canonicalise, getRoute, replace, resync, subscribeRoute } from '@/lib/route'
 import type { Route } from '@/lib/route'
 import { signIn } from '@/lib/auth'
 import {
   clearBanner,
   conversationId,
+  dropRun,
   explain,
   flash,
   openSession,
@@ -69,7 +70,7 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const [newProject, setNewProject] = useState(false)
-  const [closing, setClosing] = useState<string>('')
+  const [removing, setRemoving] = useState<string>('')
 
   useEffect(() => {
     const abort = new AbortController()
@@ -111,21 +112,30 @@ export default function App() {
     conversation.dismissRefusal()
   }, [conversation])
 
-  const closeSession = useCallback(async (id: string) => {
-    setClosing('')
+  const removeSession = useCallback(async (id: string) => {
+    setRemoving('')
     try {
-      await api.closeRun(id)
-      await refresh.runs()
-      flash('Session closed. Its transcript is still readable.')
+      await api.removeRun(id)
     } catch (err) {
-      setBanner(explain(err))
+      // A 404 means another tab deleted it first, which is the outcome asked for.
+      if (!(err instanceof ApiError && err.status === 404)) {
+        setBanner(explain(err))
+        return
+      }
     }
+    // Dropped before leaving the view, so the fallback conversation is never
+    // the run that was just deleted, even when the refresh fails.
+    dropRun(id)
+    await refresh.runs()
+    const open = getRoute()
+    if ((open.screen === 'chat' || open.screen === 'run') && open.id === id) replace({ screen: 'chat' })
+    flash('Session deleted.')
   }, [])
 
   const items = useMemo(() => paletteItems(app), [app])
   const matches = useMemo(() => ordered(items, query), [items, query])
 
-  const layerOpen = paletteOpen || quickOpen || newProject || closing !== '' || navOpen
+  const layerOpen = paletteOpen || quickOpen || newProject || removing !== '' || navOpen
 
   // The palette's list and highlight are read through a ref so the window
   // listener below is registered once. With them in the dependency array it was
@@ -157,7 +167,7 @@ export default function App() {
         e,
         {
           anyOpen: layerOpen,
-          confirmOpen: closing !== '',
+          confirmOpen: removing !== '',
           modalOpen: newProject,
           paletteOpen,
         },
@@ -167,7 +177,7 @@ export default function App() {
             setQuick(false)
             setNav(false)
             setNewProject(false)
-            setClosing('')
+            setRemoving('')
           },
           togglePalette: () => {
             setQuery('')
@@ -195,7 +205,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [layerOpen, paletteOpen, newProject, closing])
+  }, [layerOpen, paletteOpen, newProject, removing])
 
   const sidebar = <Sidebar route={route} onNewProject={() => setNewProject(true)} />
 
@@ -283,7 +293,7 @@ export default function App() {
             runId={runId}
             conversation={conversation}
             onNew={() => void openSession()}
-            onClose={setClosing}
+            onRemove={setRemoving}
           />
         </main>
         <Inspector content={inspector} />
@@ -313,18 +323,18 @@ export default function App() {
       )}
       {login && <LoginDialog provider={login} onClose={() => setLogin('')} />}
       {newProject && <NewProjectDialog onClose={() => setNewProject(false)} />}
-      {closing && (
+      {removing && (
         <Modal
-          title="Close this session?"
-          onClose={() => setClosing('')}
+          title="Delete this session?"
+          onClose={() => setRemoving('')}
           confirm={{
-            label: 'Close session',
+            label: 'Delete',
             danger: true,
-            onClick: () => void closeSession(closing),
+            onClick: () => void removeSession(removing),
           }}
         >
-          The conversation is saved and its session ends. The transcript stays readable and nothing
-          it wrote to disk is undone — but it cannot be continued.
+          This cannot be undone. A running session ends, and its transcript is deleted. Files it
+          wrote to disk stay as they are.
         </Modal>
       )}
       <ToastHost />
@@ -340,13 +350,13 @@ function Screen({
   runId,
   conversation,
   onNew,
-  onClose,
+  onRemove,
 }: {
   route: Route
   runId: string
   conversation: Conversation
   onNew: () => void
-  onClose: (id: string) => void
+  onRemove: (id: string) => void
 }) {
   switch (route.screen) {
     case 'chat':
@@ -359,7 +369,7 @@ function Screen({
           send={conversation.send}
           selected={route.id}
           onNew={onNew}
-          onClose={onClose}
+          onRemove={onRemove}
         />
       )
     case 'run':

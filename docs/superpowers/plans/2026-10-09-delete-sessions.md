@@ -1,5 +1,7 @@
 # Delete sessions
 
+Status: implemented; manual Post-Completion checks pending.
+
 ## Overview
 
 - Today the web UI can only "close" a session, and a closed session stays in the list forever.
@@ -97,7 +99,8 @@
 
 ## Technical Details
 
-- `runner`: `RunRemoved RunStatus = "removed"`; `Runs.removed []Run`; `Remove(id string) error`.
+- `runner`: `RunRemoved RunStatus = "removed"`; `Remove(id string) error`. The table keeps
+  one `removed` row for the highest id handed out when no run holds it, so ids are not reused.
 - Session id to delete: `meta.ID` if set, else `rec.SessionID`; empty means the run never
   had a turn, so there are no files.
 - `uisession.RemoveJournal(id string) error`: `os.RemoveAll(journalDir(id))`.
@@ -122,12 +125,12 @@
 - Modify: `internal/uisession/journal.go`, `internal/uisession/journal_test.go`
 - Modify: `internal/session/session.go`, `internal/session/session_test.go`
 
-- [ ] add `uisession.RemoveJournal(id string) error` (`journalDir` + `os.RemoveAll`)
-- [ ] add `session.Remove(id string) error` for `<id>.json` and `<id>.precompact-*.json`
-- [ ] write tests: each removes only its own session's files and leaves another session
-- [ ] write tests: missing files are not an error; invalid id (`..`, `a/b`) is refused
-- [ ] write test: after `session.Remove`, `session.List()` no longer returns the id
-- [ ] run `go test ./internal/uisession/... ./internal/session/...` - must pass before task 2
+- [x] add `uisession.RemoveJournal(id string) error` (`journalDir` + `os.RemoveAll`)
+- [x] add `session.Remove(id string) error` for `<id>.json` and `<id>.precompact-*.json`
+- [x] write tests: each removes only its own session's files and leaves another session
+- [x] write tests: missing files are not an error; invalid id (`..`, `a/b`) is refused
+- [x] write test: after `session.Remove`, `session.List()` no longer returns the id
+- [x] run `go test ./internal/uisession/... ./internal/session/...` - must pass before task 2
 
 ### Task 2: Remove a run in the registry
 
@@ -135,19 +138,24 @@
 - Modify: `internal/runner/runs.go`
 - Modify: `internal/runner/runs_test.go`
 
-- [ ] add `RunRemoved`, the `removed` list, and include it in `saveLocked`
-- [ ] load: `removed` rows go only to the `removed` list and still count for `next`
-- [ ] add `(*Runs).Remove(id string) error` as described in Solution Overview
-- [ ] write tests: remove a closed run (gone from List/Get, journal and session files gone,
+- [x] add `RunRemoved`, the `removed` list, and include it in `saveLocked`
+- [x] load: `removed` rows go only to the `removed` list and still count for `next`
+- [x] add `(*Runs).Remove(id string) error` as described in Solution Overview
+- [x] write tests: remove a closed run (gone from List/Get, journal and session files gone,
       notify called once)
-- [ ] write tests: remove a live run while a turn runs (session closed before files are
+- [x] write tests: remove a live run while a turn runs (session closed before files are
       deleted; the call returns after that)
-- [ ] write tests: remove a run with no session id; unknown id and second remove -> `ErrNoRun`
-- [ ] write tests: concurrent `Remove` (exactly one nil, others `ErrNoRun`); `Remove` racing
+- [x] write tests: remove a run with no session id; unknown id and second remove -> `ErrNoRun`
+- [x] write tests: concurrent `Remove` (exactly one nil, others `ErrNoRun`); `Remove` racing
       `Close()` (row never comes back)
-- [ ] write tests: after reload from the store the run stays hidden and the next id is higher
+- [x] write tests: after reload from the store the run stays hidden and the next id is higher
       than the removed one
-- [ ] run `go test -race ./internal/runner/...` - must pass before task 3
+- [x] run `go test -race ./internal/runner/...` - must pass before task 3
+- ⚠️ `TestLoadRefusesAnUnresolvableWorkingDirectory` and
+  `TestLoadErrorNamesTheDirectoryAndKeepsTheCause` (env_test.go) fail on macOS on a clean
+  tree too; not related to this work
+- ➕ `Remove` returns `ErrRunsClosed` once shutdown started (its closing save would write
+  the files back); removed rows keep only id, status and timestamps, no title
 
 ### Task 3: HTTP endpoint and backend
 
@@ -157,14 +165,14 @@
 - Modify: `cmd/aigem/webbackend.go`
 - Modify: `cmd/aigem/webphase1_test.go`, `cmd/aigem/webprojects_test.go`
 
-- [ ] replace `CloseRun` with `RemoveRun` in `RunsBackend` and `webBackend`
+- [x] replace `CloseRun` with `RemoveRun` in `RunsBackend` and `webBackend`
       (activity `run.removed`, drop `closeMu`)
-- [ ] `DELETE /api/runs/{id}` calls `RemoveRun` and answers `204` (was `200` + run JSON)
-- [ ] update the fake backend and every `CloseRun` test caller to the new meaning
-- [ ] write tests: 204 on closed run, 204 on live run, 404 unknown, 404 on second delete
-- [ ] write backend tests: activity entry recorded once under concurrent deletes;
+- [x] `DELETE /api/runs/{id}` calls `RemoveRun` and answers `204` (was `200` + run JSON)
+- [x] update the fake backend and every `CloseRun` test caller to the new meaning
+- [x] write tests: 204 on closed run, 204 on live run, 404 unknown, 404 on second delete
+- [x] write backend tests: activity entry recorded once under concurrent deletes;
       `ErrUnavailable` without runs
-- [ ] run `go test ./internal/web/... ./cmd/aigem/...` - must pass before task 4
+- [x] run `go test ./internal/web/... ./cmd/aigem/...` - must pass before task 4
 
 ### Task 4: Trash button and confirm dialog in the UI
 
@@ -173,35 +181,46 @@
 - Modify: `internal/web/_ui/src/screens/chat.test.tsx` (or `screens.test.tsx`),
   `src/ui/Modal.test.tsx`, `src/test/harness.tsx` if the fake API needs it
 
-- [ ] rename `api.closeRun` to `api.removeRun` (same `DELETE` route, no body expected)
-- [ ] `SessionRow`: replace the `×` with a trash icon button "Delete session" on every row
-- [ ] replace the close confirm modal in `App.tsx` with the delete one, danger button;
+- [x] rename `api.closeRun` to `api.removeRun` (same `DELETE` route, no body expected)
+- [x] `SessionRow`: replace the `×` with a trash icon button "Delete session" on every row
+- [x] replace the close confirm modal in `App.tsx` with the delete one, danger button;
       on success refresh runs and leave `/chat/{id}` if it was open
-- [ ] update existing close tests; write tests: every row has Delete and no Close
-- [ ] write tests: confirming calls the delete route and the row disappears; cancel does
+- [x] update existing close tests; write tests: every row has Delete and no Close
+- [x] write tests: confirming calls the delete route and the row disappears; cancel does
       nothing; the open session view moves to `/chat`
-- [ ] run lint, typecheck and vitest - must pass before task 5
+- [x] run lint, typecheck and vitest - must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] live and closed sessions can both be deleted from the list in one step
-- [ ] journal dir, `sessions/<id>.json` and precompact backups are gone; TUI `/resume` no
-      longer lists it
-- [ ] after a daemon restart the deleted run stays gone and a new run gets a new id
-- [ ] a second open tab drops the row without reload; a tab on the deleted session shows
-      "this run no longer exists"
-- [ ] run `go test ./...`, `make lint`, and UI checks (`npm run lint`, `npm run check`, vitest)
+- [x] live and closed sessions can both be deleted from the list in one step
+      (live daemon on a temp state dir: `DELETE` on a live run and on a closed run after a
+      restart both answer `204`; then `GET` and a second `DELETE` answer `404`, list drops them)
+- [x] journal dir, `sessions/<id>.json` and precompact backups are gone; TUI `/resume` no
+      longer lists it (checked on disk for both deleted runs, other run's files kept; `/resume`
+      covered by the `session.List()` test - interactive TUI not automatable)
+- [x] after a daemon restart the deleted run stays gone and a new run gets a new id
+      (`runs.json` keeps a `removed` row; after restart RUN-1 is `404`, new run is RUN-4)
+- [x] a second open tab drops the row without reload; a tab on the deleted session shows
+      "this run no longer exists" (control socket gets `run.updated` with status `removed`
+      and `activity.updated`; `GET` of the run is `404`, which `socket.ts` maps to that text;
+      browser itself skipped - not automatable here, covered by vitest)
+- [x] run `go test ./...`, `make lint`, and UI checks (`npm run lint`, `npm run check`, vitest)
+      (vitest 313/313, eslint and tsc clean. ⚠️ pre-existing on `main` too, not from this
+      branch: `go test` fails `TestLoadRefusesAnUnresolvableWorkingDirectory`,
+      `TestLoadErrorNamesTheDirectoryAndKeepsTheCause` (runner) and `TestSetupSandboxIsPrivate`
+      (testenv) on macOS; golangci-lint v2.6.2 reports one QF1003 in untouched
+      `internal/tui/model_add.go`)
 
 ### Task 6: [Final] Update documentation
 
-- [ ] rewrite `docs/web.md` around line 148 and line 369: `DELETE` now deletes, `204`,
+- [x] rewrite `docs/web.md` around line 148 and line 369: `DELETE` now deletes, `204`,
       `run.removed` activity, and the cross-process limit
-- [ ] add a CHANGELOG entry
-- [ ] mark this plan done
+- [x] add a CHANGELOG entry
+- [x] mark this plan done
 
 ## Post-Completion
 
-**Manual verification:**
-- in the browser: delete a live and a closed session, check the confirm text and that the
+**Manual verification (pending):**
+- [ ] in the browser: delete a live and a closed session, check the confirm text and that the
   open session view moves away when its run is deleted
-- with a TUI that `/resume`d the same session: deleting from the web does not crash the TUI
+- [ ] with a TUI that `/resume`d the same session: deleting from the web does not crash the TUI
