@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gigovich/aigem/internal/gitx"
 	"github.com/gigovich/aigem/internal/store"
 )
 
@@ -400,7 +400,7 @@ func (p *Projects) Repositories(ctx context.Context, id string) ([]Repository, e
 	}
 	var out []Repository
 	if isCheckout(v.Dir) {
-		out = append(out, Repository{Dir: v.Dir, Main: mainBranch(ctx, v.Dir)})
+		out = append(out, Repository{Dir: v.Dir, Main: gitx.MainBranch(ctx, v.Dir)})
 	}
 	entries, err := os.ReadDir(v.Dir)
 	if err != nil {
@@ -409,7 +409,7 @@ func (p *Projects) Repositories(ctx context.Context, id string) ([]Repository, e
 	for _, e := range entries {
 		dir := filepath.Join(v.Dir, e.Name())
 		if isCheckout(dir) {
-			out = append(out, Repository{Name: e.Name(), Dir: dir, Main: mainBranch(ctx, dir)})
+			out = append(out, Repository{Name: e.Name(), Dir: dir, Main: gitx.MainBranch(ctx, dir)})
 		}
 	}
 	return out, nil
@@ -418,16 +418,4 @@ func (p *Projects) Repositories(ctx context.Context, id string) ([]Repository, e
 func isCheckout(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil
-}
-
-// mainBranch is the branch a run will merge into, read once per discovery.
-// Empty when the checkout has neither name.
-func mainBranch(ctx context.Context, dir string) string {
-	for _, b := range []string{"main", "master"} {
-		cmd := exec.CommandContext(ctx, "git", "-C", dir, "show-ref", "--verify", "--quiet", "refs/heads/"+b)
-		if cmd.Run() == nil {
-			return b
-		}
-	}
-	return ""
 }
