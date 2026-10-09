@@ -1312,3 +1312,19 @@ func (markerTool) NeedsConfirm() bool      { return false }
 func (markerTool) Run(context.Context, json.RawMessage) (string, error) {
 	return "", nil
 }
+
+func TestNewToolsAtRootsTheSandboxAtAnotherDirectory(t *testing.T) {
+	env, _ := load(t, runner.Options{Cwd: project(t)})
+	dir := t.TempDir()
+	reg, err := env.NewToolsAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want, _ := filepath.EvalSymlinks(dir); reg.Root() != want {
+		t.Errorf("root = %q, want %q", reg.Root(), want)
+	}
+	env.Close()
+	if _, err := env.NewToolsAt(dir); err == nil {
+		t.Error("a closed environment handed out a registry")
+	}
+}

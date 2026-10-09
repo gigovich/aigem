@@ -279,7 +279,10 @@ func (e *Env) Close() {
 	releaseProjectRuntime(e.runtime)
 }
 
-// NewTools builds the sandbox for one conversation.
+// NewTools builds the sandbox for one conversation, rooted at the environment's directory.
+func (e *Env) NewTools() (*tools.Registry, error) { return e.NewToolsAt(e.Cwd) }
+
+// NewToolsAt builds the sandbox for one conversation, rooted at dir.
 //
 // It is a constructor rather than a field because a registry is not shareable
 // between sessions: the delegation and skill tools are registered into it bound
@@ -287,11 +290,11 @@ func (e *Env) Close() {
 // would have tool calls in the first asking the second's clients for approval.
 //
 // Persisted path grants are enabled by the session, not here.
-func (e *Env) NewTools() (*tools.Registry, error) {
+func (e *Env) NewToolsAt(dir string) (*tools.Registry, error) {
 	if e.closed.Load() {
 		return nil, errors.New("runner: the environment is closed; its MCP servers are gone")
 	}
-	r, err := tools.NewRegistry(e.Cwd)
+	r, err := tools.NewRegistry(dir)
 	if err != nil {
 		return nil, err
 	}
