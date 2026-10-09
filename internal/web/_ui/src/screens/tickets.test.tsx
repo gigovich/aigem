@@ -1,6 +1,7 @@
 import { act, fireEvent, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test } from 'vitest'
+import { navigate } from '@/lib/route'
 import type { Ticket } from '@/lib/wire'
 import { selectProject, store } from '@/state/app'
 import { DAEMON_PROJECT, mountApp, waitFor } from '@/test/harness'
@@ -179,6 +180,25 @@ test('a parent page lists its subtickets and has no status buttons', async () =>
   expect(screen.getByText('HTTP endpoint')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Add subticket' })).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()
+  expect(screen.getByText('1 of 2 done')).toBeInTheDocument()
+})
+
+test('a subticket shows its parent progress and cannot be split; a top-level ticket can', async () => {
+  await openTask('TCK-3', PLAN)
+  expect(screen.getByText('1 of 2 done')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Add subticket' })).not.toBeInTheDocument()
+  act(() => navigate({ screen: 'task', id: 'TCK-4' }))
+  expect(await screen.findByRole('button', { name: 'Add subticket' })).toBeInTheDocument()
+})
+
+test('a draft comment does not follow to another ticket', async () => {
+  await openTask('TCK-3', PLAN)
+  await userEvent.click(screen.getByRole('radio', { name: /Discussion/ }))
+  await userEvent.type(screen.getByLabelText('Comment'), 'half typed')
+  await userEvent.click(screen.getByRole('link', { name: 'TCK-4' }))
+  await screen.findByRole('heading', { level: 1, name: 'Runner change' })
+  await userEvent.click(screen.getByRole('radio', { name: /Discussion/ }))
+  expect(screen.getByLabelText('Comment')).toHaveValue('')
 })
 
 test('a comment is sent and the discussion shows who wrote what', async () => {

@@ -46,6 +46,7 @@ export function Task({ id = '' }: { id?: string }) {
     )
   }
 
+  const parent = tickets.find((x) => x.id === t.parent)
   const kids = tickets.filter((x) => x.parent === t.id)
   const isParent = kids.length > 0
   const waits = waitsFor(t, tickets)
@@ -64,11 +65,16 @@ export function Task({ id = '' }: { id?: string }) {
     <>
       <div className="flex-none border-b border-line px-4.5 pt-3.5 pb-3">
         <div className="flex flex-wrap items-center gap-2.5">
-          <Back label={t.parent || 'Tickets'} to={t.parent ? { screen: 'task', id: t.parent } : { screen: 'tickets' }} />
+          <Back
+            label={t.parent || 'Tickets'}
+            to={t.parent ? { screen: 'task', id: t.parent } : { screen: 'tickets' }}
+          />
           <span className="font-mono text-[0.8125rem] text-fg-subtle">{t.id}</span>
           <h1 className="m-0 text-[1rem] font-semibold">{t.title}</h1>
           <TicketStatusLabel ticket={t} />
-          {waits.length > 0 && <span className="text-[0.75rem] text-attention">⧗ waits for {waits.join(', ')}</span>}
+          {waits.length > 0 && (
+            <span className="text-[0.75rem] text-attention">⧗ waits for {waits.join(', ')}</span>
+          )}
           {!isParent && (
             <div className="ml-auto flex gap-1.5">
               {personMoves(t.status).map((to) => (
@@ -104,13 +110,15 @@ export function Task({ id = '' }: { id?: string }) {
           {tab === 'overview' && (
             <div className="mt-3">
               {t.body ? <Markdown source={t.body} /> : <p className="text-fg-subtle">No description.</p>}
-              {isParent && (
+              {!t.parent && (
                 <div className="mt-4">
                   <div className="mb-1.5 flex items-center gap-2">
                     <span className="text-[0.6875rem] tracking-[.07em] text-fg-subtle uppercase">Subtickets</span>
-                    <span className="text-[0.75rem] text-fg-subtle">
-                      {t.progress?.done ?? 0}/{t.progress?.total ?? kids.length} done
-                    </span>
+                    {isParent && (
+                      <span className="text-[0.75rem] text-fg-subtle">
+                        {t.progress?.done ?? 0}/{t.progress?.total ?? kids.length} done
+                      </span>
+                    )}
                     <button type="button" onClick={() => setAdding(true)} className={`ml-auto ${BUTTON}`}>
                       Add subticket
                     </button>
@@ -135,10 +143,23 @@ export function Task({ id = '' }: { id?: string }) {
           {tab === 'runs' && <p className="mt-3 text-fg-subtle">Runs on tickets arrive in the next part.</p>}
         </div>
 
-        <aside className="flex-none overflow-y-auto border-l border-line bg-shell px-3.5 py-3 text-[0.75rem]" style={{ width: 'var(--panel)' }}>
+        <aside
+          className="flex-none overflow-y-auto border-l border-line bg-shell px-3.5 py-3 text-[0.75rem]"
+          style={{ width: 'var(--panel)' }}
+        >
           {t.parent && (
             <Section title="Parent">
               <TicketLink id={t.parent} all={tickets} />
+              {parent?.progress && (
+                <div className="mt-0.5 text-fg-subtle">
+                  {parent.progress.done} of {parent.progress.total} done
+                </div>
+              )}
+            </Section>
+          )}
+          {isParent && (
+            <Section title="Progress">
+              {t.progress?.done ?? 0} of {t.progress?.total ?? kids.length} done
             </Section>
           )}
           {!isParent && (
@@ -188,7 +209,9 @@ export function Task({ id = '' }: { id?: string }) {
           <Section title="Repository">{t.repo || name}</Section>
         </aside>
       </div>
-      {adding && <NewTicketDialog project={project} tickets={tickets} parent={t.id} onClose={() => setAdding(false)} />}
+      {adding && (
+        <NewTicketDialog project={project} tickets={tickets} parent={t.id} onClose={() => setAdding(false)} />
+      )}
     </>
   )
 }
@@ -241,7 +264,10 @@ function Discussion({ project, ticket }: { project: string; ticket: Ticket }) {
     <div className="mt-3">
       {ticket.comments.map((c, i) => (
         <div key={i} className="border-b border-line py-2">
-          <div className="font-mono text-[0.6875rem]" style={{ color: c.by === 'you' ? 'var(--primary)' : 'var(--agent)' }}>
+          <div
+            className="font-mono text-[0.6875rem]"
+            style={{ color: c.by === 'you' ? 'var(--primary)' : 'var(--agent)' }}
+          >
             {c.by}
           </div>
           <Markdown source={c.text} />

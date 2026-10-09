@@ -391,7 +391,7 @@ function Screen({
     case 'tickets':
       return <Tickets />
     case 'task':
-      return <Task id={route.id} />
+      return <Task key={route.id} id={route.id} />
     case 'repos':
       return <Worktrees />
     case 'projects':
