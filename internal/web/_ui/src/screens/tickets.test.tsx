@@ -1,8 +1,8 @@
-import { act, fireEvent, screen } from '@testing-library/react'
+import { act, fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test } from 'vitest'
 import { navigate } from '@/lib/route'
-import type { Ticket } from '@/lib/wire'
+import type { Run, Ticket } from '@/lib/wire'
 import { selectProject, store } from '@/state/app'
 import { DAEMON_PROJECT, mountApp, waitFor } from '@/test/harness'
 
@@ -135,11 +135,17 @@ test('without a project the screen says to choose one', async () => {
   expect(await screen.findByText('Tickets need a project.')).toBeInTheDocument()
 })
 
-async function openTask(id: string, tickets: Ticket[], routes: Record<string, () => Response | Promise<Response>> = {}) {
+async function openTask(
+  id: string,
+  tickets: Ticket[],
+  routes: Record<string, () => Response | Promise<Response>> = {},
+  runs: Run[] = [],
+) {
   const h = await mountApp({
     meta: META_TICKETS,
     projects: [DAEMON_PROJECT, PRJ],
     path: `/task/${id}`,
+    runs,
     routes: { '/api/projects/PRJ-1/tickets': () => json(tickets), ...routes },
   })
   act(() => selectProject('PRJ-1'))
@@ -274,4 +280,61 @@ test('the dependency picker leaves out own subtickets and own parent', async () 
   expect(options()).toEqual(['', 'TCK-4'])
   act(() => navigate({ screen: 'task', id: 'TCK-3' }))
   await waitFor(() => expect(options()).toEqual(['', 'TCK-2']))
+})
+
+const RUN5: Run = {
+  id: 'RUN-5', mode: 'autonomous', title: 'TCK-4: Runner change', status: 'open', live: true,
+  running: true, ticketId: 'TCK-4', created: '2026-10-09T10:00:00Z', updated: '2026-10-09T10:00:00Z',
+}
+
+test('Run is offered only on a runnable ticket and starts it', async () => {
+  const tickets = PLAN.map((t) => (t.id === 'TCK-4' ? { ...t, status: 'ready' as const, runnable: true } : t))
+  const h = await openTask('TCK-4', tickets, {
+    'POST /api/projects/PRJ-1/tickets/TCK-4/run': () => new Response(JSON.stringify(RUN5), { status: 201 }),
+  })
+  await userEvent.click(screen.getByRole('button', { name: 'Run' }))
+  await waitFor(() =>
+    expect(h.sent.some((s) => s.method === 'POST' && s.path === '/api/projects/PRJ-1/tickets/TCK-4/run')).toBe(true),
+  )
+  act(() => navigate({ screen: 'task', id: 'TCK-3' }))
+  await screen.findByRole('heading', { level: 1, name: 'HTTP endpoint' })
+  expect(screen.queryByRole('button', { name: 'Run' })).not.toBeInTheDocument()
+})
+
+test('a running ticket stops its run, and the runs tab links each run', async () => {
+  const tickets = PLAN.map((t) => (t.id === 'TCK-4' ? { ...t, runs: ['RUN-5'] } : t))
+  const h = await openTask(
+    'TCK-4',
+    tickets,
+    { 'POST /api/runs/RUN-5/stop': () => new Response(null, { status: 204 }) },
+    [RUN5],
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+  await waitFor(() => expect(h.sent.some((s) => s.path === '/api/runs/RUN-5/stop')).toBe(true))
+  await userEvent.click(screen.getByRole('radio', { name: /Runs/ }))
+  const list = screen.getByRole('list', { name: 'Runs' })
+  expect(within(list).getByText('running')).toBeInTheDocument()
+  await userEvent.click(within(list).getByRole('link', { name: 'RUN-5' }))
+  expect(window.location.pathname).toBe('/run/RUN-5')
+})
+
+test('a ticket blocked on a merge offers Retry merge and Stop, and shows why it still cannot', async () => {
+  const tickets = PLAN.map((t) =>
+    t.id === 'TCK-4' ? { ...t, status: 'blocked' as const, mergePending: true, runs: ['RUN-5'] } : t,
+  )
+  await openTask(
+    'TCK-4',
+    tickets,
+    {
+      'POST /api/projects/PRJ-1/tickets/TCK-4/merge': () =>
+        new Response('the main checkout has uncommitted changes', { status: 409 }),
+    },
+    [{ ...RUN5, running: false }],
+  )
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Retry merge' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('uncommitted changes')
+  act(() => navigate({ screen: 'task', id: 'TCK-2' }))
+  await screen.findByRole('heading', { level: 1, name: 'Journal helper' })
+  expect(screen.queryByRole('button', { name: 'Retry merge' })).not.toBeInTheDocument()
 })

@@ -238,13 +238,15 @@ test('a run screen shows the timeline, the agent tree and the context window', a
   expect(screen.getByText(/100,000 \/ 200,000 tokens/)).toBeInTheDocument()
 })
 
-// Stopping a run is bound up with discarding the worktree it worked in, and
-// neither exists yet. A button that quietly did half of that is worse than none.
-test('the run screen has no stop button in this phase', async () => {
-  await mountApp({ runs: [RUN] })
+test('the run screen stops a live run', async () => {
+  const h = await mountApp({
+    runs: [RUN],
+    routes: { 'POST /api/runs/r-1/stop': () => new Response(null, { status: 204 }) },
+  })
   act(() => navigate({ screen: 'run', id: 'r-1' }))
   await screen.findByRole('heading', { name: /Rotate the signing keys/ })
-  expect(screen.queryByRole('button', { name: /Stop run/i })).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+  await waitFor(() => expect(h.sent.some((s) => s.method === 'POST' && s.path === '/api/runs/r-1/stop')).toBe(true))
 })
 
 const CLOSED: Run = { ...RUN, id: 'r-2', live: false, status: 'closed', title: 'An old one' }

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { api } from '@/lib/api'
 import { ago } from '@/lib/format'
 import { format, navigate } from '@/lib/route'
-import type { Ticket, TicketStatus } from '@/lib/wire'
+import type { Run, Ticket, TicketStatus } from '@/lib/wire'
 import { currentProject, explain, refresh, setBanner, useApp } from '@/state/app'
 import { blocks, personMoves, waitsFor } from '@/state/tickets'
 import { Back } from '@/ui/Back'
@@ -26,9 +26,10 @@ const BUTTON =
   'h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted hover:border-line-strong hover:text-fg'
 
 export function Task({ id = '' }: { id?: string }) {
-  const { project, tickets, loaded, name } = useApp((s) => ({
+  const { project, tickets, runs, loaded, name } = useApp((s) => ({
     project: s.project,
     tickets: s.tickets,
+    runs: s.runs,
     loaded: s.ticketsLoaded,
     name: currentProject(s)?.name ?? '',
   }))
@@ -36,6 +37,7 @@ export function Task({ id = '' }: { id?: string }) {
   const [tab, setTab] = useState<'overview' | 'discussion' | 'runs'>('overview')
   const [error, setError] = useState('')
   const [adding, setAdding] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   if (!project) return <EmptyState title="Tasks need a project." detail="Choose a project in the sidebar." />
   if (!t && !loaded) return <p className="m-0 px-4.5 py-3.5 text-fg-subtle">Loading tickets…</p>
@@ -64,6 +66,22 @@ export function Task({ id = '' }: { id?: string }) {
     }
   }
 
+  const act = async (call: () => Promise<unknown>) => {
+    if (busy) return
+    setBusy(true)
+    setError('')
+    try {
+      await call()
+      await Promise.all([refresh.tickets(), refresh.runs()])
+    } catch (err) {
+      setError(explain(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const lastRun = t.runs[t.runs.length - 1]
+  const lastLive = runs.some((r) => r.id === lastRun && r.live)
+
   return (
     <>
       <div className="flex-none border-b border-line px-4.5 pt-3.5 pb-3">
@@ -80,6 +98,36 @@ export function Task({ id = '' }: { id?: string }) {
           )}
           {!isParent && (
             <div className="ml-auto flex gap-1.5">
+              {t.runnable && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void act(() => api.runTicket(project, t.id))}
+                  className={BUTTON}
+                >
+                  Run
+                </button>
+              )}
+              {lastRun && lastLive && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void act(() => api.stopRun(lastRun))}
+                  className={BUTTON}
+                >
+                  Stop
+                </button>
+              )}
+              {t.status === 'blocked' && t.mergePending && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void act(() => api.mergeTicket(project, t.id))}
+                  className={BUTTON}
+                >
+                  Retry merge
+                </button>
+              )}
               {personMoves(t.status).map((to) => (
                 <button key={to} type="button" onClick={() => void change({ status: to })} className={BUTTON}>
                   {MOVE_LABEL[to]}
@@ -145,7 +193,7 @@ export function Task({ id = '' }: { id?: string }) {
             </div>
           )}
           {tab === 'discussion' && <Discussion project={project} ticket={t} />}
-          {tab === 'runs' && <p className="mt-3 text-fg-subtle">Runs on tickets arrive in the next part.</p>}
+          {tab === 'runs' && <TicketRuns ids={t.runs} />}
         </div>
 
         <aside
@@ -242,6 +290,40 @@ function TicketLink({ id, all }: { id: string; all: Ticket[] }) {
       </a>
       {t && <TicketStatusLabel ticket={t} />}
     </span>
+  )
+}
+
+function runState(r?: Run): string {
+  if (!r) return 'deleted'
+  if (r.running) return 'running'
+  return r.live ? 'live' : r.status
+}
+
+function TicketRuns({ ids }: { ids: string[] }) {
+  const runs = useApp((s) => s.runs)
+  if (ids.length === 0) return <p className="mt-3 text-fg-subtle">No runs yet. Run starts one on a runnable ticket.</p>
+  return (
+    <ul aria-label="Runs" className="m-0 mt-3 list-none p-0">
+      {[...ids].reverse().map((id) => {
+        const r = runs.find((x) => x.id === id)
+        return (
+          <li key={id} className="flex items-center gap-2.5 border-b border-line py-1.5">
+            <a
+              href={format({ screen: 'run', id })}
+              onClick={(e) => {
+                e.preventDefault()
+                navigate({ screen: 'run', id })
+              }}
+              className="font-mono text-[0.75rem] text-fg-muted hover:text-fg"
+            >
+              {id}
+            </a>
+            <span className="flex-1 truncate">{r?.title ?? ''}</span>
+            <span className="font-mono text-[0.71875rem] text-fg-subtle">{runState(r)}</span>
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 

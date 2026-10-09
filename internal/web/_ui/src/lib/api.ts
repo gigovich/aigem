@@ -27,6 +27,7 @@ import type {
   Ticket,
   NewTicket,
   TicketPatch,
+  Worktree,
 } from './wire'
 
 /**
@@ -104,6 +105,9 @@ export const api = {
   removeRun: async (id: string, signal?: AbortSignal) => {
     await send(`/api/runs/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
   },
+  stopRun: async (id: string, signal?: AbortSignal) => {
+    await send(`/api/runs/${encodeURIComponent(id)}/stop`, { method: 'POST', signal })
+  },
   runEvents: (id: string, since = 0, limit = 0, signal?: AbortSignal) =>
     json<RunEvent[]>(
       `/api/runs/${encodeURIComponent(id)}/events${query({ since, limit: limit || undefined })}`,
@@ -139,6 +143,24 @@ export const api = {
     }),
   deleteTicket: async (project: string, id: string, signal?: AbortSignal) => {
     await send(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      signal,
+    })
+  },
+  runTicket: (project: string, id: string, signal?: AbortSignal) =>
+    json<Run>(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      signal,
+    }),
+  mergeTicket: (project: string, id: string, signal?: AbortSignal) =>
+    json<Ticket>(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}/merge`, {
+      method: 'POST',
+      signal,
+    }),
+  worktrees: (project: string, signal?: AbortSignal) =>
+    json<Worktree[]>(`/api/projects/${encodeURIComponent(project)}/worktrees`, { signal }),
+  discardWorktree: async (project: string, name: string, signal?: AbortSignal) => {
+    await send(`/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(name)}`, {
       method: 'DELETE',
       signal,
     })

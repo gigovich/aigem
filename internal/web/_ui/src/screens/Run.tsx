@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
+import { api } from '@/lib/api'
 import { clock, elapsed, tokens as tokenLabel } from '@/lib/format'
 import { navigate } from '@/lib/route'
 import { readable } from '@/lib/text'
 import type { RunOp } from '@/lib/wire'
 import type { RunSocketState } from '@/lib/socket'
-import { useApp } from '@/state/app'
+import { explain, refresh, setBanner, useApp } from '@/state/app'
 import { usePublishInspector } from '@/state/inspector'
 import { visibleRows } from '@/state/eventrow'
 import { agentTree, liveStatus, planRows } from '@/state/run'
@@ -35,9 +36,7 @@ type Props = {
  * the same events - with the room a transcript does not have: the agent tree,
  * the run's own fields, the context window and the files it touched.
  *
- * There is no "Stop run" button. Stopping a run is bound up with discarding the
- * worktree it was working in, and neither exists yet; a button that quietly did
- * half of that would be worse than its absence.
+ * "Stop" ends the session and keeps the record and the timeline.
  */
 export function Run({ run, runId, state, send }: Props) {
   const { record, narrow } = useApp((s) => ({
@@ -52,6 +51,18 @@ export function Run({ run, runId, state, send }: Props) {
   // promises a keyboard contract it does not keep. Selecting a node narrows the
   // stream to what that agent did.
   const [agent, setAgent] = useState('root')
+  const [stopping, setStopping] = useState(false)
+  const stop = async () => {
+    setStopping(true)
+    try {
+      await api.stopRun(runId)
+      await refresh.runs()
+    } catch (err) {
+      setBanner(explain(err))
+    } finally {
+      setStopping(false)
+    }
+  }
 
   // Not memoised: the fold appends to `run.rows` in place, so the array is the
   // same object from one event to the next and a memo on it would never
@@ -137,6 +148,14 @@ export function Run({ run, runId, state, send }: Props) {
               className="h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
             >
               Interrupt
+            </button>
+            <button
+              type="button"
+              disabled={!record.live || stopping}
+              onClick={() => void stop()}
+              className="h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
+            >
+              Stop
             </button>
           </div>
         </div>

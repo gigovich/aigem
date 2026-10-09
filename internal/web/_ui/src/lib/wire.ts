@@ -40,6 +40,10 @@ export type Run = {
   id: string
   sessionId?: string
   projectId?: string
+  /** Set on a run that works on a ticket. */
+  ticketId?: string
+  worktree?: string
+  branch?: string
   mode: string
   title?: string
   model?: string
@@ -85,11 +89,23 @@ export type Ticket = {
   runs: string[]
   runnable: boolean
   progress?: { done: number; total: number }
+  /** A blocked ticket whose branch is committed and checked and only waits for the merge. */
+  mergePending?: boolean
 }
 
 export type NewTicket = { repo?: string; title: string; body?: string; parent?: string; dependsOn?: string[] }
 
 export type TicketPatch = { status?: TicketStatus; dependsOn?: string[] }
+
+/** An `aigem/<name>` branch in one of a project's repositories. */
+export type Worktree = {
+  repo: string
+  name: string
+  path?: string
+  ticket?: string
+  run?: string
+  state: 'running' | 'kept' | 'merged'
+}
 
 export type Model = {
   ref: string
