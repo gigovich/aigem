@@ -42,14 +42,14 @@ export function QuickChat({ run, runId, onSubmit, ready }: Props) {
 
   return (
     <div
-      className="fixed right-[14px] bottom-[34px] z-[70] flex max-h-[62vh] w-[372px] max-w-[calc(100vw-28px)] flex-col overflow-hidden rounded-[9px] border border-line-strong bg-surface shadow-panel"
+      className="fixed right-3.5 bottom-8.5 z-[70] flex max-h-[62vh] w-93 max-w-[calc(100vw-1.75rem)] flex-col overflow-hidden rounded-[0.5625rem] border border-line-strong bg-surface shadow-panel"
       style={{ animation: 'aigem-in .12s ease-out' }}
       role="dialog"
       aria-label="Quick chat"
     >
-      <div className="flex flex-none items-center gap-2 border-b border-line px-[11px] py-[9px]">
-        <span className="text-[12.5px] font-semibold">Quick chat</span>
-        <span className="font-mono text-[10px] text-fg-subtle">
+      <div className="flex flex-none items-center gap-2 border-b border-line px-2.75 py-2.25">
+        <span className="text-[0.84375rem] font-semibold">Quick chat</span>
+        <span className="font-mono text-[0.6875rem] text-fg-subtle">
           {runId ? run.title || runId : 'no session'}
         </span>
         <button
@@ -61,7 +61,7 @@ export function QuickChat({ run, runId, onSubmit, ready }: Props) {
             navigate({ screen: 'chat', id: runId })
           }}
           title="Continue in the session"
-          className="ml-auto h-[21px] rounded-[5px] border border-line px-2 text-[10.5px] text-fg-subtle enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
+          className="ml-auto h-5.25 rounded-[0.3125rem] border border-line px-2 text-[0.71875rem] text-fg-subtle enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
         >
           Open session
         </button>
@@ -69,15 +69,15 @@ export function QuickChat({ run, runId, onSubmit, ready }: Props) {
           type="button"
           onClick={() => setQuick(false)}
           aria-label="Close quick chat"
-          className="grid size-5 cursor-pointer place-items-center rounded-[4px] text-[13px] text-fg-subtle hover:bg-s0 hover:text-fg"
+          className="grid size-5 place-items-center rounded-[0.25rem] text-[0.875rem] text-fg-subtle hover:bg-s0 hover:text-fg"
         >
           <span aria-hidden="true">×</span>
         </button>
       </div>
 
-      <div ref={feed} className="flex-1 overflow-y-auto px-[11px] py-[10px]">
+      <div ref={feed} className="flex-1 overflow-y-auto px-2.75 py-2.5">
         {rows.length === 0 && (
-          <p className="m-0 text-[12px] text-fg-subtle">
+          <p className="m-0 text-[0.8125rem] text-fg-subtle">
             {!runId
               ? 'Start a session to ask anything.'
               : ready
@@ -88,15 +88,15 @@ export function QuickChat({ run, runId, onSubmit, ready }: Props) {
         {rows.map((e) => {
           const mine = e.kind === EventKind.UserMessage
           return (
-            <div key={e.seq} className="py-[6px]">
+            <div key={e.seq} className="py-1.5">
               <div
-                className="font-mono text-[9.5px] tracking-[.06em] uppercase"
+                className="font-mono text-[0.65625rem] tracking-[.06em] uppercase"
                 style={{ color: mine ? 'var(--primary)' : 'var(--agent)' }}
               >
                 {mine ? 'you' : 'agent'}
               </div>
               <div
-                className="mt-[3px] text-[12.5px] text-pretty"
+                className="mt-0.75 text-[0.84375rem] text-pretty"
                 style={{ color: mine ? 'var(--fg)' : 'var(--fg-muted)' }}
               >
                 {e.text}
@@ -106,8 +106,8 @@ export function QuickChat({ run, runId, onSubmit, ready }: Props) {
         })}
       </div>
 
-      <div className="flex-none border-t border-line bg-shell px-[11px] py-[9px]">
-        <div className="flex gap-[7px]">
+      <div className="flex-none border-t border-line bg-shell px-2.75 py-2.25">
+        <div className="flex gap-1.75">
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -119,13 +119,13 @@ export function QuickChat({ run, runId, onSubmit, ready }: Props) {
             disabled={!runId || !ready}
             placeholder="Ask anything, or say what to do…"
             aria-label="Ask anything, or say what to do"
-            className="h-[28px] min-w-0 flex-1 rounded-md border border-line bg-bg px-[9px] text-[12px] outline-none focus:border-primary disabled:opacity-50"
+            className="h-7 min-w-0 flex-1 rounded-md border border-line bg-bg px-2.25 text-[0.8125rem] outline-none focus:border-primary disabled:opacity-50"
           />
           <button
             type="button"
             onClick={send}
             disabled={!runId || !ready || !text.trim()}
-            className="h-[28px] flex-none rounded-md border border-line bg-s0 px-[11px] text-[11.5px] enabled:cursor-pointer enabled:hover:bg-s1 disabled:opacity-50"
+            className="h-7 flex-none rounded-md border border-line bg-s0 px-2.75 text-[0.78125rem] enabled:hover:bg-s1 disabled:opacity-50"
           >
             Send
           </button>

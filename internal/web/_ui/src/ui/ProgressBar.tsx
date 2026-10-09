@@ -23,14 +23,14 @@ export function ProgressBar({ used, total, label, title = 'Context' }: Props) {
   const caption = label ?? (total > 0 ? tokenLabel(used, total) : `${value}%`)
   return (
     <div>
-      <div className="flex justify-between text-[11px] text-fg-subtle">
+      <div className="flex justify-between text-[0.75rem] text-fg-subtle">
         <span>{title}</span>
         <span className="font-mono" style={{ color }}>
           {value}%
         </span>
       </div>
       <div
-        className="mt-[5px] h-[5px] overflow-hidden rounded-[3px] bg-s0"
+        className="mt-1.25 h-1.25 overflow-hidden rounded-[0.1875rem] bg-s0"
         role="progressbar"
         aria-valuenow={value}
         aria-valuemin={0}
@@ -43,7 +43,7 @@ export function ProgressBar({ used, total, label, title = 'Context' }: Props) {
         />
       </div>
       {total > 0 && (
-        <div className="mt-1 font-mono text-[10px] text-fg-subtle">{caption}</div>
+        <div className="mt-1 font-mono text-[0.6875rem] text-fg-subtle">{caption}</div>
       )}
     </div>
   )

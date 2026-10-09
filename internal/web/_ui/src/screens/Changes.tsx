@@ -48,18 +48,18 @@ export function Changes({ runId, seq }: { runId: string; seq: number }) {
   if (files.length === 0) return <EmptyState title="This run has not changed any files." />
 
   return (
-    <div className="flex-1 overflow-y-auto px-[18px] py-3">
+    <div className="flex-1 overflow-y-auto px-4.5 py-3">
       {files.map((f) => (
         <div key={f.path} className="mb-4 max-w-[110ch]">
           {f.truncated ? (
             <div className="rounded-md border border-line bg-bg p-3">
-              <div className="flex items-center gap-2 font-mono text-[11px] text-fg-muted">
+              <div className="flex items-center gap-2 font-mono text-[0.75rem] text-fg-muted">
                 <span aria-hidden="true" style={{ color: 'var(--modified)' }}>
                   ~
                 </span>
                 <span className="break-all">{readable(f.path)}</span>
               </div>
-              <p className="mt-2 mb-0 text-[11.5px] text-fg-subtle">
+              <p className="mt-2 mb-0 text-[0.78125rem] text-fg-subtle">
                 {f.created ? 'Created' : 'Changed'}, {sizeOf(f.oldBytes ?? 0)} to{' '}
                 {sizeOf(f.newBytes ?? 0)} — too large for the daemon to send both sides.
               </p>
@@ -81,8 +81,8 @@ function FileDiff({ file }: { file: Artifact }) {
   if (diff.kind === 'invisible') {
     return (
       <div className="rounded-md border border-line bg-bg p-3">
-        <div className="font-mono text-[11px] break-all text-fg-muted">{readable(file.path)}</div>
-        <p className="mt-2 mb-0 text-[11.5px] text-fg-subtle">
+        <div className="font-mono text-[0.75rem] break-all text-fg-muted">{readable(file.path)}</div>
+        <p className="mt-2 mb-0 text-[0.78125rem] text-fg-subtle">
           Every line is unchanged; the line endings or the final newline are not.
         </p>
       </div>
@@ -91,8 +91,8 @@ function FileDiff({ file }: { file: Artifact }) {
   if (diff.kind === 'too-large') {
     return (
       <div className="rounded-md border border-line bg-bg p-3">
-        <div className="font-mono text-[11px] break-all text-fg-muted">{readable(file.path)}</div>
-        <p className="mt-2 mb-0 text-[11.5px] text-fg-subtle">
+        <div className="font-mono text-[0.75rem] break-all text-fg-muted">{readable(file.path)}</div>
+        <p className="mt-2 mb-0 text-[0.78125rem] text-fg-subtle">
           {diff.oldLines} lines became {diff.newLines} — too long to diff in a browser.
         </p>
       </div>
@@ -105,7 +105,7 @@ function FileDiff({ file }: { file: Artifact }) {
         change={file.created ? '+' : '~'}
         lines={unified(diff.lines)}
       />
-      <div className="mt-1 flex gap-3 font-mono text-[10.5px]">
+      <div className="mt-1 flex gap-3 font-mono text-[0.71875rem]">
         <span style={{ color: 'var(--added)' }}>+{diff.added}</span>
         <span style={{ color: 'var(--deleted)' }}>−{diff.removed}</span>
       </div>

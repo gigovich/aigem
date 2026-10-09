@@ -31,17 +31,17 @@ export function Worktrees() {
   }, [project])
 
   const columns: Column<Repository>[] = [
-    { key: 'name', header: 'Repository', width: '200px', cell: (r) => r.name || `${name} (the project itself)` },
-    { key: 'main', header: 'Main branch', width: '140px', cell: (r) => r.main || 'neither main nor master' },
-    { key: 'dir', header: 'Directory', width: 'minmax(200px, 1fr)', cell: (r) => r.dir },
-    { key: 'worktrees', header: 'Worktrees', width: '140px', cell: () => 'no worktrees yet' },
+    { key: 'name', header: 'Repository', width: '12.5rem', cell: (r) => r.name || `${name} (the project itself)` },
+    { key: 'main', header: 'Main branch', width: '8.75rem', cell: (r) => r.main || 'neither main nor master' },
+    { key: 'dir', header: 'Directory', width: 'minmax(12.5rem, 1fr)', cell: (r) => r.dir },
+    { key: 'worktrees', header: 'Worktrees', width: '8.75rem', cell: () => 'no worktrees yet' },
   ]
 
   const loaded = repos?.project === project ? repos.items : null
   return (
     <>
-      <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-3">
-        <h1 className="m-0 text-[16px] font-semibold tracking-[-0.015em]">Repositories & worktrees</h1>
+      <div className="flex-none border-b border-line px-4.5 pt-3.5 pb-3">
+        <h1 className="m-0 text-[1.0625rem] font-semibold tracking-[-0.015em]">Repositories & worktrees</h1>
       </div>
       {!project ? (
         <EmptyState
@@ -52,7 +52,7 @@ export function Worktrees() {
           }
         />
       ) : loaded === null ? (
-        <p className="px-[18px] py-4 text-[12px] text-fg-subtle">Reading the repositories…</p>
+        <p className="px-4.5 py-4 text-[0.8125rem] text-fg-subtle">Reading the repositories…</p>
       ) : (
         <DataGrid
           label="Repositories"

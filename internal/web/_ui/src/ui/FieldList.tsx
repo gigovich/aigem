@@ -13,15 +13,15 @@ export function FieldList({ fields, keyWidth = 84 }: { fields: Field[]; keyWidth
   return (
     <dl className="m-0">
       {fields.map((f) => (
-        <div key={f.key} className="flex items-baseline gap-[10px] py-1">
+        <div key={f.key} className="flex items-baseline gap-2.5 py-1">
           <dt
-            className="flex-none text-[11px] text-fg-subtle"
-            style={{ width: `${keyWidth}px` }}
+            className="flex-none text-[0.75rem] text-fg-subtle"
+            style={{ width: `${keyWidth / 16}rem` }}
           >
             {f.key}
           </dt>
           <dd
-            className="m-0 min-w-0 font-mono text-[11.5px] break-all"
+            className="m-0 min-w-0 font-mono text-[0.78125rem] break-all"
             style={{ color: f.color ?? 'var(--fg-muted)' }}
           >
             {f.value}

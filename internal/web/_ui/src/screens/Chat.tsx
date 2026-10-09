@@ -92,9 +92,11 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
   const [all, setAll] = useState(false)
   const scoped = all || !hasProjects ? runs : inProject(runs, project)
   const needle = filter.trim().toLowerCase()
-  const shown = needle
-    ? scoped.filter((r) => `${r.title ?? ''} ${r.id} ${r.mode}`.toLowerCase().includes(needle))
-    : scoped
+  const shown = (
+    needle ? scoped.filter((r) => `${r.title ?? ''} ${r.id} ${r.mode}`.toLowerCase().includes(needle)) : scoped
+  )
+    .slice()
+    .reverse()
 
   const rows = run.rows
   const pending = run.pending[0]
@@ -175,13 +177,13 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
     <div className="flex min-h-0 flex-1">
       {showList && (
         <div
-          className={`flex flex-none flex-col overflow-hidden border-r border-line ${phone ? 'w-full' : 'w-[238px]'}`}
+          className={`flex flex-none flex-col overflow-hidden border-r border-line ${phone ? 'w-full' : 'w-59.5'}`}
         >
-          <div className="flex flex-none items-center gap-2 border-b border-line py-[11px] pr-[10px] pl-3">
-            <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+          <div className="flex flex-none items-center gap-2 border-b border-line py-2.75 pr-2.5 pl-3">
+            <h2 className="m-0 text-[0.6875rem] font-semibold tracking-[.07em] text-fg-subtle uppercase">
               Sessions
             </h2>
-            <span className="font-mono text-[10px] text-fg-subtle">{scoped.length}</span>
+            <span className="font-mono text-[0.6875rem] text-fg-subtle">{scoped.length}</span>
             {hasProjects && (
               <button
                 type="button"
@@ -189,9 +191,9 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                 aria-label="All projects"
                 title="Show sessions from every project"
                 onClick={() => setAll(!all)}
-                className={`h-5 rounded-[5px] border px-[7px] text-[10.5px] ${
+                className={`h-5 rounded-[0.3125rem] border px-1.75 text-[0.71875rem] ${
                   all ? 'border-primary text-fg' : 'border-line text-fg-muted'
-                } cursor-pointer hover:border-line-strong hover:text-fg`}
+                } hover:border-line-strong hover:text-fg`}
               >
                 All
               </button>
@@ -201,12 +203,12 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
               onClick={onNew}
               disabled={opening}
               title="New session"
-              className="ml-auto h-5 rounded-[5px] border border-line px-[7px] text-[10.5px] text-fg-muted enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
+              className="ml-auto h-5 rounded-[0.3125rem] border border-line px-1.75 text-[0.71875rem] text-fg-muted enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
             >
               New
             </button>
           </div>
-          <div className="flex-none border-b border-line px-2 py-[6px]">
+          <div className="flex-none border-b border-line px-2 py-1.5">
             <FilterInput
               value={filter}
               onChange={setFilter}
@@ -259,10 +261,10 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
             />
           ) : (
             <>
-              <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-[11px]">
-                <div className="flex flex-wrap items-center gap-[10px]">
+              <div className="flex-none border-b border-line px-4.5 pt-3.5 pb-2.75">
+                <div className="flex flex-wrap items-center gap-2.5">
                   {phone && <Back label="Sessions" to={{ screen: 'chat' }} />}
-                  <h1 className="m-0 text-[15px] font-semibold tracking-[-0.015em]">
+                  <h1 className="m-0 text-[1rem] font-semibold tracking-[-0.015em]">
                     {run.title || record.title || 'Untitled session'}
                   </h1>
                   <StatusChip status={liveStatus(record, run)} />
@@ -272,7 +274,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                     who walked away". */}
                   {run.clients.length > 1 && (
                     <span
-                      className="font-mono text-[10.5px] text-fg-subtle"
+                      className="font-mono text-[0.71875rem] text-fg-subtle"
                       title={run.clients.map((c) => c.label || c.kind || c.id).join(', ')}
                     >
                       {run.clients.length} watching
@@ -282,7 +284,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                     region inserted together with its text is announced by
                     nothing. */}
                   <span
-                    className="font-mono text-[10.5px] text-warning"
+                    className="font-mono text-[0.71875rem] text-warning"
                     role="status"
                     aria-live="polite"
                     aria-label="Stream"
@@ -293,7 +295,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                         ? reason || 'stream ended'
                         : 'reconnecting'}
                   </span>
-                  <div className="ml-auto flex flex-none gap-[6px]">
+                  <div className="ml-auto flex flex-none gap-1.5">
                     <button
                       type="button"
                       // Nothing is read back: the daemon announces the changed
@@ -304,7 +306,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                       // after the announcement and undo it.
                       onClick={() => send({ op: 'step_mode', on: !record.step })}
                       title="Pause before each tool call"
-                      className="h-[26px] cursor-pointer rounded-md border px-[10px] text-[11.5px] whitespace-nowrap"
+                      className="h-6.5 rounded-md border px-2.5 text-[0.78125rem] whitespace-nowrap"
                       style={{
                         background: record.step ? 'var(--s0)' : 'transparent',
                         borderColor: record.step ? 'var(--primary)' : 'var(--border)',
@@ -318,7 +320,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                       <button
                         type="button"
                         onClick={() => send({ op: 'interrupt' })}
-                        className="h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] whitespace-nowrap text-fg-muted hover:border-line-strong hover:text-fg"
+                        className="h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] whitespace-nowrap text-fg-muted hover:border-line-strong hover:text-fg"
                       >
                         Interrupt
                       </button>
@@ -326,7 +328,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                     <button
                       type="button"
                       onClick={() => navigate({ screen: 'run', id: record.id })}
-                      className="h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] whitespace-nowrap text-fg-muted hover:border-line-strong hover:text-fg"
+                      className="h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] whitespace-nowrap text-fg-muted hover:border-line-strong hover:text-fg"
                     >
                       Open run
                     </button>
@@ -336,7 +338,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                   them - a model reference and a working directory - are as long
                   as the machine makes them. Each cell is clipped on its own so
                   one long path cannot push the rest off the row. */}
-                <div className="mt-[9px] flex flex-wrap gap-x-4 gap-y-[6px] font-mono text-[10.5px] text-fg-subtle">
+                <div className="mt-2.25 flex flex-wrap gap-x-4 gap-y-1.5 font-mono text-[0.71875rem] text-fg-subtle">
                   <label className="flex min-w-0 items-baseline gap-1 whitespace-nowrap">
                     model
                     <select
@@ -344,7 +346,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                       disabled={run.running || state !== 'open'}
                       aria-label="Model for this conversation"
                       onChange={(e) => send({ op: 'switch_model', ref: e.target.value })}
-                      className="min-w-0 max-w-[28ch] cursor-pointer truncate border-none bg-transparent font-mono text-[10.5px] text-fg-muted outline-none disabled:cursor-not-allowed"
+                      className="min-w-0 max-w-[28ch] truncate border-none bg-transparent font-mono text-[0.71875rem] text-fg-muted outline-none"
                     >
                       {/* The run's own model first, because it may be one the
                         registry no longer lists - a model removed from
@@ -371,10 +373,10 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
               </div>
 
               {rows.length === 0 ? (
-                <div className="flex-1 overflow-y-auto px-[18px]">
+                <div className="flex-1 overflow-y-auto px-4.5">
                   <div className="max-w-[84ch] py-6">
-                    <div className="text-[13px] text-fg-muted">Nothing said yet.</div>
-                    <div className="mt-1 max-w-[56ch] text-[12px] text-pretty text-fg-subtle">
+                    <div className="text-[0.875rem] text-fg-muted">Nothing said yet.</div>
+                    <div className="mt-1 max-w-[56ch] text-[0.8125rem] text-pretty text-fg-subtle">
                       Describe what the agent should do. With step mode on it will stop before every
                       tool call and wait for you.
                     </div>
@@ -392,7 +394,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                 role="region"
                 aria-live="assertive"
                 aria-label="Approval"
-                className="flex-none px-[18px]"
+                className="flex-none px-4.5"
               >
                 {pending && (
                   <div className="max-w-[84ch] pb-2">
@@ -405,14 +407,14 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                 )}
               </div>
 
-              <div className="flex-none border-t border-line bg-shell px-[18px] pt-[10px] pb-3">
+              <div className="flex-none border-t border-line bg-shell px-4.5 pt-2.5 pb-3">
                 <div className="max-w-[84ch]">
                   {images.length > 0 && (
-                    <ul aria-label="Attachments" className="m-0 mb-2 flex list-none flex-wrap gap-[6px] p-0">
+                    <ul aria-label="Attachments" className="m-0 mb-2 flex list-none flex-wrap gap-1.5 p-0">
                       {images.map((im, i) => (
                         <li
                           key={`${im.name}-${i}`}
-                          className="flex h-[22px] items-center gap-[6px] rounded-[5px] border border-line bg-bg px-2 font-mono text-[10.5px] text-fg-muted"
+                          className="flex h-5.5 items-center gap-1.5 rounded-[0.3125rem] border border-line bg-bg px-2 font-mono text-[0.71875rem] text-fg-muted"
                         >
                           <span>{im.name}</span>
                           <span className="text-fg-subtle">{Math.ceil(im.bytes / 1024)}K</span>
@@ -420,7 +422,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                             type="button"
                             onClick={() => setImages((list) => list.filter((_, j) => j !== i))}
                             aria-label={`Remove ${im.name}`}
-                            className="cursor-pointer text-fg-subtle hover:text-fg"
+                            className="text-fg-subtle hover:text-fg"
                           >
                             <span aria-hidden="true">×</span>
                           </button>
@@ -449,7 +451,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                       }}
                       placeholder="Direct the agent — constraints, corrections, next step. ⌘↵ to send."
                       aria-label="Message"
-                      className="min-w-0 flex-1 resize-y rounded-md border border-line bg-bg px-[10px] py-2 text-[12.5px] leading-[1.5] outline-none focus:border-primary"
+                      className="min-w-0 flex-1 resize-y rounded-md border border-line bg-bg px-2.5 py-2 text-[0.84375rem] leading-[1.5] outline-none focus:border-primary"
                     />
                     <input
                       ref={picker}
@@ -469,7 +471,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                       disabled={state !== 'open'}
                       aria-label="Attach"
                       title="Attach an image"
-                      className="flex-none self-stretch rounded-md border border-line px-[10px] text-[14px] text-fg-muted enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
+                      className="flex-none self-stretch rounded-md border border-line px-2.5 text-[0.9375rem] text-fg-muted enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
                     >
                       <span aria-hidden="true">⊕</span>
                     </button>
@@ -477,7 +479,7 @@ export function Chat({ run, runId, state, reason, send, selected, onNew, onClose
                       type="button"
                       onClick={submit}
                       disabled={(!text.trim() && images.length === 0) || state !== 'open'}
-                      className="flex-none self-stretch rounded-md border border-primary bg-primary px-[14px] text-[12px] font-medium text-bg enabled:cursor-pointer enabled:hover:brightness-110 disabled:opacity-50"
+                      className="flex-none self-stretch rounded-md border border-primary bg-primary px-3.5 text-[0.8125rem] font-medium text-bg enabled:hover:brightness-110 disabled:opacity-50"
                     >
                       Send
                     </button>
@@ -526,12 +528,12 @@ function SessionRow({
         type="button"
         onClick={onOpen}
         aria-current={active ? 'true' : undefined}
-        className="w-full cursor-default py-[7px] pr-[10px] pl-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+        className="w-full py-1.75 pr-2.5 pl-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
       >
-        <span className="flex items-center gap-[7px]">
+        <span className="flex items-center gap-1.75">
           <StatusChip status={status} compact />
           <span
-            className="min-w-0 overflow-hidden text-[12px] text-ellipsis whitespace-nowrap"
+            className="min-w-0 overflow-hidden text-[0.8125rem] text-ellipsis whitespace-nowrap"
             style={{
               color: active ? 'var(--fg)' : 'var(--fg-muted)',
               fontWeight: active ? 500 : 400,
@@ -540,23 +542,28 @@ function SessionRow({
             {run.title || 'Untitled session'}
           </span>
           {run.waiting && (
-            <span className="flex-none rounded-[3px] border border-attention px-1 font-mono text-[9px] text-attention">
+            <span className="flex-none rounded-[0.1875rem] border border-attention px-1 font-mono text-[0.625rem] text-attention">
               wait
             </span>
           )}
+          {!run.live && (
+            <span className="ml-auto flex-none rounded-[0.1875rem] border border-line-strong px-1 font-mono text-[0.625rem] text-fg-subtle">
+              closed
+            </span>
+          )}
         </span>
-        <span className="mt-[2px] flex items-baseline gap-2 font-mono text-[10px] text-fg-subtle">
+        <span className="mt-0.5 flex items-baseline gap-2 font-mono text-[0.6875rem] text-fg-subtle">
           <span>{run.mode}</span>
           <span className="ml-auto">{ago(run.updated)}</span>
         </span>
       </button>
-      <div className="flex justify-end px-[10px] pb-1">
+      <div className="flex justify-end px-2.5 pb-1">
         <button
           type="button"
           onClick={onClose}
           aria-label={`Close ${run.title || run.id}`}
           title="Close session"
-          className="grid size-6 cursor-pointer place-items-center text-[11px] text-fg-subtle hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+          className="grid size-6 place-items-center text-[0.75rem] text-fg-subtle hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
         >
           <span aria-hidden="true">×</span>
         </button>

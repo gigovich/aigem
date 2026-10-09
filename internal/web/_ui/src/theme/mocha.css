@@ -4,6 +4,7 @@
  * second palette is a second file and not a search-and-replace. Mocha lives on
  * bare :root because it is the default; Latte overrides under an attribute. */
 :root {
+  color-scheme: dark;
   --bg: #11111b;
   --shell: #181825;
   --surface: #1e1e2e;

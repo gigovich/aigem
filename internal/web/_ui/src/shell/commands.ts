@@ -17,7 +17,6 @@ import {
   setQuick,
   signOut,
   store,
-  toggleDensity,
   toggleInspector,
   toggleTheme,
 } from '@/state/app'
@@ -162,18 +161,6 @@ export function paletteItems(state: AppState): PaletteItem[] {
       run: () => {
         setPalette(false)
         toggleInspector()
-      },
-    },
-    {
-      id: 'density',
-      label: 'Toggle density',
-      hint: 'dense / comfortable',
-      icon: '≡',
-      group: 'Preferences',
-      run: () => {
-        setPalette(false)
-        toggleDensity()
-        flash(`Density: ${store.get().density}`)
       },
     },
     {

@@ -14,7 +14,7 @@ export function FilterInput({ value, onChange, label, className = '' }: Props) {
       onChange={(e) => onChange(e.target.value)}
       placeholder={`${label}…  /`}
       aria-label={label}
-      className={`h-[26px] max-w-full rounded-md border border-line bg-bg px-[10px] text-[12px] outline-none focus:border-primary ${className}`}
+      className={`h-6.5 max-w-full rounded-md border border-line bg-bg px-2.5 text-[0.8125rem] outline-none focus:border-primary ${className}`}
     />
   )
 }

@@ -508,3 +508,11 @@ test('the run header counts in the singular when there is one', async () => {
   h.emit({ seq: 1, time: '2026-09-08T12:00:01Z', kind: EventKind.TurnStart })
   expect(await screen.findByText('1 event')).toBeInTheDocument()
 })
+
+test('the run screen leads back to its session', async () => {
+  const user = userEvent.setup()
+  await mountApp({ runs: [RUN] })
+  act(() => navigate({ screen: 'run', id: 'r-1' }))
+  await user.click(await screen.findByRole('button', { name: '‹ Session' }))
+  expect(window.location.pathname).toBe('/chat/r-1')
+})

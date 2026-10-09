@@ -63,13 +63,13 @@ export function Activity() {
 
   return (
     <>
-      <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-3">
-        <h1 className="m-0 text-[16px] font-semibold tracking-[-0.015em]">Activity</h1>
-        <p className="mt-1 mb-0 text-[12px] text-fg-muted">
+      <div className="flex-none border-b border-line px-4.5 pt-3.5 pb-3">
+        <h1 className="m-0 text-[1.0625rem] font-semibold tracking-[-0.015em]">Activity</h1>
+        <p className="mt-1 mb-0 text-[0.8125rem] text-fg-muted">
           Everything this daemon did, newest first. Entries older than thirty days are dropped when
           it restarts.
         </p>
-        <FilterInput value={filter} onChange={setFilter} label="Filter activity" className="mt-[10px] w-[280px]" />
+        <FilterInput value={filter} onChange={setFilter} label="Filter activity" className="mt-2.5 w-70" />
       </div>
       <div className="flex-1 overflow-y-auto pt-2 pb-10">
         {shown.map((a) => {
@@ -80,7 +80,7 @@ export function Activity() {
           return (
             <div
               key={key}
-              className={`flex min-h-row items-center border-b border-line pr-[18px] hover:bg-s0 ${active ? 'bg-s0' : ''}`}
+              className={`flex min-h-row items-center border-b border-line pr-4.5 hover:bg-s0 ${active ? 'bg-s0' : ''}`}
             >
               <button
                 type="button"
@@ -89,26 +89,26 @@ export function Activity() {
                   reveal()
                 }}
                 aria-current={active ? 'true' : undefined}
-                className="grid min-h-row min-w-0 flex-1 cursor-default items-center gap-[10px] pl-[18px] text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
-                style={{ gridTemplateColumns: '62px 96px 16px minmax(0,1fr)' }}
+                className="grid min-h-row min-w-0 flex-1 items-center gap-2.5 pl-4.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+                style={{ gridTemplateColumns: '3.875rem 6rem 1rem minmax(0,1fr)' }}
               >
-                <span className="font-mono text-[10.5px] text-fg-subtle">{a.at ? hhmm(a.at) : ''}</span>
-                <span className="overflow-hidden font-mono text-[10.5px] text-ellipsis whitespace-nowrap text-fg-subtle">
+                <span className="font-mono text-[0.71875rem] text-fg-subtle">{a.at ? hhmm(a.at) : ''}</span>
+                <span className="overflow-hidden font-mono text-[0.71875rem] text-ellipsis whitespace-nowrap text-fg-subtle">
                   {a.kind}
                 </span>
-                <span aria-hidden="true" className="text-center text-[10px]" style={{ color: m.color }}>
+                <span aria-hidden="true" className="text-center text-[0.6875rem]" style={{ color: m.color }}>
                   {m.glyph}
                 </span>
                 <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-fg-muted">
                   {a.text}
                 </span>
               </button>
-              <span className="w-[100px] flex-none text-right">
+              <span className="w-25 flex-none text-right">
                 {ref && (
                   <button
                     type="button"
                     onClick={() => navigate({ screen: 'run', id: ref })}
-                    className="cursor-pointer font-mono text-[10.5px] text-primary hover:underline"
+                    className="font-mono text-[0.71875rem] text-primary hover:underline"
                   >
                     {ref}
                   </button>

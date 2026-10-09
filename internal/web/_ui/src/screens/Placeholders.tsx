@@ -35,8 +35,8 @@ export function Task() {
 function Screen({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <>
-      <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-3">
-        <h1 className="m-0 text-[16px] font-semibold tracking-[-0.015em]">{title}</h1>
+      <div className="flex-none border-b border-line px-4.5 pt-3.5 pb-3">
+        <h1 className="m-0 text-[1.0625rem] font-semibold tracking-[-0.015em]">{title}</h1>
       </div>
       <div className="flex-1 overflow-y-auto">{children}</div>
     </>

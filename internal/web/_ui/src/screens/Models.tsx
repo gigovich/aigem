@@ -99,15 +99,15 @@ export function Models({ selected }: { selected?: string }) {
     {
       key: 'model',
       header: 'Model',
-      width: 'minmax(160px,1.4fr)',
+      width: 'minmax(10rem,1.4fr)',
       cell: (m) => (
         <span className="flex min-w-0 items-baseline gap-2">
-          <span className="overflow-hidden text-[12.5px] font-medium text-ellipsis whitespace-nowrap">
+          <span className="overflow-hidden text-[0.84375rem] font-medium text-ellipsis whitespace-nowrap">
             {modelName(m)}
           </span>
-          <span className="flex-none font-mono text-[10px] text-fg-subtle">{m.provider}</span>
+          <span className="flex-none font-mono text-[0.6875rem] text-fg-subtle">{m.provider}</span>
           {m.default && (
-            <span className="flex-none rounded-[3px] border border-line-strong px-[5px] py-px font-mono text-[9.5px] text-fg-muted">
+            <span className="flex-none rounded-[0.1875rem] border border-line-strong px-1.25 py-px font-mono text-[0.65625rem] text-fg-muted">
               default
             </span>
           )}
@@ -117,15 +117,15 @@ export function Models({ selected }: { selected?: string }) {
     {
       key: 'status',
       header: 'Status',
-      width: '96px',
+      width: '6rem',
       cell: (m) => <StatusChip status={state(m)} />,
     },
     {
       key: 'context',
       header: 'Context',
-      width: '72px',
+      width: '4.5rem',
       cell: (m) => (
-        <span className="font-mono text-[11px] text-fg-muted">
+        <span className="font-mono text-[0.75rem] text-fg-muted">
           {m.contextWindow ? compact(m.contextWindow) : '—'}
         </span>
       ),
@@ -133,19 +133,19 @@ export function Models({ selected }: { selected?: string }) {
     {
       key: 'reason',
       header: 'Reason',
-      width: '68px',
+      width: '4.25rem',
       cell: (m) => (
-        <span className="font-mono text-[11px] text-fg-muted">{m.reasoning ? 'yes' : '—'}</span>
+        <span className="font-mono text-[0.75rem] text-fg-muted">{m.reasoning ? 'yes' : '—'}</span>
       ),
     },
     {
       key: 'used',
       header: 'In use by',
-      width: '100px',
+      width: '6.25rem',
       cell: (m) => {
         const n = inUse(m.ref)
         return (
-          <span className="font-mono text-[10.5px] text-fg-subtle">
+          <span className="font-mono text-[0.71875rem] text-fg-subtle">
             {n === 0 ? '—' : `${n} run${n > 1 ? 's' : ''}`}
           </span>
         )
@@ -158,10 +158,10 @@ export function Models({ selected }: { selected?: string }) {
       // so the slot shows the output cap, which is on the wire.
       key: 'maxout',
       header: 'Max out',
-      width: '72px',
+      width: '4.5rem',
       align: 'right',
       cell: (m) => (
-        <span className="font-mono text-[11px] text-fg-subtle">
+        <span className="font-mono text-[0.75rem] text-fg-subtle">
           {m.maxTokens ? compact(m.maxTokens) : '—'}
         </span>
       ),
@@ -170,13 +170,13 @@ export function Models({ selected }: { selected?: string }) {
 
   return (
     <>
-      <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-3">
-        <h1 className="m-0 text-[16px] font-semibold tracking-[-0.015em]">Models</h1>
-        <p className="mt-1 mb-0 text-[12px] text-fg-muted">
+      <div className="flex-none border-b border-line px-4.5 pt-3.5 pb-3">
+        <h1 className="m-0 text-[1.0625rem] font-semibold tracking-[-0.015em]">Models</h1>
+        <p className="mt-1 mb-0 text-[0.8125rem] text-fg-muted">
           The routing pool available to agents. Select a row to inspect it; the default is what a
           new session starts on{defaultModel ? ` — currently ${defaultModel}` : ''}.
         </p>
-        <FilterInput value={filter} onChange={setFilter} label="Filter models" className="mt-[10px] w-[280px]" />
+        <FilterInput value={filter} onChange={setFilter} label="Filter models" className="mt-2.5 w-70" />
       </div>
       <DataGrid
         label="Models"

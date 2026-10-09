@@ -24,7 +24,7 @@ export function AgentTree({ nodes, selected, onSelect }: Props) {
       tabIndex={-1}
       aria-label="Agent tree"
       onKeyDown={onSelect ? rovingKeys : undefined}
-      className="py-[6px]"
+      className="py-1.5"
     >
       {nodes.map((n, i) => (
         <div
@@ -44,20 +44,20 @@ export function AgentTree({ nodes, selected, onSelect }: Props) {
                 }
               : undefined
           }
-          className={`flex min-h-[28px] cursor-default items-center gap-2 px-3 hover:bg-s0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary ${
+          className={`flex min-h-7 items-center gap-2 px-3 hover:bg-s0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary ${
             n.id === selected ? 'bg-s0' : ''
           }`}
-          style={{ paddingLeft: `${12 + n.level * 14}px` }}
+          style={{ paddingLeft: `${0.75 + n.level * 0.875}rem` }}
         >
           <span
             aria-hidden="true"
-            className="text-[10px]"
+            className="text-[0.6875rem]"
             style={{ color: n.running ? 'var(--running)' : 'var(--fg-subtle)' }}
           >
             {n.running ? '●' : '✓'}
           </span>
           <span
-            className="text-[12px]"
+            className="text-[0.8125rem]"
             style={{
               color: n.id === selected ? 'var(--fg)' : 'var(--fg-muted)',
               fontWeight: n.id === selected ? 500 : 400,
@@ -67,7 +67,7 @@ export function AgentTree({ nodes, selected, onSelect }: Props) {
           </span>
           <span className="sr-only">{n.running ? 'running' : 'finished'}</span>
           {n.tokens ? (
-            <span className="ml-auto font-mono text-[10px] text-fg-subtle">
+            <span className="ml-auto font-mono text-[0.6875rem] text-fg-subtle">
               {count(n.tokens)} tok
             </span>
           ) : null}

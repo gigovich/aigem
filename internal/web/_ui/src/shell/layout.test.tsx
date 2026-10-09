@@ -84,18 +84,15 @@ test('the inspector can be closed and reopened', async () => {
   expect(screen.getByRole('complementary', { name: 'Inspector' })).toBeInTheDocument()
 })
 
-test('the theme and density toggles change the document and the footer', async () => {
+test('the theme toggle changes the document and the footer', async () => {
   const user = userEvent.setup()
   await mountApp()
   expect(document.documentElement.dataset.theme).toBe('mocha')
-  expect(screen.getByRole('contentinfo')).toHaveTextContent('mocha · dense')
+  expect(screen.getByRole('contentinfo')).toHaveTextContent('mocha')
 
   await user.click(screen.getByRole('button', { name: 'Theme: mocha' }))
   expect(document.documentElement.dataset.theme).toBe('latte')
-
-  await user.click(screen.getByRole('button', { name: 'Density: dense' }))
-  expect(document.documentElement.dataset.density).toBe('comfortable')
-  expect(screen.getByRole('contentinfo')).toHaveTextContent('latte · comfortable')
+  expect(screen.getByRole('contentinfo')).toHaveTextContent('latte')
 })
 
 // A page whose control socket is down still works - every mutation is an HTTP

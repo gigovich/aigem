@@ -4,7 +4,7 @@ import { explain, flash, refresh, selectProject } from '@/state/app'
 import { Modal } from '@/ui/Modal'
 
 const INPUT =
-  'h-[28px] rounded-md border border-line bg-bg px-2 font-mono text-[12px] text-fg outline-none focus:border-primary'
+  'h-7 rounded-md border border-line bg-bg px-2 font-mono text-[0.8125rem] text-fg outline-none focus:border-primary'
 
 /**
  * Add a project: a directory on the daemon's machine, and optionally a name.
@@ -50,7 +50,7 @@ export function NewProjectDialog({ onClose }: { onClose: () => void }) {
           void add()
         }}
       >
-        <label className="flex flex-col gap-1 text-[11.5px] text-fg-subtle">
+        <label className="flex flex-col gap-1 text-[0.78125rem] text-fg-subtle">
           Directory on the daemon's machine
           <input
             value={dir}
@@ -60,12 +60,12 @@ export function NewProjectDialog({ onClose }: { onClose: () => void }) {
             className={INPUT}
           />
         </label>
-        <label className="flex flex-col gap-1 text-[11.5px] text-fg-subtle">
+        <label className="flex flex-col gap-1 text-[0.78125rem] text-fg-subtle">
           Name, if not the directory's
           <input value={name} onChange={(e) => setName(e.target.value)} className={INPUT} />
         </label>
         {error && (
-          <p role="alert" className="m-0 text-[11.5px] text-attention">
+          <p role="alert" className="m-0 text-[0.78125rem] text-attention">
             {error}
           </p>
         )}

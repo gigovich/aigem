@@ -28,7 +28,6 @@ import type {
 } from '@/lib/wire'
 
 export type Theme = 'mocha' | 'latte'
-export type Density = 'dense' | 'comfortable'
 
 export type AppState = {
   meta: Meta | null
@@ -49,7 +48,6 @@ export type AppState = {
   project: string
 
   theme: Theme
-  density: Density
   narrow: boolean
   phone: boolean
   navOpen: boolean
@@ -99,10 +97,6 @@ function initialTheme(): Theme {
   return read('aigem.theme') === 'latte' ? 'latte' : 'mocha'
 }
 
-function initialDensity(): Density {
-  return read('aigem.density') === 'comfortable' ? 'comfortable' : 'dense'
-}
-
 /**
  * localStorage throws rather than returning null in a browser told to block
  * site data, and a preference nobody could read must not be the reason the
@@ -146,7 +140,6 @@ export function initialState(): AppState {
     projects: [],
     project: read('aigem.project') ?? '',
     theme: initialTheme(),
-    density: initialDensity(),
     narrow: window.innerWidth < NARROW_AT,
     phone: window.innerWidth < PHONE_AT,
     navOpen: false,
@@ -393,18 +386,8 @@ function setTheme(theme: Theme) {
   patch({ theme })
 }
 
-function setDensity(density: Density) {
-  document.documentElement.dataset.density = density
-  write('aigem.density', density)
-  patch({ density })
-}
-
 export function toggleTheme() {
   setTheme(store.get().theme === 'mocha' ? 'latte' : 'mocha')
-}
-
-export function toggleDensity() {
-  setDensity(store.get().density === 'dense' ? 'comfortable' : 'dense')
 }
 
 export function setInspector(open: boolean) {
@@ -539,7 +522,6 @@ function applyWidth(width: number) {
  */
 export function start(): () => void {
   setTheme(store.get().theme)
-  setDensity(store.get().density)
 
   const onResize = () => applyWidth(window.innerWidth)
   window.addEventListener('resize', onResize)

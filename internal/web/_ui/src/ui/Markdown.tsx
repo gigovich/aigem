@@ -131,9 +131,9 @@ function parse(source: string): Block[] {
 }
 
 const HEADING = {
-  h1: 'mt-4 mb-2 text-[15px] font-semibold text-fg',
-  h2: 'mt-4 mb-2 text-[13.5px] font-semibold text-fg',
-  h3: 'mt-3 mb-1 text-[12.5px] font-semibold text-fg',
+  h1: 'mt-4 mb-2 text-[1rem] font-semibold text-fg',
+  h2: 'mt-4 mb-2 text-[0.90625rem] font-semibold text-fg',
+  h3: 'mt-3 mb-1 text-[0.84375rem] font-semibold text-fg',
 }
 
 export function Markdown({ source, className = '' }: { source: string; className?: string }) {
@@ -143,14 +143,14 @@ export function Markdown({ source, className = '' }: { source: string; className
   // the default is left out rather than trusted to lose.
   const muted = className.includes('text-fg') ? '' : 'text-fg-muted'
   return (
-    <div className={`max-w-[88ch] text-[12.5px] leading-[1.55] text-pretty ${muted} ${className}`}>
+    <div className={`max-w-[88ch] text-[0.84375rem] leading-[1.55] text-pretty ${muted} ${className}`}>
       {blocks.map((b, i) => {
         const key = `b${i}`
         if (b.kind === 'code') {
           return (
             <pre
               key={key}
-              className="my-3 overflow-x-auto rounded-md border border-line bg-bg p-3 font-mono text-[11.5px]"
+              className="my-3 overflow-x-auto rounded-md border border-line bg-bg p-3 font-mono text-[0.78125rem]"
             >
               <code>{b.text}</code>
             </pre>

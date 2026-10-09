@@ -125,7 +125,7 @@ export function LoginDialog({ provider, onClose }: { provider: string; onClose: 
       {login?.url && (
         <>
           <p className="m-0">Open this address and approve the request:</p>
-          <p className="mt-2 font-mono text-[11.5px] break-all">
+          <p className="mt-2 font-mono text-[0.78125rem] break-all">
             {/* Through the same allow-list the markdown renderer uses. The
                 daemon pins this URL to the provider's own discovery document,
                 but "the one URL on the page that skips the check" is not a
@@ -143,18 +143,18 @@ export function LoginDialog({ provider, onClose }: { provider: string; onClose: 
       {login?.code && (
         <p className="mt-3 m-0">
           Then enter the code{' '}
-          <span className="font-mono text-[13px] text-fg">{login.code}</span>.
+          <span className="font-mono text-[0.875rem] text-fg">{login.code}</span>.
         </p>
       )}
       {login?.acceptsPaste && (
         <label className="mt-4 block">
-          <span className="mb-[5px] block text-[11px] text-fg-muted">
+          <span className="mb-1.25 block text-[0.75rem] text-fg-muted">
             Paste the address you were redirected to
           </span>
           <input
             value={pasted}
             onChange={(e) => setPasted(e.target.value)}
-            className="h-[30px] w-full rounded-md border border-line bg-bg px-[10px] font-mono text-[11.5px] outline-none focus:border-primary"
+            className="h-7.5 w-full rounded-md border border-line bg-bg px-2.5 font-mono text-[0.78125rem] outline-none focus:border-primary"
           />
         </label>
       )}

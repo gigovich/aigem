@@ -23,17 +23,17 @@ const Row = memo(function Row({
 }) {
   return (
     <div
-      className="grid items-baseline gap-2 px-[18px] py-[3px] hover:bg-s0"
+      className="grid items-baseline gap-2 px-4.5 py-0.75 hover:bg-s0"
       style={{
-        gridTemplateColumns: '76px 16px 1fr',
+        gridTemplateColumns: '4.75rem 1rem 1fr',
         background: r.glyph === '!' ? 'color-mix(in oklab, var(--attention) 9%, transparent)' : undefined,
       }}
     >
-      <span className="font-mono text-[10.5px] text-fg-subtle opacity-75">{r.time}</span>
-      <span aria-hidden="true" className="text-center font-mono text-[11px]" style={{ color: r.color }}>
+      <span className="font-mono text-[0.71875rem] text-fg-subtle opacity-75">{r.time}</span>
+      <span aria-hidden="true" className="text-center font-mono text-[0.75rem]" style={{ color: r.color }}>
         {r.glyph}
       </span>
-      <div className="flex min-w-0 items-baseline gap-2" style={{ paddingLeft: `${r.level * 14}px` }}>
+      <div className="flex min-w-0 items-baseline gap-2" style={{ paddingLeft: `${r.level * 0.875}rem` }}>
         {r.prose ? (
           <Markdown source={r.text} className={r.phase ? 'min-w-0 font-medium text-fg' : 'min-w-0'} />
         ) : (
@@ -41,7 +41,7 @@ const Row = memo(function Row({
             className="overflow-hidden text-ellipsis whitespace-nowrap"
             style={{
               fontFamily: r.mono ? 'var(--mono)' : 'var(--sans)',
-              fontSize: r.mono ? '11.5px' : '12.5px',
+              fontSize: r.mono ? '0.78125rem' : '0.84375rem',
               fontWeight: r.phase ? 500 : 400,
               color: r.phase ? 'var(--fg)' : 'var(--fg-muted)',
             }}
@@ -49,13 +49,13 @@ const Row = memo(function Row({
             {r.text}
           </span>
         )}
-        {r.meta && <span className="flex-none font-mono text-[10px] text-fg-subtle">{r.meta}</span>}
+        {r.meta && <span className="flex-none font-mono text-[0.6875rem] text-fg-subtle">{r.meta}</span>}
         {r.blob !== undefined && onOpenBlob && (
           <button
             type="button"
             onClick={() => onOpenBlob(r.blob ?? 0)}
             aria-label={`Show all output of ${r.text || 'the tool'} at ${r.time}`}
-            className="flex-none cursor-pointer font-mono text-[10px] text-primary hover:underline"
+            className="flex-none font-mono text-[0.6875rem] text-primary hover:underline"
           >
             show all
           </button>
@@ -85,13 +85,13 @@ export function EventStream({ rows, follow = true, live, label, onOpenBlob }: Pr
   }, [follow, last, live?.text])
 
   return (
-    <div className="flex-1 overflow-y-auto pt-[6px] pb-10" role="log" aria-label={label}>
+    <div className="flex-1 overflow-y-auto pt-1.5 pb-10" role="log" aria-label={label}>
       {rows.map((r) => (
         <Row key={r.key} row={r} onOpenBlob={onOpenBlob} />
       ))}
       {live && (
-        <div className="grid gap-2 px-[18px] py-[5px]" style={{ gridTemplateColumns: '76px 16px 1fr' }}>
-          <span className="font-mono text-[10.5px] text-fg-subtle opacity-75">{live.time}</span>
+        <div className="grid gap-2 px-4.5 py-1.25" style={{ gridTemplateColumns: '4.75rem 1rem 1fr' }}>
+          <span className="font-mono text-[0.71875rem] text-fg-subtle opacity-75">{live.time}</span>
           <span className="text-center">
             <LiveDot />
           </span>

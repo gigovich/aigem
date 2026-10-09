@@ -42,7 +42,7 @@ export function SegmentedControl<T extends string>({ segments, value, onChange, 
             if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') move(-1, e)
           }}
           onClick={() => onChange(s.value)}
-          className={`h-[24px] cursor-pointer px-[9px] text-[11px] ${
+          className={`h-6 px-2.25 text-[0.75rem] ${
             i > 0 ? 'border-l border-line' : ''
           } ${s.value === value ? 'bg-s0 text-fg' : 'bg-transparent text-fg-subtle hover:text-fg'}`}
         >

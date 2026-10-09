@@ -20,10 +20,10 @@ export function StatusChip({ status, compact = false, className = '' }: Props) {
   const s = typeof status === 'string' ? STATUS[status] : status
   return (
     <span
-      className={`flex items-center gap-[6px] text-[11.5px] ${className}`}
+      className={`flex items-center gap-1.5 text-[0.78125rem] ${className}`}
       style={{ color: s.color }}
     >
-      <span aria-hidden="true" className="text-[10px] leading-none">
+      <span aria-hidden="true" className="text-[0.6875rem] leading-none">
         {s.icon}
       </span>
       {compact ? <span className="sr-only">{s.label}</span> : <span>{s.label}</span>}
@@ -36,7 +36,7 @@ export function LiveDot({ className = '' }: { className?: string }) {
   return (
     <span
       aria-hidden="true"
-      className={`inline-block size-[6px] flex-none rounded-full bg-running ${className}`}
+      className={`inline-block size-1.5 flex-none rounded-full bg-running ${className}`}
       style={{ animation: 'aigem-pulse 2.4s ease-in-out infinite' }}
     />
   )

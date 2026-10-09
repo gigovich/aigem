@@ -11,6 +11,7 @@ import { agentTree, liveStatus, planRows } from '@/state/run'
 import type { RunView } from '@/state/run'
 import { SegmentedControl } from '@/ui/SegmentedControl'
 import { AgentTree } from '@/ui/AgentTree'
+import { Back } from '@/ui/Back'
 import { EmptyState } from '@/ui/EmptyState'
 import { EventStream } from '@/ui/EventStream'
 import { FieldList } from '@/ui/FieldList'
@@ -108,22 +109,23 @@ export function Run({ run, runId, state, send }: Props) {
 
   return (
     <>
-      <div className="flex-none border-b border-line px-[18px] pt-[14px] pb-3">
-        <div className="flex flex-wrap items-center gap-[10px]">
-          <span className="font-mono text-[12px] text-fg-subtle">{record.id}</span>
-          <h1 className="m-0 text-[15px] font-semibold">
+      <div className="flex-none border-b border-line px-4.5 pt-3.5 pb-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Back label="Session" to={{ screen: 'chat', id: record.id }} />
+          <span className="font-mono text-[0.8125rem] text-fg-subtle">{record.id}</span>
+          <h1 className="m-0 text-[1rem] font-semibold">
             {run.title || record.title || 'Untitled run'}
           </h1>
           <StatusChip status={liveStatus(record, run)} />
-          <span className="font-mono text-[10.5px] text-fg-subtle">
+          <span className="font-mono text-[0.71875rem] text-fg-subtle">
             {elapsed(record.created)} elapsed
           </span>
-          <div className="ml-auto flex gap-[6px]">
+          <div className="ml-auto flex gap-1.5">
             <button
               type="button"
               onClick={() => setFollow(!follow)}
               aria-pressed={follow}
-              className="h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] text-fg-muted hover:border-line-strong hover:text-fg"
+              className="h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted hover:border-line-strong hover:text-fg"
               style={{ background: follow ? 'var(--s0)' : 'transparent' }}
             >
               Follow
@@ -132,7 +134,7 @@ export function Run({ run, runId, state, send }: Props) {
               type="button"
               disabled={!run.running || state !== 'open'}
               onClick={() => send({ op: 'interrupt' })}
-              className="h-[26px] rounded-md border border-line px-[10px] text-[11.5px] text-fg-muted enabled:cursor-pointer enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
+              className="h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted enabled:hover:border-line-strong enabled:hover:text-fg disabled:opacity-50"
             >
               Interrupt
             </button>
@@ -142,7 +144,7 @@ export function Run({ run, runId, state, send }: Props) {
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex flex-none items-center gap-[10px] border-b border-line px-[18px] py-2">
+          <div className="flex flex-none items-center gap-2.5 border-b border-line px-4.5 py-2">
             <SegmentedControl
               label="What to show"
               value={view}
@@ -157,12 +159,12 @@ export function Run({ run, runId, state, send }: Props) {
                 type="button"
                 onClick={() => setDetail(!detail)}
                 aria-pressed={detail}
-                className="h-[22px] cursor-pointer rounded-[5px] border border-line px-2 font-mono text-[10.5px] text-fg-muted hover:border-line-strong hover:text-fg"
+                className="h-5.5 rounded-[0.3125rem] border border-line px-2 font-mono text-[0.71875rem] text-fg-muted hover:border-line-strong hover:text-fg"
               >
                 {detail ? 'detail' : 'phases'}
               </button>
             )}
-            <span className="ml-auto font-mono text-[10.5px] text-fg-subtle">
+            <span className="ml-auto font-mono text-[0.71875rem] text-fg-subtle">
               {view === 'events'
                 ? `${rows.length} event${rows.length === 1 ? '' : 's'}`
                 : `${run.files.length} file${run.files.length === 1 ? '' : 's'}`}
@@ -199,7 +201,7 @@ export function Run({ run, runId, state, send }: Props) {
             className="flex-none overflow-y-auto border-l border-line bg-shell"
             style={{ width: 'var(--panel)' }}
           >
-            <h2 className="m-0 border-b border-line px-3 py-[10px] text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+            <h2 className="m-0 border-b border-line px-3 py-2.5 text-[0.6875rem] font-semibold tracking-[.07em] text-fg-subtle uppercase">
               Agent tree
             </h2>
             <AgentTree nodes={tree} selected={agent} onSelect={setAgent} />
@@ -228,17 +230,17 @@ export function Run({ run, runId, state, send }: Props) {
 
             <div aria-hidden="true" className="h-px bg-line" />
             <div className="p-3">
-              <h2 className="mb-2 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+              <h2 className="mb-2 text-[0.6875rem] font-semibold tracking-[.07em] text-fg-subtle uppercase">
                 Working directory
               </h2>
-              <div className="font-mono text-[11px] break-all text-fg-muted">
+              <div className="font-mono text-[0.75rem] break-all text-fg-muted">
                 {record.root ?? '—'}
               </div>
-              <div className="mt-2 font-mono text-[11px] text-fg-subtle">
+              <div className="mt-2 font-mono text-[0.75rem] text-fg-subtle">
                 {run.files.length} file{run.files.length === 1 ? '' : 's'} touched
               </div>
               {files.map((f) => (
-                <div key={f.text} className="flex h-6 items-center gap-2 font-mono text-[11px]">
+                <div key={f.text} className="flex h-6 items-center gap-2 font-mono text-[0.75rem]">
                   <span aria-hidden="true" className="w-2" style={{ color: f.color }}>
                     {f.icon}
                   </span>

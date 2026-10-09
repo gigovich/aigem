@@ -2,6 +2,7 @@
  * about a component, so a new screen is light and dark the moment it uses the
  * roles. */
 :root[data-theme='latte'] {
+  color-scheme: light;
   --bg: #dce0e8;
   --shell: #e6e9ef;
   --surface: #eff1f5;

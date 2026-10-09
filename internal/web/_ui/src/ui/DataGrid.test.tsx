@@ -81,5 +81,5 @@ test('shows what it was given for empty instead of an empty table', () => {
 // canvas fixed in pixels.
 test('holds its minimum width so the columns cannot be crushed', () => {
   render(grid({ minWidth: 720 }))
-  expect(screen.getByRole('grid')).toHaveStyle({ minWidth: '720px' })
+  expect(screen.getByRole('grid').style.minWidth).toBe('45rem')
 })

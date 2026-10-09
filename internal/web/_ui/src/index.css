@@ -7,7 +7,7 @@
 
 /* The bridge between the two systems. `inline` makes Tailwind emit
  * `background-color: var(--surface)` rather than baking today's hex into the
- * utility, so flipping data-theme or data-density on <html> restyles the whole
+ * utility, so flipping data-theme on <html> restyles the whole
  * page with no class swapping and no React re-render. Add a role here only once
  * it is defined in every palette file. */
 @theme inline {
@@ -40,9 +40,9 @@
   --spacing-row: var(--row-h);
   --spacing-gut: var(--gut);
 
-  /* Named rather than overriding --text-base: the design's body size is 13px
+  /* Named rather than overriding --text-base: the design's body size is 14px
    * and Tailwind's text-sm is 14px, so redefining base would leave the scale
-   * non-monotonic - text-sm rendering larger than text-base. The body size is
+   * non-monotonic - text-sm rendering as large as text-base. The body size is
    * applied on body below; text-body exists for a nested element that has to
    * come back to it, and emits nothing until something uses it. */
   --text-body: var(--fs);
@@ -97,5 +97,23 @@
 
   ::selection {
     background: var(--s2);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--s1) transparent;
+  }
+
+  button,
+  a[href],
+  summary,
+  select,
+  [role='option'],
+  [role='row'][tabindex] {
+    cursor: pointer;
+  }
+
+  :disabled {
+    cursor: not-allowed;
   }
 }

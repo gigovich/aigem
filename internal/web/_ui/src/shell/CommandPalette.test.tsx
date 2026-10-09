@@ -32,7 +32,7 @@ test('matches on a subsequence and ranks the tighter match first', () => {
 
 test('scores an early, tight match above a late, scattered one', () => {
   const early = item('New session')
-  const late = item('Toggle density', 'creates a new session eventually')
+  const late = item('Toggle theme', 'creates a new session eventually')
   expect(score(early, 'new')).toBeLessThan(score(late, 'new'))
   expect(score(early, 'zzz')).toBe(-1)
   // No query is no ranking: the unfiltered list keeps its group order.

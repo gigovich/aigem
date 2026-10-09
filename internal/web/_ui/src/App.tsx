@@ -255,7 +255,7 @@ export default function App() {
                   first.focus()
                 }
               }}
-              className="fixed inset-y-0 left-0 z-[65] flex w-[240px] shadow-panel"
+              className="fixed inset-y-0 left-0 z-[65] flex w-60 shadow-panel"
             >
               {sidebar}
             </div>
@@ -265,14 +265,14 @@ export default function App() {
           {banner && (
             <div
               role="alert"
-              className="flex items-start gap-3 border-b border-line bg-bg px-[18px] py-2 text-[12px] text-attention"
+              className="flex items-start gap-3 border-b border-line bg-bg px-4.5 py-2 text-[0.8125rem] text-attention"
             >
               <span className="min-w-0 flex-1">{banner}</span>
               <button
                 type="button"
                 onClick={clearBanner}
                 aria-label="Dismiss"
-                className="cursor-pointer text-fg-subtle hover:text-fg"
+                className="text-fg-subtle hover:text-fg"
               >
                 <span aria-hidden="true">×</span>
               </button>

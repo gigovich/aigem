@@ -14,17 +14,17 @@ export function Rows({ title, rows, mono = false, heading = 'h3', fallbackMeta }
   const Heading = heading
   return (
     <div className="p-3">
-      <Heading className="mb-[7px] text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+      <Heading className="mb-1.75 text-[0.6875rem] font-semibold tracking-[.07em] text-fg-subtle uppercase">
         {title}
       </Heading>
       {rows.map((row, i) => (
         <div
           key={i}
-          className={`flex min-h-[26px] items-center gap-2 ${mono ? 'font-mono' : ''}`}
+          className={`flex min-h-6.5 items-center gap-2 ${mono ? 'font-mono' : ''}`}
         >
           <span
             aria-hidden="true"
-            className="text-[10px]"
+            className="text-[0.6875rem]"
             style={{ color: row.color ?? 'var(--fg-subtle)' }}
           >
             {row.icon}
@@ -32,11 +32,11 @@ export function Rows({ title, rows, mono = false, heading = 'h3', fallbackMeta }
           {fallbackMeta !== undefined && !row.meta && (
             <span className="sr-only">{fallbackMeta}</span>
           )}
-          <span className="overflow-hidden text-[11.5px] text-ellipsis whitespace-nowrap text-fg-muted">
+          <span className="overflow-hidden text-[0.78125rem] text-ellipsis whitespace-nowrap text-fg-muted">
             {row.text}
           </span>
           {row.meta && (
-            <span className="ml-auto font-mono text-[10px] text-fg-subtle">{row.meta}</span>
+            <span className="ml-auto font-mono text-[0.6875rem] text-fg-subtle">{row.meta}</span>
           )}
         </div>
       ))}

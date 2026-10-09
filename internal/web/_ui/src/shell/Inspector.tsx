@@ -24,7 +24,7 @@ export function Inspector({ content }: { content: InspectorContent }) {
       aria-label="Inspector"
       className={`flex-none overflow-y-auto border-l border-line bg-shell ${
         phone
-          ? 'fixed top-[38px] right-0 bottom-[24px] z-[60] w-full max-w-[360px] shadow-panel'
+          ? 'fixed top-9.5 right-0 bottom-6 z-[60] w-full max-w-90 shadow-panel'
           : ''
       }`}
       style={{
@@ -32,26 +32,26 @@ export function Inspector({ content }: { content: InspectorContent }) {
         animation: 'aigem-sheet .16s ease-out',
       }}
     >
-      <div className="flex items-center gap-2 border-b border-line px-3 py-[10px]">
-        <span className="font-mono text-[11px] text-fg-subtle">{content.kind}</span>
-        <span className="min-w-0 overflow-hidden font-mono text-[11px] text-ellipsis whitespace-nowrap text-fg-muted">
+      <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
+        <span className="font-mono text-[0.75rem] text-fg-subtle">{content.kind}</span>
+        <span className="min-w-0 overflow-hidden font-mono text-[0.75rem] text-ellipsis whitespace-nowrap text-fg-muted">
           {content.id}
         </span>
         <button
           type="button"
           onClick={() => setInspector(false)}
           aria-label="Close inspector"
-          className="ml-auto grid size-5 cursor-pointer place-items-center rounded-[4px] text-[13px] text-fg-subtle hover:bg-s0 hover:text-fg"
+          className="ml-auto grid size-5 place-items-center rounded-[0.25rem] text-[0.875rem] text-fg-subtle hover:bg-s0 hover:text-fg"
         >
           <span aria-hidden="true">×</span>
         </button>
       </div>
 
       <div className="p-3">
-        <h2 className="m-0 text-[13px] font-semibold tracking-[-0.01em] text-pretty">
+        <h2 className="m-0 text-[0.875rem] font-semibold tracking-[-0.01em] text-pretty">
           {content.title}
         </h2>
-        {content.status && <StatusChip status={content.status} className="mt-[6px]" />}
+        {content.status && <StatusChip status={content.status} className="mt-1.5" />}
       </div>
 
       <Rule />
@@ -60,7 +60,7 @@ export function Inspector({ content }: { content: InspectorContent }) {
       </div>
 
       {content.progress && (
-        <div className="px-3 pb-[14px]">
+        <div className="px-3 pb-3.5">
           <ProgressBar used={content.progress.used} total={content.progress.total} />
         </div>
       )}
@@ -81,13 +81,13 @@ export function Inspector({ content }: { content: InspectorContent }) {
       {content.actions && content.actions.length > 0 && (
         <>
           <Rule />
-          <div className="flex flex-wrap gap-[6px] p-3">
+          <div className="flex flex-wrap gap-1.5 p-3">
             {content.actions.map((a) => (
               <button
                 key={a.label}
                 type="button"
                 onClick={a.onClick}
-                className="h-[26px] cursor-pointer rounded-md border border-line bg-surface px-[10px] text-[11.5px] text-fg-muted hover:border-line-strong hover:text-fg"
+                className="h-6.5 rounded-md border border-line bg-surface px-2.5 text-[0.78125rem] text-fg-muted hover:border-line-strong hover:text-fg"
               >
                 {a.label}
               </button>

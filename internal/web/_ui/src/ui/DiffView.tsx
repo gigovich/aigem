@@ -38,7 +38,7 @@ function tint(sign: string): string | undefined {
 export function DiffView({ path, lines, change = '~' }: Props) {
   return (
     <div className="overflow-hidden rounded-md border border-line bg-bg">
-      <div className="flex h-[30px] items-center gap-2 border-b border-line bg-shell px-[10px] font-mono text-[11px] text-fg-muted">
+      <div className="flex h-7.5 items-center gap-2 border-b border-line bg-shell px-2.5 font-mono text-[0.75rem] text-fg-muted">
         <span aria-hidden="true" style={{ color: SIGN_COLOR[change] }}>
           {change}
         </span>
@@ -52,8 +52,8 @@ export function DiffView({ path, lines, change = '~' }: Props) {
             // The index is the identity: two identical lines in a diff are two
             // different lines, and nothing here reorders.
             key={i}
-            className="grid gap-2 px-[10px] py-px font-mono text-[11.5px]"
-            style={{ gridTemplateColumns: '12px 0 1fr', background: tint(sign) }}
+            className="grid gap-2 px-2.5 py-px font-mono text-[0.78125rem]"
+            style={{ gridTemplateColumns: '0.75rem 0 1fr', background: tint(sign) }}
           >
             {/* The sign is the content on a diff: a line that reads the same
                 added and removed is a diff with the diff taken out. The glyph

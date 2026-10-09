@@ -10,19 +10,16 @@ import { runCounts, useApp } from '@/state/app'
  * that before they wonder why nothing is updating.
  */
 export function StatusBar() {
-  const { theme, density, counts, control, phone } = useApp((s) => ({
+  const { theme, counts, control, phone } = useApp((s) => ({
     theme: s.theme,
     phone: s.phone,
-    density: s.density,
     counts: runCounts(s),
     control: s.control,
   }))
 
   return (
-    <footer className="flex h-[24px] flex-none items-center gap-[14px] overflow-hidden border-t border-line bg-shell px-3 font-mono text-[10.5px] whitespace-nowrap text-fg-subtle">
-      <span>
-        {theme} · {density}
-      </span>
+    <footer className="flex h-6 flex-none items-center gap-3.5 overflow-hidden border-t border-line bg-shell px-3 font-mono text-[0.71875rem] whitespace-nowrap text-fg-subtle">
+      <span>{theme}</span>
       <span style={{ color: 'var(--running)' }}>● {counts.running} running</span>
       <span style={{ color: 'var(--attention)' }}>! {counts.waiting} needs attention</span>
       {/* The region is permanent; only the sentence inside it appears. */}

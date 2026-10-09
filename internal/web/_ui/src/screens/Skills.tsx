@@ -122,17 +122,17 @@ export function Skills({ selected }: { selected?: string }) {
     <div className="flex min-h-0 flex-1">
       {showList && (
         <div
-          className={`flex flex-none flex-col overflow-hidden border-r border-line ${phone ? 'w-full' : 'w-[244px]'}`}
+          className={`flex flex-none flex-col overflow-hidden border-r border-line ${phone ? 'w-full' : 'w-61'}`}
         >
-          <div className="flex flex-none items-center gap-2 border-b border-line px-3 py-[11px]">
-            <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+          <div className="flex flex-none items-center gap-2 border-b border-line px-3 py-2.75">
+            <h2 className="m-0 text-[0.6875rem] font-semibold tracking-[.07em] text-fg-subtle uppercase">
               Skills
             </h2>
-            <span className="ml-auto font-mono text-[10px] text-fg-subtle">
+            <span className="ml-auto font-mono text-[0.6875rem] text-fg-subtle">
               {skills.items.length}
             </span>
           </div>
-          <div className="flex-none border-b border-line px-2 py-[6px]">
+          <div className="flex-none border-b border-line px-2 py-1.5">
             <FilterInput
               value={filter}
               onChange={setFilter}
@@ -154,11 +154,11 @@ export function Skills({ selected }: { selected?: string }) {
                       type="button"
                       aria-current={active ? 'true' : undefined}
                       onClick={() => navigate({ screen: 'skills', id: s.name })}
-                      className="w-full cursor-default px-3 py-[7px] text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+                      className="w-full px-3 py-1.75 text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
                     >
-                      <span className="flex items-center gap-[7px]">
+                      <span className="flex items-center gap-1.75">
                         <span
-                          className="font-mono text-[11.5px]"
+                          className="font-mono text-[0.78125rem]"
                           style={{
                             color: active ? 'var(--fg)' : 'var(--fg-muted)',
                           }}
@@ -167,14 +167,14 @@ export function Skills({ selected }: { selected?: string }) {
                         </span>
                         <span
                           aria-hidden="true"
-                          className="ml-auto text-[9px]"
+                          className="ml-auto text-[0.625rem]"
                           style={{ color: st.color }}
                         >
                           {st.icon}
                         </span>
                         <span className="sr-only">{st.label}</span>
                       </span>
-                      <span className="block overflow-hidden text-[10.5px] text-ellipsis whitespace-nowrap text-fg-subtle">
+                      <span className="block overflow-hidden text-[0.71875rem] text-ellipsis whitespace-nowrap text-fg-subtle">
                         {scopeOf(s)}
                       </span>
                     </button>
@@ -194,23 +194,23 @@ export function Skills({ selected }: { selected?: string }) {
         <div className="min-w-0 flex-1 overflow-y-auto">
           {chosen ? (
             <>
-              <div className="border-b border-line px-[18px] pt-[14px] pb-3">
-                <div className="flex flex-wrap items-center gap-[10px]">
+              <div className="border-b border-line px-4.5 pt-3.5 pb-3">
+                <div className="flex flex-wrap items-center gap-2.5">
                   {phone && <Back label="Skills" to={{ screen: 'skills' }} />}
-                  <h1 className="m-0 font-mono text-[14px] font-medium">{chosen.name}</h1>
+                  <h1 className="m-0 font-mono text-[0.9375rem] font-medium">{chosen.name}</h1>
                   <StatusChip status={state(chosen, pending)} />
                   {phone && chosen.userInvocable && (
                     <button
                       type="button"
                       onClick={() => compose(`/skill:${chosen.name} `)}
-                      className="ml-auto h-[26px] cursor-pointer rounded-md border border-line px-[10px] text-[11.5px] text-fg-muted hover:border-line-strong hover:text-fg"
+                      className="ml-auto h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted hover:border-line-strong hover:text-fg"
                     >
                       Run in a session
                     </button>
                   )}
                 </div>
-                <p className="mt-[6px] mb-0 text-[12px] text-fg-muted">{chosen.description}</p>
-                <div className="mt-[10px] flex gap-4 font-mono text-[10.5px] text-fg-subtle">
+                <p className="mt-1.5 mb-0 text-[0.8125rem] text-fg-muted">{chosen.description}</p>
+                <div className="mt-2.5 flex gap-4 font-mono text-[0.71875rem] text-fg-subtle">
                   <span>
                     scope <span className="text-fg-muted">{scopeOf(chosen)}</span>
                   </span>
@@ -225,14 +225,14 @@ export function Skills({ selected }: { selected?: string }) {
                 </div>
               </div>
 
-              <div className="max-w-[88ch] px-[18px] pt-[14px] pb-8">
+              <div className="max-w-[88ch] px-4.5 pt-3.5 pb-8">
                 {pending.length > 0 && (
                   <>
-                    <h2 className="text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+                    <h2 className="text-[0.6875rem] font-semibold tracking-[.07em] text-fg-subtle uppercase">
                       Pending approval
                     </h2>
-                    <div className="mt-2 rounded-r-md border border-l-2 border-line border-l-attention bg-bg px-3 py-[10px]">
-                      <div className="flex items-center gap-2 font-mono text-[10.5px] text-fg-subtle">
+                    <div className="mt-2 rounded-r-md border border-l-2 border-line border-l-attention bg-bg px-3 py-2.5">
+                      <div className="flex items-center gap-2 font-mono text-[0.71875rem] text-fg-subtle">
                         <span aria-hidden="true" className="text-attention">
                           !
                         </span>
@@ -241,25 +241,25 @@ export function Skills({ selected }: { selected?: string }) {
                           {pending.length > 1 ? 's' : ''} the daemon has not loaded
                         </span>
                       </div>
-                      <ul className="mt-[6px] mb-0 list-none pl-0 font-mono text-[12px] text-fg">
+                      <ul className="mt-1.5 mb-0 list-none pl-0 font-mono text-[0.8125rem] text-fg">
                         {pending.map((n) => (
                           <li key={n}>{n}</li>
                         ))}
                       </ul>
                       {skills.pending?.invalidated && (
-                        <p className="mt-2 mb-0 text-[11.5px] text-fg-subtle">
+                        <p className="mt-2 mb-0 text-[0.78125rem] text-fg-subtle">
                           The definitions changed since they were last approved.
                         </p>
                       )}
                       <div className="mt-3 flex items-center gap-2">
-                        <span className="text-[11.5px] text-fg-subtle">
+                        <span className="text-[0.78125rem] text-fg-subtle">
                           Loading them lets the agent run what this project's files say.
                         </span>
                         <button
                           type="button"
                           disabled={busy}
                           onClick={() => setAsking(true)}
-                          className="ml-auto h-[28px] cursor-pointer rounded-md border border-primary bg-primary px-3 text-[12px] font-medium text-bg hover:brightness-110 disabled:opacity-50"
+                          className="ml-auto h-7 rounded-md border border-primary bg-primary px-3 text-[0.8125rem] font-medium text-bg hover:brightness-110 disabled:opacity-50"
                         >
                           Review and load
                         </button>
@@ -268,20 +268,20 @@ export function Skills({ selected }: { selected?: string }) {
                   </>
                 )}
 
-                <h2 className="mt-5 mb-2 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+                <h2 className="mt-5 mb-2 text-[0.6875rem] font-semibold tracking-[.07em] text-fg-subtle uppercase">
                   Instructions
                 </h2>
                 {detail ? (
                   <>
                     <Markdown source={detail.body} />
                     {detail.bodyTruncated && (
-                      <p className="mt-3 text-[11.5px] text-fg-subtle">
+                      <p className="mt-3 text-[0.78125rem] text-fg-subtle">
                         This skill is longer than the API will send; the rest is on disk.
                       </p>
                     )}
                   </>
                 ) : (
-                  <p className="text-[12px] text-fg-subtle">Reading the skill…</p>
+                  <p className="text-[0.8125rem] text-fg-subtle">Reading the skill…</p>
                 )}
               </div>
             </>

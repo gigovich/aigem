@@ -65,16 +65,16 @@ export function Sidebar({ route, onNewProject }: Props) {
           navigate({ screen: item.screen })
           setNav(false)
         }}
-        className={`flex h-[26px] w-full cursor-pointer items-center gap-2 rounded-[5px] px-2 text-left hover:bg-s0 ${
+        className={`flex h-6.5 w-full items-center gap-2 rounded-[0.3125rem] px-2 text-left hover:bg-s0 ${
           active ? 'bg-s0 font-medium text-fg' : 'text-fg-muted'
         }`}
       >
-        <span aria-hidden="true" className="w-[13px] text-center text-[11px] text-fg-subtle">
+        <span aria-hidden="true" className="w-3.25 text-center text-[0.75rem] text-fg-subtle">
           {item.icon}
         </span>
         <span>{item.label}</span>
         {count ? (
-          <span className="ml-auto font-mono text-[10px] text-fg-subtle">{count}</span>
+          <span className="ml-auto font-mono text-[0.6875rem] text-fg-subtle">{count}</span>
         ) : null}
       </button>
     )
@@ -86,13 +86,13 @@ export function Sidebar({ route, onNewProject }: Props) {
       className="flex flex-none flex-col overflow-y-auto border-r border-line bg-shell"
       style={{ width: phone ? '100%' : 'var(--rail)' }}
     >
-      <div className="px-[6px] pt-2 pb-[6px]">{TOP.map(row)}</div>
+      <div className="px-1.5 pt-2 pb-1.5">{TOP.map(row)}</div>
 
-      <div aria-hidden="true" className="mx-[10px] mt-[2px] mb-2 h-px bg-line" />
+      <div aria-hidden="true" className="mx-2.5 mt-0.5 mb-2 h-px bg-line" />
 
-      <div className="px-[6px]">
-        <div className="flex items-center pt-0 pr-1 pb-[5px] pl-2">
-          <h2 className="m-0 text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase">
+      <div className="px-1.5">
+        <div className="flex items-center pt-0 pr-1 pb-1.25 pl-2">
+          <h2 className="m-0 text-[0.6875rem] font-semibold tracking-[.07em] text-fg-subtle uppercase">
             Projects
           </h2>
           {hasProjects && (
@@ -101,7 +101,7 @@ export function Sidebar({ route, onNewProject }: Props) {
               onClick={onNewProject}
               aria-label="New project"
               title="New project"
-              className="ml-auto grid size-[18px] cursor-pointer place-items-center rounded-[4px] text-[13px] text-fg-subtle hover:bg-s0 hover:text-fg"
+              className="ml-auto grid size-4.5 place-items-center rounded-[0.25rem] text-[0.875rem] text-fg-subtle hover:bg-s0 hover:text-fg"
             >
               <span aria-hidden="true">+</span>
             </button>
@@ -121,11 +121,11 @@ export function Sidebar({ route, onNewProject }: Props) {
                       selectProject(p.id)
                       setNav(false)
                     }}
-                    className={`flex h-[26px] w-full cursor-pointer items-center gap-2 rounded-[5px] px-2 text-left hover:bg-s0 ${
+                    className={`flex h-6.5 w-full items-center gap-2 rounded-[0.3125rem] px-2 text-left hover:bg-s0 ${
                       active ? 'bg-s0 font-medium text-fg' : 'text-fg-muted'
                     }`}
                   >
-                    <span aria-hidden="true" className="w-[13px] text-center text-[11px] text-fg-subtle">
+                    <span aria-hidden="true" className="w-3.25 text-center text-[0.75rem] text-fg-subtle">
                       {p.id ? '▪' : '⌂'}
                     </span>
                     <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
@@ -133,7 +133,7 @@ export function Sidebar({ route, onNewProject }: Props) {
                     </span>
                     {p.loadError && (
                       <>
-                        <span aria-hidden="true" className="text-[10px] text-attention">
+                        <span aria-hidden="true" className="text-[0.6875rem] text-attention">
                           !
                         </span>
                         <span className="sr-only">failed to load</span>
@@ -145,31 +145,31 @@ export function Sidebar({ route, onNewProject }: Props) {
             })}
           </ul>
         ) : (
-          <p className="m-0 px-2 pb-1 text-[11px] text-fg-subtle">This daemon's directory.</p>
+          <p className="m-0 px-2 pb-1 text-[0.75rem] text-fg-subtle">This daemon's directory.</p>
         )}
       </div>
 
-      <div aria-hidden="true" className="mx-[10px] my-2 h-px bg-line" />
+      <div aria-hidden="true" className="mx-2.5 my-2 h-px bg-line" />
 
-      <div className="px-[6px] pb-[10px]">{BOTTOM.map(row)}</div>
+      <div className="px-1.5 pb-2.5">{BOTTOM.map(row)}</div>
 
-      <div className="mt-auto flex items-center gap-2 border-t border-line p-[10px]">
+      <div className="mt-auto flex items-center gap-2 border-t border-line p-2.5">
         <span
           aria-hidden="true"
-          className="grid size-5 flex-none place-items-center rounded-[4px] bg-s1 text-[10px] font-semibold text-fg-muted"
+          className="grid size-5 flex-none place-items-center rounded-[0.25rem] bg-s1 text-[0.6875rem] font-semibold text-fg-muted"
         >
           ⌂
         </span>
         <div className="min-w-0">
-          <div className="overflow-hidden text-[11.5px] text-ellipsis whitespace-nowrap">Local</div>
-          <div className="font-mono text-[9.5px] text-fg-subtle">local · agent host</div>
+          <div className="overflow-hidden text-[0.78125rem] text-ellipsis whitespace-nowrap">Local</div>
+          <div className="font-mono text-[0.65625rem] text-fg-subtle">local · agent host</div>
         </div>
         <button
           type="button"
           onClick={() => void signOut()}
           aria-label="Sign out"
           title="Sign out of this browser"
-          className="ml-auto grid size-[22px] flex-none cursor-pointer place-items-center rounded-[4px] text-[12px] text-fg-subtle hover:bg-s0 hover:text-fg"
+          className="ml-auto grid size-5.5 flex-none place-items-center rounded-[0.25rem] text-[0.8125rem] text-fg-subtle hover:bg-s0 hover:text-fg"
         >
           <span aria-hidden="true">⏏</span>
         </button>

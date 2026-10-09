@@ -42,13 +42,13 @@ and a component that opened its own would spend them by being mounted twice.
 
 Phase one's appearance comes from a Claude Design artboard, and the values that
 matter are transcribed into `test/design-values.test.ts` - both palettes, the
-density metrics, the two column widths - and checked against the CSS. "About the
+layout metrics, the two column widths - and checked against the CSS. "About the
 same colour" is the failure that check exists to catch.
 
 Colours are **roles**, never values: `--fg-subtle`, `--attention`, `--running`.
 They are declared in `src/theme/mocha.css` and `src/theme/latte.css`, bridged
 into Tailwind by the `@theme inline` block in `src/index.css`, and switched by
-`data-theme` / `data-density` on `<html>`. A new role must be added to *both*
+`data-theme` on `<html>`. A new role must be added to *both*
 palette files before anything uses it; `test/theme-tokens.test.ts` enforces that.
 
 `STATUS` in `src/lib/wire.ts` is the one place a state's label, glyph and colour

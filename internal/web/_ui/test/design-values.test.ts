@@ -66,17 +66,16 @@ const LATTE = {
   '--deleted': '#d20f39',
 }
 
-const DENSE = {
-  '--row-h': '30px',
-  '--gut': '12px',
-  '--fs': '13px',
-  '--fs-meta': '11px',
+const METRICS = {
+  '--row-h': '1.875rem',
+  '--gut': '0.75rem',
+  '--fs': '0.875rem',
+  '--fs-meta': '0.75rem',
   // The sidebar and the inspector at the ordinary width.
-  '--rail': '208px',
-  '--panel': '304px',
+  '--rail': '13rem',
+  '--panel': '19rem',
 }
-const NARROW = { '--rail': '168px', '--panel': '252px' }
-const COMFORTABLE = { '--row-h': '40px', '--gut': '18px', '--fs': '13.5px' }
+const NARROW = { '--rail': '10.5rem', '--panel': '15.75rem' }
 
 const css = (name: string) => readFileSync(join(import.meta.dirname, '../src/theme', name), 'utf8')
 
@@ -109,22 +108,14 @@ test('latte is the canvas palette, value for value', () => {
   }
 })
 
-// Density changes three numbers in the canvas and nothing else. A fourth
-// creeping in here is a layout that shifts under the toggle in a way the design
-// never described.
-test('density changes exactly the three metrics the canvas changes', () => {
-  const dense = block(css('tokens.css'), ':root')
-  for (const [name, value] of Object.entries(DENSE)) {
-    expect(dense[name], `${name} at dense`).toBe(value)
-  }
-  const comfortable = block(css('tokens.css'), ":root[data-density='comfortable']")
-  expect(Object.keys(comfortable).sort()).toEqual(Object.keys(COMFORTABLE).sort())
-  for (const [name, value] of Object.entries(COMFORTABLE)) {
-    expect(comfortable[name], `${name} at comfortable`).toBe(value)
+test('the metrics are the canvas metrics', () => {
+  const root = block(css('tokens.css'), ':root')
+  for (const [name, value] of Object.entries(METRICS)) {
+    expect(root[name], name).toBe(value)
   }
 })
 
-// The canvas's narrow layout: 208px becomes 168px and 304px becomes 252px, at
+// The canvas's narrow layout: 13rem becomes 10.5rem and 19rem becomes 15.75rem, at
 // 1120px. A width that drifts here breaks the single vertical rule the header
 // and the sidebar draw between them.
 test('the narrow layout is the canvas breakpoint and the canvas widths', () => {

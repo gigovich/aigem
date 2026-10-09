@@ -29,9 +29,8 @@ type Props<T> = {
  * It is CSS grid rather than a `<table>` because the canvas fixes the column
  * widths in pixels and lets exactly one of them give - which is a
  * `grid-template-columns` and not something a table's layout algorithm can be
- * talked into. The row is `min-height: var(--row-h)`, so the density toggle
- * changes the table without a re-render, and the header is sticky because a
- * page of models is longer than a screen.
+ * talked into. The header is sticky because a page of models is longer than a
+ * screen.
  *
  * The roles are put back by hand: a grid of divs is invisible to a screen
  * reader otherwise, and this is a table in every sense but its layout.
@@ -58,11 +57,11 @@ export function DataGrid<T>({
         aria-rowcount={rows.length + 1}
         aria-colcount={columns.length}
         onKeyDown={onSelect ? rovingKeys : undefined}
-        style={minWidth ? { minWidth: `${minWidth}px` } : undefined}
+        style={minWidth ? { minWidth: `${minWidth / 16}rem` } : undefined}
       >
         <div
           role="row"
-          className="sticky top-0 z-[2] grid gap-3 border-b border-line bg-surface px-[18px] pt-[9px] pb-[6px] text-[10px] font-semibold tracking-[.07em] text-fg-subtle uppercase"
+          className="sticky top-0 z-[2] grid gap-3 border-b border-line bg-surface px-4.5 pt-2.25 pb-1.5 text-[0.6875rem] font-semibold tracking-[.07em] text-fg-subtle uppercase"
           style={{ gridTemplateColumns: template }}
         >
           {columns.map((c) => (
@@ -100,8 +99,8 @@ export function DataGrid<T>({
                     }
                   : undefined
               }
-              className={`grid min-h-row items-center gap-3 border-b border-line px-[18px] ${
-                onSelect ? 'cursor-default hover:bg-s0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary' : ''
+              className={`grid min-h-row items-center gap-3 border-b border-line px-4.5 ${
+                onSelect ? 'hover:bg-s0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary' : ''
               } ${isSelected ? 'bg-s0' : ''}`}
               style={{ gridTemplateColumns: template }}
             >

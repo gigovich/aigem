@@ -51,11 +51,11 @@ export function ApprovalCard({ approval, onDecide, disabled = false }: Props) {
 
   return (
     <div
-      className="mt-3 rounded-r-[7px] border border-l-2 border-line border-l-attention bg-bg px-3 py-[11px]"
+      className="mt-3 rounded-r-[0.4375rem] border border-l-2 border-line border-l-attention bg-bg px-3 py-2.75"
       role="group"
       aria-label="Approval required"
     >
-      <div className="flex items-center gap-2 font-mono text-[10.5px] text-fg-subtle">
+      <div className="flex items-center gap-2 font-mono text-[0.71875rem] text-fg-subtle">
         <span aria-hidden="true" className="text-attention">
           !
         </span>
@@ -69,7 +69,7 @@ export function ApprovalCard({ approval, onDecide, disabled = false }: Props) {
       {/* Through `readable`: a path carrying a bidi override displays as one
           name and is another, and this is the one screen where a person makes a
           security decision on a string the model supplied. */}
-      <div className="mt-[7px] font-mono text-[12px] break-all text-fg">
+      <div className="mt-1.75 font-mono text-[0.8125rem] break-all text-fg">
         {readable(approval.kind === 'path' ? (approval.path ?? '') : approval.tool)}
       </div>
       {args.length > 0 && (
@@ -82,19 +82,19 @@ export function ApprovalCard({ approval, onDecide, disabled = false }: Props) {
           {/* Above the arguments, not below them: a notice telling you to read
               to the end is no use where you can only see it once you have. */}
           {long && (
-            <p className="mt-2 mb-0 font-mono text-[10.5px] text-attention">
+            <p className="mt-2 mb-0 font-mono text-[0.71875rem] text-attention">
               {lines > 1 ? `${lines} lines, ` : ''}
               {chars} characters — read all of it before approving
             </p>
           )}
           {args.map((a) => (
             <div key={a.key} className="mt-2">
-              <div className="font-mono text-[10px] break-all text-fg-subtle">{readable(a.key)}</div>
+              <div className="font-mono text-[0.6875rem] break-all text-fg-subtle">{readable(a.key)}</div>
               {/* Wrapped anywhere rather than scrolled sideways: `pre-wrap`
                   breaks only at soft-wrap opportunities, and a run with no
                   whitespace has none - so it leaves the screen behind a
                   scrollbar nobody looks for. */}
-              <pre className="m-0 rounded-md border border-line bg-shell p-2 font-mono text-[11px] break-all whitespace-pre-wrap text-fg-muted">
+              <pre className="m-0 rounded-md border border-line bg-shell p-2 font-mono text-[0.75rem] break-all whitespace-pre-wrap text-fg-muted">
                 {readable(a.value)}
               </pre>
             </div>
@@ -102,8 +102,8 @@ export function ApprovalCard({ approval, onDecide, disabled = false }: Props) {
         </>
       )}
 
-      <div className="mt-[11px] flex flex-wrap items-center gap-2">
-        <span className="font-mono text-[10.5px] break-all text-fg-subtle">
+      <div className="mt-2.75 flex flex-wrap items-center gap-2">
+        <span className="font-mono text-[0.71875rem] break-all text-fg-subtle">
           {approval.kind === 'path'
             ? readable(approval.tool)
             : 'answered once, by whoever gets there first'}
@@ -114,7 +114,7 @@ export function ApprovalCard({ approval, onDecide, disabled = false }: Props) {
               type="button"
               disabled={disabled}
               onClick={() => onDecide(refuse.value)}
-              className="h-[27px] cursor-pointer rounded-md border border-line px-[11px] text-[11.5px] text-fg-muted hover:border-danger hover:text-danger disabled:opacity-50"
+              className="h-6.75 rounded-md border border-line px-2.75 text-[0.78125rem] text-fg-muted hover:border-danger hover:text-danger disabled:opacity-50"
             >
               {refuse.label}
             </button>
@@ -125,7 +125,7 @@ export function ApprovalCard({ approval, onDecide, disabled = false }: Props) {
               type="button"
               disabled={disabled}
               onClick={() => onDecide(o.value)}
-              className="h-[27px] cursor-pointer rounded-md border border-line px-[11px] text-[11.5px] text-fg-muted hover:border-line-strong hover:text-fg disabled:opacity-50"
+              className="h-6.75 rounded-md border border-line px-2.75 text-[0.78125rem] text-fg-muted hover:border-line-strong hover:text-fg disabled:opacity-50"
             >
               {o.label}
             </button>
@@ -135,7 +135,7 @@ export function ApprovalCard({ approval, onDecide, disabled = false }: Props) {
               type="button"
               disabled={disabled}
               onClick={() => onDecide(primary.value)}
-              className="h-[27px] cursor-pointer rounded-md border border-primary bg-primary px-[11px] text-[11.5px] font-medium text-bg hover:brightness-110 disabled:opacity-50"
+              className="h-6.75 rounded-md border border-primary bg-primary px-2.75 text-[0.78125rem] font-medium text-bg hover:brightness-110 disabled:opacity-50"
             >
               {primary.label === 'Once' ? 'Approve & run' : primary.label}
             </button>

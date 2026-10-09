@@ -5,7 +5,6 @@ import {
   setNav,
   setPalette,
   setQuick,
-  toggleDensity,
   toggleInspector,
   toggleTheme,
   useApp,
@@ -24,11 +23,10 @@ type Props = { crumbs: { label: string; route?: Route }[] }
  * and they are what has to survive.
  */
 export function Header({ crumbs }: Props) {
-  const { version, theme, density, narrow, phone, quickOpen, inspectorOpen, counts } = useApp(
+  const { version, theme, narrow, phone, quickOpen, inspectorOpen, counts } = useApp(
     (s) => ({
       version: s.meta?.version ?? '',
       theme: s.theme,
-      density: s.density,
       narrow: s.narrow,
       phone: s.phone,
       quickOpen: s.quickOpen,
@@ -38,9 +36,9 @@ export function Header({ crumbs }: Props) {
   )
 
   return (
-    <header className="flex h-[38px] flex-none items-stretch border-b border-line bg-shell">
+    <header className="flex h-9.5 flex-none items-stretch border-b border-line bg-shell">
       <div
-        className="flex flex-none items-center gap-2 border-r border-line px-[10px]"
+        className="flex flex-none items-center gap-2 border-r border-line px-2.5"
         style={{ width: phone ? 'auto' : 'var(--rail)' }}
       >
         {phone ? (
@@ -48,46 +46,46 @@ export function Header({ crumbs }: Props) {
             type="button"
             onClick={() => setNav(true)}
             aria-label="Open navigation"
-            className="grid size-[24px] cursor-pointer place-items-center rounded-[5px] border border-line text-[13px] text-fg-muted hover:border-line-strong hover:text-fg"
+            className="grid size-6 place-items-center rounded-[0.3125rem] border border-line text-[0.875rem] text-fg-muted hover:border-line-strong hover:text-fg"
           >
             <span aria-hidden="true">☰</span>
           </button>
         ) : (
           <span
             aria-hidden="true"
-            className="size-[15px] flex-none rounded-[3px] bg-agent opacity-90"
+            className="size-3.75 flex-none rounded-[0.1875rem] bg-agent opacity-90"
           />
         )}
         <span className="font-semibold tracking-[-0.01em]">Aigem</span>
         {!phone && (
           <span
             title={version}
-            className="ml-auto min-w-0 overflow-hidden font-mono text-[10px] text-ellipsis whitespace-nowrap text-fg-subtle"
+            className="ml-auto min-w-0 overflow-hidden font-mono text-[0.6875rem] text-ellipsis whitespace-nowrap text-fg-subtle"
           >
             {shortVersion(version)}
           </span>
         )}
       </div>
 
-      <div className="flex min-w-0 flex-1 items-center gap-[10px] px-3">
+      <div className="flex min-w-0 flex-1 items-center gap-2.5 px-3">
         <button
           type="button"
           onClick={() => setPalette(true)}
-          className="flex h-[24px] min-w-0 flex-none cursor-pointer items-center gap-[7px] rounded-[5px] border border-line bg-surface pr-2 pl-[7px] text-fg-subtle hover:border-line-strong hover:text-fg-muted"
+          className="flex h-6 min-w-0 flex-none items-center gap-1.75 rounded-[0.3125rem] border border-line bg-surface pr-2 pl-1.75 text-fg-subtle hover:border-line-strong hover:text-fg-muted"
         >
-          <span className="overflow-hidden text-[11px] text-ellipsis whitespace-nowrap">
+          <span className="overflow-hidden text-[0.75rem] text-ellipsis whitespace-nowrap">
             {phone ? 'Search' : 'Search or run a command'}
           </span>
           <span
             aria-hidden="true"
-            className="rounded-[3px] border border-line px-1 py-px font-mono text-[10px]"
+            className="rounded-[0.1875rem] border border-line px-1 py-px font-mono text-[0.6875rem]"
           >
             ⌘K
           </span>
         </button>
 
         {!narrow && (
-          <nav aria-label="Breadcrumb" className="ml-1 flex items-center gap-[2px]">
+          <nav aria-label="Breadcrumb" className="ml-1 flex items-center gap-0.5">
             {crumbs.map((c, i) => {
               const to = c.route
               return (
@@ -96,7 +94,7 @@ export function Header({ crumbs }: Props) {
                   type="button"
                   disabled={!to}
                   onClick={to ? () => navigate(to) : undefined}
-                  className="flex h-[24px] items-center gap-[6px] rounded-[4px] px-[7px] font-mono text-[11px] text-fg-muted enabled:cursor-pointer enabled:hover:bg-s0 enabled:hover:text-fg"
+                  className="flex h-6 items-center gap-1.5 rounded-[0.25rem] px-1.75 font-mono text-[0.75rem] text-fg-muted enabled:hover:bg-s0 enabled:hover:text-fg"
                 >
                   <span>{c.label}</span>
                   {i < crumbs.length - 1 && (
@@ -110,9 +108,9 @@ export function Header({ crumbs }: Props) {
           </nav>
         )}
 
-        <div className="ml-auto flex flex-none items-center gap-[6px]">
+        <div className="ml-auto flex flex-none items-center gap-1.5">
           {!narrow && (
-            <div className="flex h-[22px] items-center gap-[6px] rounded-full border border-line px-2 font-mono text-[10.5px] whitespace-nowrap text-fg-muted">
+            <div className="flex h-5.5 items-center gap-1.5 rounded-full border border-line px-2 font-mono text-[0.71875rem] whitespace-nowrap text-fg-muted">
               <LiveDot />
               <span>
                 {counts.running} running · {counts.live} open
@@ -123,13 +121,13 @@ export function Header({ crumbs }: Props) {
             type="button"
             onClick={() => setQuick(!quickOpen)}
             title="Quick chat  ⌘J"
-            className="flex h-[24px] cursor-pointer items-center gap-[6px] rounded-[5px] border border-line px-[9px] text-[11.5px] hover:border-line-strong hover:text-fg"
+            className="flex h-6 items-center gap-1.5 rounded-[0.3125rem] border border-line px-2.25 text-[0.78125rem] hover:border-line-strong hover:text-fg"
             style={{
               background: quickOpen ? 'var(--s0)' : 'transparent',
               color: quickOpen ? 'var(--fg)' : 'var(--fg-muted)',
             }}
           >
-            <span aria-hidden="true" className="font-mono text-[10px]">
+            <span aria-hidden="true" className="font-mono text-[0.6875rem]">
               ▭
             </span>
             <span>Chat</span>
@@ -140,25 +138,16 @@ export function Header({ crumbs }: Props) {
             title="Inspector"
             aria-pressed={inspectorOpen}
             aria-label={`Inspector: ${inspectorOpen ? 'shown' : 'hidden'}`}
-            className="grid size-[24px] cursor-pointer place-items-center rounded-[5px] border border-line text-[11px] text-fg-muted hover:border-line-strong hover:text-fg"
+            className="grid size-6 place-items-center rounded-[0.3125rem] border border-line text-[0.75rem] text-fg-muted hover:border-line-strong hover:text-fg"
           >
             <span aria-hidden="true">▤</span>
-          </button>
-          <button
-            type="button"
-            onClick={toggleDensity}
-            title="Density"
-            aria-label={`Density: ${density === 'dense' ? 'dense' : 'comfy'}`}
-            className="h-[24px] cursor-pointer rounded-[5px] border border-line px-2 font-mono text-[10.5px] text-fg-muted hover:border-line-strong hover:text-fg"
-          >
-            {density === 'dense' ? 'dense' : 'comfy'}
           </button>
           <button
             type="button"
             onClick={toggleTheme}
             title="Theme"
             aria-label={`Theme: ${theme}`}
-            className="grid size-[24px] cursor-pointer place-items-center rounded-[5px] border border-line text-[11px] text-fg-muted hover:border-line-strong hover:text-fg"
+            className="grid size-6 place-items-center rounded-[0.3125rem] border border-line text-[0.75rem] text-fg-muted hover:border-line-strong hover:text-fg"
           >
             <span aria-hidden="true">{theme === 'mocha' ? '◐' : '◑'}</span>
           </button>

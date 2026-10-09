@@ -125,28 +125,28 @@ export function Modal({
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={keydown}
-        className="max-w-[92vw] rounded-[10px] border border-line-strong bg-surface shadow-panel outline-none"
-        style={{ width: `${width}px`, animation: 'aigem-in .12s ease-out' }}
+        className="max-w-[92vw] rounded-[0.625rem] border border-line-strong bg-surface shadow-panel outline-none"
+        style={{ width: `${width / 16}rem`, animation: 'aigem-in .12s ease-out' }}
       >
-        <div className="flex items-baseline gap-[10px] border-b border-line px-4 pt-[14px] pb-3">
-          <span className="text-[14px] font-semibold tracking-[-0.01em]">{title}</span>
-          {subtitle && <span className="font-mono text-[10.5px] text-fg-subtle">{subtitle}</span>}
+        <div className="flex items-baseline gap-2.5 border-b border-line px-4 pt-3.5 pb-3">
+          <span className="text-[0.9375rem] font-semibold tracking-[-0.01em]">{title}</span>
+          {subtitle && <span className="font-mono text-[0.71875rem] text-fg-subtle">{subtitle}</span>}
           <span
             aria-hidden="true"
-            className="ml-auto rounded-[3px] border border-line px-[5px] py-px font-mono text-[10px] text-fg-subtle"
+            className="ml-auto rounded-[0.1875rem] border border-line px-1.25 py-px font-mono text-[0.6875rem] text-fg-subtle"
           >
             esc
           </span>
         </div>
 
-        <div className="px-4 py-[14px] text-[12.5px] text-pretty text-fg-muted">{children}</div>
+        <div className="px-4 py-3.5 text-[0.84375rem] text-pretty text-fg-muted">{children}</div>
 
         <div className="flex items-center gap-2 border-t border-line px-4 py-3">
           {secondary && (
             <button
               type="button"
               onClick={secondary.onClick}
-              className="h-[28px] cursor-pointer rounded-md border border-line bg-transparent px-3 text-[12px] text-fg-muted hover:border-line-strong hover:text-fg"
+              className="h-7 rounded-md border border-line bg-transparent px-3 text-[0.8125rem] text-fg-muted hover:border-line-strong hover:text-fg"
             >
               {secondary.label}
             </button>
@@ -154,7 +154,7 @@ export function Modal({
           <button
             type="button"
             onClick={onClose}
-            className="ml-auto h-[28px] cursor-pointer rounded-md border border-line bg-transparent px-3 text-[12px] text-fg-muted hover:border-line-strong hover:text-fg"
+            className="ml-auto h-7 rounded-md border border-line bg-transparent px-3 text-[0.8125rem] text-fg-muted hover:border-line-strong hover:text-fg"
           >
             {cancelLabel}
           </button>
@@ -163,7 +163,7 @@ export function Modal({
               type="button"
               onClick={confirm.onClick}
               disabled={confirm.disabled}
-              className="h-[28px] cursor-pointer rounded-md px-3 text-[12px] font-medium text-bg disabled:cursor-not-allowed disabled:opacity-50 hover:brightness-110"
+              className="h-7 rounded-md px-3 text-[0.8125rem] font-medium text-bg disabled:opacity-50 hover:brightness-110"
               style={{
                 background: confirm.danger ? 'var(--danger)' : 'var(--primary)',
                 border: `1px solid ${confirm.danger ? 'var(--danger)' : 'var(--primary)'}`,

@@ -39,7 +39,7 @@ export function BlobDialog({
       {error && <p className="m-0 text-danger">{error}</p>}
       {body === null && !error && <p className="m-0">Reading it…</p>}
       {body !== null && (
-        <pre className="m-0 max-h-[60vh] overflow-auto rounded-md border border-line bg-bg p-3 font-mono text-[11.5px] whitespace-pre-wrap">
+        <pre className="m-0 max-h-[60vh] overflow-auto rounded-md border border-line bg-bg p-3 font-mono text-[0.78125rem] whitespace-pre-wrap">
           {body}
         </pre>
       )}

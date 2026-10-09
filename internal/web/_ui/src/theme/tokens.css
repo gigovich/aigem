@@ -1,11 +1,12 @@
-/* Metrics and motion. Density changes three numbers and nothing else, which is
- * why toggling it costs no re-render: the attribute lives on <html> and every
- * rule reads through the variable. */
+/* Metrics and motion. Every size in the UI is in rem, so the root font size is
+ * the one knob that scales text, spacing and layout together - 100% is the
+ * design at 16px. */
 :root {
-  --row-h: 30px;
-  --gut: 12px;
-  --fs: 13px;
-  --fs-meta: 11px;
+  font-size: 110%;
+  --row-h: 1.875rem;
+  --gut: 0.75rem;
+  --fs: 0.875rem;
+  --fs-meta: 0.75rem;
 
   /* The two vertical rules of the layout. They are here and not in the two
    * components that draw them because the header's logo column and the
@@ -14,21 +15,15 @@
    * depends on the viewport and nothing else. The breakpoint is the canvas's
    * 1120px; the JavaScript that hides the breadcrumbs and the inspector reads
    * the same number from NARROW_AT. */
-  --rail: 208px;
-  --panel: 304px;
+  --rail: 13rem;
+  --panel: 19rem;
 }
 
 @media (max-width: 1119px) {
   :root {
-    --rail: 168px;
-    --panel: 252px;
+    --rail: 10.5rem;
+    --panel: 15.75rem;
   }
-}
-
-:root[data-density='comfortable'] {
-  --row-h: 40px;
-  --gut: 18px;
-  --fs: 13.5px;
 }
 
 @keyframes aigem-pulse {
