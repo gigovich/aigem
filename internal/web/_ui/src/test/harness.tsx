@@ -131,6 +131,7 @@ export function installDaemon(daemon: Daemon = {}): Harness {
       if (path === '/api/runs') return Promise.resolve(ok(daemon.runs ?? []))
       if (path === '/api/projects') return Promise.resolve(ok(daemon.projects ?? [DAEMON_PROJECT]))
       if (/^\/api\/projects\/[^/]+\/repos$/.test(path)) return Promise.resolve(ok([]))
+      if (/^\/api\/projects\/[^/]+\/worktrees$/.test(path)) return Promise.resolve(ok([]))
       if (path === '/api/models') return Promise.resolve(ok(daemon.models ?? []))
       const at = (p: string) => path === p || path.startsWith(p + '?')
       if (at('/api/skills')) return Promise.resolve(ok(daemon.skills ?? { items: [] }))

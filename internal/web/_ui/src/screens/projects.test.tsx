@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { Project } from '@/lib/wire'
 import { navigate } from '@/lib/route'
-import { DAEMON_PROJECT, mountApp, RUN } from '@/test/harness'
+import { DAEMON_PROJECT, META, mountApp, RUN } from '@/test/harness'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -218,7 +218,49 @@ test('the worktrees screen lists the repositories of the chosen project', async 
   expect(within(grid).getByText('api')).toBeInTheDocument()
   expect(within(grid).getByText('main')).toBeInTheDocument()
   expect(within(grid).getByText('neither main nor master')).toBeInTheDocument()
-  expect(within(grid).getAllByText('no worktrees yet')).toHaveLength(2)
+  expect(within(grid).getAllByText('no worktrees')).toHaveLength(2)
+})
+
+test('the worktrees screen lists the aigem branches and discards one after asking', async () => {
+  const user = userEvent.setup()
+  let trees = [
+    { repo: '', name: 'TCK-4', path: '/home/dev/work/.aigem/worktrees/TCK-4', ticket: 'TCK-4', run: 'RUN-5', state: 'running' },
+    { repo: '', name: 'TCK-2', ticket: 'TCK-2', run: 'RUN-3', state: 'merged' },
+    { repo: '', name: 'TCK-3', path: '/home/dev/work/.aigem/worktrees/TCK-3', ticket: 'TCK-3', run: 'RUN-4', state: 'kept' },
+  ]
+  const h = await mountApp({
+    meta: { features: { ...META.features, tickets: true } },
+    projects: PROJECTS,
+    routes: {
+      '/api/projects/PRJ-1/repos': () =>
+        new Response(JSON.stringify([{ name: '', dir: '/home/dev/work', main: 'main' }]), { status: 200 }),
+      '/api/projects/PRJ-1/worktrees': () => new Response(JSON.stringify(trees), { status: 200 }),
+      'DELETE /api/projects/PRJ-1/worktrees/TCK-3': () => {
+        trees = trees.filter((w) => w.name !== 'TCK-3')
+        return new Response(null, { status: 204 })
+      },
+    },
+  })
+  act(() => navigate({ screen: 'repos' }))
+  await screen.findByText(/no project record/)
+  await user.click(within(screen.getByRole('list', { name: 'Projects' })).getByRole('button', { name: /work/ }))
+
+  const grid = await screen.findByRole('grid', { name: 'Worktrees' })
+  expect(await within(grid).findByText('aigem/TCK-4')).toBeInTheDocument()
+  expect(within(grid).getByText('removed')).toBeInTheDocument()
+  expect(within(screen.getByRole('grid', { name: 'Repositories' })).getByText('3 worktrees')).toBeInTheDocument()
+  expect(within(grid).getByRole('button', { name: 'Discard aigem/TCK-4' })).toBeDisabled()
+
+  await user.click(within(grid).getByRole('button', { name: 'Discard aigem/TCK-3' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Discard TCK-3?' })
+  await user.click(within(dialog).getByRole('button', { name: 'Discard' }))
+  await waitFor(() =>
+    expect(h.sent.some((s) => s.method === 'DELETE' && s.path === '/api/projects/PRJ-1/worktrees/TCK-3')).toBe(true),
+  )
+  await waitFor(() => expect(screen.queryByText('aigem/TCK-3')).not.toBeInTheDocument())
+
+  await user.click(within(screen.getByRole('grid', { name: 'Worktrees' })).getByRole('button', { name: 'Open run RUN-5' }))
+  expect(window.location.pathname).toBe('/run/RUN-5')
 })
 
 test('the worktrees row is offered only with projects', async () => {
