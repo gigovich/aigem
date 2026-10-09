@@ -1195,6 +1195,36 @@ func TestSystemPromptReportsTheFilesItInjected(t *testing.T) {
 	}
 }
 
+// A ticket run works in a worktree: its prompt carries the worktree's instruction
+// files under the worktree's paths, so marking them matches what its tools read.
+func TestSystemPromptAtReadsTheInstructionsOfThatDirectory(t *testing.T) {
+	cwd := project(t)
+	writeFile(t, filepath.Join(cwd, "AGENTS.md"), "MAIN RULES\n")
+	wt := project(t)
+	writeFile(t, filepath.Join(wt, ".git"), "gitdir: elsewhere\n")
+	writeFile(t, filepath.Join(wt, "AGENTS.md"), "WORKTREE RULES\n")
+	env, _ := load(t, runner.Options{Cwd: cwd})
+	if pr := env.ProjectAt(wt); !strings.Contains(pr, "WORKTREE RULES") || strings.Contains(pr, "MAIN RULES") {
+		t.Fatalf("expected the subagents' conventions from the worktree, got %q", pr)
+	}
+	if env.ProjectAt(cwd) != env.Project {
+		t.Error("ProjectAt the environment's own directory is not its load-time snapshot")
+	}
+	reg, err := env.NewToolsAt(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, injected := env.SystemPromptAt(wt)
+	if !strings.Contains(p, "WORKTREE RULES") || strings.Contains(p, "MAIN RULES") || strings.Contains(p, cwd) {
+		t.Fatalf("expected only the worktree's instructions, got %q", p)
+	}
+	reg.MarkInContext(injected)
+	if out := readFile(t, reg, "AGENTS.md"); !strings.Contains(out, "already included") {
+		t.Fatalf("expected the worktree's AGENTS.md marked as in context, got %q", out)
+	}
+}
+
 // A prompt that carried no instructions must report none, or the session marks
 // files as already-in-context that the model was never shown - and read_file
 // answers a note instead of the contents.

@@ -116,7 +116,7 @@ func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 	// the injected files in this run's own registry, so read_file returns a
 	// note instead of re-emitting what is already in the prompt.
 	buildSystem := func() string {
-		sp, injected := env.SystemPrompt()
+		sp, injected := env.SystemPromptAt(root)
 		reg.MarkInContext(injected)
 		return sp
 	}
@@ -133,7 +133,7 @@ func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 		Agents:  env.Agents,
 		Skills:  env.Skills,
 		Hooks:   env.Hooks,
-		Project: env.Project,
+		Project: env.ProjectAt(root),
 		System:  buildSystem(),
 		Title:   title,
 		// A conversation started in a browser runs the person's own hooks, and

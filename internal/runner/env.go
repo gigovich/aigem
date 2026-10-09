@@ -331,7 +331,20 @@ func (e *Env) NewToolsAt(dir string) (*tools.Registry, error) {
 // which is a fact about one conversation rather than about the project, and
 // stays visible here rather than hiding in a closure that captured whichever
 // registry happened to exist when it was built.
-func (e *Env) SystemPrompt() (string, []string) {
+func (e *Env) SystemPrompt() (string, []string) { return e.SystemPromptAt(e.Cwd) }
+
+// ProjectAt is the project-convention block a conversation rooted at dir hands its
+// subagents: the load-time snapshot at the environment's own directory.
+func (e *Env) ProjectAt(dir string) string {
+	if dir == e.Cwd {
+		return e.Project
+	}
+	return config.ProjectInstructions(dir)
+}
+
+// SystemPromptAt is SystemPrompt with the instruction files read at dir, the
+// root of the conversation's tools.
+func (e *Env) SystemPromptAt(dir string) (string, []string) {
 	sp := config.SystemPrompt()
 	now := time.Now()
 	sp += "\n\n# Current date and time\n\n" +
@@ -343,9 +356,9 @@ func (e *Env) SystemPrompt() (string, []string) {
 		"never from your training cutoff, and never guess the current date. (This value is captured when " +
 		"the prompt is built and refreshed on /new; in a very long session the time of day may have drifted.)"
 	var injected []string
-	if proj := config.ProjectInstructions(e.Cwd); proj != "" {
+	if proj := config.ProjectInstructions(dir); proj != "" {
 		sp += "\n\n" + proj
-		injected = config.InstructionPaths(e.Cwd)
+		injected = config.InstructionPaths(dir)
 	}
 	// Every front-end registers the task tool, so the block always applies. It is
 	// appended rather than baked into the base prompt so a custom SYSTEM.md
