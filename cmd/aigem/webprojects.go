@@ -130,7 +130,7 @@ func webProjectError(err error) error {
 	case errors.Is(err, runner.ErrNoProject):
 		return web.ErrNoProject
 	case errors.Is(err, runner.ErrProjectInUse):
-		return web.Conflict("this project has an open run; close it first")
+		return web.Conflict("this project has an open run; delete it first")
 	case errors.Is(err, runner.ErrProjectsClosed):
 		return err
 	default:

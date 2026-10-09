@@ -40,10 +40,10 @@ type RunsBackend interface {
 	OpenRun(ctx context.Context, req NewRun) (Run, error)
 	// Run reports one conversation, or ErrNoRun.
 	Run(ctx context.Context, id string) (Run, error)
-	// CloseRun saves a conversation and ends its session, leaving the record
-	// and the timeline behind. Closing one that is already closed is not an
-	// error: two tabs pressing the same button is the ordinary case.
-	CloseRun(ctx context.Context, id string) error
+	// RemoveRun ends a conversation's session, if it has one, and deletes the
+	// record, the timeline and the saved conversation. A run that is already
+	// gone is ErrNoRun.
+	RemoveRun(ctx context.Context, id string) error
 	// RunEvents returns the timeline after since, at most limit events, oldest
 	// first. A gap that can no longer be filled is ErrHistoryGone.
 	RunEvents(ctx context.Context, id string, since uint64, limit int) ([]RunEvent, error)

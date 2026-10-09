@@ -357,16 +357,16 @@ func TestARunSocketRefusesAForeignOrigin(t *testing.T) {
 	}
 }
 
-// A run that ends under a client ends its socket. Otherwise the tab sits on a
+// A run deleted under a client ends its socket. Otherwise the tab sits on a
 // stream that will never say anything again and never says so.
-func TestClosingARunEndsItsSockets(t *testing.T) {
+func TestDeletingARunEndsItsSockets(t *testing.T) {
 	b := &fakeBackend{}
 	srv := newTestServer(t, Config{Backend: b})
 	id := openRun(t, srv)
 	c := dialRunSocket(t, srv, id, "")
 
-	if res := api(t, srv, http.MethodDelete, "/api/runs/"+id, ""); res.StatusCode != http.StatusOK {
-		t.Fatalf("close = %d, want 200", res.StatusCode)
+	if res := api(t, srv, http.MethodDelete, "/api/runs/"+id, ""); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete = %d, want 204", res.StatusCode)
 	}
 	c.expectHangUp()
 }
@@ -494,8 +494,8 @@ func TestAClosingRunEndsItsSocketsWithoutCuttingAFrame(t *testing.T) {
 			}
 		}()
 
-		if res := api(t, srv, http.MethodDelete, "/api/runs/"+id, ""); res.StatusCode != http.StatusOK {
-			t.Fatalf("round %d: close = %d, want 200", round, res.StatusCode)
+		if res := api(t, srv, http.MethodDelete, "/api/runs/"+id, ""); res.StatusCode != http.StatusNoContent {
+			t.Fatalf("round %d: delete = %d, want 204", round, res.StatusCode)
 		}
 		<-done
 

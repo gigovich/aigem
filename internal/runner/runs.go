@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,6 +75,9 @@ const (
 	RunOpen RunStatus = "open"
 	// RunClosed means the record and its journal remain and the session is gone.
 	RunClosed RunStatus = "closed"
+	// RunRemoved is the status a deleted run is announced with, and the row
+	// kept for the last id handed out so a restart never reuses it.
+	RunRemoved RunStatus = "removed"
 )
 
 // Run is the durable half of a run: what survives a restart.
@@ -196,9 +200,10 @@ type Runs struct {
 	// rather than return while the conversations are still being saved.
 	once sync.Once
 	// opening counts the Creates that are past the closed check and still
-	// building a session. Close waits on it, because a session built after the
-	// shutdown has walked the table would otherwise be saved and closed after
-	// the daemon has torn down the environment its SessionEnd hook runs in.
+	// building a session, and the Removes still deleting a run's files. Close
+	// waits on it, because a session built after the shutdown has walked the
+	// table would otherwise be saved and closed after the daemon has torn down
+	// the environment its SessionEnd hook runs in.
 	opening sync.WaitGroup
 
 	mu   sync.Mutex
@@ -280,6 +285,12 @@ func NewRuns(cfg RunsConfig) (*Runs, error) {
 			stale = true
 			continue
 		}
+		if n := runNumber(rec.ID); n > r.next {
+			r.next = n
+		}
+		if rec.Status == RunRemoved {
+			continue
+		}
 		if rec.Status != RunClosed {
 			rec.Status = RunClosed
 			rec.Updated = now()
@@ -287,9 +298,6 @@ func NewRuns(cfg RunsConfig) (*Runs, error) {
 		}
 		r.byID[rec.ID] = &liveRun{rec: rec}
 		r.order = append(r.order, rec.ID)
-		if n := runNumber(rec.ID); n > r.next {
-			r.next = n
-		}
 	}
 	if stale {
 		r.mu.Lock()
@@ -335,7 +343,7 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	}
 	if n := r.liveLocked() + r.pending; n >= maxLiveRuns {
 		r.mu.Unlock()
-		return RunView{}, fmt.Errorf("%w: %d are open, and %d is the limit; close one first",
+		return RunView{}, fmt.Errorf("%w: %d are open, and %d is the limit; delete one first",
 			ErrTooManyRuns, n, maxLiveRuns)
 	}
 	r.next++
@@ -690,7 +698,7 @@ func (r *Runs) announce(id string) { r.publish(id) }
 // The window is wide and the consequence is severe. view() asks the session
 // five questions, each taking the session's own mutex, and none of that can be
 // done under this registry's lock - the two are deliberately never held
-// together. A CloseRun landing in the middle would otherwise publish the closed
+// together. A Remove landing in the middle would otherwise publish the closed
 // record first and this stale one after, so the last thing every tab is told
 // about a conversation that has ended is that it is open, live and running -
 // and `live` is the field a client reads before it decides whether to keep
@@ -750,55 +758,61 @@ func (r *Runs) setModel(id, ref string) {
 	r.publish(id)
 }
 
-// CloseRun saves the conversation and ends the session, leaving the record and
-// its journal behind: a run a person is done with is one they can still read.
+// Remove deletes a run: the session is ended, the row leaves the table, and the
+// journal and the saved conversation are deleted from disk.
 //
-// Closing a run that is already closed is not an error - two tabs pressing the
-// same button is the ordinary case.
-func (r *Runs) CloseRun(id string) error {
+// The row goes in one critical section, so a second caller gets ErrNoRun and
+// every other reader finds the run gone. A table that cannot be written leaves
+// the run in place and returns the error, so the delete can be retried rather
+// than coming back after a restart. The session is discarded, so no later save
+// writes the conversation back, and the files go after it. A file that cannot
+// be deleted is logged: the run is already gone from every list.
+func (r *Runs) Remove(id string) error {
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ErrRunsClosed
+	}
 	lr := r.byID[id]
 	if lr == nil {
 		r.mu.Unlock()
 		return ErrNoRun
 	}
+	order := r.order
+	delete(r.byID, id)
+	r.order = slices.DeleteFunc(slices.Clone(order), func(o string) bool { return o == id })
+	if err := r.writeLocked(); err != nil {
+		r.byID[id], r.order = lr, order
+		r.mu.Unlock()
+		return err
+	}
+	// Counted with the Creates, so a shutdown waits for these files to go
+	// rather than letting the process exit with them half deleted.
+	r.opening.Add(1)
+	defer r.opening.Done()
 	sess, rel := lr.sess, lr.release
-	// Detached under the lock, so a second caller finds nothing to close rather
-	// than racing this one into a double Close.
 	lr.sess, lr.release = nil, nil
-	r.mu.Unlock()
-
-	if sess == nil {
-		return nil
-	}
-	// Read with no lock of this registry's held. Meta takes the session's own
-	// mutex, which a journal read or a journal write holds for as long as the
-	// disk takes, and holding the table's across that would stall a list of
-	// every other run behind one conversation.
-	meta := sess.Local.Meta()
-
-	r.mu.Lock()
-	// What the session knows about itself is only true once it has had a turn:
-	// the id names the journal, and the title is whatever the conversation
-	// called itself. Without copying them back, a closed run is a record that
-	// cannot be found again and has no name.
-	if meta.ID != "" {
-		lr.rec.SessionID = meta.ID
-	}
-	if meta.Title != "" {
-		lr.rec.Title = meta.Title
-	}
-	lr.rec.Status = RunClosed
-	lr.rec.Updated = r.now()
-	lr.version++
-	r.saveLocked()
 	rec := lr.rec
+	rec.Status = RunRemoved
+	rec.Updated = r.now()
 	r.mu.Unlock()
 
-	// Announced with the session already detached, so what a page is told
-	// matches what it would read back.
+	var meta session.Meta
+	if sess != nil && sess.Local != nil {
+		sess.Local.Discard()
+		meta = sess.Local.Meta()
+	}
+	release(rel)
 	r.notify(view(rec, nil))
-	closeSession(sess, rel)
+
+	if sid := sessionID(rec, meta); sid != "" {
+		if err := uisession.RemoveJournal(sid); err != nil {
+			slog.Error("a deleted run's journal could not be removed", "run", id, "err", err)
+		}
+		if err := session.Remove(sid); err != nil {
+			slog.Error("a deleted run's conversation could not be removed", "run", id, "err", err)
+		}
+	}
 	return nil
 }
 
@@ -840,8 +854,8 @@ func (r *Runs) shutdown() {
 			rows = append(rows, lr)
 		}
 	}
-	// Detached under the lock, so a CloseRun racing this one finds nothing left
-	// to close rather than closing the same session twice.
+	// Detached under the lock, so nothing racing this one closes the same
+	// session twice.
 	sessions := make([]*Session, len(rows))
 	releases := make([]func(), len(rows))
 	for i, lr := range rows {
@@ -850,7 +864,8 @@ func (r *Runs) shutdown() {
 	}
 	r.mu.Unlock()
 
-	// Meta outside the lock, for the reason CloseRun gives.
+	// Meta outside the lock: it takes the session's own mutex, which a journal
+	// read or write holds for as long as the disk takes.
 	metas := make([]session.Meta, len(sessions))
 	for i, s := range sessions {
 		metas[i] = s.Local.Meta()
@@ -858,14 +873,7 @@ func (r *Runs) shutdown() {
 
 	r.mu.Lock()
 	for i, lr := range rows {
-		if metas[i].ID != "" {
-			lr.rec.SessionID = metas[i].ID
-		}
-		if metas[i].Title != "" {
-			lr.rec.Title = metas[i].Title
-		}
-		lr.rec.Status = RunClosed
-		lr.rec.Updated = r.now()
+		r.markClosedLocked(lr, metas[i])
 	}
 	if len(rows) > 0 {
 		r.saveLocked()
@@ -885,6 +893,19 @@ func (r *Runs) shutdown() {
 		}()
 	}
 	wg.Wait()
+}
+
+// markClosedLocked records that a row's session is gone, keeping what the
+// session learned about itself.
+func (r *Runs) markClosedLocked(lr *liveRun, meta session.Meta) {
+	if meta.ID != "" {
+		lr.rec.SessionID = meta.ID
+	}
+	if meta.Title != "" {
+		lr.rec.Title = meta.Title
+	}
+	lr.rec.Status = RunClosed
+	lr.rec.Updated = r.now()
 }
 
 // openWait bounds how long a shutdown waits for a run that is still being
@@ -975,8 +996,14 @@ func (r *Runs) row(id string) (Run, *Session, error) {
 // just started is live either way, and refusing it because the daemon could not
 // take a note would lose the conversation to protect the record of it.
 func (r *Runs) saveLocked() {
+	if err := r.writeLocked(); err != nil {
+		slog.Error("the run table could not be written", "path", r.file.Path(), "err", err)
+	}
+}
+
+func (r *Runs) writeLocked() error {
 	if r.file == nil {
-		return
+		return nil
 	}
 	table := make([]Run, 0, len(r.order))
 	for _, id := range r.order {
@@ -984,9 +1011,10 @@ func (r *Runs) saveLocked() {
 			table = append(table, lr.rec)
 		}
 	}
-	if err := r.file.Save(table); err != nil {
-		slog.Error("the run table could not be written", "path", r.file.Path(), "err", err)
+	if last := runIDPrefix + strconv.Itoa(r.next); r.next > 0 && r.byID[last] == nil {
+		table = append(table, Run{ID: last, Status: RunRemoved})
 	}
+	return r.file.Save(table)
 }
 
 // view is the record plus what the live session knows. It takes no lock of the

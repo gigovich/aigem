@@ -203,7 +203,7 @@ func (s *Server) routes() {
 	s.api("POST /api/runs", s.handleOpenRun)
 	s.mux.HandleFunc("/api/runs", methodNotAllowed("GET, HEAD, POST"))
 	s.api("GET /api/runs/{id}", s.handleRun)
-	s.api("DELETE /api/runs/{id}", s.handleCloseRun)
+	s.api("DELETE /api/runs/{id}", s.handleRemoveRun)
 	s.mux.HandleFunc("/api/runs/{id}", methodNotAllowed("GET, HEAD, DELETE"))
 	s.api("GET /api/runs/{id}/events", s.handleRunEvents)
 	s.mux.HandleFunc("/api/runs/{id}/events", methodNotAllowed("GET, HEAD"))

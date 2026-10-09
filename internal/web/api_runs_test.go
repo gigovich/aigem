@@ -164,10 +164,9 @@ func TestAnUnknownRunIs404OnEveryRouteThatNamesOne(t *testing.T) {
 	}
 }
 
-// Closing a run leaves the record and the timeline behind: a run a person is
-// done with is one they can still read. What comes back is the record as it now
-// stands, so a client applies what is true rather than what it assumed.
-func TestClosingARunReportsTheRecordItLeftBehind(t *testing.T) {
+// Deleting a run takes it out of the list. The other tabs learn of it from the
+// run.updated the registry publishes, so the router publishes nothing itself.
+func TestDeletingALiveRunIs204AndDropsItFromTheList(t *testing.T) {
 	srv := newTestServer(t, Config{})
 	c := dialControl(t, srv)
 	hello := c.next()
@@ -175,31 +174,37 @@ func TestClosingARunReportsTheRecordItLeftBehind(t *testing.T) {
 	_ = c.next() // run.updated for the open
 
 	res := api(t, srv, http.MethodDelete, "/api/runs/"+opened.ID, "")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", res.StatusCode)
-	}
-	closed := decode[Run](t, res)
-	if closed.Live || closed.Status != "closed" {
-		t.Errorf("closed run = %+v, want a record that is no longer live", closed)
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", res.StatusCode)
 	}
 	if f := c.next(); f.Type != "run.updated" || f.Rev != hello.Rev+2 {
 		t.Errorf("control message = %q at rev %d, want run.updated at %d",
 			f.Type, f.Rev, hello.Rev+2)
 	}
-	// Still listed: the record outlives the session on purpose.
-	if runs := decode[[]Run](t, api(t, srv, http.MethodGet, "/api/runs", "")); len(runs) != 1 {
-		t.Errorf("the list holds %d runs after a close, want 1", len(runs))
+	if runs := decode[[]Run](t, api(t, srv, http.MethodGet, "/api/runs", "")); len(runs) != 0 {
+		t.Errorf("the list holds %d runs after a delete, want 0", len(runs))
 	}
 }
 
-// Two tabs pressing the same button is the ordinary case, not a failure.
-func TestClosingARunTwiceIsNotAnError(t *testing.T) {
+func TestDeletingAClosedRunIs204(t *testing.T) {
+	b := &fakeBackend{}
+	srv := newTestServer(t, Config{Backend: b})
+	b.seed(Run{ID: "RUN-1", Status: "closed"})
+	if res := api(t, srv, http.MethodDelete, "/api/runs/RUN-1", ""); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", res.StatusCode)
+	}
+	if res := api(t, srv, http.MethodGet, "/api/runs/RUN-1", ""); res.StatusCode != http.StatusNotFound {
+		t.Errorf("reading a deleted run = %d, want 404", res.StatusCode)
+	}
+}
+
+// The second of two tabs pressing Delete finds nothing left to delete.
+func TestDeletingARunTwiceIs404TheSecondTime(t *testing.T) {
 	srv := newTestServer(t, Config{})
 	opened := decode[Run](t, api(t, srv, http.MethodPost, "/api/runs", `{}`))
-	for i := range 2 {
-		res := api(t, srv, http.MethodDelete, "/api/runs/"+opened.ID, "")
-		if res.StatusCode != http.StatusOK {
-			t.Fatalf("close %d = %d, want 200", i+1, res.StatusCode)
+	for i, want := range []int{http.StatusNoContent, http.StatusNotFound} {
+		if res := api(t, srv, http.MethodDelete, "/api/runs/"+opened.ID, ""); res.StatusCode != want {
+			t.Fatalf("delete %d = %d, want %d", i+1, res.StatusCode, want)
 		}
 	}
 }
@@ -439,7 +444,7 @@ func TestACreateBodyWithMoreThanOneDocumentIsRefused(t *testing.T) {
 // Every method as well as every path: the mux matches method-qualified
 // patterns, so a route registered on the server's bare mux rather than through
 // s.api is only reachable - and only detectable - by the method it was
-// registered under. Probing GET alone would have left "open a run" and "close a
+// registered under. Probing GET alone would have left "open a run" and "delete a
 // run" answerable by anyone who could reach the port.
 func TestTheRunRoutesNeedACredential(t *testing.T) {
 	b := &fakeBackend{}

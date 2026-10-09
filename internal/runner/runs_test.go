@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,8 +147,8 @@ func TestAnUnknownRunIsRefusedByEveryOperation(t *testing.T) {
 	if err := runs.Apply("RUN-nope", runner.RunOp{Op: runner.OpInterrupt}); !errors.Is(err, runner.ErrNoRun) {
 		t.Errorf("Apply = %v, want ErrNoRun", err)
 	}
-	if err := runs.CloseRun("RUN-nope"); !errors.Is(err, runner.ErrNoRun) {
-		t.Errorf("CloseRun = %v, want ErrNoRun", err)
+	if err := runs.Remove("RUN-nope"); !errors.Is(err, runner.ErrNoRun) {
+		t.Errorf("Remove = %v, want ErrNoRun", err)
 	}
 }
 
@@ -162,37 +164,6 @@ func TestAModeWithNothingBehindItIsRefusedBeforeASessionIsBuilt(t *testing.T) {
 	}
 	if opened.Load() != 0 {
 		t.Error("a session was built for a mode the registry refuses")
-	}
-}
-
-// Closing a run ends the session and keeps the record: a run a person is done
-// with is one they can still read.
-func TestClosingARunKeepsTheRecordAndReleasesWhatWasHeld(t *testing.T) {
-	var released atomic.Int64
-	runs := newRuns(t, "", nil, &released)
-	v := create(t, runs, runner.RunRequest{})
-
-	if err := runs.CloseRun(v.ID); err != nil {
-		t.Fatalf("CloseRun: %v", err)
-	}
-	if released.Load() != 1 {
-		t.Errorf("release ran %d times, want once", released.Load())
-	}
-	got, err := runs.Get(v.ID)
-	if err != nil {
-		t.Fatalf("Get after close: %v", err)
-	}
-	if got.Live || got.Status != runner.RunClosed {
-		t.Errorf("run after close = %+v, want a record with no session", got)
-	}
-
-	// Two tabs pressing the same button is the ordinary case, and closing twice
-	// must not release twice either.
-	if err := runs.CloseRun(v.ID); err != nil {
-		t.Errorf("second CloseRun: %v", err)
-	}
-	if released.Load() != 1 {
-		t.Errorf("release ran %d times after two closes, want once", released.Load())
 	}
 }
 
@@ -519,36 +490,6 @@ func TestARunOpenedWhileTheRegistryIsClosingIsClosedWithIt(t *testing.T) {
 	if released.Load() != 1 {
 		t.Errorf("release ran %d times, want once for the run that was mid-flight",
 			released.Load())
-	}
-}
-
-// Two tabs pressing the same button, at the same moment. Only one of them may
-// close the session, and the record has to end up consistent either way.
-func TestConcurrentClosesCloseTheSessionOnce(t *testing.T) {
-	var released atomic.Int64
-	runs := newRuns(t, "", nil, &released)
-	v := create(t, runs, runner.RunRequest{})
-
-	var wg sync.WaitGroup
-	errs := make([]error, 8)
-	for i := range errs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errs[i] = runs.CloseRun(v.ID)
-		}()
-	}
-	wg.Wait()
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("close %d = %v, want nil", i, err)
-		}
-	}
-	if released.Load() != 1 {
-		t.Errorf("release ran %d times, want once", released.Load())
-	}
-	if got, _ := runs.Get(v.ID); got.Live || got.Status != runner.RunClosed {
-		t.Errorf("run = %+v, want a record with no session", got)
 	}
 }
 
@@ -1925,5 +1866,324 @@ func TestARunRemembersItsProject(t *testing.T) {
 	got, err := again.Get(v.ID)
 	if err != nil || got.ProjectID != "PRJ-3" {
 		t.Errorf("after a restart ProjectID = %q, %v; want PRJ-3", got.ProjectID, err)
+	}
+}
+
+// remainingFiles reports which of a session's files are still on disk.
+func remainingFiles(t *testing.T, sid string) []string {
+	t.Helper()
+	var left []string
+	if _, err := uisession.ReadJournal(sid, 0); !errors.Is(err, fs.ErrNotExist) {
+		left = append(left, "journal")
+	}
+	dir := filepath.Join(os.Getenv("XDG_STATE_HOME"), "aigem", "sessions")
+	for _, name := range []string{sid + ".json", sid + ".precompact-1.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, fs.ErrNotExist) {
+			left = append(left, name)
+		}
+	}
+	return left
+}
+
+func TestRemovingAClosedRunDeletesItAndItsFiles(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cwd := project(t)
+	model := newFakeModel(t)
+	var notified atomic.Int64
+	var mu sync.Mutex
+	var last runner.RunView
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Notify: func(v runner.RunView) {
+			notified.Add(1)
+			mu.Lock()
+			last = v
+			mu.Unlock()
+		},
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			return runner.NewSession(runner.Spec{Mode: req.Mode, Tools: reg, Backend: model.ref("m")}),
+				runner.Opened{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	v := create(t, runs, runner.RunRequest{})
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, runs, v.ID)
+	if err := runs.CloseRun(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := closed.SessionID
+	backup := filepath.Join(os.Getenv("XDG_STATE_HOME"), "aigem", "sessions", sid+".precompact-1.json")
+	if err := os.WriteFile(backup, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if left := remainingFiles(t, sid); len(left) != 3 {
+		t.Fatalf("before the delete the files on disk are %v, want journal, session and backup", left)
+	}
+
+	notified.Store(0)
+	if err := runs.Remove(v.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if n := notified.Load(); n != 1 {
+		t.Errorf("a delete announced %d times, want once", n)
+	}
+	mu.Lock()
+	if last.ID != v.ID || last.Status != runner.RunRemoved || last.Live {
+		t.Errorf("a delete announced %+v, want %s removed and not live", last, v.ID)
+	}
+	mu.Unlock()
+	if len(runs.List()) != 0 {
+		t.Errorf("List after a delete = %+v, want empty", runs.List())
+	}
+	if _, err := runs.Get(v.ID); !errors.Is(err, runner.ErrNoRun) {
+		t.Errorf("Get after a delete = %v, want ErrNoRun", err)
+	}
+	if left := remainingFiles(t, sid); len(left) != 0 {
+		t.Errorf("files left after a delete: %v", left)
+	}
+}
+
+// A live run is ended first and its files deleted after, so the save at the
+// end of the cancelled turn cannot write the conversation back.
+func TestRemovingALiveRunEndsItBeforeDeletingItsFiles(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	held := newHeldModel(t)
+	runs := runsAgainst(t, project(t), runner.Spec{Backend: held.model.ref("held-model")})
+
+	v := create(t, runs, runner.RunRequest{})
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "take a while"}); err != nil {
+		t.Fatal(err)
+	}
+	held.waitForRequest(t)
+	got, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Running {
+		t.Fatalf("run before the delete = %+v, want a turn running", got)
+	}
+	if left := remainingFiles(t, got.SessionID); !slices.Contains(left, "journal") {
+		t.Fatalf("before the delete the files on disk are %v, want a journal", left)
+	}
+	if err := runs.Remove(v.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if left := remainingFiles(t, got.SessionID); len(left) != 0 {
+		t.Errorf("files left after deleting a live run: %v", left)
+	}
+	if _, err := runs.Get(v.ID); !errors.Is(err, runner.ErrNoRun) {
+		t.Errorf("Get after a delete = %v, want ErrNoRun", err)
+	}
+}
+
+// A delete whose table cannot be written keeps the run, so it neither comes
+// back after a restart without its files nor is lost to a retry.
+func TestARemoveThatCannotWriteTheTableKeepsTheRun(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory")
+	}
+	dir := t.TempDir()
+	runs := newRuns(t, filepath.Join(dir, "runs.json"), nil, nil)
+	v := create(t, runs, runner.RunRequest{})
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	err := runs.Remove(v.ID)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err == nil {
+		t.Fatal("Remove succeeded although the table could not be written")
+	}
+	if list := runs.List(); len(list) != 1 || list[0].ID != v.ID || !list[0].Live {
+		t.Errorf("List after a failed delete = %+v, want %s still live", list, v.ID)
+	}
+	if err := runs.Remove(v.ID); err != nil {
+		t.Errorf("retried Remove = %v, want nil", err)
+	}
+}
+
+func TestRemovingARunWithNoSessionAndRemovingTwice(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.json")
+	if err := store.New[[]runner.Run](path).Save([]runner.Run{
+		{ID: "RUN-1", Status: runner.RunClosed, Created: time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runs := newRuns(t, path, nil, nil)
+	if err := runs.Remove("RUN-1"); err != nil {
+		t.Fatalf("Remove of a run with no session id: %v", err)
+	}
+	if err := runs.Remove("RUN-1"); !errors.Is(err, runner.ErrNoRun) {
+		t.Errorf("second Remove = %v, want ErrNoRun", err)
+	}
+	if err := runs.Remove("RUN-404"); !errors.Is(err, runner.ErrNoRun) {
+		t.Errorf("Remove of an unknown run = %v, want ErrNoRun", err)
+	}
+}
+
+func TestConcurrentRemovesSucceedOnce(t *testing.T) {
+	var released atomic.Int64
+	runs := newRuns(t, "", nil, &released)
+	v := create(t, runs, runner.RunRequest{})
+
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = runs.Remove(v.ID)
+		}()
+	}
+	wg.Wait()
+	ok := 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case !errors.Is(err, runner.ErrNoRun):
+			t.Errorf("remove %d = %v, want nil or ErrNoRun", i, err)
+		}
+	}
+	if ok != 1 {
+		t.Errorf("%d removes succeeded, want exactly one", ok)
+	}
+	if released.Load() != 1 {
+		t.Errorf("release ran %d times, want once", released.Load())
+	}
+}
+
+func TestARemoveRacingShutdownNeverBringsTheRunBack(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "runs.json")
+	cwd := project(t)
+	model := newFakeModel(t)
+	var released atomic.Int64
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Store: store.New[[]runner.Run](path),
+		Open: func(_ context.Context, req runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			_, reg := newEnvAndTools(t, cwd)
+			return runner.NewSession(runner.Spec{Mode: req.Mode, Tools: reg, Backend: model.ref("m")}),
+				runner.Opened{Release: func() { released.Add(1) }}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+	v := create(t, runs, runner.RunRequest{})
+	if err := runs.Apply(v.ID, runner.RunOp{Op: runner.OpSubmit, Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, runs, v.ID)
+	before, err := runs.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := before.SessionID
+	// The turn saves itself after the event that says it ended.
+	for deadline := time.Now().Add(5 * time.Second); len(remainingFiles(t, sid)) != 2; {
+		if time.Now().After(deadline) {
+			t.Fatalf("before the race the files on disk are %v, want journal and session", remainingFiles(t, sid))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var wg sync.WaitGroup
+	var removeErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		removeErr = runs.Remove(v.ID)
+	}()
+	go func() {
+		defer wg.Done()
+		runs.Close()
+	}()
+	wg.Wait()
+
+	if released.Load() != 1 {
+		t.Errorf("release ran %d times, want once", released.Load())
+	}
+	again := newRuns(t, path, nil, nil)
+	if errors.Is(removeErr, runner.ErrRunsClosed) {
+		if got, err := again.Get(v.ID); err != nil || got.Status != runner.RunClosed {
+			t.Errorf("a run the shutdown kept = %+v, %v; want it closed", got, err)
+		}
+		if left := remainingFiles(t, sid); len(left) != 2 {
+			t.Errorf("a run the shutdown kept has files %v, want journal and session", left)
+		}
+		return
+	}
+	if removeErr != nil {
+		t.Fatalf("Remove = %v, want nil or ErrRunsClosed", removeErr)
+	}
+	if left := remainingFiles(t, sid); len(left) != 0 {
+		t.Errorf("files left after a remove: %v", left)
+	}
+	if _, err := again.Get(v.ID); !errors.Is(err, runner.ErrNoRun) {
+		t.Errorf("Get after a restart = %v, want ErrNoRun", err)
+	}
+}
+
+func TestRemoveIsRefusedAfterShutdown(t *testing.T) {
+	runs := newRuns(t, "", nil, nil)
+	v := create(t, runs, runner.RunRequest{})
+	runs.Close()
+	if err := runs.Remove(v.ID); !errors.Is(err, runner.ErrRunsClosed) {
+		t.Errorf("Remove after Close = %v, want ErrRunsClosed", err)
+	}
+}
+
+// A deleted run stays deleted across a restart, and its id is not handed out
+// again, even after a second restart: a URL a tab still holds must not open
+// somebody else's conversation.
+func TestARemovedRunStaysGoneAfterARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.json")
+	first := newRuns(t, path, nil, nil)
+	kept := create(t, first, runner.RunRequest{})
+	gone := create(t, first, runner.RunRequest{Title: "secret plans"})
+	if err := first.Remove(gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+
+	second := newRuns(t, path, nil, nil)
+	if _, err := second.Get(gone.ID); !errors.Is(err, runner.ErrNoRun) {
+		t.Errorf("Get of a removed run after a restart = %v, want ErrNoRun", err)
+	}
+	table, err := store.New[[]runner.Run](path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range table {
+		if rec.ID == gone.ID && (rec.Title != "" || rec.SessionID != "") {
+			t.Errorf("the removed run keeps %+v on disk, want only its id", rec)
+		}
+	}
+	if list := second.List(); len(list) != 1 || list[0].ID != kept.ID {
+		t.Errorf("List after a restart = %+v, want only %s", list, kept.ID)
+	}
+	// A save on the second registry must carry the highest id forward.
+	if err := second.Remove(kept.ID); err != nil {
+		t.Fatal(err)
+	}
+	second.Close()
+
+	third := newRuns(t, path, nil, nil)
+	if next := create(t, third, runner.RunRequest{}).ID; next != "RUN-3" {
+		t.Errorf("the next id is %q, want RUN-3, past the removed %q", next, gone.ID)
 	}
 }

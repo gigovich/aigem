@@ -153,24 +153,28 @@ func TestWebUsageIncludesAuthenticatedProviderWithoutSnapshot(t *testing.T) {
 }
 
 func TestActivityPersistsAndRunMutationsAppendExactlyOnce(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	log := store.NewLog[web.Activity](filepath.Join(t.TempDir(), "activity.jsonl"))
 	runs, _ := testRuns(t)
 	var published []string
 	b := newWebBackend(webBackendConfig{version: "test", runs: runs, activity: log,
 		notify: func(kind string, _ any) { published = append(published, kind) }})
 	run := openTestRun(t, b)
-	if err := b.CloseRun(context.Background(), run.ID); err != nil {
+	if err := b.RemoveRun(context.Background(), run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.CloseRun(context.Background(), run.ID); err != nil {
-		t.Fatal(err)
+	if err := b.RemoveRun(context.Background(), run.ID); !errors.Is(err, web.ErrNoRun) {
+		t.Fatalf("second remove = %v, want ErrNoRun", err)
 	}
 	got, err := b.Activity(context.Background(), 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].Kind != "run.created" || got[1].Kind != "run.closed" {
-		t.Fatalf("activity = %+v, want one creation and one closure", got)
+	if len(got) != 2 || got[0].Kind != "run.created" || got[1].Kind != "run.removed" {
+		t.Fatalf("activity = %+v, want one creation and one removal", got)
+	}
+	if got[1].RunRef != "" {
+		t.Errorf("the removal links to %q, a run that no longer exists", got[1].RunRef)
 	}
 	if got[0].Seq != 1 || got[1].Seq != 2 || got[0].At.IsZero() {
 		t.Fatalf("activity cursors/times were not restored from the log: %+v", got)
@@ -496,10 +500,10 @@ func TestAnActivityThatCouldNotBeRecordedIsNotAnnounced(t *testing.T) {
 	}
 }
 
-// Two tabs pressing Close at the same moment. The run ends once, so the feed
-// says so once: a second line would have the person reading that they closed
-// the same conversation twice.
-func TestTwoConcurrentClosesRecordOneClosure(t *testing.T) {
+// Two tabs pressing Delete at the same moment. Only one of them deletes the
+// run, so the feed says so once and the other tab is told the run is gone.
+func TestTwoConcurrentDeletesRecordOneRemoval(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	log := store.NewLog[web.Activity](filepath.Join(t.TempDir(), "activity.jsonl"))
 	runs, _ := testRuns(t)
 	b := newWebBackend(webBackendConfig{version: "test", runs: runs, activity: log})
@@ -511,27 +515,36 @@ func TestTwoConcurrentClosesRecordOneClosure(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = b.CloseRun(context.Background(), run.ID)
+			errs[i] = b.RemoveRun(context.Background(), run.ID)
 		}()
 	}
 	wg.Wait()
-	for i, err := range errs {
-		if err != nil {
-			t.Fatalf("close %d: %v", i, err)
+	var ok, gone int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, web.ErrNoRun):
+			gone++
+		default:
+			t.Fatalf("remove: %v", err)
 		}
+	}
+	if ok != 1 || gone != 1 {
+		t.Fatalf("two concurrent removes = %v, want one success and one ErrNoRun", errs)
 	}
 	got, err := b.Activity(context.Background(), 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var closed int
+	var removed int
 	for _, a := range got {
-		if a.Kind == "run.closed" {
-			closed++
+		if a.Kind == "run.removed" {
+			removed++
 		}
 	}
-	if closed != 1 {
-		t.Fatalf("two concurrent closes recorded %d closures, want one: %+v", closed, got)
+	if removed != 1 {
+		t.Fatalf("two concurrent removes recorded %d removals, want one: %+v", removed, got)
 	}
 }
 
@@ -667,8 +680,8 @@ func TestRunRoutesWithoutARegistryAreUnavailableRatherThanFatal(t *testing.T) {
 	if _, err := b.Run(context.Background(), "RUN-1"); !errors.Is(err, web.ErrUnavailable) {
 		t.Fatalf("Run without a registry = %v, want ErrUnavailable", err)
 	}
-	if err := b.CloseRun(context.Background(), "RUN-1"); !errors.Is(err, web.ErrUnavailable) {
-		t.Fatalf("CloseRun without a registry = %v, want ErrUnavailable", err)
+	if err := b.RemoveRun(context.Background(), "RUN-1"); !errors.Is(err, web.ErrUnavailable) {
+		t.Fatalf("RemoveRun without a registry = %v, want ErrUnavailable", err)
 	}
 	if _, err := b.RunEvents(context.Background(), "RUN-1", 0, 0); !errors.Is(err, web.ErrUnavailable) {
 		t.Fatalf("RunEvents without a registry = %v, want ErrUnavailable", err)

@@ -58,7 +58,6 @@ type webBackend struct {
 	// a second. Short enough that a skill added by hand shows up while the
 	// person is still looking at the screen.
 	pending map[string]pendingMemo
-	closeMu sync.Mutex
 }
 
 // pendingMemo is what a project's skills are waiting on, and when that was read.
@@ -221,24 +220,15 @@ func (b *webBackend) Run(_ context.Context, id string) (web.Run, error) {
 	return webRun(v), nil
 }
 
-func (b *webBackend) CloseRun(_ context.Context, id string) error {
+func (b *webBackend) RemoveRun(_ context.Context, id string) error {
 	if err := b.haveRuns(); err != nil {
 		return err
 	}
-	// Serialize the read-before-close so two tabs closing together append one
-	// activity record rather than both observing the run live.
-	b.closeMu.Lock()
-	defer b.closeMu.Unlock()
-	before, err := b.runs.Get(id)
-	if err != nil {
+	if err := b.runs.Remove(id); err != nil {
 		return webRunError(err)
 	}
-	if err := b.runs.CloseRun(id); err != nil {
-		return webRunError(err)
-	}
-	if before.Live {
-		b.recordActivity(web.Activity{Kind: "run.closed", Text: "Run closed", RunRef: id})
-	}
+	// No RunRef: the run it would link to is gone.
+	b.recordActivity(web.Activity{Kind: "run.removed", Text: "Deleted run " + id})
 	return nil
 }
 
@@ -441,7 +431,7 @@ func webRunError(err error) error {
 		return web.ErrNoProject
 	case errors.Is(err, runner.ErrTooManyRuns):
 		// The sentinel decides the status code and the text says how many are
-		// open, which is what tells the person to close one rather than to wait.
+		// open, which is what tells the person to delete one rather than to wait.
 		return web.Busy(err.Error())
 	case errors.Is(err, runner.ErrRunsClosed):
 		return err

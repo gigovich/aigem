@@ -110,6 +110,7 @@ func testProjectRuns(t *testing.T, projects *runner.Projects) *runner.Runs {
 }
 
 func TestRemovingAProjectWithAnOpenRunIsAConflict(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	projects := testProjects(t, nil)
 	b := newWebBackend(webBackendConfig{runs: testProjectRuns(t, projects), projects: projects})
 	added, err := b.AddProject(context.Background(), web.NewProject{Dir: t.TempDir()})
@@ -126,11 +127,11 @@ func TestRemovingAProjectWithAnOpenRunIsAConflict(t *testing.T) {
 	if err := b.RemoveProject(context.Background(), added.ID); !errors.Is(err, web.ErrConflict) {
 		t.Fatalf("remove with an open run = %v, want ErrConflict", err)
 	}
-	if err := b.CloseRun(context.Background(), run.ID); err != nil {
+	if err := b.RemoveRun(context.Background(), run.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.RemoveProject(context.Background(), added.ID); err != nil {
-		t.Fatalf("remove after the run closed = %v", err)
+		t.Fatalf("remove after the run was deleted = %v", err)
 	}
 	if err := b.RemoveProject(context.Background(), added.ID); !errors.Is(err, web.ErrNoProject) {
 		t.Errorf("a second remove = %v, want ErrNoProject", err)

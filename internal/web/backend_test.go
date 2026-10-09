@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -148,19 +149,21 @@ func (b *fakeBackend) Run(_ context.Context, id string) (Run, error) {
 	return fr.run, nil
 }
 
-func (b *fakeBackend) CloseRun(_ context.Context, id string) error {
+func (b *fakeBackend) RemoveRun(_ context.Context, id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	fr := b.runs[id]
 	if fr == nil {
 		return ErrNoRun
 	}
-	fr.run.Status, fr.run.Live, fr.run.Running = "closed", false, false
+	delete(b.runs, id)
+	b.order = slices.DeleteFunc(b.order, func(o string) bool { return o == id })
 	for s := range fr.subs {
 		s.finish()
 	}
 	fr.subs = map[*fakeStream]struct{}{}
 	run := fr.run
+	run.Status, run.Live, run.Running = "removed", false, false
 	b.mu.Unlock()
 	b.announce(run)
 	b.mu.Lock()
@@ -289,6 +292,9 @@ func (b *fakeBackend) emit(id string, payload string) RunEvent {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	fr := b.runs[id]
+	if fr == nil {
+		return nil
+	}
 	// The sequence goes where the session puts it: inside the event. The
 	// position in this slice is the same number, which is what since counts
 	// against.

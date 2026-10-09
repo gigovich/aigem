@@ -48,7 +48,7 @@ func (b *projectsBackend) RemoveProject(_ context.Context, id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if id == b.openRun {
-		return Conflict("this project has an open run; close it first")
+		return Conflict("this project has an open run; delete it first")
 	}
 	for i, p := range b.projects {
 		if p.ID == id {

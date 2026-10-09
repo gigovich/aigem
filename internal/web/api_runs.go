@@ -86,27 +86,18 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, run)
 }
 
-// handleCloseRun saves a conversation and ends its session. The record and the
-// timeline stay: a run a person is done with is one they can still read, and
-// the activity feed goes on referring to it.
-func (s *Server) handleCloseRun(w http.ResponseWriter, r *http.Request) {
+// handleRemoveRun deletes a conversation: a live one is ended first. What the
+// other tabs learn of it is the run.updated the registry publishes.
+func (s *Server) handleRemoveRun(w http.ResponseWriter, r *http.Request) {
 	b, ok := backendOf[RunsBackend](s, w, "runs")
 	if !ok {
 		return
 	}
-	id := r.PathValue("id")
-	if err := b.CloseRun(r.Context(), id); err != nil {
-		writeRunError(w, "closing a run", err)
+	if err := b.RemoveRun(r.Context(), r.PathValue("id")); err != nil {
+		writeRunError(w, "removing a run", err)
 		return
 	}
-	// Read back rather than assumed: what a client applies to its table is the
-	// record as it now stands, and this daemon is not the only writer of it.
-	run, err := b.Run(r.Context(), id)
-	if err != nil {
-		writeRunError(w, "reading a closed run", err)
-		return
-	}
-	writeJSON(w, run)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleRunEvents serves a page of a run's timeline.
@@ -293,7 +284,7 @@ func writeRunError(w http.ResponseWriter, doing string, err error) {
 			http.StatusGone)
 	case errors.Is(err, ErrBusy):
 		// The message rather than a fixed sentence: it says how much is open and
-		// what the limit is, which is what turns "try later" into "close one".
+		// what the limit is, which is what turns "try later" into "delete one".
 		// Unprefixed for the same reason Refuse is: this text is read by a
 		// person, and "web: the daemon is at capacity" reads as a stack trace
 		// escaping into the interface.
