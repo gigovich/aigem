@@ -267,3 +267,11 @@ test('the palette opens a ticket found by its title', async () => {
   await userEvent.keyboard('{Enter}')
   await waitFor(() => expect(window.location.pathname).toBe('/task/TCK-4'))
 })
+
+test('the dependency picker leaves out own subtickets and own parent', async () => {
+  const options = () => Array.from(screen.getByLabelText('Add dependency').querySelectorAll('option')).map((o) => o.value)
+  await openTask('TCK-1', PLAN)
+  expect(options()).toEqual(['', 'TCK-4'])
+  act(() => navigate({ screen: 'task', id: 'TCK-3' }))
+  await waitFor(() => expect(options()).toEqual(['', 'TCK-2']))
+})

@@ -191,7 +191,7 @@ export function Task({ id = '' }: { id?: string }) {
               >
                 <option value="">choose a ticket…</option>
                 {tickets
-                  .filter((x) => x.id !== t.id && !t.dependsOn.includes(x.id))
+                  .filter((x) => x.id !== t.id && x.id !== t.parent && x.parent !== t.id && !t.dependsOn.includes(x.id))
                   .map((x) => (
                     <option key={x.id} value={x.id}>
                       {x.id} {x.title}
