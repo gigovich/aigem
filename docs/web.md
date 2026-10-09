@@ -15,8 +15,9 @@ credential, is where a page reads the version, the default model and which
 features this daemon serves.
 
 The screens are sessions, models, skills, activity, worktrees and a run viewer,
-plus a command palette and a quick chat. Tickets and tasks are drawn as empty
-states that say what they are waiting for: they arrive with the next phase.
+plus a command palette and a quick chat. Tickets are a screen per project, with
+a page for each ticket. Tasks are drawn as an empty state that says what it is
+waiting for: it arrives with the next phase.
 This document is the protocol; how the client is put together is
 in `internal/web/_ui/README.md`.
 
@@ -166,6 +167,12 @@ though the hop to the daemon is plain HTTP.
 | `POST /api/projects` | `{"dir":"/abs/path","name":"optional"}`; 201, or 400 with why not |
 | `DELETE /api/projects/{id}` | forgets the project; 409 while it has an open run; removes no files |
 | `GET /api/projects/{id}/repos` | the git checkouts under the project, discovered on demand |
+| `GET /api/projects/{id}/tickets` | the project's tickets, oldest first; `?status=` and `?parent=` filter |
+| `POST /api/projects/{id}/tickets` | `{repo, title, body, parent, dependsOn}`; 201 |
+| `GET /api/projects/{id}/tickets/{tid}` | one ticket with its comments |
+| `PATCH /api/projects/{id}/tickets/{tid}` | `{status?, dependsOn?}`; 200 with the ticket |
+| `POST /api/projects/{id}/tickets/{tid}/comments` | `{text}`; 201 |
+| `DELETE /api/projects/{id}/tickets/{tid}` | deletes the ticket; 204 |
 | `/api/...`  | reserved; an unknown path here is a 404, never the page, in every build |
 | everything else | the application, which routes in the browser |
 
@@ -232,7 +239,7 @@ otherwise malformed values are rejected.
 `features` in `/api/meta` and in the control stream's `hello` names what this
 daemon can serve, and a page uses it to decide which screens exist at all. The
 keys are `controlSocket`, `runs`, `models`, `providerLogin`, `skills`,
-`commands`, `usage`, `activity` and `projects`.
+`commands`, `usage`, `activity`, `projects` and `tickets`.
 
 A key is present when the daemon was built with that seam *and* was given what
 the seam needs. Without a state directory there is no activity feed and no
@@ -260,8 +267,9 @@ The kinds this daemon publishes are `run.updated`, carrying the record;
 `model.default`, carrying the model that is now the default; `auth.updated`,
 naming the provider whose credentials changed; `skills.updated`, carrying what
 was loaded; `project.updated`, carrying the project that was added, removed or
-whose environment failed to load; and `activity.updated`, naming the kind of
-entry appended. Each is a statement that a collection moved, and what a page
+whose environment failed to load; `ticket.updated`, carrying `{projectId, id}` of
+the ticket that was created, changed, commented or deleted; and `activity.updated`,
+naming the kind of entry appended. Each is a statement that a collection moved, and what a page
 does with one is read that collection again - the payload is there to say
 which, not to be applied.
 
@@ -335,6 +343,44 @@ routes, on `DELETE /api/projects/{id}` and on `GET /api/projects/{id}/repos`.
 is refused with 409 while the project has an open run, and it never removes
 anything from disk - the directory, and in later phases its tickets and
 worktrees, stay where they are.
+
+## Tickets
+
+A ticket is a unit of work in one project, kept in
+`$XDG_STATE_HOME/aigem/projects/<projectID>/tickets.json`. The daemon's own
+directory has no project id, so it has no tickets. Ids are `TCK-<n>` per project
+and are never reused, also after a delete or a restart. A write that fails is
+rolled back, so the file and the answer agree.
+
+A ticket has `id`, `repo`, `title`, `body`, `status`, `parent`, `dependsOn`, `by`,
+`created`, `updated`, `comments` (`[{at, by, text}]`), `runs`, `runnable` and
+`progress` (`{done, total}`, the subtickets that are done). The title and body
+cannot be changed after create. `PATCH` takes only `status` and `dependsOn`; any
+other field is a 400.
+
+The statuses are `open`, `planning`, `review`, `ready`, `running`, `blocked`,
+`done` and `closed`. A person can make these moves:
+
+- `open` to `ready`, and `ready` to `open`
+- `blocked` to `open` or `ready`
+- `ready` or `blocked` to `done`
+- any status except `running`, `planning` and `review` to `closed`
+- `closed` to `open`
+
+The other statuses are set by later parts (planner and runs). There is one level
+only: a subticket cannot have subtickets. A ticket with subtickets has a derived
+status and no moves of its own. `runnable` is true when the status is `ready`, the
+ticket has no subtickets and every ticket in `dependsOn` is `done`. Dependencies
+may not make a cycle.
+
+Errors are meant to be shown as text. An unknown project or ticket is a `404`. A
+request that breaks a rule above is a `409` with a sentence for a person. Bad
+input is a `400`: an empty title, an unknown field, or a body over 64 KiB or a
+comment over 16 KiB. `GET` takes `?status=` and `?parent=` to filter.
+
+Creating, closing and deleting appear in the activity feed as `ticket.created`
+and `ticket.closed`. Every change is announced as `ticket.updated`. In the UI,
+"Add subticket" is on every top-level ticket.
 
 ## Runs
 
