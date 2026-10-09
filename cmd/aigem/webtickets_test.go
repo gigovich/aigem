@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gigovich/aigem/internal/runner"
@@ -104,4 +105,72 @@ func containsAll(have []string, want ...string) bool {
 		}
 	}
 	return true
+}
+
+func TestTicketRunsNeedTheCoordinatorAndRefuseWhatCannotRun(t *testing.T) {
+	b, project, _ := ticketsBackend(t)
+	ctx := context.Background()
+	kid, _ := b.CreateTicket(ctx, project, web.NewTicket{Title: "kid"})
+	ready := "ready"
+	if _, err := b.UpdateTicket(ctx, project, kid.ID, web.TicketPatch{Status: &ready}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.RunTicket(ctx, project, kid.ID); !errors.Is(err, web.ErrUnavailable) {
+		t.Errorf("without the coordinator = %v, want ErrUnavailable", err)
+	}
+
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(context.Context, runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			return nil, runner.Opened{}, errors.New("no model in this test")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+	b.runs = runs
+	b.ticketRuns = runner.NewTicketRuns(runner.TicketRunsConfig{
+		Runs: runs, Tickets: b.tickets, Projects: b.projects, Finished: b.ticketFinished,
+	})
+	_, err = b.RunTicket(ctx, project, kid.ID)
+	if !errors.Is(err, web.ErrConflict) || !strings.Contains(err.Error(), "not a git checkout") {
+		t.Errorf("a project that is no checkout = %v, want a conflict", err)
+	}
+	if _, err := b.RunTicket(ctx, project, "TCK-9"); !errors.Is(err, web.ErrNoTicket) {
+		t.Errorf("unknown ticket = %v", err)
+	}
+	if _, err := b.MergeTicket(ctx, project, kid.ID); !errors.Is(err, web.ErrConflict) {
+		t.Errorf("merge of a ready ticket = %v, want a conflict", err)
+	}
+	if list, err := b.Worktrees(ctx, project); err != nil || len(list) != 0 {
+		t.Errorf("worktrees = %v, %v", list, err)
+	}
+	if err := b.DiscardWorktree(ctx, project, kid.ID); !errors.Is(err, web.ErrNoWorktree) {
+		t.Errorf("discard = %v, want ErrNoWorktree", err)
+	}
+	if err := b.StopRun(ctx, "RUN-9"); !errors.Is(err, web.ErrNoRun) {
+		t.Errorf("stop of an unknown run = %v", err)
+	}
+}
+
+func TestAFinishedTicketRunIsInTheActivityFeed(t *testing.T) {
+	b, project, _ := ticketsBackend(t)
+	b.ticketFinished(project, runner.TicketView{Ticket: runner.Ticket{
+		ID: "TCK-1", Title: "notes", Status: runner.TicketDone, Runs: []string{"RUN-2"},
+	}}, "Added.\n\nMerged aigem/TCK-1 into main as abc.")
+	b.ticketFinished(project, runner.TicketView{Ticket: runner.Ticket{
+		ID: "TCK-2", Status: runner.TicketBlocked, Runs: []string{"RUN-3"},
+	}}, "the main checkout has uncommitted changes\n\nThe agent's summary: x")
+	feed, _ := b.Activity(context.Background(), 0, 0)
+	byKind := map[string]web.Activity{}
+	for _, a := range feed {
+		byKind[a.Kind] = a
+	}
+	if d := byKind["ticket.done"]; d.Text != "Ticket TCK-1 done: notes" || d.RunRef != "RUN-2" {
+		t.Errorf("done = %+v", d)
+	}
+	if bl := byKind["ticket.blocked"]; bl.RunRef != "RUN-3" ||
+		bl.Text != "Ticket TCK-2 blocked: the main checkout has uncommitted changes ..." {
+		t.Errorf("blocked = %+v", bl)
+	}
 }

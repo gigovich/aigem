@@ -169,3 +169,85 @@ func TestTheTicketRoutesRefuseOtherMethodsAndNeedTheFeature(t *testing.T) {
 		t.Errorf("a backend without the seam = %d, want 501", res.StatusCode)
 	}
 }
+
+func (b *ticketsBackend) RunTicket(_ context.Context, project, id string) (Run, error) {
+	switch id {
+	case "TCK-3":
+		return Run{}, Conflict("TCK-3 is not runnable")
+	case "TCK-7":
+		return Run{}, ErrNoTicket
+	}
+	return Run{ID: "RUN-5", Mode: "autonomous", TicketID: id, Status: "open", Live: true}, nil
+}
+
+func (b *ticketsBackend) MergeTicket(_ context.Context, project, id string) (Ticket, error) {
+	if id == "TCK-1" {
+		return Ticket{}, Conflict("the main checkout has uncommitted changes")
+	}
+	return Ticket{ID: id, Status: "done"}, nil
+}
+
+func (b *ticketsBackend) Worktrees(_ context.Context, project string) ([]Worktree, error) {
+	if project != "PRJ-1" {
+		return nil, ErrNoProject
+	}
+	return nil, nil
+}
+
+func (b *ticketsBackend) DiscardWorktree(_ context.Context, project, name string) error {
+	switch name {
+	case "TCK-2":
+		return Conflict("TCK-2 is worked on by the live run RUN-5; stop it first")
+	case "TCK-9":
+		return ErrNoWorktree
+	}
+	return nil
+}
+
+func TestTheTicketRunRoutesAnswerAndRefuse(t *testing.T) {
+	srv, _ := newTicketsServer(t)
+	res := api(t, srv, http.MethodPost, "/api/projects/PRJ-1/tickets/TCK-2/run", "")
+	if res.StatusCode != http.StatusCreated || decode[Run](t, res).TicketID != "TCK-2" {
+		t.Errorf("run = %d", res.StatusCode)
+	}
+	res = api(t, srv, http.MethodPost, "/api/projects/PRJ-1/tickets/TCK-3/run", "")
+	if res.StatusCode != http.StatusConflict || !strings.Contains(readBody(t, res), "not runnable") {
+		t.Errorf("a refused run = %d, want 409 with the sentence", res.StatusCode)
+	}
+	res = api(t, srv, http.MethodPost, "/api/projects/PRJ-1/tickets/TCK-7/run", "")
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown ticket = %d, want 404", res.StatusCode)
+	}
+	res = api(t, srv, http.MethodPost, "/api/projects/PRJ-1/tickets/TCK-2/merge", "")
+	if res.StatusCode != http.StatusOK || decode[Ticket](t, res).Status != "done" {
+		t.Errorf("merge = %d", res.StatusCode)
+	}
+	res = api(t, srv, http.MethodPost, "/api/projects/PRJ-1/tickets/TCK-1/merge", "")
+	if res.StatusCode != http.StatusConflict || !strings.Contains(readBody(t, res), "uncommitted changes") {
+		t.Errorf("a refused merge = %d, want 409", res.StatusCode)
+	}
+	res = api(t, srv, http.MethodGet, "/api/projects/PRJ-1/worktrees", "")
+	if body := strings.TrimSpace(readBody(t, res)); res.StatusCode != http.StatusOK || body != "[]" {
+		t.Errorf("worktrees = %d %s, want 200 []", res.StatusCode, body)
+	}
+	if res := api(t, srv, http.MethodGet, "/api/projects/PRJ-9/worktrees", ""); res.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown project = %d, want 404", res.StatusCode)
+	}
+	for name, want := range map[string]int{
+		"TCK-1": http.StatusNoContent, "TCK-2": http.StatusConflict, "TCK-9": http.StatusNotFound,
+	} {
+		if res := api(t, srv, http.MethodDelete, "/api/projects/PRJ-1/worktrees/"+name, ""); res.StatusCode != want {
+			t.Errorf("discard %s = %d, want %d", name, res.StatusCode, want)
+		}
+	}
+	for path, method := range map[string]string{
+		"/api/projects/PRJ-1/tickets/TCK-2/run":   http.MethodGet,
+		"/api/projects/PRJ-1/tickets/TCK-2/merge": http.MethodGet,
+		"/api/projects/PRJ-1/worktrees":           http.MethodPost,
+		"/api/projects/PRJ-1/worktrees/TCK-1":     http.MethodGet,
+	} {
+		if res := api(t, srv, method, path, ""); res.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s = %d, want 405", method, path, res.StatusCode)
+		}
+	}
+}

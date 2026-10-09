@@ -108,7 +108,7 @@ func webTicket(v runner.TicketView) web.Ticket {
 	t := web.Ticket{
 		ID: v.ID, Repo: v.Repo, Title: v.Title, Body: v.Body, Status: v.Status, Parent: v.Parent,
 		DependsOn: append([]string{}, v.DependsOn...), By: v.By, Created: v.Created, Updated: v.Updated,
-		Comments: []web.TicketComment{}, Runs: append([]string{}, v.Runs...), Runnable: v.Runnable,
+		Comments: []web.TicketComment{}, Runs: append([]string{}, v.Runs...), Runnable: v.Runnable, MergePending: v.MergePending,
 	}
 	for _, c := range v.Comments {
 		t.Comments = append(t.Comments, web.TicketComment{At: c.At, By: c.By, Text: c.Text})
@@ -117,4 +117,86 @@ func webTicket(v runner.TicketView) web.Ticket {
 		t.Progress = &web.TicketProgress{Done: v.Progress.Done, Total: v.Progress.Total}
 	}
 	return t
+}
+
+func (b *webBackend) RunTicket(ctx context.Context, project, id string) (web.Run, error) {
+	if err := b.ticketRunsReady(project); err != nil {
+		return web.Run{}, err
+	}
+	v, err := b.ticketRuns.Start(ctx, project, id)
+	if err != nil {
+		return web.Run{}, ticketRunError(err)
+	}
+	return webRun(v), nil
+}
+
+func (b *webBackend) MergeTicket(ctx context.Context, project, id string) (web.Ticket, error) {
+	if err := b.ticketRunsReady(project); err != nil {
+		return web.Ticket{}, err
+	}
+	v, err := b.ticketRuns.Merge(ctx, project, id)
+	if err != nil {
+		return web.Ticket{}, ticketRunError(err)
+	}
+	return webTicket(v), nil
+}
+
+func (b *webBackend) Worktrees(ctx context.Context, project string) ([]web.Worktree, error) {
+	if err := b.ticketRunsReady(project); err != nil {
+		return nil, err
+	}
+	list, err := b.ticketRuns.Worktrees(ctx, project)
+	if err != nil {
+		return nil, ticketRunError(err)
+	}
+	out := make([]web.Worktree, 0, len(list))
+	for _, w := range list {
+		out = append(out, web.Worktree(w))
+	}
+	return out, nil
+}
+
+func (b *webBackend) DiscardWorktree(ctx context.Context, project, name string) error {
+	if err := b.ticketRunsReady(project); err != nil {
+		return err
+	}
+	return ticketRunError(b.ticketRuns.Discard(ctx, project, name))
+}
+
+// ticketFinished records a ticket a run left done or blocked in the activity feed.
+func (b *webBackend) ticketFinished(_ string, v runner.TicketView, reason string) {
+	a := web.Activity{Kind: "ticket.blocked", Text: "Ticket " + v.ID + " blocked: " + firstLine(reason)}
+	if v.Status == runner.TicketDone {
+		a = web.Activity{Kind: "ticket.done", Text: "Ticket " + v.ID + " done: " + v.Title}
+	}
+	if n := len(v.Runs); n > 0 {
+		a.RunRef = v.Runs[n-1]
+	}
+	b.recordActivity(a)
+}
+
+func (b *webBackend) ticketRunsReady(project string) error {
+	if err := b.ticketProject(project); err != nil {
+		return err
+	}
+	if b.ticketRuns == nil {
+		return web.ErrUnavailable
+	}
+	return nil
+}
+
+// ticketRunError classifies what the coordinator reports: ticket rules as conflicts, the
+// rest the way a run's errors are.
+func ticketRunError(err error) error {
+	var refusal *runner.TicketRefusal
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, runner.ErrNoWorktree):
+		return web.ErrNoWorktree
+	case errors.As(err, &refusal), errors.Is(err, runner.ErrNoTicket), errors.Is(err, runner.ErrNoProject):
+		return webTicketError(err)
+	default:
+		return webRunError(err)
+	}
 }

@@ -213,6 +213,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/runs/{id}/blobs/{seq}", methodNotAllowed("GET, HEAD"))
 	s.api("GET /api/runs/{id}/artifacts", s.handleRunArtifacts)
 	s.mux.HandleFunc("/api/runs/{id}/artifacts", methodNotAllowed("GET, HEAD"))
+	s.api("POST /api/runs/{id}/stop", s.handleStopRun)
+	s.mux.HandleFunc("/api/runs/{id}/stop", methodNotAllowed("POST"))
 	s.api("GET /api/models", s.handleModels)
 	s.mux.HandleFunc("/api/models", methodNotAllowed("GET, HEAD"))
 	s.api("POST /api/models/default", s.handleDefaultModel)
@@ -252,6 +254,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/projects/{id}/tickets/{tid}", methodNotAllowed("GET, HEAD, PATCH, DELETE"))
 	s.api("POST /api/projects/{id}/tickets/{tid}/comments", s.handleCommentTicket)
 	s.mux.HandleFunc("/api/projects/{id}/tickets/{tid}/comments", methodNotAllowed("POST"))
+	s.api("POST /api/projects/{id}/tickets/{tid}/run", s.handleRunTicket)
+	s.mux.HandleFunc("/api/projects/{id}/tickets/{tid}/run", methodNotAllowed("POST"))
+	s.api("POST /api/projects/{id}/tickets/{tid}/merge", s.handleMergeTicket)
+	s.mux.HandleFunc("/api/projects/{id}/tickets/{tid}/merge", methodNotAllowed("POST"))
+	s.api("GET /api/projects/{id}/worktrees", s.handleWorktrees)
+	s.mux.HandleFunc("/api/projects/{id}/worktrees", methodNotAllowed("GET, HEAD"))
+	s.api("DELETE /api/projects/{id}/worktrees/{name}", s.handleDiscardWorktree)
+	s.mux.HandleFunc("/api/projects/{id}/worktrees/{name}", methodNotAllowed("DELETE"))
 	s.mux.Handle("/", s.assets)
 }
 

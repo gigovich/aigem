@@ -100,6 +100,19 @@ func (s *Server) handleRemoveRun(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleStopRun ends a run's session and keeps its record.
+func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[RunsBackend](s, w, "runs")
+	if !ok {
+		return
+	}
+	if err := b.StopRun(r.Context(), r.PathValue("id")); err != nil {
+		writeRunError(w, "stopping a run", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleRunEvents serves a page of a run's timeline.
 //
 // It is what a client reads after a desync, and what renders a run whose
@@ -298,6 +311,8 @@ func writeRunError(w http.ResponseWriter, doing string, err error) {
 		http.Error(w, "no such project", http.StatusNotFound)
 	case errors.Is(err, ErrNoTicket):
 		http.Error(w, "no such ticket", http.StatusNotFound)
+	case errors.Is(err, ErrNoWorktree):
+		http.Error(w, "no such worktree", http.StatusNotFound)
 	case errors.Is(err, ErrConflict):
 		http.Error(w, unprefixed(err.Error()), http.StatusConflict)
 	case errors.As(err, &refusal):

@@ -44,6 +44,9 @@ type RunsBackend interface {
 	// record, the timeline and the saved conversation. A run that is already
 	// gone is ErrNoRun.
 	RemoveRun(ctx context.Context, id string) error
+	// StopRun ends a live run's session and keeps its record and timeline. A run with no
+	// session is ErrRunClosed.
+	StopRun(ctx context.Context, id string) error
 	// RunEvents returns the timeline after since, at most limit events, oldest
 	// first. A gap that can no longer be filled is ErrHistoryGone.
 	RunEvents(ctx context.Context, id string, since uint64, limit int) ([]RunEvent, error)
@@ -176,6 +179,9 @@ type Run struct {
 	ID        string    `json:"id"`
 	SessionID string    `json:"sessionId,omitempty"`
 	ProjectID string    `json:"projectId,omitempty"`
+	TicketID  string    `json:"ticketId,omitempty"`
+	Worktree  string    `json:"worktree,omitempty"`
+	Branch    string    `json:"branch,omitempty"`
 	Mode      string    `json:"mode"`
 	Title     string    `json:"title,omitempty"`
 	Model     string    `json:"model,omitempty"`

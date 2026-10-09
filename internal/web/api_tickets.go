@@ -18,23 +18,28 @@ type TicketsBackend interface {
 	UpdateTicket(ctx context.Context, project, id string, req TicketPatch) (Ticket, error)
 	CommentTicket(ctx context.Context, project, id, text string) (Ticket, error)
 	DeleteTicket(ctx context.Context, project, id string) error
+	RunTicket(ctx context.Context, project, id string) (Run, error)
+	MergeTicket(ctx context.Context, project, id string) (Ticket, error)
+	Worktrees(ctx context.Context, project string) ([]Worktree, error)
+	DiscardWorktree(ctx context.Context, project, name string) error
 }
 
 type Ticket struct {
-	ID        string          `json:"id"`
-	Repo      string          `json:"repo"`
-	Title     string          `json:"title"`
-	Body      string          `json:"body"`
-	Status    string          `json:"status"`
-	Parent    string          `json:"parent,omitempty"`
-	DependsOn []string        `json:"dependsOn"`
-	By        string          `json:"by"`
-	Created   time.Time       `json:"created,omitzero"`
-	Updated   time.Time       `json:"updated,omitzero"`
-	Comments  []TicketComment `json:"comments"`
-	Runs      []string        `json:"runs"`
-	Runnable  bool            `json:"runnable"`
-	Progress  *TicketProgress `json:"progress,omitempty"`
+	ID           string          `json:"id"`
+	Repo         string          `json:"repo"`
+	Title        string          `json:"title"`
+	Body         string          `json:"body"`
+	Status       string          `json:"status"`
+	Parent       string          `json:"parent,omitempty"`
+	DependsOn    []string        `json:"dependsOn"`
+	By           string          `json:"by"`
+	Created      time.Time       `json:"created,omitzero"`
+	Updated      time.Time       `json:"updated,omitzero"`
+	Comments     []TicketComment `json:"comments"`
+	Runs         []string        `json:"runs"`
+	Runnable     bool            `json:"runnable"`
+	Progress     *TicketProgress `json:"progress,omitempty"`
+	MergePending bool            `json:"mergePending,omitempty"`
 }
 
 type TicketComment struct {
@@ -56,6 +61,17 @@ type NewTicket struct {
 	DependsOn []string `json:"dependsOn,omitempty"`
 }
 
+// Worktree is one aigem/<ticket> branch in a project's repository; state is running, kept or
+// merged.
+type Worktree struct {
+	Repo   string `json:"repo"`
+	Name   string `json:"name"`
+	Path   string `json:"path,omitempty"`
+	Ticket string `json:"ticket,omitempty"`
+	Run    string `json:"run,omitempty"`
+	State  string `json:"state"`
+}
+
 type TicketPatch struct {
 	Status    *string   `json:"status,omitempty"`
 	DependsOn *[]string `json:"dependsOn,omitempty"`
@@ -63,6 +79,9 @@ type TicketPatch struct {
 
 // ErrNoTicket is returned for a ticket id the project does not hold.
 var ErrNoTicket = errors.New("web: no such ticket")
+
+// ErrNoWorktree is returned for a worktree name the project does not hold.
+var ErrNoWorktree = errors.New("web: no such worktree")
 
 const (
 	maxTicketBody   = 64 << 10
@@ -173,6 +192,60 @@ func (s *Server) handleDeleteTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := b.DeleteTicket(r.Context(), r.PathValue("id"), r.PathValue("tid")); err != nil {
 		writeRunError(w, "deleting a ticket", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleRunTicket(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[TicketsBackend](s, w, "tickets")
+	if !ok {
+		return
+	}
+	run, err := b.RunTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"))
+	if err != nil {
+		writeRunError(w, "running a ticket", err)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, run)
+}
+
+func (s *Server) handleMergeTicket(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[TicketsBackend](s, w, "tickets")
+	if !ok {
+		return
+	}
+	t, err := b.MergeTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"))
+	if err != nil {
+		writeRunError(w, "merging a ticket", err)
+		return
+	}
+	writeJSON(w, t)
+}
+
+func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[TicketsBackend](s, w, "tickets")
+	if !ok {
+		return
+	}
+	items, err := b.Worktrees(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeRunError(w, "listing worktrees", err)
+		return
+	}
+	if items == nil {
+		items = []Worktree{}
+	}
+	writeJSON(w, items)
+}
+
+func (s *Server) handleDiscardWorktree(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[TicketsBackend](s, w, "tickets")
+	if !ok {
+		return
+	}
+	if err := b.DiscardWorktree(r.Context(), r.PathValue("id"), r.PathValue("name")); err != nil {
+		writeRunError(w, "discarding a worktree", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

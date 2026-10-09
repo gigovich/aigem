@@ -558,3 +558,24 @@ func TestARunTheDaemonHasNoRoomForIsARetry(t *testing.T) {
 		t.Errorf("body = %q, want what it said about the limit", body)
 	}
 }
+
+func TestStoppingARunEndsItsSessionAndKeepsTheRecord(t *testing.T) {
+	srv := newTestServer(t, Config{Backend: &fakeBackend{}})
+	run := decode[Run](t, api(t, srv, http.MethodPost, "/api/runs", `{}`))
+	if res := api(t, srv, http.MethodPost, "/api/runs/"+run.ID+"/stop", ""); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("stop = %d, want 204", res.StatusCode)
+	}
+	if got := decode[Run](t, api(t, srv, http.MethodGet, "/api/runs/"+run.ID, "")); got.Live || got.Status != "closed" {
+		t.Errorf("after stop = %+v", got)
+	}
+	if res := api(t, srv, http.MethodPost, "/api/runs/"+run.ID+"/stop", ""); res.StatusCode != http.StatusConflict {
+		t.Errorf("second stop = %d, want 409", res.StatusCode)
+	}
+	if res := api(t, srv, http.MethodPost, "/api/runs/RUN-99/stop", ""); res.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown run = %d, want 404", res.StatusCode)
+	}
+	res := api(t, srv, http.MethodGet, "/api/runs/"+run.ID+"/stop", "")
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("GET stop = %d, want 405", res.StatusCode)
+	}
+}

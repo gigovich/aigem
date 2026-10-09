@@ -149,6 +149,24 @@ func (b *fakeBackend) Run(_ context.Context, id string) (Run, error) {
 	return fr.run, nil
 }
 
+func (b *fakeBackend) StopRun(_ context.Context, id string) error {
+	b.mu.Lock()
+	fr := b.runs[id]
+	if fr == nil {
+		b.mu.Unlock()
+		return ErrNoRun
+	}
+	if !fr.run.Live {
+		b.mu.Unlock()
+		return ErrRunClosed
+	}
+	fr.run.Status, fr.run.Live, fr.run.Running = "closed", false, false
+	run := fr.run
+	b.mu.Unlock()
+	b.announce(run)
+	return nil
+}
+
 func (b *fakeBackend) RemoveRun(_ context.Context, id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

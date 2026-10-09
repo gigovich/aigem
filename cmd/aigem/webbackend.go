@@ -34,6 +34,9 @@ type webBackend struct {
 	env      *runner.Env
 	projects *runner.Projects
 	tickets  *runner.Tickets
+	// ticketRuns drives tickets with runs. It is set after construction, because its
+	// Finished callback records activity through this backend.
+	ticketRuns *runner.TicketRuns
 
 	activity   *store.Log[web.Activity]
 	activityMu sync.Mutex
@@ -80,6 +83,7 @@ var (
 	_ web.SkillsBackend   = (*webBackend)(nil)
 	_ web.CommandsBackend = (*webBackend)(nil)
 	_ web.ProjectsBackend = (*webBackend)(nil)
+	_ web.TicketsBackend  = (*webBackend)(nil)
 	_ web.UsageBackend    = (*webBackend)(nil)
 	_ web.ActivityBackend = (*webBackend)(nil)
 	_ web.FeatureBackend  = (*webBackend)(nil)
@@ -230,12 +234,27 @@ func (b *webBackend) RemoveRun(_ context.Context, id string) error {
 	if err := b.haveRuns(); err != nil {
 		return err
 	}
-	if err := b.runs.Remove(id); err != nil {
+	remove := b.runs.Remove
+	if b.ticketRuns != nil {
+		remove = b.ticketRuns.Remove
+	}
+	if err := remove(id); err != nil {
 		return webRunError(err)
 	}
 	// No RunRef: the run it would link to is gone.
 	b.recordActivity(web.Activity{Kind: "run.removed", Text: "Deleted run " + id})
 	return nil
+}
+
+func (b *webBackend) StopRun(_ context.Context, id string) error {
+	if err := b.haveRuns(); err != nil {
+		return err
+	}
+	stop := b.runs.Stop
+	if b.ticketRuns != nil {
+		stop = b.ticketRuns.Stop
+	}
+	return webRunError(stop(id))
 }
 
 func (b *webBackend) RunEvents(_ context.Context, id string, since uint64, limit int) (
@@ -399,6 +418,7 @@ func webRun(v runner.RunView) web.Run {
 	return web.Run{
 		ID: v.ID, SessionID: v.SessionID, ProjectID: v.ProjectID, Mode: string(v.Mode), Title: v.Title,
 		Model: v.Model, Root: v.Root, Status: string(v.Status),
+		TicketID: v.TicketID, Worktree: v.Worktree, Branch: v.Branch,
 		Created: v.Created, Updated: v.Updated,
 		Live: v.Live, Running: v.Running, Waiting: v.Waiting, Step: v.Step, Seq: v.Seq,
 	}
