@@ -47,7 +47,6 @@ export function Tickets() {
               type="button"
               aria-label={`${r.open ? 'Collapse' : 'Expand'} ${r.ticket.id}`}
               title={r.open ? 'Collapse' : 'Expand'}
-              tabIndex={-1}
               onKeyDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation()
