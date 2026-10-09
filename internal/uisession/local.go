@@ -197,6 +197,10 @@ type Local struct {
 
 	done   chan struct{}
 	closed bool
+	// saveMu serializes saves with Discard, so none is still writing once it returns.
+	saveMu sync.Mutex
+	// discarded stops every later save, for a conversation being deleted. Guarded by saveMu.
+	discarded bool
 	// watchers are told the kinds they asked for; see Watch.
 	watchers    []*watcher
 	metaEmitted bool
@@ -357,6 +361,16 @@ func (l *Local) Close() {
 	// nobody is left to answer. What is being waited for is the save at the end
 	// of it.
 	l.waitForTurns()
+}
+
+// Discard closes the session for good: it waits out a save in flight, and a
+// turn that outlives Close's wait cannot save the conversation back after it
+// has been deleted.
+func (l *Local) Discard() {
+	l.saveMu.Lock()
+	l.discarded = true
+	l.saveMu.Unlock()
+	l.Close()
 }
 
 // waitForTurns blocks until every running turn has finished, or closeWait has

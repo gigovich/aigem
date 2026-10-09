@@ -11,6 +11,7 @@ import (
 	"github.com/gigovich/aigem/internal/config"
 	"github.com/gigovich/aigem/internal/hooks"
 	"github.com/gigovich/aigem/internal/llm"
+	"github.com/gigovich/aigem/internal/session"
 )
 
 // CompactConfig controls automatic context compaction. The zero value disables
@@ -294,7 +295,7 @@ func backupMessages(sessionID string, n int, msgs []llm.Message) error {
 	if err != nil {
 		return err
 	}
-	name := fmt.Sprintf("%s.precompact-%d.json", sessionID, n)
+	name := fmt.Sprintf("%s%s%d.json", sessionID, session.PrecompactMarker, n)
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return err

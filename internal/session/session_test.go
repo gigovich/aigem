@@ -292,3 +292,78 @@ func TestAnOlderInstallationsDirectoryIsNarrowed(t *testing.T) {
 		t.Errorf("the sessions directory is still %o after a save, want 700", perm)
 	}
 }
+
+func TestRemoveDeletesOnlyThatSession(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	now := time.Now()
+	gone := &Session{Meta: Meta{ID: "20261009-120000-aaaaaa", Title: "gone"}}
+	kept := &Session{Meta: Meta{ID: "20261009-120000-aaaaaab", Title: "kept"}}
+	for _, s := range []*Session{gone, kept} {
+		if err := Save(s, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := filepath.Dir(saved(t, gone.ID))
+	for _, name := range []string{
+		gone.ID + ".precompact-1.json",
+		gone.ID + ".precompact-2.json",
+		kept.ID + ".precompact-1.json",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("[]"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := Remove(gone.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".lock") {
+			left = append(left, e.Name())
+		}
+	}
+	want := []string{kept.ID + ".json", kept.ID + ".precompact-1.json"}
+	if strings.Join(left, ",") != strings.Join(want, ",") {
+		t.Errorf("left %v, want %v", left, want)
+	}
+	metas, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 || metas[0].ID != kept.ID {
+		t.Errorf("List = %+v, want only %s", metas, kept.ID)
+	}
+}
+
+func TestRemoveMissingSessionIsNotAnError(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := Remove("20261009-120000-abcdef"); err != nil {
+		t.Errorf("Remove of a session never saved = %v", err)
+	}
+}
+
+func TestRemoveRefusesAnIdThatIsAPath(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	decoy := filepath.Join(state, "aigem", "secret.json")
+	if err := os.MkdirAll(filepath.Dir(decoy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(decoy, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"", ".", "..", "../secret", "a/b"} {
+		if err := Remove(id); err == nil {
+			t.Errorf("Remove(%q) was allowed", id)
+		}
+	}
+	if _, err := os.Stat(decoy); err != nil {
+		t.Errorf("decoy outside the sessions directory: %v", err)
+	}
+}

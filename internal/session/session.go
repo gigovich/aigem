@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -49,6 +50,10 @@ func NewID(now time.Time) string {
 	}
 	return now.UTC().Format("20060102-150405") + "-" + hex.EncodeToString(b[:])
 }
+
+// PrecompactMarker sits between a session id and the counter in the name of a
+// pre-compaction backup: <id>.precompact-<n>.json.
+const PrecompactMarker = ".precompact-"
 
 func dir() (string, error) {
 	base, err := config.StateDir()
@@ -108,6 +113,34 @@ func Save(s *Session, now time.Time) error {
 	return store.New[Session](path).Save(*s)
 }
 
+// Remove deletes a saved session and its pre-compaction backups. Files that
+// are already gone are not an error.
+func Remove(id string) error {
+	path, err := pathFor(id)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	d := filepath.Dir(path)
+	entries, err := os.ReadDir(d)
+	if err != nil {
+		return err
+	}
+	prefix := id + PrecompactMarker
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(d, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 // List returns saved sessions, most recently updated first.
 func List() ([]Meta, error) {
 	d, err := dir()
@@ -125,7 +158,7 @@ func List() ([]Meta, error) {
 		}
 		// Skip pre-compaction backups (<id>.precompact-<n>.json); they are raw
 		// message arrays, not sessions, and must not appear in the resume list.
-		if strings.Contains(e.Name(), ".precompact-") {
+		if strings.Contains(e.Name(), PrecompactMarker) {
 			continue
 		}
 		s, err := load(filepath.Join(d, e.Name()))

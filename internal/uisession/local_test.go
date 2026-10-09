@@ -802,6 +802,64 @@ func TestASecondCloseWaitsToo(t *testing.T) {
 	}
 }
 
+// A deleted conversation must stay deleted: a turn that finishes after
+// Discard gave up waiting does not save it back.
+func TestDiscardStopsALateSave(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	prev := closeWait
+	closeWait = 50 * time.Millisecond
+	t.Cleanup(func() { closeWait = prev })
+
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := New(Config{
+		Tools: reg,
+		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
+			return agent.New(&scriptedClient{}, reg, 0.3, confirm, "")
+		},
+		Ring: 64,
+	})
+	stuck := make(chan struct{})
+	if err := l.Run("skill", "skill", func(context.Context, agent.Events) (string, error) {
+		<-stuck
+		return "done", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if l.Meta().ID == "" {
+		t.Fatal("the turn started without a session id, so nothing would be saved")
+	}
+
+	l.Discard()
+	close(stuck)
+	l.turns.Wait()
+
+	if list, err := session.List(); err != nil || len(list) != 0 {
+		t.Errorf("saved sessions after Discard = %+v, %v; want none", list, err)
+	}
+}
+
+// A save already writing when Discard starts must finish before Discard
+// returns, or it would land after the files are deleted.
+func TestDiscardWaitsForASaveInFlight(t *testing.T) {
+	l := &Local{done: make(chan struct{})}
+	l.saveMu.Lock()
+	returned := make(chan struct{})
+	go func() {
+		l.Discard()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+		t.Fatal("Discard returned while a save was still writing")
+	case <-time.After(50 * time.Millisecond):
+	}
+	l.saveMu.Unlock()
+	<-returned
+}
+
 // The bound itself. A turn parked on something no cancellation reaches would
 // otherwise hold the process on its way out, with the terminal already gone and
 // nothing left to say why.

@@ -39,6 +39,16 @@ func journalDir(id string) (string, error) {
 	return filepath.Join(base, "journal", id), nil
 }
 
+// RemoveJournal deletes a session's journal: events, blobs and artifacts.
+// A session that never wrote one is not an error.
+func RemoveJournal(id string) error {
+	dir, err := journalDir(id)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
 // journalTextCap bounds how much of a tool result is written inline. Anything
 // larger is kept beside the journal and fetched when someone expands the call.
 // Without the split, one grep over a generated tree lands in the journal and in

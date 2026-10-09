@@ -509,3 +509,51 @@ func TestResumeContinuesTheSequence(t *testing.T) {
 		seen[ev.Seq] = true
 	}
 }
+
+func TestRemoveJournalDeletesOnlyThatSession(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const gone, kept = "20261009-120000-aaaaaa", "20261009-120000-bbbbbb"
+	for _, id := range []string{gone, kept} {
+		j, err := openJournal(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		j.append(Event{Seq: 1})
+		j.putArtifacts(map[string]tools.FileChange{"/w/a.go": {Path: "/w/a.go", New: "x"}})
+		j.close()
+	}
+
+	if err := RemoveJournal(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	goneDir, err := journalDir(gone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(goneDir); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("removed journal dir: %v, want not-exist", err)
+	}
+	keptDir, err := journalDir(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(keptDir, "events.jsonl")); err != nil {
+		t.Errorf("other session's events: %v", err)
+	}
+	if _, err := ReadArtifacts(kept); err != nil {
+		t.Errorf("other session's artifacts: %v", err)
+	}
+	if err := RemoveJournal(gone); err != nil {
+		t.Errorf("second RemoveJournal = %v, want nil", err)
+	}
+}
+
+func TestRemoveJournalRefusesAnIdThatIsAPath(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	for _, id := range []string{"", ".", "..", "../..", "a/b"} {
+		if err := RemoveJournal(id); err == nil {
+			t.Errorf("RemoveJournal(%q) was allowed", id)
+		}
+	}
+}
