@@ -16,8 +16,8 @@ features this daemon serves.
 
 The screens are sessions, models, skills, activity, worktrees and a run viewer,
 plus a command palette and a quick chat. Tickets are a screen per project, with
-a page for each ticket. Tasks are drawn as an empty state that says what it is
-waiting for: it arrives with the next phase.
+a page for each ticket. A runnable ticket can be run; the worktrees screen lists
+the branches runs left behind.
 This document is the protocol; how the client is put together is
 in `internal/web/_ui/README.md`.
 
@@ -147,6 +147,7 @@ though the hop to the daemon is plain HTTP.
 | `POST /api/runs` | opens one; answers 201 with the record |
 | `GET /api/runs/{id}` | one record |
 | `DELETE /api/runs/{id}` | ends its session and deletes the run and its files; 204 |
+| `POST /api/runs/{id}/stop` | interrupts the turn and ends the session; the record stays; 204 |
 | `GET /api/runs/{id}/events` | a page of the timeline, `?since=&limit=` |
 | `GET /api/runs/{id}/socket` | the run stream, `?since=` |
 | `GET /api/runs/{id}/blobs/{seq}` | the whole body of a tool result the timeline trimmed |
@@ -173,6 +174,10 @@ though the hop to the daemon is plain HTTP.
 | `PATCH /api/projects/{id}/tickets/{tid}` | `{status?, dependsOn?}`; 200 with the ticket |
 | `POST /api/projects/{id}/tickets/{tid}/comments` | `{text}`; 201 |
 | `DELETE /api/projects/{id}/tickets/{tid}` | deletes the ticket; 204 |
+| `POST /api/projects/{id}/tickets/{tid}/run` | starts a run on a runnable ticket; 201 with the run, 409 with why not |
+| `POST /api/projects/{id}/tickets/{tid}/merge` | retries the merge of a ticket blocked on one; 200 with the ticket, 409 |
+| `GET /api/projects/{id}/worktrees` | the `aigem/*` branches: `repo`, `name`, `path`, `ticket`, `run`, `state` |
+| `DELETE /api/projects/{id}/worktrees/{name}` | removes the worktree and its branch; 204, 409 while its run is live |
 | `/api/...`  | reserved; an unknown path here is a 404, never the page, in every build |
 | everything else | the application, which routes in the browser |
 
@@ -381,6 +386,42 @@ comment over 16 KiB. `GET` takes `?status=` and `?parent=` to filter.
 Creating, closing and deleting appear in the activity feed as `ticket.created`
 and `ticket.closed`. Every change is announced as `ticket.updated`. In the UI,
 "Add subticket" is on every top-level ticket.
+
+## Runs on tickets
+
+"Run" on a runnable ticket creates the worktree `<project dir>/.aigem/worktrees/<TCK-n>` on a
+new branch `aigem/<TCK-n>` from `main` (or `master`) in the ticket's repository, and opens an
+autonomous run whose tools are rooted there. A worktree and branch an earlier run left are
+reused, so a ticket blocked by a restart continues where it stopped. The daemon adds
+`/.aigem/worktrees/` to the repository's `info/exclude` once. The run's first message is the
+ticket, the discussion and the rule: call `ticket_done` with a summary when the work is
+complete.
+
+"Run" is refused while the ticket's last run is still live ("<id> has a live run <run>; stop
+it first"), so a ticket never has two live runs in one worktree. Only the ticket's last run can
+start or finish it; an older run's turn ends change nothing.
+
+The agent's tools are rooted at the worktree; that is all the sandbox does. The repository's
+check runs code the agent wrote there (tests, build scripts) with the daemon's rights and no
+sandbox, so review what a ticket run may touch before you give a repository a check.
+
+At the end of every turn the daemon decides. Without `ticket_done` the ticket is `blocked`
+with the agent's last message. With it, the daemon commits the worktree as
+`aigem: <title> (TCK-n, RUN-m)`, runs the check from `.aigem/project.json` in the main
+checkout (`{"check": "make test"}`, 15 minutes, the last 4 KiB of output on failure) and
+merges with `--no-ff` in the repository's own checkout - only when it is clean and on `main`,
+one merge per repository at a time; a merge that has begun is never cancelled. This happens
+only while the ticket is `running` under that run. A turn that ends interrupted or with an
+error is not done, even after `ticket_done`. Then the ticket is `done`, the run is stopped,
+the worktree is removed (kept, and the comment says so, when it has changes) and the branch is
+kept. A blocked merge sets `mergePending`, and "Retry merge" repeats it. Nothing is pushed.
+
+A blocked ticket keeps its run: typing into it moves the ticket back to `running`. Stopping
+the run blocks the ticket with "stopped by a person", deleting it with "the run was deleted",
+and a daemon restart blocks every running ticket with "the daemon restarted". The worktree
+stays in all three; "Run" reuses it and the Worktrees screen discards it. "Stop" is offered
+whenever the ticket's last run is live, because ticket runs share the daemon's limit on live
+runs with chats. Activity: `ticket.done` and `ticket.blocked`.
 
 ## Runs
 

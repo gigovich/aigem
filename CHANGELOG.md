@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Web UI: runs on tickets (part 2 of agent tickets). "Run" gives a ticket a git worktree and
+  an autonomous run; `ticket_done` makes the daemon commit, check and merge into `main`;
+  anything else blocks the ticket with a reason. Stop, Retry merge and a Worktrees list.
 - The TUI model picker offers **Add model…**, also available as `/model add`.
   Register a model on an existing provider or add an OpenAI-compatible endpoint,
   optionally store a masked API key, then save or save and select without
