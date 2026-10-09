@@ -108,7 +108,8 @@ func webTicket(v runner.TicketView) web.Ticket {
 	t := web.Ticket{
 		ID: v.ID, Repo: v.Repo, Title: v.Title, Body: v.Body, Status: v.Status, Parent: v.Parent,
 		DependsOn: append([]string{}, v.DependsOn...), By: v.By, Created: v.Created, Updated: v.Updated,
-		Comments: []web.TicketComment{}, Runs: append([]string{}, v.Runs...), Runnable: v.Runnable, MergePending: v.MergePending,
+		Comments: []web.TicketComment{}, Runs: append([]string{}, v.Runs...), Runnable: v.Runnable,
+		MergePending: v.MergePending,
 	}
 	for _, c := range v.Comments {
 		t.Comments = append(t.Comments, web.TicketComment{At: c.At, By: c.By, Text: c.Text})

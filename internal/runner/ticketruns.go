@@ -74,7 +74,7 @@ type ticketRun struct {
 
 func (tr *ticketRun) record(summary string) { tr.summary.Store(&summary) }
 
-type ticketPlace struct{ repo, main, worktree, branch string }
+type ticketPlace struct{ dir, repo, main, worktree, branch string }
 
 func NewTicketRuns(cfg TicketRunsConfig) *TicketRuns {
 	t := &TicketRuns{
@@ -176,8 +176,8 @@ func (t *TicketRuns) prepare(ctx context.Context, id string, pl ticketPlace) (fu
 	case dir:
 		return nil, refuse("%s is in the way of the worktree for %s; remove it", pl.worktree, id)
 	}
-	if strings.HasPrefix(pl.worktree, pl.repo+string(filepath.Separator)) {
-		if err := gitx.Exclude(ctx, pl.repo, "/.aigem/worktrees/"); err != nil {
+	if isCheckout(pl.dir) {
+		if err := gitx.Exclude(ctx, pl.dir, "/.aigem/worktrees/"); err != nil {
 			return nil, err
 		}
 	}
@@ -250,11 +250,10 @@ func (t *TicketRuns) Remove(run string) error {
 
 // detach lets go of a run's ticket and reports whether the run drove one.
 func (t *TicketRuns) detach(run, reason string) bool {
-	tr := t.forget(run)
+	tr := t.release(run)
 	if tr == nil {
 		return false
 	}
-	tr.cancel()
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	if tr.gone {
@@ -295,8 +294,7 @@ func (t *TicketRuns) Merge(ctx context.Context, project, id string) (TicketView,
 	case sha == "":
 		return TicketView{}, refuse("%s is not waiting for a merge", id)
 	}
-	if tr := t.forget(run); tr != nil {
-		tr.cancel()
+	if tr := t.release(run); tr != nil {
 		tr.mu.Lock()
 		tr.gone = true
 		tr.mu.Unlock()
@@ -363,6 +361,9 @@ func (t *TicketRuns) Discard(ctx context.Context, project, name string) error {
 	if w.State == "running" {
 		return refuse("%s is worked on by the live run %s; stop it first", name, w.Run)
 	}
+	if v, err := t.tickets.Get(project, w.Ticket); err == nil && v.Status == TicketBlocked && v.MergePending {
+		return refuse("%s is waiting for a merge; close the ticket or retry the merge first", name)
+	}
 	repo := filepath.Join(pv.Dir, w.Repo)
 	if w.Path != "" {
 		if err := gitx.WorktreeRemove(ctx, repo, w.Path, true); err != nil {
@@ -409,7 +410,8 @@ func (t *TicketRuns) onTurn(tr *ticketRun, ev uisession.Event) {
 
 // deliver commits what the run left in its worktree, runs the repository's check and merges.
 // It is called with tr.mu held. A cancelled tr.ctx means the run was stopped, deleted or the
-// daemon is closing: nothing more is written, except that a merge that has begun finishes.
+// daemon is closing: nothing more is written, except that a commit or a merge that has begun
+// finishes.
 func (t *TicketRuns) deliver(tr *ticketRun, title, summary string) {
 	ctx, pl := tr.ctx, tr.place
 	block := func(reason string, merge bool) {
@@ -418,7 +420,7 @@ func (t *TicketRuns) deliver(tr *ticketRun, title, summary string) {
 		}
 	}
 	msg := fmt.Sprintf("aigem: %s (%s, %s)", title, tr.ticket, tr.run)
-	if _, err := gitx.CommitAll(ctx, pl.worktree, msg); err != nil {
+	if _, err := gitx.CommitAll(context.WithoutCancel(ctx), pl.worktree, msg); err != nil {
 		block("could not commit the worktree: "+err.Error(), false)
 		return
 	}
@@ -438,8 +440,7 @@ func (t *TicketRuns) deliver(tr *ticketRun, title, summary string) {
 		return
 	}
 	tr.gone = true
-	t.forget(tr.run)
-	tr.cancel()
+	t.release(tr.run)
 	t.complete(tr.project, tr.ticket, pl, summary+"\n\n"+merged(pl, sha), tr.run)
 }
 
@@ -512,11 +513,15 @@ func (t *TicketRuns) finish(project, id, run, status, comment string, mergePendi
 	t.finished(project, v, comment)
 }
 
-func (t *TicketRuns) forget(run string) *ticketRun {
+// release lets go of a run's ticket run and cancels what it has in flight.
+func (t *TicketRuns) release(run string) *ticketRun {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	tr := t.byRun[run]
 	delete(t.byRun, run)
+	t.mu.Unlock()
+	if tr != nil {
+		tr.cancel()
+	}
 	return tr
 }
 
@@ -525,8 +530,8 @@ func (t *TicketRuns) live(run string) bool {
 	return err == nil && v.Live
 }
 
-// place is where a ticket's work happens: its repository, the branch it merges into, its
-// worktree and its branch.
+// place is where a ticket's work happens: its project directory, its repository, the branch it
+// merges into, its worktree and its branch.
 func (t *TicketRuns) place(ctx context.Context, project string, tk Ticket) (ticketPlace, error) {
 	pv, err := t.projects.Get(project)
 	if err != nil {
@@ -537,7 +542,7 @@ func (t *TicketRuns) place(ctx context.Context, project string, tk Ticket) (tick
 	}
 	repo := filepath.Join(pv.Dir, tk.Repo)
 	return ticketPlace{
-		repo: repo, main: gitx.MainBranch(ctx, repo),
+		dir: pv.Dir, repo: repo, main: gitx.MainBranch(ctx, repo),
 		worktree: filepath.Join(pv.Dir, ".aigem", "worktrees", tk.ID), branch: "aigem/" + tk.ID,
 	}, nil
 }

@@ -808,3 +808,50 @@ func TestRunRefusesATicketWhoseLastRunIsLive(t *testing.T) {
 	_, err := f.tr.Start(context.Background(), f.project, id)
 	refusal(t, err, id+" has a live run "+v.ID+"; stop it first")
 }
+
+func TestAChildRepositoryWorktreeLeavesTheRootCheckoutClean(t *testing.T) {
+	root := gitRepo(t, "main")
+	child := filepath.Join(root, "child")
+	runGit(t, root, "init", "-q", "-b", "main", child)
+	runGit(t, child, "config", "user.name", "Test")
+	runGit(t, child, "config", "user.email", "test@example.com")
+	runGit(t, child, "config", "commit.gpgsign", "false")
+	writeFile(t, child, "README.md", "child\n")
+	runGit(t, child, "add", "-A")
+	runGit(t, child, "commit", "-q", "-m", "first")
+	writeFile(t, root, ".gitignore", "/child/\n")
+	runGit(t, root, "add", "-A")
+	runGit(t, root, "commit", "-q", "-m", "ignore child")
+
+	f := newFixture(t, root)
+	id := f.readyIn("child", "in the child")
+	f.script.then(say("Stuck."))
+	f.start(id)
+	f.next(id, 0)
+	if !pathExists(f.worktree(id)) {
+		t.Fatal("the child ticket has no worktree")
+	}
+	if out := runGit(t, root, "status", "--porcelain", "--untracked-files=all"); out != "" {
+		t.Errorf("the root checkout is dirty:\n%s", out)
+	}
+}
+
+func TestDiscardRefusesAWorktreeWaitingForAMerge(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, gitRepo(t, "main"))
+	writeFile(t, f.repo, "scratch.txt", "mine\n")
+	id := f.ready("pending")
+	f.script.then(edit(filepath.Join(f.worktree(id), "p.txt"), "p\n", done("Wrote p.")))
+	v := f.start(id)
+	f.next(id, 0)
+	if err := f.tr.Stop(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.tickets.Get(f.project, id); got.Status != TicketBlocked || !got.MergePending {
+		t.Fatalf("ticket = %s, mergePending %v", got.Status, got.MergePending)
+	}
+	refusal(t, f.tr.Discard(ctx, f.project, id), id+" is waiting for a merge")
+	if !gitx.BranchExists(ctx, f.repo, "aigem/"+id) {
+		t.Error("the branch was deleted")
+	}
+}

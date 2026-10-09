@@ -414,7 +414,9 @@ one merge per repository at a time; a merge that has begun is never cancelled. T
 only while the ticket is `running` under that run. A turn that ends interrupted or with an
 error is not done, even after `ticket_done`. Then the ticket is `done`, the run is stopped,
 the worktree is removed (kept, and the comment says so, when it has changes) and the branch is
-kept. A blocked merge sets `mergePending`, and "Retry merge" repeats it. Nothing is pushed.
+kept. Untracked files the check leaves, such as `coverage.out` when not ignored, count as
+changes and keep the worktree. A blocked merge sets `mergePending`, and "Retry merge" repeats
+it. Nothing is pushed.
 
 A blocked ticket keeps its run: typing into it moves the ticket back to `running`. Stopping
 the run blocks the ticket with "stopped by a person", deleting it with "the run was deleted",
