@@ -46,6 +46,7 @@ export type AppState = {
   activity: Activity[]
   projects: Project[]
   tickets: Ticket[]
+  newTicketOpen: boolean
   /** The project every list screen reads; empty is the daemon's own directory. Saved per browser. */
   project: string
 
@@ -141,6 +142,7 @@ export function initialState(): AppState {
     activity: [],
     projects: [],
     tickets: [],
+    newTicketOpen: false,
     project: read('aigem.project') ?? '',
     theme: initialTheme(),
     narrow: window.innerWidth < NARROW_AT,
@@ -428,6 +430,10 @@ export function reveal() {
 
 export function toggleInspector() {
   store.set((s) => ({ ...s, inspectorOpen: !s.inspectorOpen }))
+}
+
+export function patchNewTicket(open: boolean) {
+  patch({ newTicketOpen: open })
 }
 
 export function setPalette(open: boolean) {

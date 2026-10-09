@@ -10,17 +10,6 @@ import { EmptyState } from '@/ui/EmptyState'
  * does nothing is harder to tell from a broken one.
  */
 
-export function Tickets() {
-  return (
-    <Screen title="Tickets">
-      <EmptyState
-        title="Tickets need a project."
-        detail="A ticket belongs to a repository inside a project. Tickets arrive in the next phase."
-      />
-    </Screen>
-  )
-}
-
 export function Task() {
   return (
     <Screen title="Task">

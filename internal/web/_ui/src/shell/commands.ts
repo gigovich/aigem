@@ -13,6 +13,7 @@ import {
   compose,
   flash,
   openSession,
+  patchNewTicket,
   setPalette,
   setQuick,
   signOut,
@@ -105,6 +106,20 @@ export function paletteItems(state: AppState): PaletteItem[] {
         run: go({ screen: 'skills' }),
       })
     }
+  }
+  if (features.tickets && state.project) {
+    items.push({
+      id: 'new-ticket',
+      label: 'New ticket',
+      hint: 'in the selected project',
+      icon: '+',
+      group: 'Create',
+      run: () => {
+        setPalette(false)
+        navigate({ screen: 'tickets' })
+        patchNewTicket(true)
+      },
+    })
   }
   items.push({
     id: 'quick-chat',
