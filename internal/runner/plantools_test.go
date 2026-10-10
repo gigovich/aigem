@@ -82,6 +82,10 @@ func TestThePlannerToolsWriteSubticketsOfItsTicketOnly(t *testing.T) {
 	if kid, _ := f.tickets.Get(f.project, "TCK-4"); kid.Status != TicketOpen {
 		t.Errorf("set_dependencies moved the subticket to %s", kid.Status)
 	}
+	_, err = runTool(t, ts, "set_dependencies", `{"id":"TCK-4"}`)
+	refusal(t, err, "dependsOn is required")
+	_, err = f.tickets.update(f.project, "TCK-4", TicketPatch{Status: new(TicketReady)}, "RUN-1")
+	refusal(t, err, "a planner run cannot change a status")
 	_, err = runTool(t, ts, "set_dependencies", `{"id":"TCK-2","dependsOn":["TCK-3"]}`)
 	refusal(t, err, "RUN-1 only changes the subtickets of the ticket it plans")
 	_, err = runTool(t, ts, "delete_subticket", `{"id":"TCK-2"}`)

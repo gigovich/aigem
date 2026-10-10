@@ -299,6 +299,25 @@ func TestReviseOpensANewPlannerWhenTheOldOneIsGone(t *testing.T) {
 	}
 }
 
+func TestReviseRacingAStopOpensANewPlanner(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.openTicket("goal")
+	v := f.planned(id)
+	f.tr.mu.Lock()
+	tr := f.tr.byRun[v.ID]
+	f.tr.mu.Unlock()
+	tr.mu.Lock()
+	tr.gone = true
+	tr.mu.Unlock()
+	f.script.then(call("plan_done", `{"summary":"Kept it."}`), say("ok"))
+	if _, err := f.tr.Revise(context.Background(), f.project, id, "Keep it as is."); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.next(id, 2); got.Status != TicketReview || lastComment(got) != "Kept it." || len(got.Runs) != 2 {
+		t.Fatalf("after revise = %s %q runs %v", got.Status, lastComment(got), got.Runs)
+	}
+}
+
 func TestStopDeleteAndRestartLeaveThePlanInReview(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	stopped := f.openTicket("stopped")

@@ -172,13 +172,16 @@ func (t *TicketRuns) Revise(ctx context.Context, project, id, feedback string) (
 	}
 	if n := len(tk.Runs); n > 0 && t.live(tk.Runs[n-1]) {
 		run := tk.Runs[n-1]
-		if _, err := t.tickets.Revise(project, id, run, feedback); err != nil {
+		revised, err := t.reviseLive(project, id, run, feedback)
+		if err != nil {
 			return TicketView{}, err
 		}
-		if err := t.runs.Apply(run, RunOp{Op: OpSubmit, Text: reviseNote(feedback)}); err != nil {
-			t.review(project, id, run, "the feedback could not be sent to the run: "+err.Error())
+		if revised {
+			if err := t.runs.Apply(run, RunOp{Op: OpSubmit, Text: reviseNote(feedback)}); err != nil {
+				t.review(project, id, run, "the feedback could not be sent to the run: "+err.Error())
+			}
+			return t.tickets.Get(project, id)
 		}
-		return t.tickets.Get(project, id)
 	}
 	if _, err := t.openPlanner(ctx, project, tk, func(run string) (TicketView, error) {
 		return t.tickets.Revise(project, id, run, feedback)
@@ -186,6 +189,25 @@ func (t *TicketRuns) Revise(ctx context.Context, project, id, feedback string) (
 		return TicketView{}, err
 	}
 	return t.tickets.Get(project, id)
+}
+
+// reviseLive moves the ticket back to planning under its live planner run, unless a Stop or a
+// delete let go of that run first. It holds the run's lock, as detach does, so either one sees
+// what the other did.
+func (t *TicketRuns) reviseLive(project, id, run, feedback string) (bool, error) {
+	t.mu.Lock()
+	tr := t.byRun[run]
+	t.mu.Unlock()
+	if tr == nil {
+		return false, nil
+	}
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.gone {
+		return false, nil
+	}
+	_, err := t.tickets.Revise(project, id, run, feedback)
+	return true, err
 }
 
 // endPlanner stops the planner run of a plan a person decided. The decision is recorded first,
@@ -196,12 +218,7 @@ func (t *TicketRuns) endPlanner(v TicketView) {
 		return
 	}
 	run := v.Runs[n-1]
-	if tr := t.release(run); tr != nil {
-		tr.mu.Lock()
-		tr.gone = true
-		tr.mu.Unlock()
-	}
-	if err := t.runs.Stop(run); err != nil && !errors.Is(err, ErrRunClosed) && !errors.Is(err, ErrNoRun) {
+	if err := t.Stop(run); err != nil && !errors.Is(err, ErrNoRun) && !errors.Is(err, ErrRunClosed) {
 		slog.Warn("a decided plan's run could not be stopped", "run", run, "err", err)
 	}
 }

@@ -457,6 +457,8 @@ person decides:
   the feedback goes to the planner run; when that run is gone, a new one starts with the draft
   and the discussion.
 
+Deleting a ticket in `review` is refused: reject the plan first.
+
 Stopping the planner run moves the ticket to `review` with "stopped by a person", deleting it
 with "the run was deleted", and a daemon restart with "the daemon restarted"; the draft stays.
 Typing into a live planner run moves the ticket back to `planning`. Activity:

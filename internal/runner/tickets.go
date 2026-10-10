@@ -156,6 +156,9 @@ func (t *Tickets) Update(project, id string, p TicketPatch) (TicketView, error) 
 
 // update changes a ticket for a person (run "") or relinks a draft for its planner run.
 func (t *Tickets) update(project, id string, p TicketPatch, run string) (TicketView, error) {
+	if run != "" && p.Status != nil {
+		return TicketView{}, refuse("a planner run cannot change a status")
+	}
 	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
 		i := findTicket(tab.Tickets, id)
 		if i < 0 {

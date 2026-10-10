@@ -124,13 +124,16 @@ func (t *TicketRuns) planTools(tr *ticketRun) []tools.Tool {
 				`},"required":["id","dependsOn"]}`,
 			func(_ context.Context, args json.RawMessage) (string, error) {
 				var in struct {
-					ID        string   `json:"id"`
-					DependsOn []string `json:"dependsOn"`
+					ID        string    `json:"id"`
+					DependsOn *[]string `json:"dependsOn"`
 				}
 				if err := json.Unmarshal(args, &in); err != nil {
 					return "", err
 				}
-				v, err := t.tickets.update(tr.project, in.ID, TicketPatch{DependsOn: &in.DependsOn}, tr.run)
+				if in.DependsOn == nil {
+					return "", refuse("dependsOn is required")
+				}
+				v, err := t.tickets.update(tr.project, in.ID, TicketPatch{DependsOn: in.DependsOn}, tr.run)
 				if err != nil {
 					return "", err
 				}
