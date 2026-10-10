@@ -21,13 +21,14 @@ import (
 // fixture is one project whose directory is the repository, with a scripted model behind
 // every run.
 type fixture struct {
-	t       *testing.T
-	repo    string
-	project string
-	script  *scripted
-	runs    *Runs
-	tickets *Tickets
-	tr      *TicketRuns
+	t        *testing.T
+	repo     string
+	project  string
+	script   *scripted
+	runs     *Runs
+	tickets  *Tickets
+	projects *Projects
+	tr       *TicketRuns
 
 	mu   sync.Mutex
 	told []string
@@ -42,6 +43,7 @@ func newFixture(t *testing.T, repo string) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(projects.Close)
+	f.projects = projects
 	pv, err := projects.Add(repo, "")
 	if err != nil {
 		t.Fatal(err)
