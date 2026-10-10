@@ -14,6 +14,7 @@ type ticketsBackend struct {
 	tmu     sync.Mutex
 	tickets []Ticket
 	patched TicketPatch
+	decided string
 }
 
 func (b *ticketsBackend) Tickets(_ context.Context, project string) ([]Ticket, error) {
@@ -248,6 +249,90 @@ func TestTheTicketRunRoutesAnswerAndRefuse(t *testing.T) {
 	} {
 		if res := api(t, srv, method, path, ""); res.StatusCode != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s = %d, want 405", method, path, res.StatusCode)
+		}
+	}
+}
+
+func (b *ticketsBackend) PlanTicket(_ context.Context, project, id string) (Run, error) {
+	if id == "TCK-2" {
+		return Run{}, Conflict("TCK-2 is a subticket; only a top-level ticket is planned")
+	}
+	return Run{ID: "RUN-6", Mode: "autonomous", TicketID: id, Status: "open", Live: true}, nil
+}
+
+func (b *ticketsBackend) ApproveTicket(_ context.Context, project, id string) (Ticket, error) {
+	if id == "TCK-3" {
+		return Ticket{}, Conflict("TCK-3 is done, not in review")
+	}
+	return Ticket{ID: id, Status: "ready"}, nil
+}
+
+func (b *ticketsBackend) RejectTicket(_ context.Context, project, id, reason string) (Ticket, error) {
+	if id == "TCK-3" {
+		return Ticket{}, Conflict("TCK-3 is done, not in review")
+	}
+	b.tmu.Lock()
+	b.decided = reason
+	b.tmu.Unlock()
+	return Ticket{ID: id, Status: "open"}, nil
+}
+
+func (b *ticketsBackend) ReviseTicket(_ context.Context, project, id, text string) (Ticket, error) {
+	b.tmu.Lock()
+	b.decided = text
+	b.tmu.Unlock()
+	return Ticket{ID: id, Status: "planning"}, nil
+}
+
+func (b *ticketsBackend) lastDecided() string {
+	b.tmu.Lock()
+	defer b.tmu.Unlock()
+	return b.decided
+}
+
+func TestThePlanRoutesAnswerAndRefuse(t *testing.T) {
+	srv, b := newTicketsServer(t)
+	base := "/api/projects/PRJ-1/tickets/"
+	res := api(t, srv, http.MethodPost, base+"TCK-1/plan", "")
+	if res.StatusCode != http.StatusCreated || decode[Run](t, res).TicketID != "TCK-1" {
+		t.Errorf("plan = %d", res.StatusCode)
+	}
+	res = api(t, srv, http.MethodPost, base+"TCK-2/plan", "")
+	if res.StatusCode != http.StatusConflict || !strings.Contains(readBody(t, res), "only a top-level ticket") {
+		t.Errorf("a refused plan = %d, want 409 with the sentence", res.StatusCode)
+	}
+	res = api(t, srv, http.MethodPost, base+"TCK-1/approve", "")
+	if res.StatusCode != http.StatusOK || decode[Ticket](t, res).Status != "ready" {
+		t.Errorf("approve = %d", res.StatusCode)
+	}
+	if res := api(t, srv, http.MethodPost, base+"TCK-3/approve", ""); res.StatusCode != http.StatusConflict {
+		t.Errorf("a refused approve = %d, want 409", res.StatusCode)
+	}
+	res = api(t, srv, http.MethodPost, base+"TCK-1/reject", `{"reason":"too big"}`)
+	if res.StatusCode != http.StatusOK || b.lastDecided() != "too big" {
+		t.Errorf("reject = %d, reason %q", res.StatusCode, b.lastDecided())
+	}
+	res = api(t, srv, http.MethodPost, base+"TCK-3/reject", `{"reason":"late"}`)
+	if res.StatusCode != http.StatusConflict || !strings.Contains(readBody(t, res), "not in review") {
+		t.Errorf("a refused reject = %d, want 409 with the sentence", res.StatusCode)
+	}
+	res = api(t, srv, http.MethodPost, base+"TCK-1/revise", `{"text":"split it"}`)
+	if res.StatusCode != http.StatusOK || b.lastDecided() != "split it" {
+		t.Errorf("revise = %d, text %q", res.StatusCode, b.lastDecided())
+	}
+	for _, c := range []struct{ path, body string }{
+		{"TCK-1/reject", `{}`},
+		{"TCK-1/revise", `{"text":"  "}`},
+		{"TCK-1/reject", `{"reason":"x","why":"y"}`},
+		{"TCK-1/revise", `{"text":"` + strings.Repeat("a", 16<<10+1) + `"}`},
+	} {
+		if res := api(t, srv, http.MethodPost, base+c.path, c.body); res.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s %.40s = %d, want 400", c.path, c.body, res.StatusCode)
+		}
+	}
+	for _, p := range []string{"plan", "approve", "reject", "revise"} {
+		if res := api(t, srv, http.MethodGet, base+"TCK-1/"+p, ""); res.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s = %d, want 405", p, res.StatusCode)
 		}
 	}
 }

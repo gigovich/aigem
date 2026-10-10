@@ -201,3 +201,60 @@ func ticketRunError(err error) error {
 		return webRunError(err)
 	}
 }
+
+func (b *webBackend) PlanTicket(ctx context.Context, project, id string) (web.Run, error) {
+	if err := b.ticketRunsReady(project); err != nil {
+		return web.Run{}, err
+	}
+	v, err := b.ticketRuns.Plan(ctx, project, id)
+	if err != nil {
+		return web.Run{}, ticketRunError(err)
+	}
+	return webRun(v), nil
+}
+
+func (b *webBackend) ApproveTicket(_ context.Context, project, id string) (web.Ticket, error) {
+	if err := b.ticketRunsReady(project); err != nil {
+		return web.Ticket{}, err
+	}
+	v, err := b.ticketRuns.Approve(project, id)
+	if err != nil {
+		return web.Ticket{}, ticketRunError(err)
+	}
+	b.recordActivity(web.Activity{Kind: "ticket.approved", Text: "Approved the plan of " + v.ID + ": " + v.Title})
+	return webTicket(v), nil
+}
+
+func (b *webBackend) RejectTicket(_ context.Context, project, id, reason string) (web.Ticket, error) {
+	if err := b.ticketRunsReady(project); err != nil {
+		return web.Ticket{}, err
+	}
+	v, err := b.ticketRuns.Reject(project, id, reason)
+	if err != nil {
+		return web.Ticket{}, ticketRunError(err)
+	}
+	b.recordActivity(web.Activity{
+		Kind: "ticket.rejected", Text: "Rejected the plan of " + v.ID + ": " + firstLine(reason),
+	})
+	return webTicket(v), nil
+}
+
+func (b *webBackend) ReviseTicket(ctx context.Context, project, id, text string) (web.Ticket, error) {
+	if err := b.ticketRunsReady(project); err != nil {
+		return web.Ticket{}, err
+	}
+	v, err := b.ticketRuns.Revise(ctx, project, id, text)
+	if err != nil {
+		return web.Ticket{}, ticketRunError(err)
+	}
+	return webTicket(v), nil
+}
+
+// ticketPlanned records a plan that reached review in the activity feed.
+func (b *webBackend) ticketPlanned(_ string, v runner.TicketView, comment string) {
+	a := web.Activity{Kind: "ticket.planned", Text: "Plan of " + v.ID + " in review: " + firstLine(comment)}
+	if n := len(v.Runs); n > 0 {
+		a.RunRef = v.Runs[n-1]
+	}
+	b.recordActivity(a)
+}

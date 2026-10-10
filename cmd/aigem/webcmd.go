@@ -242,7 +242,8 @@ func runWebCommand(args []string) error {
 	})
 	if tickets != nil && projects != nil {
 		backend.ticketRuns = runner.NewTicketRuns(runner.TicketRunsConfig{
-			Runs: runs, Tickets: tickets, Projects: projects, Finished: backend.ticketFinished,
+			Runs: runs, Tickets: tickets, Projects: projects,
+			Finished: backend.ticketFinished, Planned: backend.ticketPlanned,
 		})
 		backend.ticketRuns.Recover()
 		// Deferred after runs.Close, so it runs first: deliveries stop before the sessions do.

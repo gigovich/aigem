@@ -20,6 +20,10 @@ type TicketsBackend interface {
 	DeleteTicket(ctx context.Context, project, id string) error
 	RunTicket(ctx context.Context, project, id string) (Run, error)
 	MergeTicket(ctx context.Context, project, id string) (Ticket, error)
+	PlanTicket(ctx context.Context, project, id string) (Run, error)
+	ApproveTicket(ctx context.Context, project, id string) (Ticket, error)
+	RejectTicket(ctx context.Context, project, id, reason string) (Ticket, error)
+	ReviseTicket(ctx context.Context, project, id, text string) (Ticket, error)
 	Worktrees(ctx context.Context, project string) ([]Worktree, error)
 	DiscardWorktree(ctx context.Context, project, name string) error
 }
@@ -249,4 +253,86 @@ func (s *Server) handleDiscardWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePlanTicket(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[TicketsBackend](s, w, "tickets")
+	if !ok {
+		return
+	}
+	v, err := b.PlanTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"))
+	if err != nil {
+		writeRunError(w, "planning a ticket", err)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, v)
+}
+
+func (s *Server) handleApproveTicket(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[TicketsBackend](s, w, "tickets")
+	if !ok {
+		return
+	}
+	v, err := b.ApproveTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"))
+	if err != nil {
+		writeRunError(w, "approving a plan", err)
+		return
+	}
+	writeJSON(w, v)
+}
+
+func (s *Server) handleRejectTicket(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[TicketsBackend](s, w, "tickets")
+	if !ok {
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := decodeJSONLimit(w, r, &req, maxCommentBytes+1<<10); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	switch {
+	case strings.TrimSpace(req.Reason) == "":
+		http.Error(w, "a reason is required", http.StatusBadRequest)
+		return
+	case len(req.Reason) > maxCommentBytes:
+		http.Error(w, "a reason is at most 16 KiB", http.StatusBadRequest)
+		return
+	}
+	v, err := b.RejectTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"), req.Reason)
+	if err != nil {
+		writeRunError(w, "rejecting a plan", err)
+		return
+	}
+	writeJSON(w, v)
+}
+
+func (s *Server) handleReviseTicket(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[TicketsBackend](s, w, "tickets")
+	if !ok {
+		return
+	}
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := decodeJSONLimit(w, r, &req, maxCommentBytes+1<<10); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	switch {
+	case strings.TrimSpace(req.Text) == "":
+		http.Error(w, "feedback is required", http.StatusBadRequest)
+		return
+	case len(req.Text) > maxCommentBytes:
+		http.Error(w, "feedback is at most 16 KiB", http.StatusBadRequest)
+		return
+	}
+	v, err := b.ReviseTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"), req.Text)
+	if err != nil {
+		writeRunError(w, "revising a plan", err)
+		return
+	}
+	writeJSON(w, v)
 }

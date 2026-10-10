@@ -174,3 +174,84 @@ func TestAFinishedTicketRunIsInTheActivityFeed(t *testing.T) {
 		t.Errorf("blocked = %+v", bl)
 	}
 }
+
+func TestPlansNeedTheCoordinatorAndAreRecorded(t *testing.T) {
+	b, project, _ := ticketsBackend(t)
+	ctx := context.Background()
+	goal, _ := b.CreateTicket(ctx, project, web.NewTicket{Title: "goal"})
+	if _, err := b.PlanTicket(ctx, project, goal.ID); !errors.Is(err, web.ErrUnavailable) {
+		t.Errorf("without the coordinator = %v, want ErrUnavailable", err)
+	}
+
+	runs, err := runner.NewRuns(runner.RunsConfig{
+		Open: func(context.Context, runner.RunRequest) (*runner.Session, runner.Opened, error) {
+			return nil, runner.Opened{}, errors.New("no model in this test")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+	b.runs = runs
+	b.ticketRuns = runner.NewTicketRuns(runner.TicketRunsConfig{
+		Runs: runs, Tickets: b.tickets, Projects: b.projects, Finished: b.ticketFinished, Planned: b.ticketPlanned,
+	})
+	_, err = b.PlanTicket(ctx, project, goal.ID)
+	if err == nil || !strings.Contains(err.Error(), "no model in this test") {
+		t.Errorf("a planner that cannot open = %v", err)
+	}
+	kid, _ := b.CreateTicket(ctx, project, web.NewTicket{Title: "kid", Parent: goal.ID})
+	_, err = b.PlanTicket(ctx, project, kid.ID)
+	if !errors.Is(err, web.ErrConflict) || !strings.Contains(err.Error(), "only a top-level ticket is planned") {
+		t.Errorf("plan of a subticket = %v, want a conflict", err)
+	}
+	for name, call := range map[string]func() error{
+		"approve": func() error { _, err := b.ApproveTicket(ctx, project, goal.ID); return err },
+		"reject":  func() error { _, err := b.RejectTicket(ctx, project, goal.ID, "no"); return err },
+		"revise":  func() error { _, err := b.ReviseTicket(ctx, project, goal.ID, "more"); return err },
+	} {
+		if err := call(); !errors.Is(err, web.ErrConflict) || !strings.Contains(err.Error(), "not in review") {
+			t.Errorf("%s of an open ticket = %v, want a conflict", name, err)
+		}
+	}
+
+	inReview := func(title string) web.Ticket {
+		t.Helper()
+		tk, _ := b.CreateTicket(ctx, project, web.NewTicket{Title: title})
+		if _, err := b.tickets.StartPlan(project, tk.ID, "RUN-9"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.tickets.PlanReview(project, tk.ID, "RUN-9", "One step."); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.CreateTicket(ctx, project, web.NewTicket{Title: "step", Parent: tk.ID}); err != nil {
+			t.Fatal(err)
+		}
+		return tk
+	}
+	approved := inReview("approved")
+	if v, err := b.ApproveTicket(ctx, project, approved.ID); err != nil || v.Status != "ready" {
+		t.Errorf("approve = %+v, %v", v, err)
+	}
+	rejected := inReview("rejected")
+	if v, err := b.RejectTicket(ctx, project, rejected.ID, "too big"); err != nil || v.Status != "open" {
+		t.Errorf("reject = %+v, %v", v, err)
+	}
+	b.ticketPlanned(project, runner.TicketView{Ticket: runner.Ticket{ID: "TCK-1", Runs: []string{"RUN-2"}}},
+		"Two steps.\n\nmore")
+
+	feed, _ := b.Activity(ctx, 0, 0)
+	byKind := map[string]web.Activity{}
+	for _, a := range feed {
+		byKind[a.Kind] = a
+	}
+	if a := byKind["ticket.approved"]; a.Text != "Approved the plan of "+approved.ID+": approved" {
+		t.Errorf("approved = %+v", a)
+	}
+	if a := byKind["ticket.rejected"]; a.Text != "Rejected the plan of "+rejected.ID+": too big" {
+		t.Errorf("rejected = %+v", a)
+	}
+	if a := byKind["ticket.planned"]; a.Text != "Plan of TCK-1 in review: Two steps. ..." || a.RunRef != "RUN-2" {
+		t.Errorf("planned = %+v", a)
+	}
+}
