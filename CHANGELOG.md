@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Web UI: the planner (part 3 of agent tickets). "Plan" opens a read-only run that splits a
+  ticket into draft subtickets; a person approves, rejects or revises the plan. The Tickets
+  list's "Needs you" filter shows blocked tickets and plans in review.
 - Web UI: runs on tickets (part 2 of agent tickets). "Run" gives a ticket a git worktree and
   an autonomous run; `ticket_done` makes the daemon commit, check and merge into `main`;
   anything else blocks the ticket with a reason. Stop, Retry merge and a Worktrees list.

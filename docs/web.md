@@ -16,8 +16,8 @@ features this daemon serves.
 
 The screens are sessions, models, skills, activity, worktrees and a run viewer,
 plus a command palette and a quick chat. Tickets are a screen per project, with
-a page for each ticket. A runnable ticket can be run; the worktrees screen lists
-the branches runs left behind.
+a page for each ticket. An open ticket can be planned and a runnable one run;
+the worktrees screen lists the branches runs left behind.
 This document is the protocol; how the client is put together is
 in `internal/web/_ui/README.md`.
 
@@ -176,6 +176,10 @@ though the hop to the daemon is plain HTTP.
 | `DELETE /api/projects/{id}/tickets/{tid}` | deletes the ticket; 204 |
 | `POST /api/projects/{id}/tickets/{tid}/run` | starts a run on a runnable ticket; 201 with the run, 409 with why not |
 | `POST /api/projects/{id}/tickets/{tid}/merge` | retries the merge of a ticket blocked on one; 200 with the ticket, 409 |
+| `POST /api/projects/{id}/tickets/{tid}/plan` | starts a planner run on an open top-level ticket; 201 with the run, 409 |
+| `POST /api/projects/{id}/tickets/{tid}/approve` | approves the plan in review; 200 with the ticket, 409 |
+| `POST /api/projects/{id}/tickets/{tid}/reject` | `{reason}`; deletes the draft, back to `open`; 200 with the ticket, 409 |
+| `POST /api/projects/{id}/tickets/{tid}/revise` | `{text}`; sends the feedback to the planner; 200 with the ticket, 409 |
 | `GET /api/projects/{id}/worktrees` | the `aigem/*` branches: `repo`, `name`, `path`, `ticket`, `run`, `state` |
 | `DELETE /api/projects/{id}/worktrees/{name}` | removes the worktree and its branch; 204, 409 while its run is live |
 | `/api/...`  | reserved; an unknown path here is a 404, never the page, in every build |
@@ -424,6 +428,40 @@ and a daemon restart blocks every running ticket with "the daemon restarted". Th
 stays in all three; "Run" reuses it and the Worktrees screen discards it. "Stop" is offered
 whenever the ticket's last run is live, because ticket runs share the daemon's limit on live
 runs with chats. Activity: `ticket.done` and `ticket.blocked`.
+
+## Planner
+
+"Plan" on a top-level `open` ticket without subtickets moves it to `planning` and opens a
+planner run: an autonomous run with the `read-only` capability profile (read, list and search
+tools; no writes, no shell) rooted at the ticket's repository main checkout. Its first message
+is the ticket, the discussion, the project's repositories and the rule: split the ticket into
+subtickets that each fit one autonomous run, link them with dependencies, and call `plan_done`
+with a short summary. Its ticket tools are `list_tickets`, `get_ticket`, `create_subticket`,
+`delete_subticket`, `set_dependencies` and `plan_done`; they act only while the ticket is
+`planning` under that run, and write only its subtickets.
+
+The plan is a draft of ordinary `open` subtickets (`by: run RUN-n`). While the parent is
+`planning` or `review` its status is not derived from them, a draft has no status moves, and
+no ticket outside the plan may wait for one. In `planning` a person cannot add, delete or
+relink the parent's subtickets; in `review` they can.
+
+At the end of every planner turn the ticket goes to `review` with the summary of `plan_done`,
+else the agent's last message, or "interrupted" / "the turn ended with an error: ...". Then a
+person decides:
+
+- "Approve": every subticket becomes `ready`, the planner run is stopped and the parent
+  follows its subtickets again. Refused while the plan has no subticket.
+- "Reject" with a reason: the subtickets are deleted, the run is stopped and the ticket is
+  `open` again with the comment "Plan rejected: <reason>".
+- "Revise" with feedback: the feedback is a comment, the ticket goes back to `planning` and
+  the feedback goes to the planner run; when that run is gone, a new one starts with the draft
+  and the discussion.
+
+Stopping the planner run moves the ticket to `review` with "stopped by a person", deleting it
+with "the run was deleted", and a daemon restart with "the daemon restarted"; the draft stays.
+Typing into a live planner run moves the ticket back to `planning`. Activity:
+`ticket.planned`, `ticket.approved` and `ticket.rejected`. The Tickets screen's "Needs you"
+filter lists `blocked` tickets and plans in `review`.
 
 ## Runs
 
