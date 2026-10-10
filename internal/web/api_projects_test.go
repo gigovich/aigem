@@ -237,3 +237,61 @@ func TestOpeningARunCarriesItsProject(t *testing.T) {
 		t.Errorf("projectId = %q, want PRJ-1 echoed on the record", run.ProjectID)
 	}
 }
+
+func (b *projectsBackend) UpdateProject(_ context.Context, id string, req ProjectPatch) (
+	Project, error,
+) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, p := range b.projects {
+		if p.ID != id {
+			continue
+		}
+		if req.Slots != nil {
+			if *req.Slots < 0 || *req.Slots > 8 {
+				return Project{}, Refuse(errors.New("slots must be between 0 and 8"))
+			}
+			b.projects[i].Slots = *req.Slots
+		}
+		if req.Paused != nil {
+			b.projects[i].Paused = *req.Paused
+		}
+		return b.projects[i], nil
+	}
+	return Project{}, ErrNoProject
+}
+
+func TestUpdatingAProjectAnswersForEachState(t *testing.T) {
+	srv, _ := newProjectsServer(t)
+	api(t, srv, http.MethodPost, "/api/projects", `{"dir":"/home/dev/thing"}`)
+
+	res := api(t, srv, http.MethodPatch, "/api/projects/PRJ-1", `{"slots":2}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", res.StatusCode, readBody(t, res))
+	}
+	if got := decode[Project](t, res); got.Slots != 2 || got.Paused {
+		t.Errorf("after slots = %+v", got)
+	}
+	res = api(t, srv, http.MethodPatch, "/api/projects/PRJ-1", `{"paused":true}`)
+	if got := decode[Project](t, res); got.Slots != 2 || !got.Paused {
+		t.Errorf("after pause = %+v, want the slots kept", got)
+	}
+	list := decode[[]Project](t, api(t, srv, http.MethodGet, "/api/projects", ""))
+	if last := list[len(list)-1]; last.Slots != 2 || !last.Paused {
+		t.Errorf("listed = %+v, want slots and paused", last)
+	}
+
+	res = api(t, srv, http.MethodPatch, "/api/projects/PRJ-1", `{"slots":9}`)
+	if res.StatusCode != http.StatusBadRequest ||
+		!strings.Contains(readBody(t, res), "slots must be between 0 and 8") {
+		t.Errorf("slots 9 = %d, want 400 with the sentence", res.StatusCode)
+	}
+	if res := api(t, srv, http.MethodPatch, "/api/projects/PRJ-1", `{"name":"x"}`); res.StatusCode !=
+		http.StatusBadRequest {
+		t.Errorf("an unknown field = %d, want 400", res.StatusCode)
+	}
+	if res := api(t, srv, http.MethodPatch, "/api/projects/PRJ-9", `{"slots":1}`); res.StatusCode !=
+		http.StatusNotFound {
+		t.Errorf("an unknown project = %d, want 404", res.StatusCode)
+	}
+}

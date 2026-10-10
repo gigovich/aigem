@@ -187,8 +187,25 @@ func webModelRef(backend llm.Backend) *llm.Ref {
 // published before that is dropped rather than queued - there is no page
 // connected to hear it, because nothing is serving yet.
 type notifier struct {
-	mu  sync.Mutex
-	srv *web.Server
+	mu   sync.Mutex
+	srv  *web.Server
+	wake func()
+}
+
+// wakes sets what a ticket or project change wakes: the dispatcher, once it exists.
+func (n *notifier) wakes(f func()) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.wake = f
+}
+
+func (n *notifier) dispatch() {
+	n.mu.Lock()
+	wake := n.wake
+	n.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
 }
 
 func (n *notifier) to(srv *web.Server) {
@@ -212,10 +229,14 @@ func (n *notifier) publish(kind string, data any) {
 func (n *notifier) publishRun(v runner.RunView) { n.publish("run.updated", webRun(v)) }
 
 // publishProject is the projects registry's own callback shape, the same way.
-func (n *notifier) publishProject(v runner.ProjectView) { n.publish("project.updated", webProject(v)) }
+func (n *notifier) publishProject(v runner.ProjectView) {
+	n.publish("project.updated", webProject(v))
+	n.dispatch()
+}
 
 // publishTicket names the ticket that changed; a page re-reads its list rather than
 // patching it, so the frame carries the address and not the record.
 func (n *notifier) publishTicket(project string, v runner.TicketView) {
 	n.publish("ticket.updated", map[string]string{"projectId": project, "id": v.ID})
+	n.dispatch()
 }

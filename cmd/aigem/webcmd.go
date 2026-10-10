@@ -240,6 +240,7 @@ func runWebCommand(args []string) error {
 		version: versionString(), models: rt.models, runs: runs,
 		env: env, projects: projects, tickets: tickets, activity: activity, notify: announce.publish,
 	})
+	var dispatcher *runner.Dispatcher
 	if tickets != nil && projects != nil {
 		backend.ticketRuns = runner.NewTicketRuns(runner.TicketRunsConfig{
 			Runs: runs, Tickets: tickets, Projects: projects,
@@ -248,6 +249,13 @@ func runWebCommand(args []string) error {
 		backend.ticketRuns.Recover()
 		// Deferred after runs.Close, so it runs first: deliveries stop before the sessions do.
 		defer backend.ticketRuns.Close()
+		dispatcher = runner.NewDispatcher(runner.DispatcherConfig{
+			Projects: projects, Tickets: tickets, TicketRuns: backend.ticketRuns,
+			Started: backend.ticketStarted,
+		})
+		announce.wakes(dispatcher.Wake)
+		// Deferred after ticketRuns.Close, so it runs before it: no start races their shutdown.
+		defer dispatcher.Close()
 	}
 	srv, err := web.New(web.Config{
 		Addr:       *addr,
@@ -301,6 +309,9 @@ func runWebCommand(args []string) error {
 		// needs the environment to still be there.
 		if err := srv.Close(); err != nil {
 			return err
+		}
+		if dispatcher != nil {
+			dispatcher.Close()
 		}
 		if backend.ticketRuns != nil {
 			backend.ticketRuns.Close()

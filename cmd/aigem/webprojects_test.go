@@ -230,3 +230,34 @@ func TestOpenRunResolvesTheProjectBeforeTheModel(t *testing.T) {
 		t.Error("the failure was not recorded on the project")
 	}
 }
+
+func TestUpdatingAProjectSetsItsDispatcher(t *testing.T) {
+	ctx := context.Background()
+	b := newWebBackend(webBackendConfig{projects: testProjects(t, nil)})
+	added, err := b.AddProject(ctx, web.NewProject{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slots, paused := 2, true
+	got, err := b.UpdateProject(ctx, added.ID, web.ProjectPatch{Slots: &slots})
+	if err != nil || got.Slots != 2 || got.Paused {
+		t.Fatalf("slots = %+v, %v", got, err)
+	}
+	if got, err = b.UpdateProject(ctx, added.ID, web.ProjectPatch{Paused: &paused}); err != nil ||
+		got.Slots != 2 || !got.Paused {
+		t.Fatalf("pause = %+v, %v", got, err)
+	}
+	if list, _ := b.Projects(ctx); list[len(list)-1].Slots != 2 || !list[len(list)-1].Paused {
+		t.Errorf("listed = %+v", list)
+	}
+	bad := 9
+	_, err = b.UpdateProject(ctx, added.ID, web.ProjectPatch{Slots: &bad})
+	var refusal *web.Refusal
+	if !errors.As(err, &refusal) || err.Error() != "slots must be between 0 and 8" {
+		t.Errorf("slots 9 = %v, want a refusal without the package prefix", err)
+	}
+	if _, err := b.UpdateProject(ctx, "PRJ-9", web.ProjectPatch{Slots: &slots}); !errors.Is(err,
+		web.ErrNoProject) {
+		t.Errorf("unknown project = %v, want web.ErrNoProject", err)
+	}
+}

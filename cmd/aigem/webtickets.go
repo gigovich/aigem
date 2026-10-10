@@ -176,6 +176,12 @@ func (b *webBackend) ticketFinished(_ string, v runner.TicketView, reason string
 	b.recordActivity(a)
 }
 
+// ticketStarted records a ticket the dispatcher started in the activity feed.
+func (b *webBackend) ticketStarted(_ string, v runner.TicketView, run string) {
+	b.recordActivity(web.Activity{Kind: "ticket.started", Text: "Started " + v.ID + ": " + v.Title,
+		RunRef: run})
+}
+
 func (b *webBackend) ticketRunsReady(project string) error {
 	if err := b.ticketProject(project); err != nil {
 		return err

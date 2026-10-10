@@ -61,6 +61,19 @@ func (b *webBackend) RemoveProject(_ context.Context, id string) error {
 	return nil
 }
 
+func (b *webBackend) UpdateProject(_ context.Context, id string, req web.ProjectPatch) (
+	web.Project, error,
+) {
+	if b.projects == nil {
+		return web.Project{}, web.ErrUnavailable
+	}
+	v, err := b.projects.SetDispatch(id, req.Slots, req.Paused)
+	if err != nil {
+		return web.Project{}, webProjectError(err)
+	}
+	return webProject(v), nil
+}
+
 func (b *webBackend) ProjectRepos(ctx context.Context, id string) ([]web.Repository, error) {
 	if b.projects == nil {
 		return nil, web.ErrUnavailable
@@ -120,7 +133,10 @@ func (b *webBackend) envFor(ctx context.Context, project string) (*runner.Env, e
 }
 
 func webProject(v runner.ProjectView) web.Project {
-	return web.Project{ID: v.ID, Name: v.Name, Dir: v.Dir, Created: v.Created, LoadError: v.LoadError}
+	return web.Project{
+		ID: v.ID, Name: v.Name, Dir: v.Dir, Created: v.Created, LoadError: v.LoadError,
+		Slots: v.Slots, Paused: v.Paused,
+	}
 }
 
 // webProjectError classifies what the registry reports. A bad directory and a

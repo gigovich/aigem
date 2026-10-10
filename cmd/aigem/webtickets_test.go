@@ -255,3 +255,14 @@ func TestPlansNeedTheCoordinatorAndAreRecorded(t *testing.T) {
 		t.Errorf("planned = %+v", a)
 	}
 }
+
+func TestADispatchedTicketIsInTheActivityFeed(t *testing.T) {
+	b, project, _ := ticketsBackend(t)
+	v := runner.TicketView{Ticket: runner.Ticket{ID: "TCK-1", Title: "notes"}}
+	b.ticketStarted(project, v, "RUN-2")
+	feed, _ := b.Activity(context.Background(), 0, 0)
+	if len(feed) != 1 || feed[0].Kind != "ticket.started" || feed[0].Text != "Started TCK-1: notes" ||
+		feed[0].RunRef != "RUN-2" {
+		t.Errorf("feed = %+v", feed)
+	}
+}

@@ -21,6 +21,9 @@ type ProjectsBackend interface {
 	// RemoveProject forgets a project. ErrNoProject for an unknown id, a
 	// Conflict while it has an open run. It never removes files.
 	RemoveProject(ctx context.Context, id string) error
+	// UpdateProject sets the dispatcher's slots and pause. ErrNoProject for an unknown id, a
+	// *Refusal for slots out of range.
+	UpdateProject(ctx context.Context, id string, req ProjectPatch) (Project, error)
 	// ProjectRepos discovers the project's git checkouts on demand.
 	ProjectRepos(ctx context.Context, id string) ([]Repository, error)
 }
@@ -33,6 +36,14 @@ type Project struct {
 	// LoadError is why the project's environment could not be loaded, when it
 	// could not. Runs cannot open in it until a load succeeds.
 	LoadError string `json:"loadError,omitempty"`
+	// Slots is how many tickets the dispatcher keeps running; 0 is off.
+	Slots  int  `json:"slots"`
+	Paused bool `json:"paused"`
+}
+
+type ProjectPatch struct {
+	Slots  *int  `json:"slots,omitempty"`
+	Paused *bool `json:"paused,omitempty"`
 }
 
 type NewProject struct {
@@ -113,6 +124,24 @@ func (s *Server) handleRemoveProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[ProjectsBackend](s, w, "projects")
+	if !ok {
+		return
+	}
+	var req ProjectPatch
+	if err := decodeJSON(w, r, &req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	p, err := b.UpdateProject(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		writeRunError(w, "changing a project", err)
+		return
+	}
+	writeJSON(w, p)
 }
 
 func (s *Server) handleProjectRepos(w http.ResponseWriter, r *http.Request) {
