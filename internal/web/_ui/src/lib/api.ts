@@ -157,6 +157,26 @@ export const api = {
       method: 'POST',
       signal,
     }),
+  planTicket: (project: string, id: string, signal?: AbortSignal) =>
+    json<Run>(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}/plan`, {
+      method: 'POST',
+      signal,
+    }),
+  approveTicket: (project: string, id: string, signal?: AbortSignal) =>
+    json<Ticket>(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      signal,
+    }),
+  rejectTicket: (project: string, id: string, reason: string, signal?: AbortSignal) =>
+    json<Ticket>(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}/reject`, {
+      ...body({ reason }),
+      signal,
+    }),
+  reviseTicket: (project: string, id: string, text: string, signal?: AbortSignal) =>
+    json<Ticket>(`/api/projects/${encodeURIComponent(project)}/tickets/${encodeURIComponent(id)}/revise`, {
+      ...body({ text }),
+      signal,
+    }),
   worktrees: (project: string, signal?: AbortSignal) =>
     json<Worktree[]>(`/api/projects/${encodeURIComponent(project)}/worktrees`, { signal }),
   discardWorktree: async (project: string, name: string, signal?: AbortSignal) => {

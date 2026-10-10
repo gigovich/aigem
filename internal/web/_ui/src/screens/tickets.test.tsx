@@ -338,3 +338,87 @@ test('a ticket blocked on a merge offers Retry merge and Stop, and shows why it 
   await screen.findByRole('heading', { level: 1, name: 'Journal helper' })
   expect(screen.queryByRole('button', { name: 'Retry merge' })).not.toBeInTheDocument()
 })
+
+const RUN6: Run = { ...RUN5, id: 'RUN-6', title: 'Plan TCK-6: Big goal', running: false, ticketId: 'TCK-6' }
+const REVIEW = [
+  ticket('TCK-6', { title: 'Big goal', status: 'review', runs: ['RUN-6'], progress: { done: 0, total: 2 } }),
+  ticket('TCK-7', { title: 'Schema', parent: 'TCK-6', by: 'run RUN-6' }),
+  ticket('TCK-8', { title: 'Handler', parent: 'TCK-6', by: 'run RUN-6', dependsOn: ['TCK-7'] }),
+]
+
+test('Plan is offered on an open top-level ticket without subtickets and starts a planner', async () => {
+  const h = await openTask('TCK-6', [...PLAN, ticket('TCK-6', { title: 'Big goal' })], {
+    'POST /api/projects/PRJ-1/tickets/TCK-6/plan': () => new Response(JSON.stringify(RUN6), { status: 201 }),
+  })
+  await userEvent.click(screen.getByRole('button', { name: 'Plan' }))
+  await waitFor(() =>
+    expect(h.sent.some((s) => s.method === 'POST' && s.path === '/api/projects/PRJ-1/tickets/TCK-6/plan')).toBe(true),
+  )
+  act(() => navigate({ screen: 'task', id: 'TCK-1' }))
+  await screen.findByRole('heading', { level: 1, name: 'Delete sessions' })
+  expect(screen.queryByRole('button', { name: 'Plan' })).not.toBeInTheDocument()
+  act(() => navigate({ screen: 'task', id: 'TCK-3' }))
+  await screen.findByRole('heading', { level: 1, name: 'HTTP endpoint' })
+  expect(screen.queryByRole('button', { name: 'Plan' })).not.toBeInTheDocument()
+})
+
+test('a plan in review is approved, or rejected with a reason', async () => {
+  const h = await openTask(
+    'TCK-6',
+    REVIEW,
+    {
+      'POST /api/projects/PRJ-1/tickets/TCK-6/approve': () =>
+        new Response("TCK-6's plan has no subtickets; revise or reject it", { status: 409 }),
+      'POST /api/projects/PRJ-1/tickets/TCK-6/reject': () => json(ticket('TCK-6', { title: 'Big goal' })),
+    },
+    [RUN6],
+  )
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('has no subtickets')
+  await userEvent.click(screen.getByRole('button', { name: 'Reject' }))
+  expect(screen.getByRole('button', { name: 'Reject plan' })).toBeDisabled()
+  await userEvent.type(screen.getByLabelText('Reason'), 'too big')
+  await userEvent.click(screen.getByRole('button', { name: 'Reject plan' }))
+  await waitFor(() => expect(screen.queryByLabelText('Reason')).not.toBeInTheDocument())
+  const sent = h.sent.find((s) => s.path === '/api/projects/PRJ-1/tickets/TCK-6/reject')
+  expect(JSON.parse(sent!.body)).toEqual({ reason: 'too big' })
+})
+
+test('Revise sends the feedback from the keyboard, and Escape closes the box', async () => {
+  const h = await openTask(
+    'TCK-6',
+    REVIEW,
+    { 'POST /api/projects/PRJ-1/tickets/TCK-6/revise': () => json(REVIEW[0]) },
+    [RUN6],
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Reject' }))
+  await userEvent.type(screen.getByLabelText('Reason'), '{Escape}')
+  expect(screen.queryByLabelText('Reason')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Revise' }))
+  await userEvent.type(screen.getByLabelText('Feedback'), 'Add a migration.')
+  await userEvent.keyboard('{Control>}{Enter}{/Control}')
+  await waitFor(() => expect(h.sent.some((s) => s.path === '/api/projects/PRJ-1/tickets/TCK-6/revise')).toBe(true))
+  const sent = h.sent.find((s) => s.path === '/api/projects/PRJ-1/tickets/TCK-6/revise')
+  expect(JSON.parse(sent!.body)).toEqual({ text: 'Add a migration.' })
+})
+
+test('a draft subticket page offers no status moves', async () => {
+  await openTask('TCK-7', REVIEW, {}, [RUN6])
+  expect(screen.queryByRole('button', { name: 'Mark ready' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()
+})
+
+test('a ticket being planned offers Stop but no decisions, and no new subtickets', async () => {
+  const planning = REVIEW.map((t) => (t.id === 'TCK-6' ? { ...t, status: 'planning' as const } : t))
+  await openTask('TCK-6', planning, {}, [{ ...RUN6, running: true }])
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
+  for (const name of ['Approve', 'Reject', 'Revise', 'Plan', 'Add subticket']) {
+    expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+  }
+})
+
+test('a plan in review still allows adding a subticket', async () => {
+  await openTask('TCK-6', REVIEW, {}, [RUN6])
+  expect(screen.getByRole('button', { name: 'Add subticket' })).toBeInTheDocument()
+})

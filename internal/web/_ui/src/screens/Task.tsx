@@ -38,6 +38,7 @@ export function Task({ id = '' }: { id?: string }) {
   const [error, setError] = useState('')
   const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [asking, setAsking] = useState<'' | 'reject' | 'revise'>('')
 
   if (!project) return <EmptyState title="Tasks need a project." detail="Choose a project in the sidebar." />
   if (!t && !loaded) return <p className="m-0 px-4.5 py-3.5 text-fg-subtle">Loading tickets…</p>
@@ -52,6 +53,7 @@ export function Task({ id = '' }: { id?: string }) {
   }
 
   const parent = tickets.find((x) => x.id === t.parent)
+  const draft = parent?.status === 'planning' || parent?.status === 'review'
   const kids = tickets.filter((x) => x.parent === t.id)
   const isParent = kids.length > 0
   const waits = waitsFor(t, tickets)
@@ -96,45 +98,78 @@ export function Task({ id = '' }: { id?: string }) {
           {waits.length > 0 && (
             <span className="text-[0.75rem] text-attention">⧗ waits for {waits.join(', ')}</span>
           )}
-          {!isParent && (
-            <div className="ml-auto flex gap-1.5">
-              {t.runnable && (
+          <div className="ml-auto flex gap-1.5">
+            {!t.parent && !isParent && t.status === 'open' && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void act(() => api.planTicket(project, t.id))}
+                className={BUTTON}
+              >
+                Plan
+              </button>
+            )}
+            {t.runnable && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void act(() => api.runTicket(project, t.id))}
+                className={BUTTON}
+              >
+                Run
+              </button>
+            )}
+            {lastRun && lastLive && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void act(() => api.stopRun(lastRun))}
+                className={BUTTON}
+              >
+                Stop
+              </button>
+            )}
+            {t.status === 'review' && (
+              <>
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void act(() => api.runTicket(project, t.id))}
+                  onClick={() => void act(() => api.approveTicket(project, t.id))}
                   className={BUTTON}
                 >
-                  Run
+                  Approve
                 </button>
-              )}
-              {lastRun && lastLive && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void act(() => api.stopRun(lastRun))}
-                  className={BUTTON}
-                >
-                  Stop
-                </button>
-              )}
-              {t.status === 'blocked' && t.mergePending && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void act(() => api.mergeTicket(project, t.id))}
-                  className={BUTTON}
-                >
-                  Retry merge
-                </button>
-              )}
-              {personMoves(t.status).map((to) => (
+                {(['reject', 'revise'] as const).map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    aria-expanded={asking === k}
+                    onClick={() => setAsking(asking === k ? '' : k)}
+                    className={BUTTON}
+                  >
+                    {k === 'reject' ? 'Reject' : 'Revise'}
+                  </button>
+                ))}
+              </>
+            )}
+            {!isParent && t.status === 'blocked' && t.mergePending && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void act(() => api.mergeTicket(project, t.id))}
+                className={BUTTON}
+              >
+                Retry merge
+              </button>
+            )}
+            {!isParent &&
+              !draft &&
+              personMoves(t.status).map((to) => (
                 <button key={to} type="button" onClick={() => void change({ status: to })} className={BUTTON}>
                   {MOVE_LABEL[to]}
                 </button>
               ))}
-            </div>
-          )}
+          </div>
         </div>
         <div className="mt-1.5 font-mono text-[0.71875rem] text-fg-subtle">
           {t.repo || name} · created by {t.by || 'you'}
@@ -145,6 +180,22 @@ export function Task({ id = '' }: { id?: string }) {
           <p role="alert" className="m-0 mt-1.5 text-[0.78125rem] text-attention">
             {error}
           </p>
+        )}
+        {asking && t.status === 'review' && (
+          <PlanAnswer
+            key={asking}
+            kind={asking}
+            busy={busy}
+            onCancel={() => setAsking('')}
+            onSend={(text) =>
+              void act(async () => {
+                await (asking === 'reject'
+                  ? api.rejectTicket(project, t.id, text)
+                  : api.reviseTicket(project, t.id, text))
+                setAsking('')
+              })
+            }
+          />
         )}
       </div>
 
@@ -172,9 +223,11 @@ export function Task({ id = '' }: { id?: string }) {
                         {t.progress?.done ?? 0}/{t.progress?.total ?? kids.length} done
                       </span>
                     )}
-                    <button type="button" onClick={() => setAdding(true)} className={`ml-auto ${BUTTON}`}>
-                      Add subticket
-                    </button>
+                    {t.status !== 'planning' && (
+                      <button type="button" onClick={() => setAdding(true)} className={`ml-auto ${BUTTON}`}>
+                        Add subticket
+                      </button>
+                    )}
                   </div>
                   {kids.map((k) => (
                     <button
@@ -370,6 +423,49 @@ function Discussion({ project, ticket }: { project: string; ticket: Ticket }) {
         />
         <button type="button" onClick={() => void send()} disabled={!text.trim() || busy} className={BUTTON}>
           Send comment
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function PlanAnswer({
+  kind,
+  busy,
+  onSend,
+  onCancel,
+}: {
+  kind: 'reject' | 'revise'
+  busy: boolean
+  onSend: (text: string) => void
+  onCancel: () => void
+}) {
+  const [text, setText] = useState('')
+  const send = () => {
+    if (text.trim() && !busy) onSend(text)
+  }
+  return (
+    <div className="mt-2 flex gap-2">
+      <textarea
+        aria-label={kind === 'reject' ? 'Reason' : 'Feedback'}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send()
+          if (e.key === 'Escape') onCancel()
+        }}
+        rows={2}
+        placeholder={
+          kind === 'reject' ? 'Why is this plan wrong? ⌘↵ to send' : 'What should the planner change? ⌘↵ to send'
+        }
+        className={`flex-1 ${INPUT}`}
+      />
+      <div className="flex flex-col gap-1.5">
+        <button type="button" disabled={!text.trim() || busy} onClick={send} className={BUTTON}>
+          {kind === 'reject' ? 'Reject plan' : 'Send feedback'}
+        </button>
+        <button type="button" onClick={onCancel} className={BUTTON}>
+          Cancel
         </button>
       </div>
     </div>
