@@ -42,10 +42,13 @@ context: `docs/superpowers/specs/2026-10-09-agent-tickets-design.md` (part 1),
   runs (`planning`) and parents (derived status) take no slot. The daemon's limit of 32 live
   runs still applies.
 - The dispatcher never plans. It never stops a run: Pause and lower slots only stop new starts.
-- A failed start, exactly: the ticket moves `ready` -> `blocked` with the comment
-  `the dispatcher could not start it: <error>` by `aigem`. `ErrTooManyRuns` changes nothing;
-  `ErrRunsClosed` stops the dispatcher; a ticket that is no longer runnable or that another
-  Start holds is left alone.
+- A failed start, exactly: a `*TicketRefusal` (the ticket's own fault: a path in the way, not a
+  checkout, the worktree could not be added, a bad repository) moves the ticket `ready` ->
+  `blocked` with the comment `the dispatcher could not start it: <error>` by `aigem`. Any other
+  error, `ErrTooManyRuns` included, blocks nothing: it is logged and the dispatcher holds (the
+  pass ends, wakes are ignored until the next 30 s tick). `ErrRunsClosed` and `Close` stop the
+  dispatcher, and a start that `Close` cancelled never blocks its ticket. A ticket that is no
+  longer runnable or that another Start holds is left alone.
 - `Tickets.Block` refusals, exactly: `<id> is <status>, not ready`, `<id> is not runnable`.
 - Route: `PATCH /api/projects/{id}` `{slots?, paused?}`; 200 with the project, 400 out of range
   or unknown field, 404 unknown project, 405 other methods. `GET /api/projects` returns `slots`
@@ -81,18 +84,31 @@ context: `docs/superpowers/specs/2026-10-09-agent-tickets-design.md` (part 1),
 - Decision: `TicketRuns.Start`'s `<id> is already starting` refusal becomes the unexported type
   `startingRefusal` (it unwraps to the same `*TicketRefusal`, so HTTP is unchanged). The
   dispatcher leaves such a ticket alone: a person's "Run" in flight is not blocked.
+- Decision: only a `*TicketRefusal` blocks. Other errors (a project env that does not load, a
+  model or login error, `Runs.Create` errors, `ErrTooManyRuns`) are not the ticket's fault, so
+  the dispatcher logs them and holds until its next tick. Without the hold this is a hot loop:
+  an env load failure calls `Projects.notify`, which wakes the dispatcher, and every start runs
+  git `prepare` before `ErrTooManyRuns`. The hold is a `held bool` field touched only on the
+  dispatcher goroutine: `pass` sets it and returns at once while it is set, the tick clears it.
+- Decision: no live-run check in `TicketRuns.Start` before `prepare`: it needs a new `Runs`
+  method, and the hold already limits it to one `prepare` (undone) per 30 s while full.
 - Deviation from spec: no "starting" set in the dispatcher. Passes run one at a time on its one
   goroutine and `Start` is synchronous, so it cannot start a ticket twice; `TicketRuns.starting`
   already guards against a person's Run.
 - Deviation from spec: `TicketRunsConfig.Finished` does not call `Wake` itself. Every outcome
   goes through `Tickets.Finish`, whose ticket notification already wakes the dispatcher.
-- Decision: `DispatcherConfig.Blocked func(project string, v TicketView, reason string)` is
-  told about a ticket it blocked; `cmd/aigem` wires it to the existing `ticketFinished`, which
-  writes `ticket.blocked`.
-- Decision: `ErrTooManyRuns` ends the whole pass (every project would get the same answer).
-- Decision: a pass checks for `Close` before each start; `Close` does not cancel a start in
-  flight (a cancelled start would block its ticket with `context canceled`), it waits for it.
-- Decision: the 30 s safety tick is a constant, not injectable; tests call `Wake`.
+- Decision: after `Block` the dispatcher calls `TicketRuns`' own `finished` callback, which
+  `cmd/aigem` already wires to `ticketFinished` (writes `ticket.blocked`). No extra config.
+- Decision: `DispatcherConfig.Started func(project string, v TicketView, run string)` gets the
+  list view and the run id from `Start`; no extra `tickets.Get`. It is required (no nil
+  default).
+- Decision: `Start` runs with the dispatcher's context, which `Close` cancels; `Close` then
+  waits for the pass. A start that fails while stopped ends the pass and never blocks its
+  ticket. A person's "Run" during a pass can briefly put one ticket over the slots (the pass
+  counted before it); documented, not prevented.
+- Decision: the 30 s safety tick is a constant, not injectable. Tests build the dispatcher
+  without its goroutine (`newDispatcher`), call `pass` synchronously and clear `held` where the
+  tick would. One test runs the goroutine for `Wake` and `Close`.
 - Decision: "oldest first by ticket number" is the list order: tickets are appended in creation
   order and ids only grow.
 - Decision: UI errors go to the page banner (`setBanner`, the app's `role="alert"`); "n of N
@@ -101,19 +117,26 @@ context: `docs/superpowers/specs/2026-10-09-agent-tickets-design.md` (part 1),
 ## Review Focus
 
 - A person presses "Run" on the very ticket the dispatcher takes next: one run, the ticket is
-  not blocked. (Task 3 `TestADispatcherLeavesATicketAPersonIsStarting`,
-  `TestOneTicketIsNeverStartedTwice`.)
-- The daemon holds 32 live runs: nothing is blocked, the ticket starts once a run is deleted.
-  (Task 3 `TestTheDispatcherWaitsWhileTheDaemonIsFull`.)
+  not blocked. (Task 3 `TestADispatcherLeavesATicketAPersonIsStarting`.)
+- The daemon holds 32 live runs: nothing is blocked, a wake does not retry, the tick does.
+  (Task 3 `TestTheDispatcherHoldsWhileTheDaemonIsFull`.)
+- An error that is not the ticket's fault (env load, model, `Runs.Create`): nothing is blocked
+  and there is no hot loop through `Projects.notify` -> `Wake`. (Task 3
+  `TestAFailureNotOfTheTicketHoldsUntilTheTick`.)
 - A ticket finishes: its slot is filled right away through the ticket notification, without
   the 30 s tick, and the notify path does not deadlock with a pass. (Task 2
   `TestAFinishedTicketFreesItsSlotForTheNext`.)
+- `Close` during a start: the cancelled start never blocks its ticket. (Task 3
+  `TestAStoppedDispatcherNeverBlocksATicket`.)
 - After a restart `Recover` leaves the old running tickets `blocked`: the dispatcher must not
   start them again, only the next ready ones. (Task 2
   `TestTheDispatcherFillsFreeSlotsOldestFirst`: a blocked ticket keeps its status.)
-- A broken ticket (path in the way, git error, a project that cannot load) is blocked once with
-  the reason and is not retried in a loop; the next ticket still starts in the same pass. (Task
-  3 `TestADispatcherBlocksABrokenTicketOnceAndGoesOn`.)
+- A broken ticket (path in the way, not a checkout, worktree add) is blocked once with the
+  reason and is not retried; the next ticket still starts in the same pass. (Task 3
+  `TestADispatcherBlocksABrokenTicketOnceAndGoesOn`.)
+- A person moves a blocked ticket back to ready while its run is still live: the dispatcher
+  blocks it again with the live-run reason (`<id> has a live run RUN-n; stop it first`).
+  Acceptable and documented in `docs/web.md`.
 
 ## File Structure
 
@@ -127,7 +150,7 @@ context: `docs/superpowers/specs/2026-10-09-agent-tickets-design.md` (part 1),
 | `cmd/aigem/webprojects.go`, `webtickets.go` | adapter, `ticketStarted` |
 | `cmd/aigem/webruns.go`, `webcmd.go` | notifier wakes the dispatcher; wiring |
 | `internal/web/_ui/src/lib/wire.ts`, `api.ts` | `slots`, `paused`, `updateProject` |
-| `internal/web/_ui/src/screens/Tickets.tsx` | the dispatcher controls |
+| `internal/web/_ui/src/screens/Tickets.tsx`, `Task.tsx` | dispatcher controls; export `BUTTON` |
 | `docs/web.md`, `CHANGELOG.md` | docs |
 
 ---
@@ -269,24 +292,25 @@ git commit -m "feat(runner): slots and pause on a project"
 **Interfaces:**
 - Consumes: `Projects.SetDispatch`, `ProjectView.Slots`, `ProjectView.Paused` (Task 1);
   part 2's `TicketRuns.Start(ctx, project, id string) (RunView, error)`, `ErrRunsClosed`;
-  `Tickets.List`, `Tickets.Get`, `TicketView.Runnable`, `TicketView.Progress`.
+  `Tickets.List`, `TicketView.Runnable`, `TicketView.Progress`.
 - Produces:
   ```go
   type DispatcherConfig struct {
   	Projects   *Projects
   	Tickets    *Tickets
   	TicketRuns *TicketRuns
-  	Started    func(project string, v TicketView) // v read after the start: running, Runs set
+  	Started    func(project string, v TicketView, run string) // required; v is the listed view
   }
   func NewDispatcher(cfg DispatcherConfig) *Dispatcher // starts its goroutine; first pass now
   func (d *Dispatcher) Wake()                          // never blocks; coalesces
-  func (d *Dispatcher) Close()                         // stops, waits; safe twice
+  func (d *Dispatcher) Close()                         // cancels a start, waits; safe twice
   ```
-  Unexported, used by Task 3: `func (d *Dispatcher) start(project string, v TicketView) error`,
-  the fields `stop`, `done chan struct{}`, the constant `dispatchEvery = 30 * time.Second`.
-  Test helpers produced in `dispatcher_test.go` and used by Task 3: `f.setDispatch(slots int,
-  paused bool)`, `f.dispatcher() *Dispatcher`, `f.tell(s string)`, `f.ticket(id) TicketView`,
-  `f.running(id)`, `f.count(prefix string) int`, `settle()`.
+  Unexported, used by Task 3: `newDispatcher(cfg) *Dispatcher` (no goroutine), `loop()`,
+  `pass() bool` (false: the dispatcher stops), the fields `ctx`, `cancel`, `wake`, `done`, the
+  constant `dispatchEvery = 30 * time.Second`. Test helpers produced in `dispatcher_test.go`
+  and used by Task 3: `f.setDispatch(slots int, paused bool)`, `f.dispatcher() *Dispatcher`
+  (no goroutine), `f.dispatcherConfig()`, `f.pass(d)`, `f.tell(s)`, `f.said() []string` (a
+  locked copy of `f.told`), `f.count(prefix) int`, `f.ticket(id) TicketView`.
 
 - [ ] **Step 1: Keep the projects in the fixture**
 
@@ -305,17 +329,18 @@ and in `newFixture`, right after `t.Cleanup(projects.Close)`:
 
 - [ ] **Step 2: Write the failing tests**
 
-Create `internal/runner/dispatcher_test.go`:
+Create `internal/runner/dispatcher_test.go`. Every test but one builds the dispatcher without
+its goroutine and runs its passes itself; `TestAFinishedTicketFreesItsSlotForTheNext` runs the
+goroutine for `Wake` and `Close`.
 
 ```go
 package runner
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func (f *fixture) setDispatch(slots int, paused bool) {
@@ -325,14 +350,21 @@ func (f *fixture) setDispatch(slots int, paused bool) {
 	}
 }
 
-func (f *fixture) dispatcher() *Dispatcher {
-	f.t.Helper()
-	d := NewDispatcher(DispatcherConfig{
+func (f *fixture) dispatcherConfig() DispatcherConfig {
+	return DispatcherConfig{
 		Projects: f.projects, Tickets: f.tickets, TicketRuns: f.tr,
-		Started: func(_ string, v TicketView) { f.tell("started: " + v.ID + " " + v.Status) },
-	})
-	f.t.Cleanup(d.Close)
-	return d
+		Started: func(_ string, v TicketView, run string) { f.tell("started: " + v.ID + " " + run) },
+	}
+}
+
+// dispatcher builds a dispatcher without its goroutine: the test runs its passes.
+func (f *fixture) dispatcher() *Dispatcher { return newDispatcher(f.dispatcherConfig()) }
+
+func (f *fixture) pass(d *Dispatcher) {
+	f.t.Helper()
+	if !d.pass() {
+		f.t.Fatal("the dispatcher stopped")
+	}
 }
 
 func (f *fixture) tell(s string) {
@@ -341,11 +373,15 @@ func (f *fixture) tell(s string) {
 	f.mu.Unlock()
 }
 
-func (f *fixture) count(prefix string) int {
+func (f *fixture) said() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return slices.Clone(f.told)
+}
+
+func (f *fixture) count(prefix string) int {
 	n := 0
-	for _, s := range f.told {
+	for _, s := range f.said() {
 		if strings.HasPrefix(s, prefix) {
 			n++
 		}
@@ -361,14 +397,6 @@ func (f *fixture) ticket(id string) TicketView {
 	}
 	return v
 }
-
-func (f *fixture) running(id string) {
-	f.t.Helper()
-	waitUntil(f.t, func() bool { return f.ticket(id).Status == TicketRunning })
-}
-
-// settle gives the dispatcher time to do what it must not.
-func settle() { time.Sleep(300 * time.Millisecond) }
 
 func TestTheDispatcherFillsFreeSlotsOldestFirst(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
@@ -401,12 +429,10 @@ func TestTheDispatcherFillsFreeSlotsOldestFirst(t *testing.T) {
 
 	f.setDispatch(3, false)
 	d := f.dispatcher()
-	f.running(first)
-	f.running(step.ID)
-	settle()
+	f.pass(d)
 	for id, want := range map[string]string{
-		waits.ID: TicketReady, last: TicketReady, stuck: TicketBlocked, planMe: TicketPlanning,
-		mine: TicketRunning, goal: TicketRunning,
+		first: TicketRunning, step.ID: TicketRunning, waits.ID: TicketReady, last: TicketReady,
+		stuck: TicketBlocked, planMe: TicketPlanning, mine: TicketRunning, goal: TicketRunning,
 	} {
 		if got := f.ticket(id).Status; got != want {
 			t.Errorf("%s is %s, want %s", id, got, want)
@@ -414,15 +440,17 @@ func TestTheDispatcherFillsFreeSlotsOldestFirst(t *testing.T) {
 	}
 
 	f.setDispatch(4, false)
-	d.Wake()
-	f.running(last)
+	f.pass(d)
+	if s := f.ticket(last).Status; s != TicketRunning {
+		t.Fatalf("with a fourth slot last is %s, want running", s)
+	}
 	for _, id := range []string{first, step.ID, last} {
-		if !f.toldAbout("started: " + id + " running") {
-			t.Errorf("Started was not told about %s: %v", id, f.told)
+		if f.count("started: "+id+" "+runIDPrefix) != 1 {
+			t.Errorf("Started was not told about %s once: %v", id, f.said())
 		}
 	}
 	if f.count("started: ") != 3 {
-		t.Errorf("told %v, want only the dispatcher's three starts", f.told)
+		t.Errorf("told %v, want only the dispatcher's three starts", f.said())
 	}
 }
 
@@ -430,72 +458,59 @@ func TestPauseStopsNewStartsAndResumeFillsTheSlots(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	one, two := f.ready("one"), f.ready("two")
 	f.script.then(hold(), hold())
-	f.setDispatch(1, true)
 	d := f.dispatcher()
-	settle()
-	if s := f.ticket(one).Status; s != TicketReady {
-		t.Fatalf("while paused one is %s, want ready", s)
-	}
-
-	f.setDispatch(1, false)
-	d.Wake()
-	f.running(one)
-	both := func(what string) {
+	after := func(slots int, paused bool, a, b string) {
 		t.Helper()
-		d.Wake()
-		settle()
-		if a, b := f.ticket(one).Status, f.ticket(two).Status; a != TicketRunning || b != TicketReady {
-			t.Fatalf("%s: one %s, two %s; want running and ready", what, a, b)
+		f.setDispatch(slots, paused)
+		f.pass(d)
+		if x, y := f.ticket(one).Status, f.ticket(two).Status; x != a || y != b {
+			t.Fatalf("slots %d, paused %v: one %s, two %s; want %s and %s", slots, paused, x, y, a, b)
 		}
 	}
-	f.setDispatch(2, true)
-	both("paused with a free slot")
-	f.setDispatch(0, false)
-	both("slots lowered below the running count")
-
-	f.setDispatch(2, false)
-	d.Wake()
-	f.running(two)
+	after(1, true, TicketReady, TicketReady)
+	after(1, false, TicketRunning, TicketReady)
+	after(2, true, TicketRunning, TicketReady)
+	after(0, false, TicketRunning, TicketReady)
+	after(2, false, TicketRunning, TicketRunning)
 }
 
 func TestAFinishedTicketFreesItsSlotForTheNext(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
-	var d atomic.Pointer[Dispatcher]
-	f.tickets.notify = func(string, TicketView) {
-		if x := d.Load(); x != nil {
-			x.Wake()
-		}
-	}
+	d := newDispatcher(f.dispatcherConfig())
+	f.tickets.notify = func(string, TicketView) { d.Wake() }
 	first, second := f.ready("first"), f.ready("second")
 	wrote := edit(filepath.Join(f.worktree(first), "a.txt"), "a\n", done("Did first."))
 	f.script.then(wrote, say("ok"), hold())
-	d.Store(f.dispatcher())
 	f.setDispatch(1, false)
-	d.Load().Wake()
+	go d.loop()
+	t.Cleanup(d.Close)
 
-	f.running(second)
-	if v := f.ticket(first); v.Status != TicketDone {
-		t.Fatalf("first is %s, want done", v.Status)
+	waitUntil(t, func() bool { return f.toldAbout("started: " + second) })
+	if a, b := f.ticket(first).Status, f.ticket(second).Status; a != TicketDone || b != TicketRunning {
+		t.Fatalf("first is %s, second %s; want done and running", a, b)
 	}
-	if !f.toldAbout("started: "+first+" running") || !f.toldAbout("started: "+second+" running") {
-		t.Errorf("told %v", f.told)
+	if !f.toldAbout("started: " + first) {
+		t.Errorf("told %v", f.said())
 	}
-}
 
-func TestAClosedDispatcherStartsNothing(t *testing.T) {
-	f := newFixture(t, gitRepo(t, "main"))
-	f.setDispatch(1, false)
-	d := f.dispatcher()
 	d.Close()
-	id := f.ready("late")
-	for range 3 {
-		d.Wake()
-	}
-	settle()
-	if s := f.ticket(id).Status; s != TicketReady {
+	late := f.ready("late")
+	f.setDispatch(2, false)
+	d.Wake()
+	if s := f.ticket(late).Status; s != TicketReady {
 		t.Errorf("after Close the ticket is %s, want ready", s)
 	}
 	d.Close()
+}
+
+func TestWakeUpsCoalesce(t *testing.T) {
+	d := newDispatcher(DispatcherConfig{})
+	for range 3 {
+		d.Wake()
+	}
+	if n := len(d.wake); n != 1 {
+		t.Errorf("%d wake-ups pending, want 1", n)
+	}
 }
 
 func TestTheDispatcherStopsWhenTheRunsClose(t *testing.T) {
@@ -503,10 +518,7 @@ func TestTheDispatcherStopsWhenTheRunsClose(t *testing.T) {
 	id := f.ready("never")
 	f.tr.Close()
 	f.setDispatch(1, false)
-	d := f.dispatcher()
-	select {
-	case <-d.done:
-	case <-time.After(10 * time.Second):
+	if f.dispatcher().pass() {
 		t.Fatal("the dispatcher went on after the ticket runs closed")
 	}
 	if v := f.ticket(id); v.Status != TicketReady || len(v.Comments) != 0 {
@@ -515,10 +527,14 @@ func TestTheDispatcherStopsWhenTheRunsClose(t *testing.T) {
 }
 ```
 
+`f.tickets.notify` is set before the first ticket exists and before `go d.loop()`, so no
+wake is lost. After `d.Close()` returns the goroutine is gone, so the check for `late`
+needs no wait.
+
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `go test ./internal/runner/ -run 'Dispatcher|Pause|AFinishedTicketFrees'`
-Expected: FAIL to compile: `undefined: Dispatcher`, `undefined: NewDispatcher`.
+Run: `go test ./internal/runner/ -run 'Dispatcher|Pause|AFinishedTicketFrees|WakeUps'`
+Expected: FAIL to compile: `undefined: Dispatcher`, `undefined: newDispatcher`.
 
 - [ ] **Step 4: Write the implementation**
 
@@ -531,7 +547,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 	"time"
 )
 
@@ -541,8 +556,9 @@ type DispatcherConfig struct {
 	Projects   *Projects
 	Tickets    *Tickets
 	TicketRuns *TicketRuns
-	// Started is told about every ticket the dispatcher started.
-	Started func(project string, v TicketView)
+	// Started is told about every ticket the dispatcher started, as listed before the start,
+	// with its new run.
+	Started func(project string, v TicketView, run string)
 }
 
 // Dispatcher starts the oldest runnable tickets of every project with free slots. Its passes
@@ -551,24 +567,26 @@ type Dispatcher struct {
 	projects *Projects
 	tickets  *Tickets
 	runs     *TicketRuns
-	started  func(string, TicketView)
+	started  func(string, TicketView, string)
 
-	wake chan struct{}
-	stop chan struct{}
-	done chan struct{}
-	once sync.Once
+	ctx    context.Context
+	cancel context.CancelFunc
+	wake   chan struct{}
+	done   chan struct{}
 }
 
 func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
-	d := &Dispatcher{
-		projects: cfg.Projects, tickets: cfg.Tickets, runs: cfg.TicketRuns, started: cfg.Started,
-		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
-	}
-	if d.started == nil {
-		d.started = func(string, TicketView) {}
-	}
+	d := newDispatcher(cfg)
 	go d.loop()
 	return d
+}
+
+func newDispatcher(cfg DispatcherConfig) *Dispatcher {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Dispatcher{
+		projects: cfg.Projects, tickets: cfg.Tickets, runs: cfg.TicketRuns, started: cfg.Started,
+		ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{}),
+	}
 }
 
 // Wake asks for a pass. Wake-ups that arrive during a pass cause one more.
@@ -579,9 +597,9 @@ func (d *Dispatcher) Wake() {
 	}
 }
 
-// Close stops the dispatcher and waits for the pass in flight.
+// Close cancels the start in flight and waits for the dispatcher to stop.
 func (d *Dispatcher) Close() {
-	d.once.Do(func() { close(d.stop) })
+	d.cancel()
 	<-d.done
 }
 
@@ -591,7 +609,7 @@ func (d *Dispatcher) loop() {
 	defer tick.Stop()
 	for d.pass() {
 		select {
-		case <-d.stop:
+		case <-d.ctx.Done():
 			return
 		case <-d.wake:
 		case <-tick.C:
@@ -623,30 +641,17 @@ func (d *Dispatcher) pass() bool {
 			if !v.Runnable {
 				continue
 			}
-			select {
-			case <-d.stop:
-				return false
-			default:
-			}
-			switch err := d.start(p.ID, v); {
+			run, err := d.runs.Start(d.ctx, p.ID, v.ID)
+			switch {
 			case err == nil:
 				running++
-			case errors.Is(err, ErrRunsClosed):
+				d.started(p.ID, v, run.ID)
+			case errors.Is(err, ErrRunsClosed), d.ctx.Err() != nil:
 				return false
 			}
 		}
 	}
 	return true
-}
-
-func (d *Dispatcher) start(project string, v TicketView) error {
-	if _, err := d.runs.Start(context.Background(), project, v.ID); err != nil {
-		return err
-	}
-	if cur, err := d.tickets.Get(project, v.ID); err == nil {
-		d.started(project, cur)
-	}
-	return nil
 }
 ```
 
@@ -666,28 +671,30 @@ git commit -m "feat(runner): the dispatcher fills free slots"
 
 ---
 
-### Task 3: A failed start blocks the ticket once
+### Task 3: A failed start blocks the ticket once, or holds the dispatcher
 
 **Files:**
 - Modify: `internal/runner/tickets.go` (`Block`)
 - Modify: `internal/runner/ticketruns.go` (`startingRefusal`, the "already starting" case)
-- Modify: `internal/runner/dispatcher.go` (`Blocked`, `pass`, `start`)
+- Modify: `internal/runner/dispatcher.go` (`held`, `loop`, `pass`)
 - Test: `internal/runner/tickets_test.go`, `internal/runner/dispatcher_test.go` (append)
 
 **Interfaces:**
-- Consumes: `Dispatcher`, `DispatcherConfig`, `start`, the test helpers (Task 2);
-  `ErrTooManyRuns` (wrapped with `%w` by `Runs.Create`).
+- Consumes: `Dispatcher`, `newDispatcher`, `loop`, `pass`, the test helpers (Task 2);
+  `TicketRuns.finished` (part 2's `Finished` callback, never nil); `ErrTooManyRuns` (wrapped
+  with `%w` by `Runs.Create`).
 - Produces:
   ```go
   func (t *Tickets) Block(project, id, reason string) (TicketView, error)
   type startingRefusal struct{ *TicketRefusal } // Unwrap() error returns the *TicketRefusal
-  // DispatcherConfig gains:
-  Blocked func(project string, v TicketView, reason string)
+  // Dispatcher gains the field held bool: set by pass, cleared by the tick in loop.
   ```
   `Block`: only a `ready`, runnable ticket; status `blocked`, the reason as a comment by
   `aigem` (cut like a run comment); refusals `<id> is <status>, not ready`,
   `<id> is not runnable`; `ErrNoTicket`. The reason the dispatcher writes is
-  `the dispatcher could not start it: <error>`.
+  `the dispatcher could not start it: <error>`; it then calls `d.runs.finished(project, v,
+  reason)`, which `cmd/aigem` wires to `ticketFinished` (`ticket.blocked`). The fixture's
+  `Finished` records it as `blocked: <reason>`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -726,7 +733,7 @@ func TestBlockMovesOnlyARunnableReadyTicket(t *testing.T) {
 }
 ```
 
-Append to `internal/runner/dispatcher_test.go` (add `"context"` and `"sync"` to its imports):
+Append to `internal/runner/dispatcher_test.go` (add `"context"` and `"os"` to its imports):
 
 ```go
 func TestADispatcherBlocksABrokenTicketOnceAndGoesOn(t *testing.T) {
@@ -737,8 +744,11 @@ func TestADispatcherBlocksABrokenTicketOnceAndGoesOn(t *testing.T) {
 	f.script.then(hold())
 	f.setDispatch(1, false)
 	d := f.dispatcher()
+	f.pass(d)
 
-	f.running(next)
+	if s := f.ticket(next).Status; s != TicketRunning {
+		t.Fatalf("next is %s, want running in the same pass", s)
+	}
 	want := "the dispatcher could not start it: " + f.worktree(broken) +
 		" is in the way of the worktree for " + broken + "; remove it"
 	v := f.ticket(broken)
@@ -746,17 +756,16 @@ func TestADispatcherBlocksABrokenTicketOnceAndGoesOn(t *testing.T) {
 		v.Comments[0].Text != want {
 		t.Fatalf("broken = %s %+v", v.Status, v.Comments)
 	}
-	d.Wake()
-	settle()
+	f.pass(d)
 	if n := len(f.ticket(broken).Comments); n != 1 {
 		t.Errorf("the broken ticket has %d comments, want it tried once", n)
 	}
 	if n := f.count("blocked: the dispatcher could not start it: "); n != 1 {
-		t.Errorf("Blocked told %d times, want once: %v", n, f.told)
+		t.Errorf("finished told %d times, want once: %v", n, f.said())
 	}
 }
 
-func TestTheDispatcherWaitsWhileTheDaemonIsFull(t *testing.T) {
+func TestTheDispatcherHoldsWhileTheDaemonIsFull(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	var chats []RunView
 	for range maxLiveRuns {
@@ -770,16 +779,56 @@ func TestTheDispatcherWaitsWhileTheDaemonIsFull(t *testing.T) {
 	f.script.then(hold())
 	f.setDispatch(1, false)
 	d := f.dispatcher()
-	settle()
+	f.pass(d)
 	v := f.ticket(id)
-	if v.Status != TicketReady || len(v.Comments) != 0 || pathExists(f.worktree(id)) {
-		t.Fatalf("while full = %s %+v, want ready, untouched and no worktree", v.Status, v.Comments)
+	if v.Status != TicketReady || len(v.Comments) != 0 || pathExists(f.worktree(id)) || !d.held {
+		t.Fatalf("while full = %s %+v, held %v; want ready, untouched, no worktree, held",
+			v.Status, v.Comments, d.held)
 	}
 	if err := f.runs.Remove(chats[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	d.Wake()
-	f.running(id)
+	f.pass(d)
+	if s := f.ticket(id).Status; s != TicketReady {
+		t.Fatalf("a wake while held started it: %s", s)
+	}
+	d.held = false
+	f.pass(d)
+	if s := f.ticket(id).Status; s != TicketRunning {
+		t.Fatalf("after the tick the ticket is %s, want running", s)
+	}
+}
+
+func TestAFailureNotOfTheTicketHoldsUntilTheTick(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	one, two := f.ready("one"), f.ready("two")
+	writeFile(t, f.repo, ".aigem", "not a directory")
+	f.setDispatch(2, false)
+	d := f.dispatcher()
+	f.pass(d)
+	for _, id := range []string{one, two} {
+		if v := f.ticket(id); v.Status != TicketReady || len(v.Comments) != 0 {
+			t.Fatalf("%s = %s %+v, want ready and untouched", id, v.Status, v.Comments)
+		}
+	}
+	if !d.held || f.count("blocked: ") != 0 {
+		t.Fatalf("held %v, told %v; want held and nothing blocked", d.held, f.said())
+	}
+	if err := os.Remove(filepath.Join(f.repo, ".aigem")); err != nil {
+		t.Fatal(err)
+	}
+	f.script.then(hold(), hold())
+	f.pass(d)
+	if s := f.ticket(one).Status; s != TicketReady {
+		t.Fatalf("a wake while held started one: %s", s)
+	}
+	d.held = false
+	f.pass(d)
+	for _, id := range []string{one, two} {
+		if s := f.ticket(id).Status; s != TicketRunning {
+			t.Errorf("after the tick %s is %s, want running", id, s)
+		}
+	}
 }
 
 func TestADispatcherLeavesATicketAPersonIsStarting(t *testing.T) {
@@ -792,52 +841,45 @@ func TestADispatcherLeavesATicketAPersonIsStarting(t *testing.T) {
 	f.script.then(hold())
 	f.setDispatch(1, false)
 	d := f.dispatcher()
-	settle()
-	if v := f.ticket(id); v.Status != TicketReady || len(v.Comments) != 0 {
-		t.Fatalf("while a person starts it = %s %+v, want ready and untouched", v.Status, v.Comments)
+	f.pass(d)
+	if v := f.ticket(id); v.Status != TicketReady || len(v.Comments) != 0 || d.held {
+		t.Fatalf("while a person starts it = %s %+v, held %v; want ready, untouched, not held",
+			v.Status, v.Comments, d.held)
 	}
 	f.tr.mu.Lock()
 	delete(f.tr.starting, key)
 	f.tr.mu.Unlock()
-	d.Wake()
-	f.running(id)
+	f.pass(d)
+	if s := f.ticket(id).Status; s != TicketRunning {
+		t.Fatalf("the ticket is %s, want running", s)
+	}
 }
 
-func TestOneTicketIsNeverStartedTwice(t *testing.T) {
+func TestAStoppedDispatcherNeverBlocksATicket(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
-	id := f.ready("once")
-	f.script.then(hold())
+	id := f.ready("cancelled")
 	f.setDispatch(1, false)
-	var wg sync.WaitGroup
-	wg.Go(func() { _, _ = f.tr.Start(context.Background(), f.project, id) })
 	d := f.dispatcher()
-	for range 20 {
-		d.Wake()
+	d.cancel()
+	if d.pass() {
+		t.Fatal("a pass after Close went on")
 	}
-	wg.Wait()
-	f.running(id)
-	settle()
-	if v := f.ticket(id); v.Status != TicketRunning || len(v.Runs) != 1 || len(v.Comments) != 0 {
-		t.Errorf("ticket = %s, runs %v, comments %+v; want one run and no block", v.Status, v.Runs,
-			v.Comments)
+	if v := f.ticket(id); v.Status != TicketReady || len(v.Comments) != 0 {
+		t.Errorf("ticket = %s %+v, want ready and untouched", v.Status, v.Comments)
 	}
 }
 ```
 
-In the same file, change `f.dispatcher()` so the config also records blocks:
-
-```go
-	d := NewDispatcher(DispatcherConfig{
-		Projects: f.projects, Tickets: f.tickets, TicketRuns: f.tr,
-		Started: func(_ string, v TicketView) { f.tell("started: " + v.ID + " " + v.Status) },
-		Blocked: func(_ string, _ TicketView, reason string) { f.tell("blocked: " + reason) },
-	})
-```
+In `TestAFailureNotOfTheTicketHoldsUntilTheTick` a file at `<repo>/.aigem` makes `prepare`'s
+`os.MkdirAll` fail with a plain error, not a `*TicketRefusal`. In
+`TestAStoppedDispatcherNeverBlocksATicket` the cancelled context makes git fail inside
+`Start`, which refuses with `<repo> has no main or master branch`, a `*TicketRefusal`: the
+dispatcher must see that it is stopped and not block.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./internal/runner/ -run 'Block|Broken|Full|IsStarting|StartedTwice'`
-Expected: FAIL to compile: `ts.Block undefined`, `unknown field Blocked`.
+Run: `go test ./internal/runner/ -run 'Block|Broken|Full|NotOfTheTicket|IsStarting|Stopped'`
+Expected: FAIL to compile: `ts.Block undefined`, `d.held undefined`.
 
 - [ ] **Step 3: `Tickets.Block`**
 
@@ -876,13 +918,14 @@ func (t *Tickets) Block(project, id, reason string) (TicketView, error) {
 In `internal/runner/ticketruns.go`, after `var ErrNoWorktree = ...`, add:
 
 ```go
-// startingRefusal refuses a ticket another Start holds; the dispatcher leaves it alone.
+// startingRefusal refuses a ticket another Start holds, so the dispatcher can leave a person's
+// Run in flight alone instead of blocking the ticket.
 type startingRefusal struct{ *TicketRefusal }
 
 func (e startingRefusal) Unwrap() error { return e.TicketRefusal }
 ```
 
-In `Start`, replace the `case t.starting[key]:` branch body's return:
+In `Start`, replace the `case t.starting[key]:` branch:
 
 ```go
 	case t.starting[key]:
@@ -890,60 +933,57 @@ In `Start`, replace the `case t.starting[key]:` branch body's return:
 		return RunView{}, startingRefusal{&TicketRefusal{Reason: id + " is already starting"}}
 ```
 
-- [ ] **Step 5: The dispatcher blocks and waits**
+- [ ] **Step 5: The dispatcher blocks or holds**
 
-In `internal/runner/dispatcher.go`:
-
-Add to `DispatcherConfig` after `Started`:
+In `internal/runner/dispatcher.go`, add the field after `done` in `type Dispatcher struct`:
 
 ```go
-	// Blocked is told about a ticket that could not start and was blocked, with the reason.
-	Blocked func(project string, v TicketView, reason string)
+	// held ignores wake-ups until the next tick; only the dispatcher's goroutine touches it.
+	held bool
 ```
 
-Add the field `blocked  func(string, TicketView, string)` after `started` in `Dispatcher`, set
-it in `NewDispatcher` (`blocked: cfg.Blocked,` in the literal) with the same nil default:
+In `loop`, the tick clears it:
 
 ```go
-	if d.blocked == nil {
-		d.blocked = func(string, TicketView, string) {}
+		case <-tick.C:
+			d.held = false
+```
+
+In `pass`, return at once while held (first line of the function):
+
+```go
+	if d.held {
+		return true
 	}
 ```
 
-In `pass`, add a case to the `switch err := d.start(p.ID, v)`:
+and replace the `switch` after `d.runs.Start` with:
 
 ```go
-			case errors.Is(err, ErrTooManyRuns):
+			switch {
+			case err == nil:
+				running++
+				d.started(p.ID, v, run.ID)
+			case errors.Is(err, ErrRunsClosed), d.ctx.Err() != nil:
+				return false
+			case errors.As(err, new(startingRefusal)):
+			case errors.As(err, new(*TicketRefusal)):
+				reason := "the dispatcher could not start it: " + err.Error()
+				if b, berr := d.tickets.Block(p.ID, v.ID, reason); berr == nil {
+					d.runs.finished(p.ID, b, reason)
+				}
+			default:
+				slog.Warn("the dispatcher waits for its next tick", "project", p.ID, "ticket", v.ID,
+					"err", err)
+				d.held = true
 				return true
+			}
 ```
 
-Replace `start` with:
-
-```go
-// start starts one ticket. A ticket that cannot start for a reason of its own is blocked, so
-// the next pass does not try it again.
-func (d *Dispatcher) start(project string, v TicketView) error {
-	_, err := d.runs.Start(context.Background(), project, v.ID)
-	switch {
-	case err == nil:
-		if cur, err := d.tickets.Get(project, v.ID); err == nil {
-			d.started(project, cur)
-		}
-		return nil
-	case errors.Is(err, ErrRunsClosed), errors.Is(err, ErrTooManyRuns),
-		errors.As(err, new(startingRefusal)):
-		return err
-	}
-	reason := "the dispatcher could not start it: " + err.Error()
-	if b, berr := d.tickets.Block(project, v.ID, reason); berr == nil {
-		d.blocked(project, b, reason)
-	}
-	return err
-}
-```
-
-`Block` refuses a ticket that is no longer ready or runnable (it changed between the list and
-the start), so that case needs no code here.
+The order matters: the stopped check comes before the refusal (a cancelled start refuses),
+and `startingRefusal` before `*TicketRefusal` (it unwraps to one). `Block` refuses a ticket
+that is no longer ready or runnable (it changed between the list and the start), so that case
+needs no code here.
 
 - [ ] **Step 6: Run the tests and the linter**
 
@@ -957,7 +997,7 @@ and the part 2 "already starting" refusals still pass, since `refusal` uses `err
 ```bash
 git add internal/runner/tickets.go internal/runner/tickets_test.go \
   internal/runner/ticketruns.go internal/runner/dispatcher.go internal/runner/dispatcher_test.go
-git commit -m "feat(runner): a ticket the dispatcher cannot start is blocked once"
+git commit -m "feat(runner): a failed start blocks the ticket once or holds the dispatcher"
 ```
 
 ---
@@ -977,7 +1017,8 @@ git commit -m "feat(runner): a ticket the dispatcher cannot start is blocked onc
 
 **Interfaces:**
 - Consumes: `Projects.SetDispatch` (Task 1); `NewDispatcher`, `DispatcherConfig{Projects,
-  Tickets, TicketRuns, Started, Blocked}`, `Wake`, `Close` (Tasks 2, 3).
+  Tickets, TicketRuns, Started}`, `Wake`, `Close` (Tasks 2, 3). A ticket the dispatcher blocks
+  already reaches the existing `ticketFinished` through `TicketRunsConfig.Finished`.
 - Produces:
   ```go
   // web.Project gains:
@@ -990,7 +1031,7 @@ git commit -m "feat(runner): a ticket the dispatcher cannot start is blocked onc
   // web.ProjectsBackend gains:
   UpdateProject(ctx context.Context, id string, req ProjectPatch) (Project, error)
   // cmd/aigem:
-  func (b *webBackend) ticketStarted(project string, v runner.TicketView)
+  func (b *webBackend) ticketStarted(project string, v runner.TicketView, run string)
   func (n *notifier) wakes(f func())
   ```
   Route `PATCH /api/projects/{id}`: 200 with the project; 400 for a `*Refusal` or a bad body;
@@ -1103,34 +1144,21 @@ Append to `cmd/aigem/webtickets_test.go`:
 ```go
 func TestADispatchedTicketIsInTheActivityFeed(t *testing.T) {
 	b, project, _ := ticketsBackend(t)
-	b.ticketStarted(project, runner.TicketView{Ticket: runner.Ticket{
-		ID: "TCK-1", Title: "notes", Status: runner.TicketRunning, Runs: []string{"RUN-2"},
-	}})
+	v := runner.TicketView{Ticket: runner.Ticket{ID: "TCK-1", Title: "notes"}}
+	b.ticketStarted(project, v, "RUN-2")
 	feed, _ := b.Activity(context.Background(), 0, 0)
 	if len(feed) != 1 || feed[0].Kind != "ticket.started" || feed[0].Text != "Started TCK-1: notes" ||
 		feed[0].RunRef != "RUN-2" {
 		t.Errorf("feed = %+v", feed)
 	}
 }
-
-func TestTicketAndProjectChangesWakeTheDispatcher(t *testing.T) {
-	var n notifier
-	n.publishTicket("PRJ-1", runner.TicketView{})
-	woken := 0
-	n.wakes(func() { woken++ })
-	n.publishTicket("PRJ-1", runner.TicketView{})
-	n.publishProject(runner.ProjectView{})
-	if woken != 2 {
-		t.Errorf("woken %d times, want once per ticket and project change after wiring", woken)
-	}
-}
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./internal/web/ ./cmd/aigem/ -run 'UpdatingAProject|Dispatched|WakeTheDispatcher'`
+Run: `go test ./internal/web/ ./cmd/aigem/ -run 'UpdatingAProject|Dispatched'`
 Expected: FAIL to compile: `undefined: ProjectPatch`, `b.UpdateProject undefined`,
-`b.ticketStarted undefined`, `n.wakes undefined`.
+`b.ticketStarted undefined`.
 
 - [ ] **Step 3: The route**
 
@@ -1225,12 +1253,9 @@ In `cmd/aigem/webtickets.go`, after `ticketFinished`, add:
 
 ```go
 // ticketStarted records a ticket the dispatcher started in the activity feed.
-func (b *webBackend) ticketStarted(_ string, v runner.TicketView) {
-	a := web.Activity{Kind: "ticket.started", Text: "Started " + v.ID + ": " + v.Title}
-	if n := len(v.Runs); n > 0 {
-		a.RunRef = v.Runs[n-1]
-	}
-	b.recordActivity(a)
+func (b *webBackend) ticketStarted(_ string, v runner.TicketView, run string) {
+	b.recordActivity(web.Activity{Kind: "ticket.started", Text: "Started " + v.ID + ": " + v.Title,
+		RunRef: run})
 }
 ```
 
@@ -1296,10 +1321,10 @@ builds `backend.ticketRuns` with:
 		defer backend.ticketRuns.Close()
 		dispatcher = runner.NewDispatcher(runner.DispatcherConfig{
 			Projects: projects, Tickets: tickets, TicketRuns: backend.ticketRuns,
-			Started: backend.ticketStarted, Blocked: backend.ticketFinished,
+			Started: backend.ticketStarted,
 		})
 		announce.wakes(dispatcher.Wake)
-		// Deferred last, so it runs first: no start races the shutdown of the ticket runs.
+		// Deferred after ticketRuns.Close, so it runs before it: no start races their shutdown.
 		defer dispatcher.Close()
 	}
 ```
@@ -1336,6 +1361,7 @@ git commit -m "feat(web): project slots and pause route; the daemon runs the dis
 - Modify: `internal/web/_ui/src/lib/wire.ts` (`Project`, `ProjectPatch`)
 - Modify: `internal/web/_ui/src/lib/api.ts` (`updateProject`)
 - Modify: `internal/web/_ui/src/screens/Tickets.tsx` (header controls)
+- Modify: `internal/web/_ui/src/screens/Task.tsx` (export `BUTTON`)
 - Test: `internal/web/_ui/src/screens/tickets.test.tsx` (append)
 
 **Interfaces:**
@@ -1361,7 +1387,7 @@ test('the dispatcher controls set slots, pause and resume, and count running tic
   const h = await openTickets(PLAN, {
     '/api/projects': () => json([DAEMON_PROJECT, prj]),
     'PATCH /api/projects/PRJ-1': () => {
-      prj = { ...prj, ...JSON.parse(h.sent[h.sent.length - 1].body) }
+      prj = { ...prj, ...(JSON.parse(h.sent[h.sent.length - 1]?.body ?? '{}') as object) }
       return json(prj)
     },
   })
@@ -1376,7 +1402,9 @@ test('the dispatcher controls set slots, pause and resume, and count running tic
   await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
   await waitFor(() => expect(screen.queryByText('Paused')).not.toBeInTheDocument())
 
-  const patches = h.sent.filter((s) => s.method === 'PATCH').map((s) => JSON.parse(s.body))
+  const patches = h.sent
+    .filter((s) => s.method === 'PATCH')
+    .map((s) => JSON.parse(s.body) as unknown)
   expect(patches).toEqual([{ slots: 3 }, { paused: true }, { paused: false }])
 })
 
@@ -1387,7 +1415,7 @@ test('a refused slot count shows the sentence; the daemon directory has no contr
   })
   await userEvent.selectOptions(screen.getByLabelText('Slots'), '5')
   expect(await screen.findByRole('alert')).toHaveTextContent('slots must be between 0 and 8')
-  expect(screen.queryByText(/running$/)).not.toBeInTheDocument()
+  expect(screen.queryByText(/ of \d+ running$/)).not.toBeInTheDocument()
   act(() => selectProject(''))
   expect(await screen.findByText('Tickets need a project.')).toBeInTheDocument()
   expect(screen.queryByLabelText('Slots')).not.toBeInTheDocument()
@@ -1397,6 +1425,23 @@ test('a refused slot count shows the sentence; the daemon directory has no contr
 
 `PLAN` has one running leaf (TCK-4) and one running parent (TCK-1, with `progress`), so the
 count is 1. In the second test `PRJ` has no `slots`, so the select shows Off and no count.
+
+The Slots select adds `option` roles to the page, so in the existing test
+`the palette opens a ticket found by its title` scope the options to the palette. Replace:
+
+```ts
+  await screen.findByRole('dialog', { name: 'Command palette' })
+  await userEvent.keyboard('Runner change')
+  expect(screen.getAllByRole('option')[0]).toHaveTextContent('TCK-4 Runner change')
+```
+
+with:
+
+```ts
+  const palette = await screen.findByRole('dialog', { name: 'Command palette' })
+  await userEvent.keyboard('Runner change')
+  expect(within(palette).getAllByRole('option')[0]).toHaveTextContent('TCK-4 Runner change')
+```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1458,13 +1503,15 @@ import {
 } from '@/state/app'
 ```
 
-After `const PRIMARY = ...` add:
+In `internal/web/_ui/src/screens/Task.tsx` change `const BUTTON =` to `export const BUTTON =`
+(the value stays). In `Tickets.tsx` add after the `@/ui/SegmentedControl` import:
 
 ```tsx
-const BUTTON =
-  'h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted ' +
-  'hover:border-line-strong hover:text-fg'
+import { BUTTON } from './Task'
 ```
+
+`Task.tsx` already imports from `./Tickets`; the cycle is safe because both constants are read
+only while rendering, never while the modules load.
 
 Replace the `useApp` call at the top of `Tickets` and add the count and the change:
 
@@ -1547,7 +1594,8 @@ Expected: PASS.
 
 ```bash
 git add internal/web/_ui/src/lib/wire.ts internal/web/_ui/src/lib/api.ts \
-  internal/web/_ui/src/screens/Tickets.tsx internal/web/_ui/src/screens/tickets.test.tsx
+  internal/web/_ui/src/screens/Tickets.tsx internal/web/_ui/src/screens/Task.tsx \
+  internal/web/_ui/src/screens/tickets.test.tsx
 git commit -m "feat(web): slots, pause and the running count on the Tickets screen"
 ```
 
@@ -1575,22 +1623,19 @@ After the "Planner" section (before `## Runs`) add:
 ```markdown
 ## Dispatcher
 
-The dispatcher presses "Run" by itself. Each project has `slots`, 0 to 8, default 0 (off),
-and `paused`, both kept in `projects.json` and set with `PATCH /api/projects/{id}`. While
-fewer of the project's tickets are `running` than there are slots, the daemon starts the
-oldest runnable ticket. A slot is a `running` ticket whoever started it, the dispatcher or a
-person with "Run"; blocked tickets and planner runs take none. The daemon's limit of 32 live
-runs still applies. The dispatcher never plans.
+The dispatcher presses "Run" by itself. Each project has `slots` (0 to 8, default 0: off) and
+`paused`. While fewer of its tickets are `running` than there are slots, the daemon starts the
+oldest runnable ticket. A slot is a `running` ticket, whoever started it; blocked tickets and
+planner runs take none. A person's "Run" during a pass can briefly put one ticket over the
+slots. The daemon's limit of 32 live runs still applies. The dispatcher never plans.
 
-It looks again after every ticket or project change and every 30 seconds. A start refused by
-the run limit is tried again later. Any other refusal (a path in the way of the worktree, a
-git error) moves the ticket to `blocked` with the comment
-"the dispatcher could not start it: <error>", so a broken ticket is not retried in a loop.
-Pause stops new starts and keeps running tickets going; lowering the slots stops nothing.
-After a restart the tickets that were running are blocked ("the daemon restarted") and the
-next ready ones start. Activity: `ticket.started` for the dispatcher's starts; a failed start
-is `ticket.blocked`. The Tickets screen has the "Slots" select, Pause / Resume, the
-"n of N running" count and a "Paused" badge.
+It looks again after every ticket or project change and every 30 seconds. A start the ticket
+itself cannot make (a path in the way of the worktree, not a git checkout) moves it to
+`blocked` with the comment "the dispatcher could not start it: <error>". Any other error (the
+run limit, a project env that does not load, the model) blocks nothing: the dispatcher logs it
+and waits for the next 30 second tick. A ticket moved back to `ready` while its run is still
+live is blocked again with the live-run reason. Pause stops new starts; lowering the slots
+stops nothing.
 ```
 
 In `CHANGELOG.md` under `## [Unreleased]` / `### Added`, above the part 3 entry, add:

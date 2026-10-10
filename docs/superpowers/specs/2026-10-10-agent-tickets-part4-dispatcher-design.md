@@ -36,13 +36,19 @@ Decisions taken with the user on 2026-10-10:
   after a ticket run's outcome is recorded, and every 30 seconds as a safety net. Wake-ups that
   arrive during a pass cause one more pass, never more.
 - **A failed start.**
-  - `ErrTooManyRuns` (the daemon's live-run limit): nothing changes; the next pass tries again.
-  - `ErrRunsClosed`: the dispatcher stops.
-  - Anything else (a `*TicketRefusal` such as `<path> is in the way of the worktree for <id>;
-    remove it`, or a git error): the ticket moves `ready` -> `blocked` with the comment
-    `the dispatcher could not start it: <error>` by `aigem`, so the same broken ticket is not
-    retried in a loop. A refusal because the ticket is no longer runnable (it changed between the
-    read and the start) is ignored.
+  - A `*TicketRefusal`, the ticket's own fault (`<path> is in the way of the worktree for <id>;
+    remove it`, not a git checkout, the worktree could not be added, a bad repository): the
+    ticket moves `ready` -> `blocked` with the comment `the dispatcher could not start it:
+    <error>` by `aigem`, so the same broken ticket is not retried in a loop. A refusal because
+    the ticket is no longer runnable (it changed between the read and the start) or because a
+    person's "Run" is starting it is ignored.
+  - Any other error (`ErrTooManyRuns`, a project env that does not load, a model or login
+    error, a `Runs.Create` error): nothing is blocked. The dispatcher logs it and holds: the
+    pass ends and wake-ups are ignored until the next 30 second tick. Without the hold an env
+    load failure, which notifies the project and so wakes the dispatcher, would loop, and every
+    start would run git before it meets the run limit.
+  - `ErrRunsClosed` or `Close`: the dispatcher stops; a start that `Close` cancelled never
+    blocks its ticket.
 - **Pause.** No new starts; running tickets go on. Resume (or a higher slot count) runs a pass.
   Lowering the slots below the running count stops nothing; the queue just waits.
 - **Restart.** Part 2's `Recover` blocks the tickets that were running (`the daemon restarted`);
@@ -54,12 +60,13 @@ Decisions taken with the user on 2026-10-10:
 - `runner.Tickets`: `Block(project, id, reason string) (TicketView, error)`, only from `ready`
   (else `<id> is <status>, not ready`), inside the registry lock.
 - `runner.Dispatcher` (`internal/runner/dispatcher.go`): `NewDispatcher(cfg)` with `Projects`,
-  `Tickets`, `TicketRuns` and a `Started func(project string, v TicketView)` callback;
-  `Wake()` (never blocks), `Close()` (stops and waits for the pass in flight). One goroutine per
-  daemon; it keeps no state but a small "starting" set.
-- `cmd/aigem`: builds the dispatcher after `TicketRuns.Recover`; the ticket notify, the project
-  notify and `TicketRunsConfig.Finished` call `Wake()`; `Close()` runs before `TicketRuns.Close`.
-  `Started` writes the activity.
+  `Tickets`, `TicketRuns` and a `Started func(project string, v TicketView, run string)`
+  callback; `Wake()` (never blocks), `Close()` (cancels the start in flight and waits). One
+  goroutine per daemon; its only state is the hold flag. A ticket it blocks is reported
+  through `TicketRuns`' `Finished` callback, like a run's outcome.
+- `cmd/aigem`: builds the dispatcher after `TicketRuns.Recover`; the ticket notify and the
+  project notify call `Wake()` (every run outcome goes through a ticket change);
+  `Close()` runs before `TicketRuns.Close`. `Started` writes the activity.
 
 ## API
 
@@ -82,9 +89,11 @@ start shows as the existing `ticket.blocked`.
 
 - `runner`: `SetDispatch` range and persistence; `Block`; the dispatcher fills slots oldest
   first, respects dependencies, counts a person's "Run", ignores blocked tickets and planners,
-  stops on Pause and fills on Resume, blocks a broken ticket once, waits on `ErrTooManyRuns`,
-  does not start one ticket twice, and stops on `Close`. Real git repositories and the scripted
-  model, as in part 2.
+  stops on Pause and fills on Resume, blocks a broken ticket once, holds on `ErrTooManyRuns`
+  and on any other error that is not a refusal (blocks nothing, ignores wake-ups until the
+  tick), leaves a ticket a person is starting, never blocks after `Close`, and stops on
+  `Close`. Passes run synchronously in the tests; one test runs the goroutine. Real git
+  repositories and the scripted model, as in part 2.
 - `web`, `cmd/aigem`: the PATCH route (200, 400, 404, 405), the wiring, `ticket.started`.
 - UI: the select, Pause / Resume, the count, the badge.
 - A manual check with a real model: slots 2, three ready tickets, pause and resume.
