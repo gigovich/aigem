@@ -62,7 +62,17 @@ export type Run = {
 export type NewRun = { mode?: string; title?: string; model?: string; projectId?: string }
 
 /** A project: a directory on the daemon's machine. The daemon's own has an empty id. */
-export type Project = { id: string; name: string; dir: string; created?: string; loadError?: string }
+export type Project = {
+  id: string
+  name: string
+  dir: string
+  created?: string
+  loadError?: string
+  slots?: number
+  paused?: boolean
+}
+
+export type ProjectPatch = { slots?: number; paused?: boolean }
 
 export type NewProject = { dir: string; name?: string }
 

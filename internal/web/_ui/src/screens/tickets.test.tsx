@@ -267,9 +267,9 @@ test('a new subticket cannot wait for its own parent', async () => {
 test('the palette opens a ticket found by its title', async () => {
   await openTickets(PLAN)
   await userEvent.keyboard('{Control>}k{/Control}')
-  await screen.findByRole('dialog', { name: 'Command palette' })
+  const palette = await screen.findByRole('dialog', { name: 'Command palette' })
   await userEvent.keyboard('Runner change')
-  expect(screen.getAllByRole('option')[0]).toHaveTextContent('TCK-4 Runner change')
+  expect(within(palette).getAllByRole('option')[0]).toHaveTextContent('TCK-4 Runner change')
   await userEvent.keyboard('{Enter}')
   await waitFor(() => expect(window.location.pathname).toBe('/task/TCK-4'))
 })
@@ -438,4 +438,44 @@ test('Needs you lists the blocked tickets and the plans in review', async () => 
   expect(screen.getByText('Big goal')).toBeInTheDocument()
   expect(screen.queryByText('Runner change')).not.toBeInTheDocument()
   expect(screen.queryByText('Schema')).not.toBeInTheDocument()
+})
+
+test('the dispatcher controls set slots, pause and resume, and count running tickets', async () => {
+  let prj = { ...PRJ, slots: 2, paused: false }
+  const h = await openTickets(PLAN, {
+    '/api/projects': () => json([DAEMON_PROJECT, prj]),
+    'PATCH /api/projects/PRJ-1': () => {
+      prj = { ...prj, ...(JSON.parse(h.sent[h.sent.length - 1]?.body ?? '{}') as object) }
+      return json(prj)
+    },
+  })
+  expect(await screen.findByText('1 of 2 running')).toBeInTheDocument()
+  expect(screen.getByLabelText('Slots')).toHaveValue('2')
+  expect(screen.queryByText('Paused')).not.toBeInTheDocument()
+
+  await userEvent.selectOptions(screen.getByLabelText('Slots'), '3')
+  expect(await screen.findByText('1 of 3 running')).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Pause' }))
+  expect(await screen.findByText('Paused')).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
+  await waitFor(() => expect(screen.queryByText('Paused')).not.toBeInTheDocument())
+
+  const patches = h.sent
+    .filter((s) => s.method === 'PATCH')
+    .map((s) => JSON.parse(s.body) as unknown)
+  expect(patches).toEqual([{ slots: 3 }, { paused: true }, { paused: false }])
+})
+
+test('a refused slot count shows the sentence; the daemon directory has no controls', async () => {
+  await openTickets(PLAN, {
+    'PATCH /api/projects/PRJ-1': () =>
+      new Response('slots must be between 0 and 8', { status: 400 }),
+  })
+  await userEvent.selectOptions(screen.getByLabelText('Slots'), '5')
+  expect(await screen.findByRole('alert')).toHaveTextContent('slots must be between 0 and 8')
+  expect(screen.queryByText(/ of \d+ running$/)).not.toBeInTheDocument()
+  act(() => selectProject(''))
+  expect(await screen.findByText('Tickets need a project.')).toBeInTheDocument()
+  expect(screen.queryByLabelText('Slots')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
 })

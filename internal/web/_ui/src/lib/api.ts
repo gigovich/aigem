@@ -17,6 +17,7 @@ import type {
   NewProject,
   NewRun,
   Project,
+  ProjectPatch,
   ProviderUsage,
   Repository,
   Run,
@@ -124,6 +125,12 @@ export const api = {
   projects: (signal?: AbortSignal) => json<Project[]>('/api/projects', { signal }),
   addProject: (req: NewProject, signal?: AbortSignal) =>
     json<Project>('/api/projects', { ...body(req), signal }),
+  updateProject: (id: string, patch: ProjectPatch, signal?: AbortSignal) =>
+    json<Project>(`/api/projects/${encodeURIComponent(id)}`, {
+      ...body(patch),
+      method: 'PATCH',
+      signal,
+    }),
   projectRepos: (id: string, signal?: AbortSignal) =>
     json<Repository[]>(`/api/projects/${encodeURIComponent(id)}/repos`, { signal }),
   tickets: (project: string, signal?: AbortSignal) =>

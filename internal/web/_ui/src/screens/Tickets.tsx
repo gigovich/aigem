@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { navigate } from '@/lib/route'
-import type { Repository, Ticket } from '@/lib/wire'
-import { currentProject, explain, flash, patchNewTicket, refresh, useApp } from '@/state/app'
+import type { ProjectPatch, Repository, Ticket } from '@/lib/wire'
+import {
+  currentProject,
+  explain,
+  flash,
+  patchNewTicket,
+  refresh,
+  setBanner,
+  useApp,
+} from '@/state/app'
 import { TICKET_STATUS, treeRows, waitsFor } from '@/state/tickets'
 import type { TicketFilter, TicketRow } from '@/state/tickets'
 import { DataGrid } from '@/ui/DataGrid'
@@ -11,17 +19,21 @@ import { EmptyState } from '@/ui/EmptyState'
 import { FilterInput } from '@/ui/FilterInput'
 import { Modal } from '@/ui/Modal'
 import { SegmentedControl } from '@/ui/SegmentedControl'
+import { BUTTON } from './Task'
 
 const PRIMARY =
   'h-6.5 rounded-md border border-primary bg-primary px-2.5 text-[0.78125rem] font-medium text-bg hover:brightness-110'
 
 export function Tickets() {
-  const { project, tickets, name, newOpen } = useApp((s) => ({
+  const { project, tickets, name, newOpen, slots, paused } = useApp((s) => ({
     project: s.project,
     tickets: s.tickets,
     name: currentProject(s)?.name ?? '',
     newOpen: s.newTicketOpen,
+    slots: currentProject(s)?.slots ?? 0,
+    paused: currentProject(s)?.paused ?? false,
   }))
+  const running = tickets.filter((t) => t.status === 'running' && !t.progress).length
   const [filter, setFilter] = useState<TicketFilter>('active')
   const [needle, setNeedle] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -29,6 +41,15 @@ export function Tickets() {
   useEffect(() => {
     if (newOpen && !project) patchNewTicket(false)
   }, [newOpen, project])
+
+  const dispatch = async (change: ProjectPatch) => {
+    try {
+      await api.updateProject(project, change)
+      await refresh.projects()
+    } catch (err) {
+      setBanner(explain(err))
+    }
+  }
 
   const toggle = (id: string) =>
     setCollapsed((s) => {
@@ -92,7 +113,33 @@ export function Tickets() {
               ]}
             />
             <FilterInput value={needle} onChange={setNeedle} label="Filter tickets" />
-            <button type="button" onClick={() => patchNewTicket(true)} className={`ml-auto ${PRIMARY}`}>
+            <div className="ml-auto flex items-center gap-2 text-[0.78125rem] text-fg-subtle">
+              {paused && (
+                <span className="rounded-[0.1875rem] border border-line-strong px-1 text-[0.6875rem]">
+                  Paused
+                </span>
+              )}
+              {slots > 0 && <span>{`${running} of ${slots} running`}</span>}
+              <label className="flex items-center gap-1">
+                Slots
+                <select
+                  value={slots}
+                  onChange={(e) => void dispatch({ slots: Number(e.target.value) })}
+                  className={INPUT}
+                >
+                  <option value={0}>Off</option>
+                  {Array.from({ length: 8 }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" onClick={() => void dispatch({ paused: !paused })} className={BUTTON}>
+                {paused ? 'Resume' : 'Pause'}
+              </button>
+            </div>
+            <button type="button" onClick={() => patchNewTicket(true)} className={PRIMARY}>
               New ticket
             </button>
           </>

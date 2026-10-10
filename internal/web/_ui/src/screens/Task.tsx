@@ -22,7 +22,7 @@ const MOVE_LABEL: Record<TicketStatus, string> = {
   blocked: '',
 }
 
-const BUTTON =
+export const BUTTON =
   'h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted hover:border-line-strong hover:text-fg'
 
 export function Task({ id = '' }: { id?: string }) {
