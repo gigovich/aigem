@@ -45,8 +45,9 @@ context: `docs/superpowers/specs/2026-10-09-agent-tickets-design.md` (part 1),
 - A failed start, exactly: a `*TicketRefusal` (the ticket's own fault: a path in the way, not a
   checkout, the worktree could not be added, a bad repository) moves the ticket `ready` ->
   `blocked` with the comment `the dispatcher could not start it: <error>` by `aigem`. Any other
-  error, `ErrTooManyRuns` included, blocks nothing: it is logged and the dispatcher holds (the
-  pass ends, wakes are ignored until the next 30 s tick). `ErrRunsClosed` and `Close` stop the
+  error blocks nothing: it is logged and the dispatcher holds (wakes are ignored until the next
+  30 s tick). Only `ErrTooManyRuns` (daemon-wide) ends the pass; any other error goes on to the
+  next project. `ErrRunsClosed` and `Close` stop the
   dispatcher, and a start that `Close` cancelled never blocks its ticket. A ticket that is no
   longer runnable or that another Start holds is left alone.
 - `Tickets.Block` refusals, exactly: `<id> is <status>, not ready`, `<id> is not runnable`.
@@ -86,7 +87,8 @@ context: `docs/superpowers/specs/2026-10-09-agent-tickets-design.md` (part 1),
   dispatcher leaves such a ticket alone: a person's "Run" in flight is not blocked.
 - Decision: only a `*TicketRefusal` blocks. Other errors (a project env that does not load, a
   model or login error, `Runs.Create` errors, `ErrTooManyRuns`) are not the ticket's fault, so
-  the dispatcher logs them and holds until its next tick. Without the hold this is a hot loop:
+  the dispatcher logs them and holds until its next tick (the rest of the pass still visits the
+  other projects; only `ErrTooManyRuns` ends it). Without the hold this is a hot loop:
   an env load failure calls `Projects.notify`, which wakes the dispatcher, and every start runs
   git `prepare` before `ErrTooManyRuns`. The hold is a `held bool` field touched only on the
   dispatcher goroutine: `pass` sets it and returns at once while it is set, the tick clears it.

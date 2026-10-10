@@ -286,6 +286,40 @@ func TestAFailureNotOfTheTicketHoldsUntilTheTick(t *testing.T) {
 	}
 }
 
+func TestAFailingProjectDoesNotHoldTheOthers(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	broken := f.ready("broken")
+	writeFile(t, f.repo, ".aigem", "not a directory")
+	other, err := f.projects.Add(gitRepo(t, "main"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := f.tickets.Create(other.ID, NewTicket{Title: "fine", Body: "Do fine."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tickets.Update(other.ID, v.ID, TicketPatch{Status: ptr(TicketReady)}); err != nil {
+		t.Fatal(err)
+	}
+	f.setDispatch(1, false)
+	one := 1
+	if _, err := f.projects.SetDispatch(other.ID, &one, new(bool)); err != nil {
+		t.Fatal(err)
+	}
+	d := f.dispatcher()
+	f.pass(d)
+	if s := f.ticket(broken).Status; s != TicketReady {
+		t.Errorf("the failing project's ticket is %s, want ready", s)
+	}
+	got, err := f.tickets.Get(other.ID, v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != TicketRunning || !d.held {
+		t.Fatalf("other ticket %s, held %v; want running and held", got.Status, d.held)
+	}
+}
+
 func TestADispatcherLeavesATicketAPersonIsStarting(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	id := f.ready("mine")

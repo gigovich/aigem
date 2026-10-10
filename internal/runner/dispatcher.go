@@ -83,6 +83,7 @@ func (d *Dispatcher) pass() bool {
 	if d.held {
 		return true
 	}
+projects:
 	for _, p := range d.projects.List() {
 		if p.Slots == 0 || p.Paused {
 			continue
@@ -122,7 +123,10 @@ func (d *Dispatcher) pass() bool {
 				slog.Warn("the dispatcher waits for its next tick", "project", p.ID, "ticket", v.ID,
 					"err", err)
 				d.held = true
-				return true
+				if errors.Is(err, ErrTooManyRuns) {
+					return true
+				}
+				continue projects
 			}
 		}
 	}
