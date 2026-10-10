@@ -317,3 +317,110 @@ func TestOnlyTheLastRunStartsOrFinishesATicket(t *testing.T) {
 		t.Fatalf("last run take back = %+v, %v", v, err)
 	}
 }
+
+func TestAPlanStartsOnlyOnAnOpenTopLevelTicketAndEndsInReview(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	ts, _ := newTestTickets(t, t.TempDir())
+	goal := mustCreate(t, ts, NewTicket{Title: "goal"})
+	split := mustCreate(t, ts, NewTicket{Title: "split"})
+	kid := mustCreate(t, ts, NewTicket{Title: "kid", Parent: split.ID})
+	ready := mustCreate(t, ts, NewTicket{Title: "ready"})
+	if _, err := ts.Update("PRJ-1", ready.ID, TicketPatch{Status: ptr(TicketReady)}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ts.StartPlan("PRJ-1", kid.ID, "RUN-1")
+	refusal(t, err, "TCK-3 is a subticket; only a top-level ticket is planned")
+	_, err = ts.StartPlan("PRJ-1", split.ID, "RUN-1")
+	refusal(t, err, "TCK-2 already has subtickets")
+	_, err = ts.StartPlan("PRJ-1", ready.ID, "RUN-1")
+	refusal(t, err, "TCK-4 is ready, not open")
+
+	v, err := ts.StartPlan("PRJ-1", goal.ID, "RUN-1")
+	if err != nil || v.Status != TicketPlanning || !slices.Equal(v.Runs, []string{"RUN-1"}) {
+		t.Fatalf("plan = %+v, %v", v, err)
+	}
+	_, err = ts.StartPlan("PRJ-1", goal.ID, "RUN-2")
+	refusal(t, err, "TCK-1 is planning, not open")
+	_, err = ts.PlanReview("PRJ-1", goal.ID, "RUN-2", "x")
+	refusal(t, err, "TCK-1 is driven by another run")
+
+	v, err = ts.PlanReview("PRJ-1", goal.ID, "RUN-1", "Three steps.")
+	if err != nil || v.Status != TicketReview || lastComment(v) != "Three steps." || v.Comments[0].By != "aigem" {
+		t.Fatalf("review = %+v, %v", v, err)
+	}
+	refusal(t, ts.Delete("PRJ-1", goal.ID), "TCK-1 is review; it cannot be deleted now")
+	v, err = ts.StartPlan("PRJ-1", goal.ID, "RUN-1")
+	if err != nil || v.Status != TicketPlanning || len(v.Runs) != 1 {
+		t.Fatalf("a person's turn in the planner = %+v, %v, want planning again with the same run", v, err)
+	}
+	_, err = ts.PlanReview("PRJ-1", ready.ID, "RUN-1", "x")
+	refusal(t, err, "TCK-4 is driven by another run")
+}
+
+func TestADraftIsHeldWhileItsParentIsPlannedOrReviewed(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	ts, _ := newTestTickets(t, t.TempDir())
+	goal := mustCreate(t, ts, NewTicket{Title: "goal"})
+	other := mustCreate(t, ts, NewTicket{Title: "other"})
+	if _, err := ts.StartPlan("PRJ-1", goal.ID, "RUN-1"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := ts.create("PRJ-1", NewTicket{Title: "a", Parent: goal.ID, By: "run RUN-1"}, "RUN-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ts.create("PRJ-1", NewTicket{Title: "b", Parent: goal.ID, DependsOn: []string{a.ID}}, "RUN-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := ts.Get("PRJ-1", goal.ID); g.Status != TicketPlanning || g.Progress == nil || g.Progress.Total != 2 {
+		t.Fatalf("parent = %s %+v, want planning with two subtickets", g.Status, g.Progress)
+	}
+
+	_, err = ts.Create("PRJ-1", NewTicket{Title: "mine", Parent: goal.ID})
+	refusal(t, err, "TCK-1 is being planned")
+	refusal(t, ts.Delete("PRJ-1", b.ID), "TCK-1 is being planned")
+	_, err = ts.Update("PRJ-1", b.ID, TicketPatch{DependsOn: &[]string{}})
+	refusal(t, err, "TCK-1 is being planned")
+	_, err = ts.Update("PRJ-1", a.ID, TicketPatch{Status: ptr(TicketReady)})
+	refusal(t, err, "TCK-3 is part of a plan in review")
+	_, err = ts.Update("PRJ-1", other.ID, TicketPatch{DependsOn: &[]string{a.ID}})
+	refusal(t, err, "TCK-3 is a draft of TCK-1's plan")
+	_, err = ts.create("PRJ-1", NewTicket{Title: "x", Parent: other.ID}, "RUN-1")
+	refusal(t, err, "RUN-1 does not plan TCK-2")
+	_, err = ts.create("PRJ-1", NewTicket{Title: "x"}, "RUN-1")
+	refusal(t, err, "RUN-1 only changes the subtickets of the ticket it plans")
+	_, err = ts.create("PRJ-1", NewTicket{Title: "x", Parent: goal.ID}, "RUN-2")
+	refusal(t, err, "RUN-2 does not plan TCK-1")
+	if _, err := ts.update("PRJ-1", b.ID, TicketPatch{DependsOn: &[]string{}}, "RUN-1"); err != nil {
+		t.Fatalf("the planner relinks = %v", err)
+	}
+	if err := ts.remove("PRJ-1", b.ID, "RUN-1"); err != nil {
+		t.Fatalf("the planner deletes = %v", err)
+	}
+
+	if _, err := ts.PlanReview("PRJ-1", goal.ID, "RUN-1", "One step."); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ts.create("PRJ-1", NewTicket{Title: "late", Parent: goal.ID}, "RUN-1")
+	refusal(t, err, "TCK-1 is review, not planning")
+	mine, err := ts.Create("PRJ-1", NewTicket{Title: "mine", Parent: goal.ID, By: "you"})
+	if err != nil {
+		t.Fatalf("a person adds a subticket in review = %v", err)
+	}
+	if _, err := ts.Update("PRJ-1", mine.ID, TicketPatch{DependsOn: &[]string{a.ID}}); err != nil {
+		t.Fatalf("a person relinks inside the plan = %v", err)
+	}
+	_, err = ts.Update("PRJ-1", mine.ID, TicketPatch{Status: ptr(TicketClosed)})
+	refusal(t, err, mine.ID+" is part of a plan in review")
+	if _, err := ts.Update("PRJ-1", mine.ID, TicketPatch{DependsOn: &[]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.Delete("PRJ-1", mine.ID); err != nil {
+		t.Fatalf("a person deletes a draft in review = %v", err)
+	}
+	if g, _ := ts.Get("PRJ-1", goal.ID); g.Status != TicketReview {
+		t.Errorf("parent = %s, want review: it is not derived while reviewed", g.Status)
+	}
+}

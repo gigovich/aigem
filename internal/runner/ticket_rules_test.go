@@ -187,3 +187,40 @@ func TestCycleSearchStaysFastOnDeepChainsOfParents(t *testing.T) {
 	_, err = checkDeps(all, all[0], []string{"TOP"})
 	refusal(t, err, "that makes a cycle: P-0 -> TOP -> P-99")
 }
+
+func TestOnlyThePlannerRunChangesADraftWhilePlanning(t *testing.T) {
+	plan := tk("TCK-1", TicketPlanning)
+	plan.Runs = []string{"RUN-1"}
+	all := rows(plan, kid("TCK-2", "TCK-1", TicketOpen), tk("TCK-3", TicketOpen))
+	if err := planLock(all, "TCK-1", "RUN-1"); err != nil {
+		t.Errorf("the planner run = %v", err)
+	}
+	refusal(t, planLock(all, "TCK-1", ""), "TCK-1 is being planned")
+	refusal(t, planLock(all, "TCK-1", "RUN-2"), "RUN-2 does not plan TCK-1")
+	refusal(t, planLock(all, "", "RUN-1"), "RUN-1 only changes the subtickets of the ticket it plans")
+	if err := planLock(all, "TCK-3", ""); err != nil {
+		t.Errorf("a person and a ticket that is not planned = %v", err)
+	}
+	all[0].Status = TicketReview
+	if err := planLock(all, "TCK-1", ""); err != nil {
+		t.Errorf("a person edits a plan in review = %v", err)
+	}
+	refusal(t, planLock(all, "TCK-1", "RUN-1"), "TCK-1 is review, not planning")
+	if !isDraft(all, all[1]) || isDraft(all, all[2]) || isDraft(all, all[0]) {
+		t.Error("only a subticket of a plan in review is a draft")
+	}
+	all[0].Status = TicketReady
+	if isDraft(all, all[1]) {
+		t.Error("an approved subticket is still a draft")
+	}
+}
+
+func TestOnlyAnOpenTopLevelTicketWithoutSubticketsIsPlannable(t *testing.T) {
+	refusal(t, plannable(kid("TCK-2", "TCK-1", TicketOpen), false),
+		"TCK-2 is a subticket; only a top-level ticket is planned")
+	refusal(t, plannable(tk("TCK-1", TicketReady), false), "TCK-1 is ready, not open")
+	refusal(t, plannable(tk("TCK-1", TicketOpen), true), "TCK-1 already has subtickets")
+	if err := plannable(tk("TCK-1", TicketOpen), false); err != nil {
+		t.Errorf("an open ticket = %v", err)
+	}
+}

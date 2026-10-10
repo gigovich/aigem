@@ -139,6 +139,8 @@ func checkDeps(rows []Ticket, t Ticket, deps []string) ([]string, error) {
 			return nil, refuse("%s cannot wait for its own parent %s", t.ID, d)
 		case rows[i].Parent == t.ID:
 			return nil, refuse("%s cannot wait for its own subticket %s", t.ID, d)
+		case isDraft(rows, rows[i]) && rows[i].Parent != t.Parent:
+			return nil, refuse("%s is a draft of %s's plan", d, rows[i].Parent)
 		}
 		if slices.Contains(out, d) {
 			continue
@@ -211,4 +213,44 @@ func ticketView(rows []Ticket, t Ticket) TicketView {
 	}
 	v.Runnable = true
 	return v
+}
+
+// isDraft says whether t is a subticket of a plan in progress or in review.
+func isDraft(rows []Ticket, t Ticket) bool {
+	i := findTicket(rows, t.Parent)
+	return i >= 0 && (rows[i].Status == TicketPlanning || rows[i].Status == TicketReview)
+}
+
+// planLock says whether run ("" for a person) may add, delete or relink a subticket of parent.
+// While parent is planning only its planner run may; a planner run touches nothing else.
+func planLock(rows []Ticket, parent, run string) error {
+	i := findTicket(rows, parent)
+	planning := i >= 0 && rows[i].Status == TicketPlanning
+	switch {
+	case run == "" && planning:
+		return refuse("%s is being planned", parent)
+	case run == "":
+		return nil
+	case i < 0:
+		return refuse("%s only changes the subtickets of the ticket it plans", run)
+	case !lastRun(rows[i], run):
+		return refuse("%s does not plan %s", run, parent)
+	case !planning:
+		return refuse("%s is %s, not planning", parent, rows[i].Status)
+	}
+	return nil
+}
+
+// plannable refuses a ticket a planner cannot take: only an open top-level ticket without
+// subtickets is planned.
+func plannable(t Ticket, hasKids bool) error {
+	switch {
+	case t.Parent != "":
+		return refuse("%s is a subticket; only a top-level ticket is planned", t.ID)
+	case t.Status != TicketOpen:
+		return refuse("%s is %s, not open", t.ID, t.Status)
+	case hasKids:
+		return refuse("%s already has subtickets", t.ID)
+	}
+	return nil
 }

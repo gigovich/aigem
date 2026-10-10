@@ -108,6 +108,11 @@ func (t *Tickets) Get(project, id string) (TicketView, error) {
 }
 
 func (t *Tickets) Create(project string, n NewTicket) (TicketView, error) {
+	return t.create(project, n, "")
+}
+
+// create adds a ticket for a person (run "") or for the planner run that plans its parent.
+func (t *Tickets) create(project string, n NewTicket, run string) (TicketView, error) {
 	title := strings.TrimSpace(n.Title)
 	if title == "" {
 		return TicketView{}, refuse("a ticket needs a title")
@@ -121,6 +126,9 @@ func (t *Tickets) Create(project string, n NewTicket) (TicketView, error) {
 			if tab.Tickets[i].Parent != "" {
 				return nil, refuse("%s is a subticket and cannot have subtickets", n.Parent)
 			}
+		}
+		if err := planLock(tab.Tickets, n.Parent, run); err != nil {
+			return nil, err
 		}
 		now := t.now()
 		tab.Next++
@@ -143,6 +151,11 @@ func (t *Tickets) Create(project string, n NewTicket) (TicketView, error) {
 }
 
 func (t *Tickets) Update(project, id string, p TicketPatch) (TicketView, error) {
+	return t.update(project, id, p, "")
+}
+
+// update changes a ticket for a person (run "") or relinks a draft for its planner run.
+func (t *Tickets) update(project, id string, p TicketPatch, run string) (TicketView, error) {
 	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
 		i := findTicket(tab.Tickets, id)
 		if i < 0 {
@@ -151,6 +164,9 @@ func (t *Tickets) Update(project, id string, p TicketPatch) (TicketView, error) 
 		tk := &tab.Tickets[i]
 		changed := false
 		if p.DependsOn != nil {
+			if err := planLock(tab.Tickets, tk.Parent, run); err != nil {
+				return nil, err
+			}
 			deps, err := checkDeps(tab.Tickets, *tk, *p.DependsOn)
 			if err != nil {
 				return nil, err
@@ -162,6 +178,8 @@ func (t *Tickets) Update(project, id string, p TicketPatch) (TicketView, error) 
 			switch {
 			case !validStatus(*p.Status):
 				return nil, refuse("unknown status %q", *p.Status)
+			case isDraft(tab.Tickets, *tk):
+				return nil, refuse("%s is part of a plan in review", id)
 			case len(subtickets(tab.Tickets, id)) > 0:
 				return nil, refuse("%s follows its subtickets; change them instead", id)
 			}
@@ -213,6 +231,13 @@ func lastRun(tk Ticket, run string) bool {
 	return len(tk.Runs) > 0 && tk.Runs[len(tk.Runs)-1] == run
 }
 
+func clipRunComment(s string) string {
+	if len(s) > maxRunComment {
+		return strings.ToValidUTF8(s[:maxRunComment], "") + "…"
+	}
+	return s
+}
+
 // Start hands a ticket to a run. A new run needs a runnable ticket; the run that already
 // drives it (its last) takes it back from blocked when a person typed into it.
 func (t *Tickets) Start(project, id, run string) (TicketView, error) {
@@ -249,15 +274,77 @@ func (t *Tickets) Start(project, id, run string) (TicketView, error) {
 	return views[0], nil
 }
 
+// StartPlan hands an open top-level ticket without subtickets to a new planner run. The run
+// that already plans it (its last) takes it back from review when a person typed into it.
+func (t *Tickets) StartPlan(project, id, run string) (TicketView, error) {
+	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
+		i := findTicket(tab.Tickets, id)
+		if i < 0 {
+			return nil, ErrNoTicket
+		}
+		tk := &tab.Tickets[i]
+		owns := lastRun(*tk, run)
+		switch {
+		case owns && tk.Status == TicketPlanning:
+			return nil, nil
+		case owns && tk.Status != TicketReview:
+			return nil, refuse("%s is %s, not in review", id, tk.Status)
+		case !owns && slices.Contains(tk.Runs, run):
+			return nil, refuse("%s is driven by another run", id)
+		case !owns:
+			if err := plannable(*tk, len(subtickets(tab.Tickets, id)) > 0); err != nil {
+				return nil, err
+			}
+			tk.Runs = append(tk.Runs, run)
+		}
+		tk.Status, tk.Updated = TicketPlanning, t.now()
+		return []string{id}, nil
+	})
+	if err != nil {
+		return TicketView{}, err
+	}
+	if len(views) == 0 {
+		return t.Get(project, id)
+	}
+	return views[0], nil
+}
+
+// PlanReview hands a plan to a person: the ticket goes to review with the planner's comment.
+// Only the ticket's last run may do it.
+func (t *Tickets) PlanReview(project, id, run, comment string) (TicketView, error) {
+	comment = clipRunComment(comment)
+	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
+		i := findTicket(tab.Tickets, id)
+		if i < 0 {
+			return nil, ErrNoTicket
+		}
+		tk := &tab.Tickets[i]
+		switch {
+		case !lastRun(*tk, run):
+			return nil, refuse("%s is driven by another run", id)
+		case tk.Status != TicketPlanning && tk.Status != TicketReview:
+			return nil, refuse("%s is %s; no plan is in progress", id, tk.Status)
+		}
+		now := t.now()
+		tk.Status, tk.Updated = TicketReview, now
+		if comment != "" {
+			tk.Comments = append(tk.Comments, Comment{At: now, By: "aigem", Text: comment})
+		}
+		return []string{id}, nil
+	})
+	if err != nil {
+		return TicketView{}, err
+	}
+	return views[0], nil
+}
+
 // Finish records how a run left a ticket: done, or blocked with the reason as a comment.
 // Only the ticket's last run may do it.
 func (t *Tickets) Finish(project, id, run, status, comment string, mergePending bool) (TicketView, error) {
 	if status != TicketDone && status != TicketBlocked {
 		return TicketView{}, refuse("a run cannot leave a ticket %s", status)
 	}
-	if len(comment) > maxRunComment {
-		comment = strings.ToValidUTF8(comment[:maxRunComment], "") + "…"
-	}
+	comment = clipRunComment(comment)
 	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
 		i := findTicket(tab.Tickets, id)
 		if i < 0 {
@@ -283,11 +370,17 @@ func (t *Tickets) Finish(project, id, run, status, comment string, mergePending 
 	return views[0], nil
 }
 
-func (t *Tickets) Delete(project, id string) error {
+func (t *Tickets) Delete(project, id string) error { return t.remove(project, id, "") }
+
+// remove deletes a ticket for a person (run "") or a draft for the planner run that plans it.
+func (t *Tickets) remove(project, id, run string) error {
 	_, err := t.change(project, func(tab *TicketTable) ([]string, error) {
 		i := findTicket(tab.Tickets, id)
 		if i < 0 {
 			return nil, ErrNoTicket
+		}
+		if err := planLock(tab.Tickets, tab.Tickets[i].Parent, run); err != nil {
+			return nil, err
 		}
 		if len(subtickets(tab.Tickets, id)) > 0 {
 			return nil, refuse("%s has subtickets; close it instead", id)
@@ -297,7 +390,7 @@ func (t *Tickets) Delete(project, id string) error {
 				return nil, refuse("%s waits for %s; close it instead", other.ID, id)
 			}
 		}
-		if s := tab.Tickets[i].Status; s == TicketRunning || s == TicketPlanning {
+		if s := tab.Tickets[i].Status; s == TicketRunning || s == TicketPlanning || s == TicketReview {
 			return nil, refuse("%s is %s; it cannot be deleted now", id, s)
 		}
 		parent := tab.Tickets[i].Parent
@@ -366,7 +459,9 @@ func settleParents(tab *TicketTable, touched []string, now time.Time) []string {
 		if len(kids) == 0 {
 			continue
 		}
-		if s := derive(kids); s != tab.Tickets[pi].Status {
+		// A plan in progress or in review does not follow its draft.
+		held := tab.Tickets[pi].Status == TicketPlanning || tab.Tickets[pi].Status == TicketReview
+		if s := derive(kids); !held && s != tab.Tickets[pi].Status {
 			tab.Tickets[pi].Status = s
 			tab.Tickets[pi].Updated = now
 		}
