@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -186,5 +188,138 @@ func TestTheDispatcherStopsWhenTheRunsClose(t *testing.T) {
 	}
 	if v := f.ticket(id); v.Status != TicketReady || len(v.Comments) != 0 {
 		t.Errorf("ticket = %s with %d comments, want ready and untouched", v.Status, len(v.Comments))
+	}
+}
+
+func TestADispatcherBlocksABrokenTicketOnceAndGoesOn(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	broken := f.ready("in the way")
+	writeFile(t, f.worktree(broken), "left.txt", "x")
+	next := f.ready("next")
+	f.script.then(hold())
+	f.setDispatch(1, false)
+	d := f.dispatcher()
+	f.pass(d)
+
+	if s := f.ticket(next).Status; s != TicketRunning {
+		t.Fatalf("next is %s, want running in the same pass", s)
+	}
+	want := "the dispatcher could not start it: " + f.worktree(broken) +
+		" is in the way of the worktree for " + broken + "; remove it"
+	v := f.ticket(broken)
+	if v.Status != TicketBlocked || len(v.Comments) != 1 || v.Comments[0].By != "aigem" ||
+		v.Comments[0].Text != want {
+		t.Fatalf("broken = %s %+v", v.Status, v.Comments)
+	}
+	f.pass(d)
+	if n := len(f.ticket(broken).Comments); n != 1 {
+		t.Errorf("the broken ticket has %d comments, want it tried once", n)
+	}
+	if n := f.count("blocked: the dispatcher could not start it: "); n != 1 {
+		t.Errorf("finished told %d times, want once: %v", n, f.said())
+	}
+}
+
+func TestTheDispatcherHoldsWhileTheDaemonIsFull(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	var chats []RunView
+	for range maxLiveRuns {
+		v, err := f.runs.Create(context.Background(), RunRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		chats = append(chats, v)
+	}
+	id := f.ready("waits for room")
+	f.script.then(hold())
+	f.setDispatch(1, false)
+	d := f.dispatcher()
+	f.pass(d)
+	v := f.ticket(id)
+	if v.Status != TicketReady || len(v.Comments) != 0 || pathExists(f.worktree(id)) || !d.held {
+		t.Fatalf("while full = %s %+v, held %v; want ready, untouched, no worktree, held",
+			v.Status, v.Comments, d.held)
+	}
+	if err := f.runs.Remove(chats[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	f.pass(d)
+	if s := f.ticket(id).Status; s != TicketReady {
+		t.Fatalf("a wake while held started it: %s", s)
+	}
+	d.held = false
+	f.pass(d)
+	if s := f.ticket(id).Status; s != TicketRunning {
+		t.Fatalf("after the tick the ticket is %s, want running", s)
+	}
+}
+
+func TestAFailureNotOfTheTicketHoldsUntilTheTick(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	one, two := f.ready("one"), f.ready("two")
+	writeFile(t, f.repo, ".aigem", "not a directory")
+	f.setDispatch(2, false)
+	d := f.dispatcher()
+	f.pass(d)
+	for _, id := range []string{one, two} {
+		if v := f.ticket(id); v.Status != TicketReady || len(v.Comments) != 0 {
+			t.Fatalf("%s = %s %+v, want ready and untouched", id, v.Status, v.Comments)
+		}
+	}
+	if !d.held || f.count("blocked: ") != 0 {
+		t.Fatalf("held %v, told %v; want held and nothing blocked", d.held, f.said())
+	}
+	if err := os.Remove(filepath.Join(f.repo, ".aigem")); err != nil {
+		t.Fatal(err)
+	}
+	f.script.then(hold(), hold())
+	f.pass(d)
+	if s := f.ticket(one).Status; s != TicketReady {
+		t.Fatalf("a wake while held started one: %s", s)
+	}
+	d.held = false
+	f.pass(d)
+	for _, id := range []string{one, two} {
+		if s := f.ticket(id).Status; s != TicketRunning {
+			t.Errorf("after the tick %s is %s, want running", id, s)
+		}
+	}
+}
+
+func TestADispatcherLeavesATicketAPersonIsStarting(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.ready("mine")
+	key := f.project + "/" + id
+	f.tr.mu.Lock()
+	f.tr.starting[key] = true
+	f.tr.mu.Unlock()
+	f.script.then(hold())
+	f.setDispatch(1, false)
+	d := f.dispatcher()
+	f.pass(d)
+	if v := f.ticket(id); v.Status != TicketReady || len(v.Comments) != 0 || d.held {
+		t.Fatalf("while a person starts it = %s %+v, held %v; want ready, untouched, not held",
+			v.Status, v.Comments, d.held)
+	}
+	f.tr.mu.Lock()
+	delete(f.tr.starting, key)
+	f.tr.mu.Unlock()
+	f.pass(d)
+	if s := f.ticket(id).Status; s != TicketRunning {
+		t.Fatalf("the ticket is %s, want running", s)
+	}
+}
+
+func TestAStoppedDispatcherNeverBlocksATicket(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.ready("cancelled")
+	f.setDispatch(1, false)
+	d := f.dispatcher()
+	d.cancel()
+	if d.pass() {
+		t.Fatal("a pass after Close went on")
+	}
+	if v := f.ticket(id); v.Status != TicketReady || len(v.Comments) != 0 {
+		t.Errorf("ticket = %s %+v, want ready and untouched", v.Status, v.Comments)
 	}
 }

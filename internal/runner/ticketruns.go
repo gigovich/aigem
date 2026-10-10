@@ -23,6 +23,12 @@ const ticketRule = "Work in this worktree. When the work is complete, call ticke
 
 var ErrNoWorktree = errors.New("runner: no such worktree")
 
+// startingRefusal refuses a ticket another Start holds, so the dispatcher can leave a person's
+// Run in flight alone instead of blocking the ticket.
+type startingRefusal struct{ *TicketRefusal }
+
+func (e startingRefusal) Unwrap() error { return e.TicketRefusal }
+
 // closeTurnsWait bounds how long Close waits for the deliveries it cancelled.
 const closeTurnsWait = 30 * time.Second
 
@@ -107,7 +113,7 @@ func (t *TicketRuns) Start(ctx context.Context, project, id string) (RunView, er
 		return RunView{}, ErrRunsClosed
 	case t.starting[key]:
 		t.mu.Unlock()
-		return RunView{}, refuse("%s is already starting", id)
+		return RunView{}, startingRefusal{&TicketRefusal{Reason: id + " is already starting"}}
 	}
 	t.starting[key] = true
 	t.mu.Unlock()

@@ -465,6 +465,32 @@ func (t *Tickets) Finish(project, id, run, status, comment string, mergePending 
 	return views[0], nil
 }
 
+// Block moves a ready ticket that could not start to blocked, with the reason as a comment.
+func (t *Tickets) Block(project, id, reason string) (TicketView, error) {
+	reason = clipRunComment(reason)
+	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
+		i := findTicket(tab.Tickets, id)
+		if i < 0 {
+			return nil, ErrNoTicket
+		}
+		tk := &tab.Tickets[i]
+		switch {
+		case tk.Status != TicketReady:
+			return nil, refuse("%s is %s, not ready", id, tk.Status)
+		case !ticketView(tab.Tickets, *tk).Runnable:
+			return nil, refuse("%s is not runnable", id)
+		}
+		now := t.now()
+		tk.Status, tk.Updated = TicketBlocked, now
+		tk.Comments = append(tk.Comments, Comment{At: now, By: "aigem", Text: reason})
+		return []string{id}, nil
+	})
+	if err != nil {
+		return TicketView{}, err
+	}
+	return views[0], nil
+}
+
 func (t *Tickets) Delete(project, id string) error { return t.remove(project, id, "") }
 
 // remove deletes a ticket for a person (run "") or a draft for the planner run that plans it.

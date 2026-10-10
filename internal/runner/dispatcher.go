@@ -30,6 +30,9 @@ type Dispatcher struct {
 	cancel context.CancelFunc
 	wake   chan struct{}
 	done   chan struct{}
+
+	// held ignores wake-ups until the next tick; only the dispatcher's goroutine touches it.
+	held bool
 }
 
 func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
@@ -70,12 +73,16 @@ func (d *Dispatcher) loop() {
 			return
 		case <-d.wake:
 		case <-tick.C:
+			d.held = false
 		}
 	}
 }
 
 // pass fills the free slots of every project and reports whether the dispatcher goes on.
 func (d *Dispatcher) pass() bool {
+	if d.held {
+		return true
+	}
 	for _, p := range d.projects.List() {
 		if p.Slots == 0 || p.Paused {
 			continue
@@ -105,6 +112,17 @@ func (d *Dispatcher) pass() bool {
 				d.started(p.ID, v, run.ID)
 			case errors.Is(err, ErrRunsClosed), d.ctx.Err() != nil:
 				return false
+			case errors.As(err, new(startingRefusal)):
+			case errors.As(err, new(*TicketRefusal)):
+				reason := "the dispatcher could not start it: " + err.Error()
+				if b, berr := d.tickets.Block(p.ID, v.ID, reason); berr == nil {
+					d.runs.finished(p.ID, b, reason)
+				}
+			default:
+				slog.Warn("the dispatcher waits for its next tick", "project", p.ID, "ticket", v.ID,
+					"err", err)
+				d.held = true
+				return true
 			}
 		}
 	}

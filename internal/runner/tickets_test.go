@@ -510,3 +510,34 @@ func TestARejectedPlanLosesItsDraftAndAReviseCanTakeANewRun(t *testing.T) {
 		t.Errorf("a rejected ticket cannot be planned again: %v", err)
 	}
 }
+
+func TestBlockMovesOnlyARunnableReadyTicket(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	ts, told := newTestTickets(t, t.TempDir())
+	first := mustCreate(t, ts, NewTicket{Title: "first"})
+	waits := mustCreate(t, ts, NewTicket{Title: "waits", DependsOn: []string{first.ID}})
+	_, err := ts.Block("PRJ-1", first.ID, "x")
+	refusal(t, err, "TCK-1 is open, not ready")
+	for _, id := range []string{first.ID, waits.ID} {
+		if _, err := ts.Update("PRJ-1", id, TicketPatch{Status: ptr(TicketReady)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = ts.Block("PRJ-1", waits.ID, "x")
+	refusal(t, err, "TCK-2 is not runnable")
+
+	n := len(*told)
+	v, err := ts.Block("PRJ-1", first.ID, "the dispatcher could not start it: boom")
+	if err != nil || v.Status != TicketBlocked || len(v.Comments) != 1 ||
+		v.Comments[0].By != "aigem" || v.Comments[0].Text != "the dispatcher could not start it: boom" {
+		t.Fatalf("Block = %+v, %v", v, err)
+	}
+	if len(*told) != n+1 {
+		t.Errorf("announced %v, want the blocked ticket once more", *told)
+	}
+	_, err = ts.Block("PRJ-1", first.ID, "again")
+	refusal(t, err, "TCK-1 is blocked, not ready")
+	if _, err := ts.Block("PRJ-1", "TCK-9", "x"); !errors.Is(err, ErrNoTicket) {
+		t.Errorf("unknown ticket = %v, want ErrNoTicket", err)
+	}
+}
