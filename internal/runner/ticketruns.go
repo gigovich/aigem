@@ -39,6 +39,8 @@ type TicketRunsConfig struct {
 	Projects *Projects
 	// Finished is told when a run leaves a ticket done or blocked, with the comment it wrote.
 	Finished func(project string, v TicketView, reason string)
+	// Planned is told when a planner run's ticket reaches review, with the comment it wrote.
+	Planned func(project string, v TicketView, comment string)
 }
 
 // TicketRuns drives tickets with autonomous runs: a worktree per ticket, a run inside it, and
@@ -48,6 +50,7 @@ type TicketRuns struct {
 	tickets  *Tickets
 	projects *Projects
 	finished func(string, TicketView, string)
+	planned  func(string, TicketView, string)
 
 	mu    sync.Mutex
 	byRun map[string]*ticketRun
@@ -81,10 +84,14 @@ type ticketPlace struct{ dir, repo, main, worktree, branch string }
 func NewTicketRuns(cfg TicketRunsConfig) *TicketRuns {
 	t := &TicketRuns{
 		runs: cfg.Runs, tickets: cfg.Tickets, projects: cfg.Projects, finished: cfg.Finished,
-		byRun: map[string]*ticketRun{}, starting: map[string]bool{}, merging: map[string]*sync.Mutex{},
+		planned: cfg.Planned,
+		byRun:   map[string]*ticketRun{}, starting: map[string]bool{}, merging: map[string]*sync.Mutex{},
 	}
 	if t.finished == nil {
 		t.finished = func(string, TicketView, string) {}
+	}
+	if t.planned == nil {
+		t.planned = func(string, TicketView, string) {}
 	}
 	return t
 }
@@ -392,16 +399,25 @@ func (t *TicketRuns) onTurn(tr *ticketRun, ev uisession.Event) {
 	}
 	switch ev.Kind {
 	case uisession.KindTurnStart:
-		if _, err := t.tickets.Start(tr.project, tr.ticket, tr.run); err != nil {
+		start := t.tickets.Start
+		if tr.plan {
+			start = t.tickets.StartPlan
+		}
+		if _, err := start(tr.project, tr.ticket, tr.run); err != nil {
 			slog.Warn("a ticket run's new turn could not take its ticket back", "ticket", tr.ticket, "err", err)
 		}
 	case uisession.KindTurnEnd:
 		summary := tr.summary.Swap(nil)
-		// Only a turn that holds its ticket running decides; a turn that could not take the ticket
-		// back, or a turn_end delivered twice, finds it in another state.
+		// Only a turn that holds its ticket running (planning, for a planner) decides; a turn that
+		// could not take the ticket back, or a turn_end delivered twice, finds it in another state.
 		tk, err := t.tickets.Get(tr.project, tr.ticket)
 		switch {
-		case err != nil || tk.Status != TicketRunning || !lastRun(tk.Ticket, tr.run):
+		case err != nil || !lastRun(tk.Ticket, tr.run):
+		case tr.plan:
+			if tk.Status == TicketPlanning {
+				t.review(tr.project, tr.ticket, tr.run, planWords(ev, summary))
+			}
+		case tk.Status != TicketRunning:
 		case summary == nil || ev.Interrupted || ev.Error != "":
 			t.finish(tr.project, tr.ticket, tr.run, TicketBlocked, lastWords(ev), false)
 		default:
@@ -597,7 +613,10 @@ func lastWords(ev uisession.Event) string {
 	return "the turn ended without ticket_done"
 }
 
-func ticketPrompt(tk Ticket) string {
+func ticketPrompt(tk Ticket) string { return ticketText(tk) + ticketRule }
+
+// ticketText is a ticket as a run reads it: its title, body and discussion.
+func ticketText(tk Ticket) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s: %s\n\n", tk.ID, tk.Title)
 	if tk.Body != "" {
@@ -609,7 +628,6 @@ func ticketPrompt(tk Ticket) string {
 			fmt.Fprintf(&b, "%s: %s\n\n", c.By, c.Text)
 		}
 	}
-	b.WriteString(ticketRule)
 	return b.String()
 }
 

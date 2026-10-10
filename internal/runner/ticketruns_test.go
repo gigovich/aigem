@@ -59,6 +59,11 @@ func newFixture(t *testing.T, repo string) *fixture {
 			f.told = append(f.told, v.Status+": "+reason)
 			f.mu.Unlock()
 		},
+		Planned: func(_ string, v TicketView, comment string) {
+			f.mu.Lock()
+			f.told = append(f.told, v.Status+": "+comment)
+			f.mu.Unlock()
+		},
 	})
 	return f
 }
