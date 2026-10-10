@@ -30,6 +30,8 @@ type Project struct {
 	Name    string    `json:"name"`
 	Dir     string    `json:"dir"`
 	Created time.Time `json:"created"`
+	Slots   int       `json:"slots,omitempty"`
+	Paused  bool      `json:"paused,omitempty"`
 }
 
 // ProjectTable is the saved registry. The counter is saved with the rows
@@ -208,6 +210,38 @@ func (p *Projects) Remove(id string) error {
 	}
 	p.notify(ProjectView{Project: pr.rec})
 	return nil
+}
+
+const maxSlots = 8
+
+// SetDispatch sets how many tickets the dispatcher keeps running in the project and whether it
+// is paused; nil keeps a setting.
+func (p *Projects) SetDispatch(id string, slots *int, paused *bool) (ProjectView, error) {
+	if slots != nil && (*slots < 0 || *slots > maxSlots) {
+		return ProjectView{}, fmt.Errorf("runner: slots must be between 0 and %d", maxSlots)
+	}
+	p.mu.Lock()
+	pr := p.byID[id]
+	if pr == nil {
+		p.mu.Unlock()
+		return ProjectView{}, ErrNoProject
+	}
+	old := pr.rec
+	if slots != nil {
+		pr.rec.Slots = *slots
+	}
+	if paused != nil {
+		pr.rec.Paused = *paused
+	}
+	if err := p.saveLocked(); err != nil {
+		pr.rec = old
+		p.mu.Unlock()
+		return ProjectView{}, err
+	}
+	v := p.viewLocked(pr)
+	p.mu.Unlock()
+	p.notify(v)
+	return v, nil
 }
 
 func (p *Projects) viewLocked(pr *project) ProjectView {
