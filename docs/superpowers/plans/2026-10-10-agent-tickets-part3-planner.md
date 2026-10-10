@@ -76,7 +76,8 @@ context: `docs/superpowers/specs/2026-10-09-agent-tickets-design.md` (part 1) an
   `<run> does not plan <parent>`, `<parent> is <status>, not planning`,
   `<run> only changes the subtickets of the ticket it plans`; and for people:
   `<id> is <status>, not in review`, `a rejection needs a reason`, `feedback cannot be empty`,
-  `<dir> does not exist` (the ticket's repository directory is missing).
+  `<dir> does not exist` (the ticket's repository directory is missing); and for a planner run
+  ending its plan: `<id> is <status>; no plan is in progress` (`PlanReview`).
 - Decision: a person typing into a live planner run while the ticket is in `review` moves it
   back to `planning` (as part 2 takes `blocked` back to `running`); that turn's end sends it to
   `review` again.
@@ -94,14 +95,16 @@ context: `docs/superpowers/specs/2026-10-09-agent-tickets-design.md` (part 1) an
   feedback is the last comment of the discussion it carries.
 - Decision: the message sent to a live planner on Revise is "A person reviewed the plan and
   asks for changes:", the feedback, then "Revise the subtickets, then call plan_done again."
-- Decision: `list_tickets` and `get_ticket` read any ticket of the project (the spec's "read the
-  project's tickets"); the writes touch only the planned ticket's subtickets.
+- Deviation from spec: `list_tickets` and `get_ticket` read any ticket of the project (the spec
+  says the tools act only on that ticket's subtickets, but also "read the project's tickets");
+  the writes touch only the planned ticket's subtickets.
 - Decision: the planner's subagents and skills build their tools from the run's registry, so
   they reach the ticket tools too. Accepted: the same `Tickets` guards hold for them.
 - Decision: a `delete_subticket` of a draft another draft waits for keeps part 1's refusal
   (`<x> waits for <id>; close it instead`); the planner unlinks first with `set_dependencies`.
-- Decision: deleting a ticket in `review` without subtickets stays allowed (part 1 refuses only
-  `planning` or a ticket with subtickets); its planner run stays live until stopped.
+- Deviation from spec: deleting a ticket in `review` is refused too (part 1 refuses only
+  `running`, `planning` or a ticket with subtickets), so no live planner run is left without
+  its ticket: reject the plan first, then delete.
 - Decision: the planner run's title is `Plan <TCK-n>: <title>`.
 - Decision: activity texts: `Plan of <id> in review: <first line>`,
   `Approved the plan of <id>: <title>`, `Rejected the plan of <id>: <first line of reason>`.
@@ -254,6 +257,7 @@ func TestAPlanStartsOnlyOnAnOpenTopLevelTicketAndEndsInReview(t *testing.T) {
 	if err != nil || v.Status != TicketReview || lastComment(v) != "Three steps." || v.Comments[0].By != "aigem" {
 		t.Fatalf("review = %+v, %v", v, err)
 	}
+	refusal(t, ts.Delete("PRJ-1", goal.ID), "TCK-1 is review; it cannot be deleted now")
 	v, err = ts.StartPlan("PRJ-1", goal.ID, "RUN-1")
 	if err != nil || v.Status != TicketPlanning || len(v.Runs) != 1 {
 		t.Fatalf("a person's turn in the planner = %+v, %v, want planning again with the same run", v, err)
@@ -471,7 +475,13 @@ func (t *Tickets) remove(project, id, run string) error {
 		}
 ```
 
-(the rest of the old `Delete` body follows unchanged).
+(the rest of the old `Delete` body follows unchanged, except that its status check becomes):
+
+```go
+		if s := tab.Tickets[i].Status; s == TicketRunning || s == TicketPlanning || s == TicketReview {
+			return nil, refuse("%s is %s; it cannot be deleted now", id, s)
+		}
+```
 
 In `Finish`, replace
 
@@ -1603,9 +1613,7 @@ func TestAPlannerRunSplitsTheTicketAndHandsItToAPerson(t *testing.T) {
 	if msg := f.firstMessage(v.ID); !strings.Contains(msg, "# TCK-1: big goal") || !strings.Contains(msg, planRule) {
 		t.Errorf("first message = %q", msg)
 	}
-	if !f.toldAbout("review: Two steps.") {
-		t.Errorf("told = %v", f.told)
-	}
+	waitUntil(t, func() bool { return f.toldAbout("review: Two steps.") })
 }
 
 func TestAPlannerTurnAlwaysEndsInReview(t *testing.T) {
@@ -1879,17 +1887,18 @@ func (t *TicketRuns) openPlanner(ctx context.Context, project string, tk TicketV
 		return RunView{}, err
 	}
 	tr.run = v.ID
+	// Registered before the move, so a Stop in between finds the run and lets its ticket go.
+	t.mu.Lock()
+	t.byRun[v.ID] = tr
+	t.mu.Unlock()
 	moved, err := move(v.ID)
 	if err != nil {
-		tr.cancel()
+		t.release(v.ID)
 		if rmErr := t.runs.Remove(v.ID); rmErr != nil {
 			slog.Warn("a planner run that could not start was not deleted", "run", v.ID, "err", rmErr)
 		}
 		return RunView{}, err
 	}
-	t.mu.Lock()
-	t.byRun[v.ID] = tr
-	t.mu.Unlock()
 	all, _ := t.tickets.List(project)
 	var draft []TicketView
 	for _, k := range all {
@@ -2316,7 +2325,7 @@ git commit -m "feat(runner): approve, reject and revise a plan; stop, delete and
 ### Task 7: HTTP routes, daemon wiring and activity
 
 **Files:**
-- Modify: `internal/web/api_tickets.go` (seam methods, handlers, `decideTicket`)
+- Modify: `internal/web/api_tickets.go` (seam methods, handlers)
 - Modify: `internal/web/server.go` (routes)
 - Modify: `cmd/aigem/webtickets.go` (adapter, `ticketPlanned`)
 - Modify: `cmd/aigem/webcmd.go` (`Planned: backend.ticketPlanned`)
@@ -2359,6 +2368,9 @@ func (b *ticketsBackend) ApproveTicket(_ context.Context, project, id string) (T
 }
 
 func (b *ticketsBackend) RejectTicket(_ context.Context, project, id, reason string) (Ticket, error) {
+	if id == "TCK-3" {
+		return Ticket{}, Conflict("TCK-3 is done, not in review")
+	}
 	b.tmu.Lock()
 	b.decided = reason
 	b.tmu.Unlock()
@@ -2399,6 +2411,10 @@ func TestThePlanRoutesAnswerAndRefuse(t *testing.T) {
 	res = api(t, srv, http.MethodPost, base+"TCK-1/reject", `{"reason":"too big"}`)
 	if res.StatusCode != http.StatusOK || b.lastDecided() != "too big" {
 		t.Errorf("reject = %d, reason %q", res.StatusCode, b.lastDecided())
+	}
+	res = api(t, srv, http.MethodPost, base+"TCK-3/reject", `{"reason":"late"}`)
+	if res.StatusCode != http.StatusConflict || !strings.Contains(readBody(t, res), "not in review") {
+		t.Errorf("a refused reject = %d, want 409 with the sentence", res.StatusCode)
 	}
 	res = api(t, srv, http.MethodPost, base+"TCK-1/revise", `{"text":"split it"}`)
 	if res.StatusCode != http.StatusOK || b.lastDecided() != "split it" {
@@ -2558,47 +2574,56 @@ func (s *Server) handleApproveTicket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRejectTicket(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Reason string `json:"reason"`
-	}
-	s.decideTicket(w, r, &req, &req.Reason, "a reason", "rejecting a plan",
-		func(b TicketsBackend) (Ticket, error) {
-			return b.RejectTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"), req.Reason)
-		})
-}
-
-func (s *Server) handleReviseTicket(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Text string `json:"text"`
-	}
-	s.decideTicket(w, r, &req, &req.Text, "feedback", "revising a plan",
-		func(b TicketsBackend) (Ticket, error) {
-			return b.ReviseTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"), req.Text)
-		})
-}
-
-// decideTicket answers a plan decision whose body carries one required text of at most 16 KiB.
-func (s *Server) decideTicket(w http.ResponseWriter, r *http.Request, req any, text *string, what, doing string,
-	call func(TicketsBackend) (Ticket, error)) {
 	b, ok := backendOf[TicketsBackend](s, w, "tickets")
 	if !ok {
 		return
 	}
-	if err := decodeJSONLimit(w, r, req, maxCommentBytes+1<<10); err != nil {
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := decodeJSONLimit(w, r, &req, maxCommentBytes+1<<10); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	switch {
-	case strings.TrimSpace(*text) == "":
-		http.Error(w, what+" is required", http.StatusBadRequest)
+	case strings.TrimSpace(req.Reason) == "":
+		http.Error(w, "a reason is required", http.StatusBadRequest)
 		return
-	case len(*text) > maxCommentBytes:
-		http.Error(w, what+" is at most 16 KiB", http.StatusBadRequest)
+	case len(req.Reason) > maxCommentBytes:
+		http.Error(w, "a reason is at most 16 KiB", http.StatusBadRequest)
 		return
 	}
-	t, err := call(b)
+	t, err := b.RejectTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"), req.Reason)
 	if err != nil {
-		writeRunError(w, doing, err)
+		writeRunError(w, "rejecting a plan", err)
+		return
+	}
+	writeJSON(w, t)
+}
+
+func (s *Server) handleReviseTicket(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[TicketsBackend](s, w, "tickets")
+	if !ok {
+		return
+	}
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := decodeJSONLimit(w, r, &req, maxCommentBytes+1<<10); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	switch {
+	case strings.TrimSpace(req.Text) == "":
+		http.Error(w, "feedback is required", http.StatusBadRequest)
+		return
+	case len(req.Text) > maxCommentBytes:
+		http.Error(w, "feedback is at most 16 KiB", http.StatusBadRequest)
+		return
+	}
+	t, err := b.ReviseTicket(r.Context(), r.PathValue("id"), r.PathValue("tid"), req.Text)
+	if err != nil {
+		writeRunError(w, "revising a plan", err)
 		return
 	}
 	writeJSON(w, t)
@@ -2723,7 +2748,8 @@ git commit -m "feat(web): plan, approve, reject and revise routes"
 - Consumes: the routes of Task 7.
 - Produces: `api.planTicket(project, id)` -> `Run`, `api.approveTicket(project, id)`,
   `api.rejectTicket(project, id, reason)`, `api.reviseTicket(project, id, text)` -> `Ticket`.
-  Ticket page: "Plan" on a top-level `open` ticket without subtickets; "Stop" whenever the
+  Ticket page: no status moves on a draft subticket (its parent is `planning` or `review`);
+  "Plan" on a top-level `open` ticket without subtickets; "Stop" whenever the
   last run is live (also on a parent); in `review` "Approve", "Reject" and "Revise"; Reject and
   Revise toggle a box (`Reason` / `Feedback` textarea, "Reject plan" / "Send feedback" and
   "Cancel", Ctrl/Cmd+Enter sends, Escape cancels); refusals in the page's alert.
@@ -2797,6 +2823,12 @@ test('Revise sends the feedback from the keyboard, and Escape closes the box', a
   expect(JSON.parse(sent!.body)).toEqual({ text: 'Add a migration.' })
 })
 
+test('a draft subticket page offers no status moves', async () => {
+  await openTask('TCK-7', REVIEW, {}, [RUN6])
+  expect(screen.queryByRole('button', { name: 'Mark ready' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()
+})
+
 test('a ticket being planned offers Stop but no decisions', async () => {
   const planning = REVIEW.map((t) => (t.id === 'TCK-6' ? { ...t, status: 'planning' as const } : t))
   await openTask('TCK-6', planning, {}, [{ ...RUN6, running: true }])
@@ -2852,6 +2884,13 @@ After `const [busy, setBusy] = useState(false)` add:
 
 ```tsx
   const [asking, setAsking] = useState<'' | 'reject' | 'revise'>('')
+```
+
+After `const parent = tickets.find((x) => x.id === t.parent)` add (a draft has no moves on
+the server, so the page offers none):
+
+```tsx
+  const draft = parent?.status === 'planning' || parent?.status === 'review'
 ```
 
 Replace the whole `{!isParent && ( <div className="ml-auto flex gap-1.5"> ... </div> )}` block
@@ -2923,6 +2962,7 @@ in the header with:
               </button>
             )}
             {!isParent &&
+              !draft &&
               personMoves(t.status).map((to) => (
                 <button key={to} type="button" onClick={() => void change({ status: to })} className={BUTTON}>
                   {MOVE_LABEL[to]}
@@ -3022,7 +3062,7 @@ git commit -m "feat(web): plan, approve, reject and revise on the ticket page"
 ### Task 9: UI - the draft badge and the "Needs you" filter
 
 **Files:**
-- Modify: `internal/web/_ui/src/screens/Task.tsx` (draft badge)
+- Modify: `internal/web/_ui/src/screens/Task.tsx` (draft badge, "Add subticket" in planning)
 - Modify: `internal/web/_ui/src/state/tickets.ts`, `src/screens/Tickets.tsx` (filter)
 - Test: `internal/web/_ui/src/screens/tickets.test.tsx`, `src/state/tickets.test.ts` (append)
 
@@ -3030,7 +3070,7 @@ git commit -m "feat(web): plan, approve, reject and revise on the ticket page"
 - Consumes: `REVIEW`, `RUN6` test fixtures (Task 8).
 - Produces: `TicketFilter = 'active' | 'ready' | 'needs' | 'all'`; `needs` shows `blocked` and
   `review`. On the ticket page, while the ticket is `planning` or `review`, each subticket row
-  of the Overview list carries a "Draft" badge.
+  of the Overview list carries a "Draft" badge; "Add subticket" is hidden in `planning`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3040,9 +3080,17 @@ Append to `internal/web/_ui/src/screens/tickets.test.tsx`:
 test('the subtickets of a plan in progress or in review are drafts', async () => {
   await openTask('TCK-6', [...PLAN, ...REVIEW], {}, [RUN6])
   expect(screen.getAllByText('Draft')).toHaveLength(2)
+  expect(screen.getByRole('button', { name: 'Add subticket' })).toBeInTheDocument()
   act(() => navigate({ screen: 'task', id: 'TCK-1' }))
   await screen.findByRole('heading', { level: 1, name: 'Delete sessions' })
   expect(screen.queryByText('Draft')).not.toBeInTheDocument()
+})
+
+test('a ticket being planned cannot get a subticket by hand', async () => {
+  const planning = REVIEW.map((t) => (t.id === 'TCK-6' ? { ...t, status: 'planning' as const } : t))
+  await openTask('TCK-6', planning, {}, [RUN6])
+  expect(screen.getAllByText('Draft')).toHaveLength(2)
+  expect(screen.queryByRole('button', { name: 'Add subticket' })).not.toBeInTheDocument()
 })
 
 test('Needs you lists the blocked tickets and the plans in review', async () => {
@@ -3085,6 +3133,17 @@ In `internal/web/_ui/src/screens/Task.tsx`, in the Overview subticket row (the
                           Draft
                         </span>
                       )}
+```
+
+In the same Overview list header, wrap the "Add subticket" button so a person cannot add one
+while the ticket is being planned:
+
+```tsx
+                    {t.status !== 'planning' && (
+                      <button type="button" onClick={() => setAdding(true)} className={`ml-auto ${BUTTON}`}>
+                        Add subticket
+                      </button>
+                    )}
 ```
 
 - [ ] **Step 4: The filter**
@@ -3187,7 +3246,8 @@ filter lists `blocked` tickets and plans in `review`.
 
 In the screens paragraph near the top replace "A runnable ticket can be run; the worktrees
 screen lists the branches runs left behind." with "An open ticket can be planned and a
-runnable one run; the worktrees screen lists the branches runs left behind."
+runnable one run; the worktrees screen lists the branches runs left behind." The old sentence
+spans two lines; reflow that paragraph to at most 100 characters per line.
 
 In `CHANGELOG.md` under `## [Unreleased]` / `### Added`, above the part 2 entry, add:
 
