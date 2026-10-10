@@ -479,9 +479,9 @@ itself cannot make (a path in the way of the worktree, not a git checkout) moves
 `blocked` with the comment "the dispatcher could not start it: <error>". Any other error (a
 project env that does not load, the model) is not the ticket's fault and blocks nothing: the
 dispatcher logs it and holds until the next 30 second tick, but the other projects in that pass
-still start. A full daemon (32 live runs) ends the pass. A ticket moved back to `ready` while its run is still
-live is blocked again with the live-run reason. Pause stops new starts; lowering the slots
-stops nothing.
+still start. A full daemon (32 live runs) ends the pass. A ticket moved back to `ready` while
+its run is still live is blocked again with the live-run reason. Pause stops new starts;
+lowering the slots stops nothing.
 
 ## Runs
 
