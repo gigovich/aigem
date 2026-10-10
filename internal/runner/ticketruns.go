@@ -63,10 +63,12 @@ type TicketRuns struct {
 // cancel stops a commit or a check in flight.
 type ticketRun struct {
 	project, ticket, run string
-	place                ticketPlace
-	summary              atomic.Pointer[string]
-	ctx                  context.Context
-	cancel               context.CancelFunc
+	// plan marks a planner run: its turn end sends the ticket to review.
+	plan    bool
+	place   ticketPlace
+	summary atomic.Pointer[string]
+	ctx     context.Context
+	cancel  context.CancelFunc
 
 	mu   sync.Mutex
 	gone bool
