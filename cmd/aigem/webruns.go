@@ -127,6 +127,7 @@ func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 	backendRef := webModelRef(backend)
 	sess := runner.NewSession(runner.Spec{
 		Mode:    req.Mode,
+		Profile: req.Profile,
 		Tools:   reg,
 		Backend: backendRef,
 		Models:  rt.models,

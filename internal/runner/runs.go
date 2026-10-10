@@ -145,6 +145,10 @@ type RunRequest struct {
 	// TicketID, Worktree and Branch tie an autonomous run to a ticket. Open roots the
 	// session's tools at Worktree.
 	TicketID, Worktree, Branch string
+	// Dir roots a run that has no worktree, such as a planner at a repository's main checkout.
+	Dir string
+	// Profile names the capability profile of an autonomous run; empty is the default.
+	Profile string
 	// Tools are registered into the session once it is built, past the mode's tool subset.
 	Tools []tools.Tool
 	// OnTurn is called with every turn_start and turn_end, in order, on a goroutine of the
@@ -152,12 +156,34 @@ type RunRequest struct {
 	OnTurn func(uisession.Event)
 }
 
-// Root is where the session's tools are rooted: the ticket's worktree, else dir.
+// Root is where the session's tools are rooted: the ticket's worktree, else Dir, else dir.
 func (req RunRequest) Root(dir string) string {
-	if req.Worktree != "" {
+	switch {
+	case req.Worktree != "":
 		return req.Worktree
+	case req.Dir != "":
+		return req.Dir
 	}
 	return dir
+}
+
+// readOnlyProfile is the capability profile a run without a worktree must have.
+const readOnlyProfile = "read-only"
+
+// allowed says whether the request's mode, profile and root go together. The autonomous policy
+// approves edits on the assumption that a ticket's worktree is all the session can reach; a run
+// without one may only read.
+func (req RunRequest) allowed() bool {
+	if _, err := tools.ResolveCapabilityProfile(req.Profile); err != nil {
+		return false
+	}
+	switch req.Mode {
+	case ModeInteractive:
+		return req.Profile == ""
+	case ModeAutonomous:
+		return req.TicketID != "" && (req.Worktree != "" || req.Profile == readOnlyProfile && req.Dir != "")
+	}
+	return false
 }
 
 // Opened is what OpenRun built. It is reported rather than assumed, because
@@ -352,9 +378,7 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 	if req.Mode == "" {
 		req.Mode = ModeInteractive
 	}
-	if req.Mode != ModeInteractive && (req.Mode != ModeAutonomous || req.TicketID == "" || req.Worktree == "") {
-		// The autonomous policy approves edits on the assumption that a ticket's worktree is
-		// all the session can reach; without one there is nothing that assumption holds for.
+	if !req.allowed() {
 		return RunView{}, fmt.Errorf("%w: %q", ErrRunMode, req.Mode)
 	}
 

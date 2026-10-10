@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,7 +74,8 @@ func scriptedOpen(s *scripted, dir string) OpenRun {
 		if err != nil {
 			return nil, Opened{}, err
 		}
-		sess := NewSession(Spec{Mode: req.Mode, Tools: reg, Backend: llm.NewRef(s), Title: req.Title})
+		sess := NewSession(Spec{Mode: req.Mode, Profile: req.Profile, Tools: reg, Backend: llm.NewRef(s),
+			Title: req.Title})
 		return sess, Opened{Model: "test/model", Root: root}, nil
 	}
 }
@@ -146,6 +148,9 @@ func TestARunIsRootedAtItsWorktreeWhenItHasOne(t *testing.T) {
 	if got := (RunRequest{Worktree: wt}).Root("/p"); got != wt {
 		t.Errorf("a ticket run = %q, want its worktree", got)
 	}
+	if got := (RunRequest{Dir: "/p/api"}).Root("/p"); got != "/p/api" {
+		t.Errorf("a run with a dir = %q, want its dir", got)
+	}
 }
 
 func TestALostReplayStandsInForTheTurnEnd(t *testing.T) {
@@ -166,7 +171,7 @@ func TestALostReplayStandsInForTheTurnEnd(t *testing.T) {
 	}
 }
 
-func TestAnAutonomousRunNeedsATicketAndAWorktree(t *testing.T) {
+func TestAnAutonomousRunNeedsATicketAndAWorktreeOrOnlyReads(t *testing.T) {
 	runs, err := NewRuns(RunsConfig{Open: scriptedOpen(&scripted{}, t.TempDir())})
 	if err != nil {
 		t.Fatal(err)
@@ -175,10 +180,53 @@ func TestAnAutonomousRunNeedsATicketAndAWorktree(t *testing.T) {
 	for _, req := range []RunRequest{
 		{Mode: ModeAutonomous, TicketID: "TCK-1"},
 		{Mode: ModeAutonomous, Worktree: t.TempDir()},
+		{Mode: ModeAutonomous, TicketID: "TCK-1", Dir: t.TempDir()},
+		{Mode: ModeAutonomous, TicketID: "TCK-1", Dir: t.TempDir(), Profile: "shell"},
+		{Mode: ModeAutonomous, TicketID: "TCK-1", Profile: readOnlyProfile},
+		{Mode: ModeAutonomous, TicketID: "TCK-1", Worktree: t.TempDir(), Profile: "nope"},
+		{Profile: readOnlyProfile},
 	} {
 		if _, err := runs.Create(context.Background(), req); !errors.Is(err, ErrRunMode) {
 			t.Errorf("Create(%+v) = %v, want ErrRunMode", req, err)
 		}
+	}
+}
+
+func TestAReadOnlyRunIsRootedAtItsDirAndCannotWrite(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := &scripted{}
+	s.then(call("write_file", `{"path":"x.txt","content":"x"}`), call("probe", `{}`), say("read it"))
+	runs, err := NewRuns(RunsConfig{Open: scriptedOpen(s, t.TempDir())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runs.Close)
+
+	dir := t.TempDir()
+	p := &probe{}
+	turns := make(chan uisession.Event, 8)
+	v, err := runs.Create(context.Background(), RunRequest{
+		Mode: ModeAutonomous, Profile: readOnlyProfile, TicketID: "TCK-1", Dir: dir,
+		Tools: []tools.Tool{p}, OnTurn: func(ev uisession.Event) { turns <- ev },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Root != dir || v.Worktree != "" || v.TicketID != "TCK-1" {
+		t.Fatalf("run = %+v", v)
+	}
+	if err := runs.Apply(v.ID, RunOp{Op: OpSubmit, Text: "plan"}); err != nil {
+		t.Fatal(err)
+	}
+	nextTurn(t, turns)
+	if ev := nextTurn(t, turns); ev.Kind != uisession.KindTurnEnd {
+		t.Fatalf("second event = %s, want turn_end", ev.Kind)
+	}
+	if pathExists(filepath.Join(dir, "x.txt")) {
+		t.Error("a read-only run wrote a file")
+	}
+	if !p.ran.Load() {
+		t.Error("the extra tool was not offered past the read-only subset")
 	}
 }
 

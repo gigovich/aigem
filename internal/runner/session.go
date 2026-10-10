@@ -48,20 +48,21 @@ func (m Mode) AutoMode() bool { return m == ModeAutonomous }
 // Autonomous sessions never inherit approvals made by an interactive session.
 func (m Mode) PathGrants() bool { return m != ModeAutonomous }
 
-// CapabilitySubset returns the tool names exposed to an autonomous session.
-// Interactive and unknown modes retain the complete registry. The returned slice
-// is independent so callers cannot mutate the profile shared by other sessions.
-func (m Mode) CapabilitySubset() []string {
+// CapabilitySubset returns the tool names exposed to an autonomous session under the named
+// capability profile ("" is the default). Interactive and unknown modes retain the complete
+// registry. The returned slice is independent so callers cannot mutate the profile shared by
+// other sessions.
+func (m Mode) CapabilitySubset(profile string) []string {
 	if m != ModeAutonomous {
 		return nil
 	}
-	profile, err := tools.ResolveCapabilityProfile("")
+	p, err := tools.ResolveCapabilityProfile(profile)
 	if err != nil {
-		// The default is a package constant and is validated by tools' tests. A
-		// failure here indicates an internal programming error, not user input.
-		panic("runner: default capability profile unavailable: " + err.Error())
+		// Runs.Create refuses an unknown name and the default is validated by tools' tests; a
+		// failure here is a programming error, not user input.
+		panic("runner: capability profile unavailable: " + err.Error())
 	}
-	return append([]string(nil), profile.Allow...)
+	return append([]string(nil), p.Allow...)
 }
 
 // TurnBudget returns the runaway-protection policy for a mode. Interactive and
@@ -88,6 +89,8 @@ func (m Mode) TurnBudget() agent.TurnBudget {
 type Spec struct {
 	// Mode selects the session policy. Its zero value is interactive.
 	Mode Mode
+	// Profile names the capability profile of an autonomous session; empty is the default.
+	Profile string
 
 	// Tools is this session's sandbox, from Env.NewTools.
 	Tools *tools.Registry
@@ -224,7 +227,7 @@ func NewSession(spec Spec) *Session {
 	if reg == nil {
 		panic("runner: session requires a tools registry")
 	}
-	if subset := spec.Mode.CapabilitySubset(); subset != nil {
+	if subset := spec.Mode.CapabilitySubset(spec.Profile); subset != nil {
 		reg = reg.Subset(subset)
 	}
 	// A registry belongs to one conversation. Registering the delegation, skill

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,16 +74,20 @@ func TestAutonomousSessionDerivesSafetyPolicy(t *testing.T) {
 }
 
 func TestModeDerivesAutonomousCapabilityAndBudget(t *testing.T) {
-	if got := (runner.Mode("")).CapabilitySubset(); got != nil {
+	if got := (runner.Mode("")).CapabilitySubset(""); got != nil {
 		t.Fatalf("interactive capability subset = %v, want nil", got)
 	}
 	if got := (runner.Mode("")).TurnBudget(); got != (agent.TurnBudget{}) {
 		t.Fatalf("interactive turn budget = %+v, want zero", got)
 	}
 
-	got := runner.ModeAutonomous.CapabilitySubset()
+	got := runner.ModeAutonomous.CapabilitySubset("")
 	if len(got) == 0 {
 		t.Fatal("autonomous capability subset is empty")
+	}
+	ro := runner.ModeAutonomous.CapabilitySubset("read-only")
+	if slices.Contains(ro, "write_file") || slices.Contains(ro, "bash") || !slices.Contains(ro, "read_file") {
+		t.Fatalf("read-only subset = %v", ro)
 	}
 	if got := runner.ModeAutonomous.TurnBudget(); got != (agent.TurnBudget{
 		MaxModelRounds:       agent.DefaultBudgetMaxModelRounds,
