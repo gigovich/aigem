@@ -424,3 +424,89 @@ func TestADraftIsHeldWhileItsParentIsPlannedOrReviewed(t *testing.T) {
 		t.Errorf("parent = %s, want review: it is not derived while reviewed", g.Status)
 	}
 }
+
+func TestAPersonApprovesARevisedPlan(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	ts, _ := newTestTickets(t, t.TempDir())
+	goal := mustCreate(t, ts, NewTicket{Title: "goal"})
+	_, err := ts.Approve("PRJ-1", goal.ID)
+	refusal(t, err, "TCK-1 is open, not in review")
+	if _, err := ts.StartPlan("PRJ-1", goal.ID, "RUN-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.PlanReview("PRJ-1", goal.ID, "RUN-1", "Nothing to split."); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ts.Approve("PRJ-1", goal.ID)
+	refusal(t, err, "TCK-1's plan has no subtickets; revise or reject it")
+	_, err = ts.Revise("PRJ-1", goal.ID, "RUN-1", "  ")
+	refusal(t, err, "feedback cannot be empty")
+
+	v, err := ts.Revise("PRJ-1", goal.ID, "RUN-1", "Split it in two.")
+	if err != nil || v.Status != TicketPlanning || len(v.Runs) != 1 || lastComment(v) != "Split it in two." ||
+		v.Comments[len(v.Comments)-1].By != "you" {
+		t.Fatalf("revise = %+v, %v", v, err)
+	}
+	a, err := ts.create("PRJ-1", NewTicket{Title: "a", Parent: goal.ID}, "RUN-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ts.create("PRJ-1", NewTicket{Title: "b", Parent: goal.ID, DependsOn: []string{a.ID}}, "RUN-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.PlanReview("PRJ-1", goal.ID, "RUN-1", "Two steps."); err != nil {
+		t.Fatal(err)
+	}
+	v, err = ts.Approve("PRJ-1", goal.ID)
+	if err != nil || v.ID != goal.ID || v.Status != TicketReady {
+		t.Fatalf("approve = %s %s, %v, want the parent ready", v.ID, v.Status, err)
+	}
+	for _, id := range []string{a.ID, b.ID} {
+		if k, _ := ts.Get("PRJ-1", id); k.Status != TicketReady {
+			t.Errorf("%s = %s, want ready", id, k.Status)
+		}
+	}
+	if k, _ := ts.Get("PRJ-1", a.ID); !k.Runnable {
+		t.Error("the first step of an approved plan is not runnable")
+	}
+	_, err = ts.Reject("PRJ-1", goal.ID, "x")
+	refusal(t, err, "TCK-1 is ready, not in review")
+}
+
+func TestARejectedPlanLosesItsDraftAndAReviseCanTakeANewRun(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	ts, _ := newTestTickets(t, t.TempDir())
+	goal := mustCreate(t, ts, NewTicket{Title: "goal"})
+	if _, err := ts.StartPlan("PRJ-1", goal.ID, "RUN-1"); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := ts.create("PRJ-1", NewTicket{Title: "a", Parent: goal.ID}, "RUN-1")
+	if _, err := ts.create("PRJ-1", NewTicket{Title: "b", Parent: goal.ID, DependsOn: []string{a.ID}},
+		"RUN-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.PlanReview("PRJ-1", goal.ID, "RUN-1", "Two steps."); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ts.Reject("PRJ-1", goal.ID, " ")
+	refusal(t, err, "a rejection needs a reason")
+
+	v, err := ts.Revise("PRJ-1", goal.ID, "RUN-4", "Try again.")
+	if err != nil || !slices.Equal(v.Runs, []string{"RUN-1", "RUN-4"}) || v.Status != TicketPlanning {
+		t.Fatalf("revise with a new run = %+v, %v", v, err)
+	}
+	if _, err := ts.PlanReview("PRJ-1", goal.ID, "RUN-4", "Same plan."); err != nil {
+		t.Fatal(err)
+	}
+	v, err = ts.Reject("PRJ-1", goal.ID, "too big")
+	if err != nil || v.Status != TicketOpen || v.Progress != nil || lastComment(v) != "Plan rejected: too big" {
+		t.Fatalf("reject = %+v, %v", v, err)
+	}
+	if list, _ := ts.List("PRJ-1"); len(list) != 1 {
+		t.Errorf("tickets after reject = %d, want only the parent", len(list))
+	}
+	if _, err := ts.StartPlan("PRJ-1", goal.ID, "RUN-5"); err != nil {
+		t.Errorf("a rejected ticket cannot be planned again: %v", err)
+	}
+}

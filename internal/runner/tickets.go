@@ -338,6 +338,98 @@ func (t *Tickets) PlanReview(project, id, run, comment string) (TicketView, erro
 	return views[0], nil
 }
 
+func inReview(rows []Ticket, id string) (int, error) {
+	i := findTicket(rows, id)
+	switch {
+	case i < 0:
+		return -1, ErrNoTicket
+	case rows[i].Status != TicketReview:
+		return -1, refuse("%s is %s, not in review", id, rows[i].Status)
+	}
+	return i, nil
+}
+
+// Approve makes a reviewed plan's subtickets ready and hands its parent back to them.
+func (t *Tickets) Approve(project, id string) (TicketView, error) {
+	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
+		i, err := inReview(tab.Tickets, id)
+		if err != nil {
+			return nil, err
+		}
+		now := t.now()
+		touched := []string{id}
+		for k := range tab.Tickets {
+			if tab.Tickets[k].Parent == id {
+				tab.Tickets[k].Status, tab.Tickets[k].Updated = TicketReady, now
+				touched = append(touched, tab.Tickets[k].ID)
+			}
+		}
+		if len(touched) == 1 {
+			return nil, refuse("%s's plan has no subtickets; revise or reject it", id)
+		}
+		tab.Tickets[i].Status, tab.Tickets[i].Updated = derive(subtickets(tab.Tickets, id)), now
+		return touched, nil
+	})
+	if err != nil {
+		return TicketView{}, err
+	}
+	return views[0], nil
+}
+
+// Reject deletes a reviewed plan's subtickets and opens its ticket again with the reason.
+func (t *Tickets) Reject(project, id, reason string) (TicketView, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return TicketView{}, refuse("a rejection needs a reason")
+	}
+	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
+		if _, err := inReview(tab.Tickets, id); err != nil {
+			return nil, err
+		}
+		touched := []string{id}
+		tab.Tickets = slices.DeleteFunc(tab.Tickets, func(k Ticket) bool {
+			if k.Parent == id {
+				touched = append(touched, k.ID)
+			}
+			return k.Parent == id
+		})
+		now := t.now()
+		tk := &tab.Tickets[findTicket(tab.Tickets, id)]
+		tk.Status, tk.Updated = TicketOpen, now
+		tk.Comments = append(tk.Comments, Comment{At: now, By: "you", Text: "Plan rejected: " + reason})
+		return touched, nil
+	})
+	if err != nil {
+		return TicketView{}, err
+	}
+	return views[0], nil
+}
+
+// Revise sends a reviewed plan back to planning under run, with the person's feedback.
+func (t *Tickets) Revise(project, id, run, feedback string) (TicketView, error) {
+	if strings.TrimSpace(feedback) == "" {
+		return TicketView{}, refuse("feedback cannot be empty")
+	}
+	views, err := t.change(project, func(tab *TicketTable) ([]string, error) {
+		i, err := inReview(tab.Tickets, id)
+		if err != nil {
+			return nil, err
+		}
+		tk := &tab.Tickets[i]
+		if !lastRun(*tk, run) {
+			tk.Runs = append(tk.Runs, run)
+		}
+		now := t.now()
+		tk.Status, tk.Updated = TicketPlanning, now
+		tk.Comments = append(tk.Comments, Comment{At: now, By: "you", Text: feedback})
+		return []string{id}, nil
+	})
+	if err != nil {
+		return TicketView{}, err
+	}
+	return views[0], nil
+}
+
 // Finish records how a run left a ticket: done, or blocked with the reason as a comment.
 // Only the ticket's last run may do it.
 func (t *Tickets) Finish(project, id, run, status, comment string, mergePending bool) (TicketView, error) {
