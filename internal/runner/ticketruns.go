@@ -203,7 +203,8 @@ func (t *TicketRuns) prepare(ctx context.Context, id string, pl ticketPlace) (fu
 	return func() { t.unplace(pl, !branch) }, nil
 }
 
-// Recover blocks the tickets a previous daemon left running: their runs did not survive it.
+// Recover blocks the tickets a previous daemon left running and sends the plans it left planning
+// to review: their runs did not survive it.
 func (t *TicketRuns) Recover() {
 	for _, p := range t.projects.List() {
 		views, err := t.tickets.List(p.ID)
@@ -213,10 +214,15 @@ func (t *TicketRuns) Recover() {
 		}
 		for _, v := range views {
 			n := len(v.Runs)
-			if v.Status != TicketRunning || v.Progress != nil || n == 0 || t.live(v.Runs[n-1]) {
+			if n == 0 || t.live(v.Runs[n-1]) {
 				continue
 			}
-			t.finish(p.ID, v.ID, v.Runs[n-1], TicketBlocked, "the daemon restarted", false)
+			switch {
+			case v.Status == TicketRunning && v.Progress == nil:
+				t.finish(p.ID, v.ID, v.Runs[n-1], TicketBlocked, "the daemon restarted", false)
+			case v.Status == TicketPlanning:
+				t.review(p.ID, v.ID, v.Runs[n-1], "the daemon restarted")
+			}
 		}
 	}
 }
@@ -270,7 +276,11 @@ func (t *TicketRuns) detach(run, reason string) bool {
 	}
 	tr.gone = true
 	v, err := t.tickets.Get(tr.project, tr.ticket)
-	if err == nil && (v.Status == TicketRunning || v.Status == TicketBlocked) {
+	switch {
+	case err != nil:
+	case tr.plan && (v.Status == TicketPlanning || v.Status == TicketReview):
+		t.review(tr.project, tr.ticket, run, reason)
+	case !tr.plan && (v.Status == TicketRunning || v.Status == TicketBlocked):
 		t.finish(tr.project, tr.ticket, run, TicketBlocked, reason, v.MergePending)
 	}
 	return true

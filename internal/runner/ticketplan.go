@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -137,4 +138,75 @@ func planPrompt(tk Ticket, draft []TicketView, repos []Repository) string {
 	}
 	b.WriteString("\n" + planRule)
 	return b.String()
+}
+
+// Approve makes a reviewed plan's subtickets ready and stops its planner run.
+func (t *TicketRuns) Approve(project, id string) (TicketView, error) {
+	v, err := t.tickets.Approve(project, id)
+	if err != nil {
+		return TicketView{}, err
+	}
+	t.endPlanner(v)
+	return v, nil
+}
+
+// Reject deletes a reviewed plan's subtickets, opens the ticket again and stops its planner run.
+func (t *TicketRuns) Reject(project, id, reason string) (TicketView, error) {
+	v, err := t.tickets.Reject(project, id, reason)
+	if err != nil {
+		return TicketView{}, err
+	}
+	t.endPlanner(v)
+	return v, nil
+}
+
+// Revise sends a person's feedback to the planner run that is still live, or to a new one whose
+// first message carries the draft and the discussion with the feedback.
+func (t *TicketRuns) Revise(ctx context.Context, project, id, feedback string) (TicketView, error) {
+	tk, err := t.tickets.Get(project, id)
+	if err != nil {
+		return TicketView{}, err
+	}
+	if tk.Status != TicketReview {
+		return TicketView{}, refuse("%s is %s, not in review", id, tk.Status)
+	}
+	if n := len(tk.Runs); n > 0 && t.live(tk.Runs[n-1]) {
+		run := tk.Runs[n-1]
+		if _, err := t.tickets.Revise(project, id, run, feedback); err != nil {
+			return TicketView{}, err
+		}
+		if err := t.runs.Apply(run, RunOp{Op: OpSubmit, Text: reviseNote(feedback)}); err != nil {
+			t.review(project, id, run, "the feedback could not be sent to the run: "+err.Error())
+		}
+		return t.tickets.Get(project, id)
+	}
+	if _, err := t.openPlanner(ctx, project, tk, func(run string) (TicketView, error) {
+		return t.tickets.Revise(project, id, run, feedback)
+	}); err != nil {
+		return TicketView{}, err
+	}
+	return t.tickets.Get(project, id)
+}
+
+// endPlanner stops the planner run of a plan a person decided. The decision is recorded first,
+// so the run's last turn end finds nothing to change.
+func (t *TicketRuns) endPlanner(v TicketView) {
+	n := len(v.Runs)
+	if n == 0 {
+		return
+	}
+	run := v.Runs[n-1]
+	if tr := t.release(run); tr != nil {
+		tr.mu.Lock()
+		tr.gone = true
+		tr.mu.Unlock()
+	}
+	if err := t.runs.Stop(run); err != nil && !errors.Is(err, ErrRunClosed) && !errors.Is(err, ErrNoRun) {
+		slog.Warn("a decided plan's run could not be stopped", "run", run, "err", err)
+	}
+}
+
+func reviseNote(feedback string) string {
+	return "A person reviewed the plan and asks for changes:\n\n" + feedback +
+		"\n\nRevise the subtickets, then call plan_done again."
 }
