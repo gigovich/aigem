@@ -172,16 +172,14 @@ const readOnlyProfile = "read-only"
 
 // allowed says whether the request's mode, profile and root go together. The autonomous policy
 // approves edits on the assumption that a ticket's worktree is all the session can reach; a run
-// without one may only read.
+// without one may only read. Only the default and read-only profiles are open to a run.
 func (req RunRequest) allowed() bool {
-	if _, err := tools.ResolveCapabilityProfile(req.Profile); err != nil {
-		return false
-	}
 	switch req.Mode {
 	case ModeInteractive:
 		return req.Profile == ""
 	case ModeAutonomous:
-		return req.TicketID != "" && (req.Worktree != "" || req.Profile == readOnlyProfile && req.Dir != "")
+		return req.TicketID != "" && (req.Profile == "" && req.Worktree != "" ||
+			req.Profile == readOnlyProfile && (req.Worktree != "" || req.Dir != ""))
 	}
 	return false
 }
@@ -379,7 +377,7 @@ func (r *Runs) Create(ctx context.Context, req RunRequest) (RunView, error) {
 		req.Mode = ModeInteractive
 	}
 	if !req.allowed() {
-		return RunView{}, fmt.Errorf("%w: %q", ErrRunMode, req.Mode)
+		return RunView{}, fmt.Errorf("%w: %q with profile %q", ErrRunMode, req.Mode, req.Profile)
 	}
 
 	r.mu.Lock()
