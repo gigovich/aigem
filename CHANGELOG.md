@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Web UI: the dispatcher (part 4 of agent tickets). Each project has 0 to 8 slots; while
+  fewer tickets are running, the daemon starts the oldest runnable one by itself. Pause and
+  Resume on the Tickets screen; a ticket that cannot start is blocked with the reason.
 - Web UI: the planner (part 3 of agent tickets). "Plan" opens a read-only run that splits a
   ticket into draft subtickets; a person approves, rejects or revises the plan. The Tickets
   list's "Needs you" filter shows blocked tickets and plans in review.

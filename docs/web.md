@@ -164,9 +164,10 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/commands` | the command palette catalogue from the active environment; takes `?project=` |
 | `GET /api/usage` | stored provider quota snapshots |
 | `GET /api/activity` | persistent mutation feed, paged with `?since=&limit=` |
-| `GET /api/projects` | the registry, the daemon's own directory first with an empty id |
+| `GET /api/projects` | the registry, the daemon's own directory first with an empty id; each with `slots` and `paused` |
 | `POST /api/projects` | `{"dir":"/abs/path","name":"optional"}`; 201, or 400 with why not |
 | `DELETE /api/projects/{id}` | forgets the project; 409 while it has an open run; removes no files |
+| `PATCH /api/projects/{id}` | `{slots?, paused?}`; 200 with the project, 400 out of range, 404 |
 | `GET /api/projects/{id}/repos` | the git checkouts under the project, discovered on demand |
 | `GET /api/projects/{id}/tickets` | the project's tickets, oldest first; `?status=` and `?parent=` filter |
 | `POST /api/projects/{id}/tickets` | `{repo, title, body, parent, dependsOn}`; 201 |
@@ -464,6 +465,22 @@ with "the run was deleted", and a daemon restart with "the daemon restarted"; th
 Typing into a live planner run moves the ticket back to `planning`. Activity:
 `ticket.planned`, `ticket.approved` and `ticket.rejected`. The Tickets screen's "Needs you"
 filter lists `blocked` tickets and plans in `review`.
+
+## Dispatcher
+
+The dispatcher presses "Run" by itself. Each project has `slots` (0 to 8, default 0: off) and
+`paused`. While fewer of its tickets are `running` than there are slots, the daemon starts the
+oldest runnable ticket. A slot is a `running` ticket, whoever started it; blocked tickets and
+planner runs take none. A person's "Run" during a pass can briefly put one ticket over the
+slots. The daemon's limit of 32 live runs still applies. The dispatcher never plans.
+
+It looks again after every ticket or project change and every 30 seconds. A start the ticket
+itself cannot make (a path in the way of the worktree, not a git checkout) moves it to
+`blocked` with the comment "the dispatcher could not start it: <error>". Any other error (the
+run limit, a project env that does not load, the model) blocks nothing: the dispatcher logs it
+and waits for the next 30 second tick. A ticket moved back to `ready` while its run is still
+live is blocked again with the live-run reason. Pause stops new starts; lowering the slots
+stops nothing.
 
 ## Runs
 
