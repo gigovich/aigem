@@ -1,7 +1,7 @@
 import type { Ticket, TicketStatus } from '@/lib/wire'
 
 export type TicketRow = { ticket: Ticket; depth: 0 | 1; open?: boolean }
-export type TicketFilter = 'active' | 'ready' | 'blocked' | 'all'
+export type TicketFilter = 'active' | 'ready' | 'needs' | 'all'
 
 export const TICKET_STATUS: Record<TicketStatus, { label: string; icon: string; color: string }> = {
   open: { label: 'open', icon: '○', color: 'var(--fg-muted)' },
@@ -34,7 +34,7 @@ function shown(t: Ticket, filter: TicketFilter, needle: string): boolean {
   if (needle && !`${t.id} ${t.title}`.toLowerCase().includes(needle)) return false
   if (filter === 'active') return t.status !== 'done' && t.status !== 'closed'
   if (filter === 'ready') return t.status === 'ready'
-  if (filter === 'blocked') return t.status === 'blocked'
+  if (filter === 'needs') return t.status === 'blocked' || t.status === 'review'
   return true
 }
 

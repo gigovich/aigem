@@ -87,7 +87,7 @@ export function Tickets() {
               segments={[
                 { value: 'active', label: 'Active' },
                 { value: 'ready', label: 'Ready' },
-                { value: 'blocked', label: 'Blocked' },
+                { value: 'needs', label: 'Needs you' },
                 { value: 'all', label: 'All' },
               ]}
             />

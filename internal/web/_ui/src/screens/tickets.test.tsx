@@ -422,3 +422,20 @@ test('a plan in review still allows adding a subticket', async () => {
   await openTask('TCK-6', REVIEW, {}, [RUN6])
   expect(screen.getByRole('button', { name: 'Add subticket' })).toBeInTheDocument()
 })
+
+test('the subtickets of a plan in progress or in review are drafts', async () => {
+  await openTask('TCK-6', [...PLAN, ...REVIEW], {}, [RUN6])
+  expect(screen.getAllByText('Draft')).toHaveLength(2)
+  act(() => navigate({ screen: 'task', id: 'TCK-1' }))
+  await screen.findByRole('heading', { level: 1, name: 'Delete sessions' })
+  expect(screen.queryByText('Draft')).not.toBeInTheDocument()
+})
+
+test('Needs you lists the blocked tickets and the plans in review', async () => {
+  await openTickets([...PLAN, ticket('TCK-9', { title: 'Stuck one', status: 'blocked' }), ...REVIEW])
+  await userEvent.click(screen.getByRole('radio', { name: 'Needs you' }))
+  expect(screen.getByText('Stuck one')).toBeInTheDocument()
+  expect(screen.getByText('Big goal')).toBeInTheDocument()
+  expect(screen.queryByText('Runner change')).not.toBeInTheDocument()
+  expect(screen.queryByText('Schema')).not.toBeInTheDocument()
+})

@@ -45,3 +45,8 @@ test('personMoves mirrors the daemon rules', () => {
   expect(personMoves('closed')).toEqual(['open'])
   expect(personMoves('running')).toEqual([])
 })
+
+test('needs you holds the blocked tickets and the plans in review', () => {
+  const more = [...all, t('TCK-6', 'blocked'), t('TCK-7', 'review')]
+  expect(treeRows(more, 'needs', '', new Set()).map((r) => r.ticket.id)).toEqual(['TCK-6', 'TCK-7'])
+})

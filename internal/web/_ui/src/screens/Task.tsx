@@ -238,6 +238,11 @@ export function Task({ id = '' }: { id?: string }) {
                     >
                       <span className="font-mono text-[0.75rem] text-fg-subtle">{k.id}</span>
                       <span className="flex-1 truncate">{k.title}</span>
+                      {(t.status === 'planning' || t.status === 'review') && (
+                        <span className="rounded-[0.1875rem] border border-line-strong px-1 text-[0.6875rem] text-fg-subtle">
+                          Draft
+                        </span>
+                      )}
                       <TicketStatusLabel ticket={k} />
                     </button>
                   ))}
