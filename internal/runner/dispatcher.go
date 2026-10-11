@@ -113,7 +113,7 @@ projects:
 				d.started(p.ID, v, run.ID)
 			case errors.Is(err, ErrRunsClosed), d.ctx.Err() != nil:
 				return false
-			case errors.As(err, new(startingRefusal)):
+			case errors.As(err, new(startingRefusal)), errors.Is(err, ErrNoTicket):
 			case errors.As(err, new(*TicketRefusal)):
 				reason := "the dispatcher could not start it: " + err.Error()
 				if b, berr := d.tickets.Block(p.ID, v.ID, reason); berr == nil {

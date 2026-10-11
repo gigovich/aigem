@@ -344,6 +344,26 @@ func TestADispatcherLeavesATicketAPersonIsStarting(t *testing.T) {
 	}
 }
 
+func TestADispatcherIgnoresATicketDeletedUnderIt(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	listed := NewTickets(TicketsConfig{Dir: t.TempDir()})
+	v, err := listed.Create(f.project, NewTicket{Title: "gone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := listed.Update(f.project, v.ID, TicketPatch{Status: ptr(TicketReady)}); err != nil {
+		t.Fatal(err)
+	}
+	f.setDispatch(1, false)
+	cfg := f.dispatcherConfig()
+	cfg.Tickets = listed
+	d := newDispatcher(cfg)
+	f.pass(d)
+	if got, _ := listed.Get(f.project, v.ID); got.Status != TicketReady || len(got.Comments) != 0 || d.held {
+		t.Fatalf("ticket = %s %+v, held %v; want ready, untouched, not held", got.Status, got.Comments, d.held)
+	}
+}
+
 func TestAStoppedDispatcherNeverBlocksATicket(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	id := f.ready("cancelled")
