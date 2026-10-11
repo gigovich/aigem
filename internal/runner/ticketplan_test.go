@@ -202,7 +202,7 @@ func (f *fixture) planned(id string) RunView {
 	return v
 }
 
-func TestApproveMakesTheDraftReadyAndStopsThePlanner(t *testing.T) {
+func TestApproveMakesTheDraftReady(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	id := f.openTicket("goal")
 	f.planned(id)
