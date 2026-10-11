@@ -205,16 +205,13 @@ func (f *fixture) planned(id string) RunView {
 func TestApproveMakesTheDraftReadyAndStopsThePlanner(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	id := f.openTicket("goal")
-	v := f.planned(id)
+	f.planned(id)
 	got, err := f.tr.Approve(f.project, id)
 	if err != nil || got.Status != TicketReady {
 		t.Fatalf("approve = %s, %v", got.Status, err)
 	}
 	if k, _ := f.tickets.Get(f.project, "TCK-2"); k.Status != TicketReady || !k.Runnable {
 		t.Errorf("subticket = %s runnable %v, want ready and runnable", k.Status, k.Runnable)
-	}
-	if rv, _ := f.runs.Get(v.ID); rv.Live {
-		t.Error("the planner run is still live after approval")
 	}
 	time.Sleep(200 * time.Millisecond)
 	if again, _ := f.tickets.Get(f.project, id); len(again.Comments) != 1 || again.Status != TicketReady {
@@ -227,16 +224,13 @@ func TestApproveMakesTheDraftReadyAndStopsThePlanner(t *testing.T) {
 func TestRejectDeletesTheDraftAndOpensTheTicket(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	id := f.openTicket("goal")
-	v := f.planned(id)
+	f.planned(id)
 	got, err := f.tr.Reject(f.project, id, "too big")
 	if err != nil || got.Status != TicketOpen || got.Progress != nil || lastComment(got) != "Plan rejected: too big" {
 		t.Fatalf("reject = %+v, %v", got, err)
 	}
 	if _, err := f.tickets.Get(f.project, "TCK-2"); !errors.Is(err, ErrNoTicket) {
 		t.Errorf("the draft after reject = %v", err)
-	}
-	if rv, _ := f.runs.Get(v.ID); rv.Live {
-		t.Error("the planner run is still live after rejection")
 	}
 	f.script.then(say("Again?"))
 	f.plan(id)
@@ -249,11 +243,30 @@ func TestThePlanReachingReviewClosesThePlannerSession(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	id := f.openTicket("goal")
 	v := f.planned(id)
-	if rv, _ := f.runs.Get(v.ID); rv.Live {
-		t.Error("the planner run is still live in review")
-	}
+	waitUntil(t, func() bool { rv, _ := f.runs.Get(v.ID); return !rv.Live })
 	if err := f.runs.Apply(v.ID, RunOp{Op: OpSubmit, Text: "go on"}); !errors.Is(err, ErrRunClosed) {
 		t.Errorf("a message to the planner in review = %v, want ErrRunClosed", err)
+	}
+}
+
+func TestATurnAfterTheReviewDoesNotTakeThePlanBack(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.openTicket("goal")
+	f.script.then(hold())
+	v := f.plan(id)
+	waitUntil(t, func() bool { rv, _ := f.runs.Get(v.ID); return rv.Running && f.script.left() == 0 })
+	f.tr.mu.Lock()
+	tr := f.tr.byRun[v.ID]
+	f.tr.mu.Unlock()
+	f.tr.onTurn(tr, uisession.Event{Kind: uisession.KindTurnEnd, Text: "Planned."})
+	f.tr.onTurn(tr, uisession.Event{Kind: uisession.KindTurnStart})
+	if err := f.tr.Stop(v.ID); !errors.Is(err, ErrRunClosed) {
+		t.Errorf("stop after review = %v, want ErrRunClosed", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got, _ := f.tickets.Get(f.project, id); got.Status != TicketReview || len(got.Comments) != 1 ||
+		lastComment(got) != "Planned." {
+		t.Fatalf("ticket = %s %+v, want review with the plan's comment only", got.Status, got.Comments)
 	}
 }
 

@@ -431,6 +431,7 @@ func (t *TicketRuns) onTurn(tr *ticketRun, ev uisession.Event) {
 		case err != nil || !lastRun(tk.Ticket, tr.run):
 		case tr.plan:
 			if tk.Status == TicketPlanning {
+				tr.gone = true
 				t.review(tr.project, tr.ticket, tr.run, planWords(ev, summary))
 			}
 		case tk.Status != TicketRunning:

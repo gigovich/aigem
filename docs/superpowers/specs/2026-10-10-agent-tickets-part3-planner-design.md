@@ -20,8 +20,8 @@ Decisions taken with the user on 2026-10-10:
   status is not derived from its subtickets while it is `planning` or `review`.
 - **The planner reads code and writes tickets.** Read-only tools rooted at the repository's main
   checkout, plus ticket tools. No file writes, no shell, no worktree.
-- **Approve, Reject or Revise.** Revise sends the person's feedback to the same planner run, which
-  edits its draft and finishes again.
+- **Approve, Reject or Revise.** Revise opens a new planner run with the draft and the person's
+  feedback; it edits the draft and finishes again.
 
 ## Statuses and rules
 
@@ -39,20 +39,16 @@ Decisions taken with the user on 2026-10-10:
     `<id> is a draft of <parent>'s plan`);
   - in `planning` a person cannot add, delete or relink subtickets of that parent (409
     `<parent> is being planned`); in `review` a person can, with the existing UI.
-- **Approve** (`review` only): every subticket becomes `ready`, the planner run is stopped, and
-  the parent's status is derived again (so it becomes `ready`). Refused with zero subtickets:
+- **Approve** (`review` only): every subticket becomes `ready` and the parent's status is derived
+  again (so it becomes `ready`). Refused with zero subtickets:
   `<id>'s plan has no subtickets; revise or reject it`.
-- **Reject** (`review` only), with a reason: the subtickets are deleted, the planner run is
-  stopped, the ticket goes back to `open`, and the reason is a comment
-  (`Plan rejected: <reason>`).
+- **Reject** (`review` only), with a reason: the subtickets are deleted, the ticket goes back to
+  `open`, and the reason is a comment (`Plan rejected: <reason>`).
 - **Revise** (`review` only), with feedback: the feedback is a comment by `you`, the ticket goes
-  to `planning`, and the feedback is sent to the planner run as a new message. When that run is
-  no longer live, a new planner run is opened; its first message carries the draft and the
-  feedback.
-  Changed later: the planner run's session closes when the plan reaches `review`, so Revise
-  always opens a new planner run.
-- **End of a planner turn.** The ticket goes to `review` in every case; `review` is "needs a
-  person" for a plan, so no new status is needed:
+  to `planning`, and a new planner run is opened; its first message carries the draft and the
+  discussion with the feedback.
+- **End of a planner turn.** The ticket goes to `review` in every case and the planner run's
+  session closes; `review` is "needs a person" for a plan, so no new status is needed:
   - with `plan_done(summary)`: the summary is a comment;
   - without it: the agent's last message is the comment;
   - interrupted or ended with an error (also after `plan_done`): `interrupted` /
@@ -106,7 +102,7 @@ All on `/api/projects/{id}/tickets/{tid}/`; refusals are 409 with the reason as 
 | `POST plan` | starts a planner run; 201 with the run |
 | `POST approve` | approves the plan; 200 with the ticket |
 | `POST reject` | `{reason}`; deletes the draft, back to `open`; 200 with the ticket |
-| `POST revise` | `{text}`; sends the feedback to the planner; 200 with the ticket |
+| `POST revise` | `{text}`; a new planner run gets the feedback; 200 with the ticket |
 
 Activity: `ticket.planned` (review reached, with the summary or reason), `ticket.approved`,
 `ticket.rejected`.
@@ -125,7 +121,7 @@ Activity: `ticket.planned` (review reached, with the summary or reason), `ticket
 - `runner`: no derive while `planning`/`review`; the draft guards; approve, reject and revise,
   each with its refusals; the tools' guards (other ticket, not planning, stale run, unknown
   repo); end of turn with and without `plan_done`, interrupted, error; Stop, delete and restart
-  moving to `review`; revise with a dead run opens a new one. Real git repositories and the
+  moving to `review`; revise opens a new planner run. Real git repositories and the
   scripted model, as in part 2.
 - `web`, `cmd/aigem`: routes, 409s, activity.
 - UI: buttons per status, the draft badge, the reason and feedback boxes, the filter.

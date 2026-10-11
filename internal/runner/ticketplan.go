@@ -101,8 +101,8 @@ func (t *TicketRuns) review(project, id, run, comment string) {
 	}
 	t.planned(project, v, comment)
 	t.release(run)
-	err = t.runs.Stop(run)
-	if err != nil && !errors.Is(err, ErrRunClosed) && !errors.Is(err, ErrNoRun) && !errors.Is(err, ErrRunsClosed) {
+	if err := t.runs.Stop(run); err != nil && !errors.Is(err, ErrRunClosed) &&
+		!errors.Is(err, ErrNoRun) && !errors.Is(err, ErrRunsClosed) {
 		slog.Warn("a reviewed plan's run could not be stopped", "run", run, "err", err)
 	}
 }
@@ -146,24 +146,14 @@ func planPrompt(tk Ticket, draft []TicketView, repos []Repository) string {
 	return b.String()
 }
 
-// Approve makes a reviewed plan's subtickets ready and stops its planner run.
+// Approve makes a reviewed plan's subtickets ready.
 func (t *TicketRuns) Approve(project, id string) (TicketView, error) {
-	v, err := t.tickets.Approve(project, id)
-	if err != nil {
-		return TicketView{}, err
-	}
-	t.endPlanner(v)
-	return v, nil
+	return t.tickets.Approve(project, id)
 }
 
-// Reject deletes a reviewed plan's subtickets, opens the ticket again and stops its planner run.
+// Reject deletes a reviewed plan's subtickets and opens the ticket again.
 func (t *TicketRuns) Reject(project, id, reason string) (TicketView, error) {
-	v, err := t.tickets.Reject(project, id, reason)
-	if err != nil {
-		return TicketView{}, err
-	}
-	t.endPlanner(v)
-	return v, nil
+	return t.tickets.Reject(project, id, reason)
 }
 
 // Revise opens a new planner run whose first message carries the draft and the discussion with
@@ -182,17 +172,4 @@ func (t *TicketRuns) Revise(ctx context.Context, project, id, feedback string) (
 		return TicketView{}, err
 	}
 	return t.tickets.Get(project, id)
-}
-
-// endPlanner stops the planner run of a plan a person decided. The decision is recorded first,
-// so the run's last turn end finds nothing to change.
-func (t *TicketRuns) endPlanner(v TicketView) {
-	n := len(v.Runs)
-	if n == 0 {
-		return
-	}
-	run := v.Runs[n-1]
-	if err := t.Stop(run); err != nil && !errors.Is(err, ErrNoRun) && !errors.Is(err, ErrRunClosed) {
-		slog.Warn("a decided plan's run could not be stopped", "run", run, "err", err)
-	}
 }
