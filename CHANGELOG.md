@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Web UI: the add-project form offers to make a directory that is not a git repository
+  one (`git init` and an empty first commit on `main`), since tickets need a repository.
 - Web UI: the dispatcher (part 4 of agent tickets). Each project has 0 to 8 slots; while
   fewer tickets are running, the daemon starts the oldest runnable one by itself. Pause and
   Resume on the Tickets screen; a ticket that cannot start is blocked with the reason.

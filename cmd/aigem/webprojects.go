@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gigovich/aigem/internal/gitx"
 	"github.com/gigovich/aigem/internal/pathutil"
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/web"
@@ -34,7 +35,7 @@ func (b *webBackend) Projects(context.Context) ([]web.Project, error) {
 	return out, nil
 }
 
-func (b *webBackend) AddProject(_ context.Context, req web.NewProject) (web.Project, error) {
+func (b *webBackend) AddProject(ctx context.Context, req web.NewProject) (web.Project, error) {
 	if b.projects == nil {
 		return web.Project{}, web.ErrUnavailable
 	}
@@ -45,6 +46,12 @@ func (b *webBackend) AddProject(_ context.Context, req web.NewProject) (web.Proj
 	v, err := b.projects.Add(dir, req.Name)
 	if err != nil {
 		return web.Project{}, webProjectError(err)
+	}
+	if req.GitInit && !isRepo(dir) {
+		if err := gitx.Init(ctx, dir); err != nil {
+			_ = b.projects.Remove(v.ID)
+			return web.Project{}, web.Refuse(err)
+		}
 	}
 	b.recordActivity(web.Activity{Kind: "project.added", Text: "Added project " + v.Name})
 	return webProject(v), nil
@@ -149,8 +156,7 @@ func (b *webBackend) Dirs(ctx context.Context, path string) (web.DirListing, err
 			} else if !e.IsDir() {
 				continue
 			}
-			_, gitErr := os.Lstat(filepath.Join(full, ".git"))
-			out.Dirs = append(out.Dirs, web.Dir{Name: e.Name(), Git: gitErr == nil})
+			out.Dirs = append(out.Dirs, web.Dir{Name: e.Name(), Git: isRepo(full)})
 		}
 		if errors.Is(err, io.EOF) {
 			break
@@ -164,6 +170,11 @@ func (b *webBackend) Dirs(ctx context.Context, path string) (web.DirListing, err
 		out.Dirs = out.Dirs[:maxDirs]
 	}
 	return out, nil
+}
+
+func isRepo(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 // underRoot resolves a path the page sent - relative to the root, or absolute

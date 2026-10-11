@@ -380,7 +380,7 @@ func TestProjectOnlyModelOfATrustedProviderCanBeAdded(t *testing.T) {
 }
 
 func TestValidNamesRejectFormatCharacters(t *testing.T) {
-	for _, s := range []string{"a‮b", "a​b"} {
+	for _, s := range []string{"a\u202eb", "a\u200bb"} {
 		if validModelID(s) || validName(s) {
 			t.Errorf("%q accepted", s)
 		}

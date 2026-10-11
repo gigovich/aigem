@@ -14,8 +14,10 @@ aigem web --root ~/work          # pick projects from under ~/work
 New projects can only be picked from under the root: the directory the daemon
 was started in, or `--root`. A daemon with no projects shows the form to add
 one in place of every screen. `--root` limits only what can be added: projects
-added earlier stay listed wherever they are. The daemon needs its state
-directory and refuses to start without one.
+added earlier stay listed wherever they are. Tickets run in a git repository, so
+for a directory that is not one the form offers to run `git init` and make a first
+empty commit on `main`. The daemon needs its state directory and refuses to start
+without one.
 
 `/healthz` says only that the process is up; `GET /api/meta`, behind the
 credential, is where a page reads the version, the default model and which
@@ -176,7 +178,7 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/usage` | stored provider quota snapshots |
 | `GET /api/activity` | persistent mutation feed, paged with `?since=&limit=` |
 | `GET /api/projects` | the registry, in the order projects were added; each with `slots` and `paused` |
-| `POST /api/projects` | `{"dir":"app","name":"optional"}`, `dir` under the root; 201, or 400 |
+| `POST /api/projects` | `{"dir":"app","name":"optional","gitInit":false}`, `dir` under the root; 201, or 400 |
 | `GET /api/fs` | `?path=` under the root; `{root, path, dirs: [{name, git}], truncated}` |
 | `DELETE /api/projects/{id}` | forgets the project; 409 while it has an open run; removes no files |
 | `PATCH /api/projects/{id}` | `{slots?, paused?}`; 200 with the project, 400 out of range, 404 |

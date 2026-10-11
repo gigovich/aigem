@@ -63,6 +63,21 @@ func lines(out string) []string {
 	return strings.Split(out, "\n")
 }
 
+// Init makes dir, which has no .git, a repository on main with one empty commit, which a run's
+// worktree branches from. The commit has its own author and skips signing and hooks, so a machine's
+// git setup cannot stop it; if it fails anyway, the .git made here is removed.
+func Init(ctx context.Context, dir string) error {
+	if _, err := run(ctx, dir, "init", "-q", "-b", "main"); err != nil {
+		return err
+	}
+	_, err := run(ctx, dir, "-c", "user.name=aigem", "-c", "user.email=aigem@localhost", "-c", "commit.gpgsign=false",
+		"commit", "-q", "--allow-empty", "--no-verify", "-m", "Initial commit")
+	if err != nil {
+		_ = os.RemoveAll(filepath.Join(dir, ".git"))
+	}
+	return err
+}
+
 // MainBranch is the branch runs merge into: main, else master, else "".
 func MainBranch(ctx context.Context, dir string) string {
 	for _, b := range []string{"main", "master"} {

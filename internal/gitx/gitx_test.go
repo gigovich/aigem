@@ -212,3 +212,14 @@ func TestAnErrorCarriesGitsOwnText(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestInitLeavesAMainBranch(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	dir := t.TempDir()
+	if err := Init(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := MainBranch(context.Background(), dir); got != "main" {
+		t.Errorf("main branch = %q, want main", got)
+	}
+}

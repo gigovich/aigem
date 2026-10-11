@@ -130,6 +130,7 @@ test('with no projects the page is the add form, and a folder is opened to pick 
   expect(h.paths).toContain('/api/fs?path=thing')
 
   await user.click(screen.getByRole('button', { name: /^thing/ }))
+  expect(screen.queryByRole('checkbox', { name: /run git init/ })).not.toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Add project' }))
   await waitFor(() => expect(screen.queryByRole('heading', { name: 'Add your first project' })).not.toBeInTheDocument())
   expect(h.sent.filter((r) => r.path === '/api/projects').pop()?.body).toBe('{"dir":"thing"}')
@@ -148,6 +149,21 @@ test('the root itself can be picked', async () => {
   await user.click(await screen.findByRole('button', { name: '/home/dev' }))
   await user.click(screen.getByRole('button', { name: 'Add project' }))
   await waitFor(() => expect(h.sent.find((r) => r.path === '/api/projects')?.body).toBe('{"dir":"."}'))
+})
+
+test('a folder that is not a git repository can be made one', async () => {
+  const user = userEvent.setup()
+  const PLAIN: Project = { id: 'PRJ-3', name: 'plain', dir: '/home/dev/plain' }
+  const h = await mountApp({
+    projects: [],
+    routes: { 'POST /api/projects': () => new Response(JSON.stringify(PLAIN), { status: 201 }) },
+  })
+  await user.click(await screen.findByRole('button', { name: 'plain' }))
+  await user.click(screen.getByRole('checkbox', { name: /run git init/ }))
+  await user.click(screen.getByRole('button', { name: 'Add project' }))
+  await waitFor(() =>
+    expect(h.sent.find((r) => r.path === '/api/projects')?.body).toBe('{"dir":"plain","gitInit":true}'),
+  )
 })
 
 test('/projects/{id} selects the project and lands on the sessions', async () => {

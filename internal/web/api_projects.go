@@ -63,6 +63,8 @@ type ProjectPatch struct {
 type NewProject struct {
 	Dir  string `json:"dir"`
 	Name string `json:"name,omitempty"`
+	// GitInit makes a directory that is not a repository one, as tickets need.
+	GitInit bool `json:"gitInit,omitempty"`
 }
 
 type Repository struct {

@@ -86,7 +86,7 @@ test('models asks before it changes the default, and only then writes', async ()
 const MODEL_SETUP = { features: { ...META.features, modelSetup: true } }
 
 test('with no model of its own the page is the add form', async () => {
-  const project: Model = { ...MODELS[1], ref: 'repo/m', provider: 'repo', name: 'Repo', project: true }
+  const project: Model = { ...MODELS[1]!, ref: 'repo/m', provider: 'repo', name: 'Repo', project: true }
   const providers = { providers: [{ id: 'openai', needsAuth: true, authenticated: true, canLogin: true }], local: [] }
   await mountApp({
     meta: MODEL_SETUP,
@@ -99,10 +99,10 @@ test('with no model of its own the page is the add form', async () => {
 
 test('the add form lists a local server and posts the checked models with a context window', async () => {
   const user = userEvent.setup()
-  const project: Model = { ...MODELS[1], ref: 'repo/m', provider: 'repo', name: 'Repo', project: true }
+  const project: Model = { ...MODELS[1]!, ref: 'repo/m', provider: 'repo', name: 'Repo', project: true }
   const served: Model[] = [
-    { ...MODELS[1], ref: 'a', provider: '', name: 'a', contextWindow: 8192 },
-    { ...MODELS[1], ref: 'b', provider: '', name: 'b', contextWindow: 0 },
+    { ...MODELS[1]!, ref: 'a', provider: '', name: 'a', contextWindow: 8192 },
+    { ...MODELS[1]!, ref: 'b', provider: '', name: 'b', contextWindow: 0 },
   ]
   const providers = {
     providers: [{ id: 'openai', needsAuth: true, authenticated: true, canLogin: true }],
@@ -141,7 +141,7 @@ test('models removes an added model once asked', async () => {
   const user = userEvent.setup()
   const h = await mountApp({
     meta: MODEL_SETUP,
-    models: [MODELS[0], { ...MODELS[1], removable: true }],
+    models: [MODELS[0]!, { ...MODELS[1]!, removable: true }],
     routes: { 'DELETE /api/models?ref=openai%2Fgpt-5': () => new Response(null, { status: 204 }) },
   })
   go('models')

@@ -9,7 +9,8 @@ type Node = { dirs: Dir[]; truncated?: boolean } | { error: string }
 type Props = {
   /** The chosen path relative to the root; '' is the root itself, null is nothing yet. */
   selected: string | null
-  onSelect: (path: string) => void
+  /** git is whether the directory is a repository; unknown for the root. */
+  onSelect: (path: string, git?: boolean) => void
 }
 
 const ROW = 'flex h-6 w-full items-center gap-1.5 rounded-[0.3125rem] px-1.5 text-left hover:bg-s0'
@@ -86,7 +87,7 @@ export function DirTree({ selected, onSelect }: Props) {
                 <button
                   type="button"
                   aria-pressed={selected === p}
-                  onClick={() => onSelect(p)}
+                  onClick={() => onSelect(p, !!d.git)}
                   className={`${ROW} ${selected === p ? 'bg-s0 font-medium text-fg' : 'text-fg-muted'}`}
                 >
                   <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{d.name}</span>

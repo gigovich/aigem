@@ -20,6 +20,8 @@ const INPUT =
  */
 export function ProjectForm({ onDone }: { onDone?: () => void }) {
   const [dir, setDir] = useState<string | null>(null)
+  const [notGit, setNotGit] = useState(false)
+  const [gitInit, setGitInit] = useState(false)
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -31,7 +33,11 @@ export function ProjectForm({ onDone }: { onDone?: () => void }) {
     try {
       const trimmed = name.trim()
       const path = dir || '.'
-      const project = await api.addProject(trimmed ? { dir: path, name: trimmed } : { dir: path })
+      const project = await api.addProject({
+        dir: path,
+        ...(trimmed && { name: trimmed }),
+        ...(notGit && gitInit && { gitInit: true }),
+      })
       await reloadProjects()
       selectProject(project.id)
       flash(`Added ${project.name}`)
@@ -52,8 +58,21 @@ export function ProjectForm({ onDone }: { onDone?: () => void }) {
     >
       <div className="flex flex-col gap-1 text-[0.78125rem] text-fg-subtle">
         Directory
-        <DirTree selected={dir} onSelect={setDir} />
+        <DirTree
+          selected={dir}
+          onSelect={(path, git) => {
+            setDir(path)
+            setNotGit(git === false)
+            setGitInit(false)
+          }}
+        />
       </div>
+      {notGit && (
+        <label className="flex items-center gap-2 text-[0.78125rem] text-fg-subtle">
+          <input type="checkbox" checked={gitInit} onChange={(e) => setGitInit(e.target.checked)} />
+          Not a git repository: run git init and a first commit (tickets need a repository)
+        </label>
+      )}
       <label className="flex flex-col gap-1 text-[0.78125rem] text-fg-subtle">
         Name, if not the directory's
         <input

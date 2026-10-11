@@ -28,6 +28,7 @@ export type Feature =
   | 'controlSocket'
   | 'runs'
   | 'models'
+  | 'modelSetup'
   | 'providerLogin'
   | 'skills'
   | 'commands'
@@ -75,7 +76,7 @@ export type Project = {
 export type ProjectPatch = { slots?: number; paused?: boolean }
 
 /** `dir` is relative to the daemon's root, or absolute under it. */
-export type NewProject = { dir: string; name?: string }
+export type NewProject = { dir: string; name?: string; gitInit?: boolean }
 
 export type Dir = { name: string; git?: boolean }
 

@@ -288,6 +288,7 @@ func TestAFailureNotOfTheTicketHoldsUntilTheTick(t *testing.T) {
 
 func TestAFailingProjectDoesNotHoldTheOthers(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
+	f.script.then(hold())
 	broken := f.ready("broken")
 	writeFile(t, f.repo, ".aigem", "not a directory")
 	other, err := f.projects.Add(gitRepo(t, "main"), "")

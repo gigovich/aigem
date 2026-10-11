@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gigovich/aigem/internal/gitx"
 	"github.com/gigovich/aigem/internal/llm"
 	"github.com/gigovich/aigem/internal/pathutil"
 	"github.com/gigovich/aigem/internal/runner"
@@ -356,5 +357,24 @@ func TestUpdatingAProjectSetsItsDispatcher(t *testing.T) {
 	if _, err := b.UpdateProject(ctx, "PRJ-9", web.ProjectPatch{Slots: &slots}); !errors.Is(err,
 		web.ErrNoProject) {
 		t.Errorf("unknown project = %v, want web.ErrNoProject", err)
+	}
+}
+
+func TestAddProjectCanInitAGitRepository(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	root := testRoot(t, "plain", "fresh")
+	b := newWebBackend(webBackendConfig{root: root, projects: testProjects(t, nil)})
+	ctx := context.Background()
+	if _, err := b.AddProject(ctx, web.NewProject{Dir: "plain"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "plain", ".git")); err == nil {
+		t.Error("a project added without gitInit became a repository")
+	}
+	if _, err := b.AddProject(ctx, web.NewProject{Dir: "fresh", GitInit: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitx.MainBranch(ctx, filepath.Join(root, "fresh")); got != "main" {
+		t.Errorf("main branch = %q, want main", got)
 	}
 }

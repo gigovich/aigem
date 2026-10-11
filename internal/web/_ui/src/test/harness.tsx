@@ -134,7 +134,7 @@ export function installDaemon(daemon: Daemon = {}): Harness {
       if (path === '/api/projects') return Promise.resolve(ok(daemon.projects ?? [HOME_PROJECT]))
       if (at('/api/fs')) {
         const sub = new URLSearchParams(path.split('?')[1]).get('path') ?? ''
-        return Promise.resolve(ok({ root: '/home/dev', path: sub, dirs: sub ? [] : [{ name: 'thing', git: true }] }))
+        return Promise.resolve(ok({ root: '/home/dev', path: sub, dirs: sub ? [] : [{ name: 'plain' }, { name: 'thing', git: true }] }))
       }
       if (/^\/api\/projects\/[^/]+\/repos$/.test(path)) return Promise.resolve(ok([]))
       if (/^\/api\/projects\/[^/]+\/worktrees$/.test(path)) return Promise.resolve(ok([]))
