@@ -71,9 +71,12 @@ export type Project = {
   loadError?: string
   slots?: number
   paused?: boolean
+  /** Ticket runs get bash; shellForced when the daemon's --ticket-shell gives it to every project. */
+  shell?: boolean
+  shellForced?: boolean
 }
 
-export type ProjectPatch = { slots?: number; paused?: boolean }
+export type ProjectPatch = { slots?: number; paused?: boolean; shell?: boolean }
 
 /** `dir` is relative to the daemon's root, or absolute under it. */
 export type NewProject = { dir: string; name?: string; gitInit?: boolean }

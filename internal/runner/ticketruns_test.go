@@ -293,6 +293,22 @@ func TestADoneTicketIsCommittedCheckedAndMergedIntoMain(t *testing.T) {
 	}
 }
 
+func TestBashReachesATicketRunOnlyWhenItsProjectAllowsIt(t *testing.T) {
+	for _, shell := range []bool{false, true} {
+		f := newFixture(t, gitRepo(t, "main"))
+		if _, err := f.projects.SetDispatch(f.project, nil, nil, &shell); err != nil {
+			t.Fatal(err)
+		}
+		id := f.ready("make notes")
+		f.script.then(call("bash", `{"cmd":"echo notes > notes.txt"}`), done("Made notes."), say("Finished."))
+		f.start(id)
+		f.next(id, 0)
+		if _, err := os.Stat(filepath.Join(f.repo, "notes.txt")); (err == nil) != shell {
+			t.Errorf("shell %v: notes.txt on main = %v", shell, err == nil)
+		}
+	}
+}
+
 func TestATurnWithoutTicketDoneBlocksAndTheNextTurnIsEvaluatedAgain(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	id := f.ready("pick a database")

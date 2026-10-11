@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Web UI: a **Shell** switch on the Tickets screen gives a project's ticket runs bash (the
+  `shell` profile), so they can run tests. `aigem web --ticket-shell` turns it on for every
+  project.
 - Web UI: the add-project form offers to make a directory that is not a git repository
   one (`git init` and an empty first commit on `main`), since tickets need a repository.
 - Web UI: the dispatcher (part 4 of agent tickets). Each project has 0 to 8 slots; while

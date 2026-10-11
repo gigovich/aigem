@@ -19,7 +19,7 @@ type ProjectsBackend interface {
 	// RemoveProject forgets a project. ErrNoProject for an unknown id, a
 	// Conflict while it has an open run. It never removes files.
 	RemoveProject(ctx context.Context, id string) error
-	// UpdateProject sets the dispatcher's slots and pause. ErrNoProject for an unknown id, a
+	// UpdateProject sets the dispatcher's slots, pause and shell. ErrNoProject for an unknown id, a
 	// *Refusal for slots out of range.
 	UpdateProject(ctx context.Context, id string, req ProjectPatch) (Project, error)
 	// ProjectRepos discovers the project's git checkouts on demand.
@@ -53,11 +53,16 @@ type Project struct {
 	// Slots is how many tickets the dispatcher keeps running; 0 is off.
 	Slots  int  `json:"slots"`
 	Paused bool `json:"paused"`
+	// Shell gives the project's ticket runs bash; ShellForced is set when the daemon gives it to
+	// every project, whatever Shell says.
+	Shell       bool `json:"shell"`
+	ShellForced bool `json:"shellForced,omitempty"`
 }
 
 type ProjectPatch struct {
 	Slots  *int  `json:"slots,omitempty"`
 	Paused *bool `json:"paused,omitempty"`
+	Shell  *bool `json:"shell,omitempty"`
 }
 
 type NewProject struct {

@@ -167,18 +167,22 @@ func (req RunRequest) Root(dir string) string {
 	return dir
 }
 
-// readOnlyProfile is the capability profile a run without a worktree must have.
-const readOnlyProfile = "read-only"
+// readOnlyProfile is the capability profile a run without a worktree must have; shellProfile is the
+// one that adds bash.
+const (
+	readOnlyProfile = "read-only"
+	shellProfile    = "shell"
+)
 
 // allowed says whether the request's mode, profile and root go together. The autonomous policy
 // approves edits on the assumption that a ticket's worktree is all the session can reach; a run
-// without one may only read. Only the default and read-only profiles are open to a run.
+// without one may only read. A ticket's run in a worktree may also have bash.
 func (req RunRequest) allowed() bool {
 	switch req.Mode {
 	case ModeInteractive:
 		return req.Profile == ""
 	case ModeAutonomous:
-		return req.TicketID != "" && (req.Profile == "" && req.Worktree != "" ||
+		return req.TicketID != "" && ((req.Profile == "" || req.Profile == shellProfile) && req.Worktree != "" ||
 			req.Profile == readOnlyProfile && (req.Worktree != "" || req.Dir != ""))
 	}
 	return false

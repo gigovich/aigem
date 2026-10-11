@@ -345,6 +345,11 @@ func TestUpdatingAProjectSetsItsDispatcher(t *testing.T) {
 		got.Slots != 2 || !got.Paused {
 		t.Fatalf("pause = %+v, %v", got, err)
 	}
+	on := true
+	if got, err = b.UpdateProject(ctx, added.ID, web.ProjectPatch{Shell: &on}); err != nil ||
+		!got.Shell || got.ShellForced || !got.Paused {
+		t.Fatalf("shell = %+v, %v", got, err)
+	}
 	if list, _ := b.Projects(ctx); list[len(list)-1].Slots != 2 || !list[len(list)-1].Paused {
 		t.Errorf("listed = %+v", list)
 	}

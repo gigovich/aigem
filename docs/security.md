@@ -37,6 +37,11 @@ commands (`rm`, `git reset --hard`, `git clean`, ...) are still denied.
 `dangerous-shell` is the opt-in for unattended destructive shell - and even then,
 catastrophic hard-deny patterns are blocked by the `bash` tool itself.
 
+A ticket's run in `aigem web` uses `workspace-write`, or `shell` when its project turns
+**Shell** on or the daemon runs with `--ticket-shell`. Commands recognised as destructive are not
+denied but wait for a person; every other command runs without asking, with the daemon's
+environment and network.
+
 ### Turn budgets
 
 Unattended turns also carry runaway budgets: 20 minutes wall-clock, 40 model

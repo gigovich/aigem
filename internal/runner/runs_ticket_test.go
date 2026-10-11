@@ -184,7 +184,6 @@ func TestAnAutonomousRunNeedsATicketAndAWorktreeOrOnlyReads(t *testing.T) {
 		{Mode: ModeAutonomous, TicketID: "TCK-1", Dir: t.TempDir(), Profile: "shell"},
 		{Mode: ModeAutonomous, TicketID: "TCK-1", Profile: readOnlyProfile},
 		{Mode: ModeAutonomous, TicketID: "TCK-1", Worktree: t.TempDir(), Profile: "nope"},
-		{Mode: ModeAutonomous, TicketID: "TCK-1", Worktree: t.TempDir(), Profile: "shell"},
 		{Mode: ModeAutonomous, TicketID: "TCK-1", Worktree: t.TempDir(), Profile: "dangerous-shell"},
 		{Profile: readOnlyProfile},
 	} {

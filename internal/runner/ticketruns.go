@@ -144,11 +144,15 @@ func (t *TicketRuns) Start(ctx context.Context, project, id string) (RunView, er
 		return RunView{}, err
 	}
 
+	var profile string
+	if pv, err := t.projects.Get(project); err == nil && pv.TicketShell() {
+		profile = shellProfile
+	}
 	tr := &ticketRun{project: project, ticket: id, place: pl}
 	tr.ctx, tr.cancel = context.WithCancel(context.Background())
 	v, err := t.runs.Create(ctx, RunRequest{
 		Mode: ModeAutonomous, Title: id + ": " + tk.Title, ProjectID: project,
-		TicketID: id, Worktree: pl.worktree, Branch: pl.branch,
+		TicketID: id, Worktree: pl.worktree, Branch: pl.branch, Profile: profile,
 		Tools:  []tools.Tool{newTicketDone(tr.record)},
 		OnTurn: func(ev uisession.Event) { t.onTurn(tr, ev) },
 	})

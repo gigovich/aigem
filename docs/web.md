@@ -9,6 +9,7 @@ aigem web                        # a port chosen by the kernel
 aigem web --addr 127.0.0.1:7777  # a fixed one
 aigem web --open                 # open it in the default browser too
 aigem web --root ~/work          # pick projects from under ~/work
+aigem web --ticket-shell         # let every project's ticket runs use bash
 ```
 
 New projects can only be picked from under the root: the directory the daemon
@@ -177,11 +178,11 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/commands` | the command palette catalogue from the active environment; takes `?project=` |
 | `GET /api/usage` | stored provider quota snapshots |
 | `GET /api/activity` | persistent mutation feed, paged with `?since=&limit=` |
-| `GET /api/projects` | the registry, in the order projects were added; each with `slots` and `paused` |
+| `GET /api/projects` | the registry, in the order projects were added; each with `slots`, `paused`, `shell` and `shellForced` |
 | `POST /api/projects` | `{"dir":"app","name":"optional","gitInit":false}`, `dir` under the root; 201, or 400 |
 | `GET /api/fs` | `?path=` under the root; `{root, path, dirs: [{name, git}], truncated}` |
 | `DELETE /api/projects/{id}` | forgets the project; 409 while it has an open run; removes no files |
-| `PATCH /api/projects/{id}` | `{slots?, paused?}`; 200 with the project, 400 out of range, 404 |
+| `PATCH /api/projects/{id}` | `{slots?, paused?, shell?}`; 200 with the project, 400 out of range, 404 |
 | `GET /api/projects/{id}/repos` | the git checkouts under the project, discovered on demand |
 | `GET /api/projects/{id}/tickets` | the project's tickets, oldest first; `?status=` and `?parent=` filter |
 | `POST /api/projects/{id}/tickets` | `{repo, title, body, parent, dependsOn}`; 201 |
@@ -494,6 +495,16 @@ dispatcher logs it and holds until the next 30 second tick, but the other projec
 still start. A full daemon (32 live runs) ends the pass. A ticket moved back to `ready` while
 its run is still live is blocked again with the live-run reason. Pause stops new starts;
 lowering the slots stops nothing.
+
+A ticket run edits files in its worktree but has no `bash` by default, so it cannot run tests.
+The **Shell** switch on the Tickets screen (`shell` on the project) gives the project's ticket
+runs the `shell` profile: bash runs without asking, and only a command aigem recognises as
+destructive (`rm`, `git reset --hard`, ...) waits for a person. Bash is not held to the
+worktree: it has the daemon's environment (provider keys included), the network and your git
+credentials. Text the agent reads, such as a web page or a planted file, can steer it, so turn
+Shell on only where that risk is acceptable.
+`aigem web --ticket-shell` turns it on for every project (`shellForced`), and the switch then
+shows on and cannot be turned off. Runs already started keep the profile they started with.
 
 ## Runs
 

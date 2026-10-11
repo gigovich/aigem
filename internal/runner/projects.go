@@ -32,6 +32,8 @@ type Project struct {
 	Created time.Time `json:"created"`
 	Slots   int       `json:"slots,omitempty"`
 	Paused  bool      `json:"paused,omitempty"`
+	// Shell gives the project's ticket runs bash.
+	Shell bool `json:"shell,omitempty"`
 }
 
 // ProjectTable is the saved registry. The counter is saved with the rows
@@ -46,19 +48,27 @@ type ProjectTable struct {
 type ProjectView struct {
 	Project
 	LoadError string
+	// ShellForced is set when the daemon gives every project's ticket runs bash.
+	ShellForced bool
 }
+
+// TicketShell says whether the project's ticket runs get bash.
+func (v ProjectView) TicketShell() bool { return v.Shell || v.ShellForced }
 
 type ProjectsConfig struct {
 	Store   *store.File[ProjectTable]
 	LoadEnv func(ctx context.Context, dir string) (*Env, error)
 	Notify  func(ProjectView)
 	Now     func() time.Time
+	// Shell gives every project's ticket runs bash, whatever the project says.
+	Shell bool
 }
 
 type Projects struct {
 	loadEnv func(context.Context, string) (*Env, error)
 	notify  func(ProjectView)
 	now     func() time.Time
+	shell   bool
 
 	mu     sync.Mutex
 	file   *store.File[ProjectTable]
@@ -78,7 +88,7 @@ type project struct {
 
 func NewProjects(cfg ProjectsConfig) (*Projects, error) {
 	p := &Projects{
-		loadEnv: cfg.LoadEnv, notify: cfg.Notify, now: cfg.Now,
+		loadEnv: cfg.LoadEnv, notify: cfg.Notify, now: cfg.Now, shell: cfg.Shell,
 		file: cfg.Store, byID: map[string]*project{},
 	}
 	if p.now == nil {
@@ -176,7 +186,7 @@ func (p *Projects) Add(dir, name string) (ProjectView, error) {
 	}
 	p.mu.Unlock()
 
-	v := ProjectView{Project: rec}
+	v := ProjectView{Project: rec, ShellForced: p.shell}
 	p.notify(v)
 	return v, nil
 }
@@ -208,15 +218,15 @@ func (p *Projects) Remove(id string) error {
 	if env != nil {
 		env.Close()
 	}
-	p.notify(ProjectView{Project: pr.rec})
+	p.notify(ProjectView{Project: pr.rec, ShellForced: p.shell})
 	return nil
 }
 
 const maxSlots = 8
 
-// SetDispatch sets how many tickets the dispatcher keeps running in the project and whether it
-// is paused; nil keeps a setting.
-func (p *Projects) SetDispatch(id string, slots *int, paused *bool) (ProjectView, error) {
+// SetDispatch sets how many tickets the dispatcher keeps running in the project, whether it is
+// paused and whether its ticket runs get bash; nil keeps a setting.
+func (p *Projects) SetDispatch(id string, slots *int, paused, shell *bool) (ProjectView, error) {
 	if slots != nil && (*slots < 0 || *slots > maxSlots) {
 		return ProjectView{}, fmt.Errorf("runner: slots must be between 0 and %d", maxSlots)
 	}
@@ -233,6 +243,9 @@ func (p *Projects) SetDispatch(id string, slots *int, paused *bool) (ProjectView
 	if paused != nil {
 		pr.rec.Paused = *paused
 	}
+	if shell != nil {
+		pr.rec.Shell = *shell
+	}
 	if err := p.saveLocked(); err != nil {
 		pr.rec = old
 		p.mu.Unlock()
@@ -245,7 +258,7 @@ func (p *Projects) SetDispatch(id string, slots *int, paused *bool) (ProjectView
 }
 
 func (p *Projects) viewLocked(pr *project) ProjectView {
-	return ProjectView{Project: pr.rec, LoadError: pr.loadErr}
+	return ProjectView{Project: pr.rec, LoadError: pr.loadErr, ShellForced: p.shell}
 }
 
 // saveLocked writes the table and returns the error: unlike a run, a project is

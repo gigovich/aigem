@@ -637,7 +637,7 @@ func TestDispatchSettingsAreCheckedSavedAndAnnounced(t *testing.T) {
 	addProject(t, p, t.TempDir(), "")
 
 	slots, paused := 3, true
-	v, err := p.SetDispatch("PRJ-1", &slots, &paused)
+	v, err := p.SetDispatch("PRJ-1", &slots, &paused, nil)
 	if err != nil || v.Slots != 3 || !v.Paused {
 		t.Fatalf("SetDispatch = %+v, %v", v, err)
 	}
@@ -645,21 +645,34 @@ func TestDispatchSettingsAreCheckedSavedAndAnnounced(t *testing.T) {
 		t.Errorf("announced %+v, want the new settings", last)
 	}
 	resume := false
-	if v, err = p.SetDispatch("PRJ-1", nil, &resume); err != nil || v.Slots != 3 || v.Paused {
+	if v, err = p.SetDispatch("PRJ-1", nil, &resume, nil); err != nil || v.Slots != 3 || v.Paused {
 		t.Errorf("resume = %+v, %v, want the slots kept", v, err)
 	}
 	for _, bad := range []int{-1, 9} {
-		_, err := p.SetDispatch("PRJ-1", &bad, nil)
+		_, err := p.SetDispatch("PRJ-1", &bad, nil, nil)
 		if err == nil || err.Error() != "runner: slots must be between 0 and 8" {
 			t.Errorf("slots %d = %v", bad, err)
 		}
 	}
-	if _, err := p.SetDispatch("PRJ-9", &slots, nil); !errors.Is(err, runner.ErrNoProject) {
+	if _, err := p.SetDispatch("PRJ-9", &slots, nil, nil); !errors.Is(err, runner.ErrNoProject) {
 		t.Errorf("unknown project = %v, want ErrNoProject", err)
 	}
 
+	shell := true
+	if v, err = p.SetDispatch("PRJ-1", nil, nil, &shell); err != nil || !v.TicketShell() || v.ShellForced {
+		t.Errorf("shell = %+v, %v", v, err)
+	}
+
 	again := newProjects(t, path, nil)
-	if got, err := again.Get("PRJ-1"); err != nil || got.Slots != 3 || got.Paused {
+	if got, err := again.Get("PRJ-1"); err != nil || got.Slots != 3 || got.Paused || !got.Shell {
 		t.Errorf("after a restart = %+v, %v", got, err)
+	}
+	forced, err := runner.NewProjects(runner.ProjectsConfig{Shell: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(forced.Close)
+	if v := addProject(t, forced, t.TempDir(), ""); !v.TicketShell() || v.Shell {
+		t.Errorf("a daemon giving every project the shell = %+v", v)
 	}
 }

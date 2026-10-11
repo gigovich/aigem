@@ -77,7 +77,7 @@ func (b *webBackend) UpdateProject(_ context.Context, id string, req web.Project
 	if b.projects == nil {
 		return web.Project{}, web.ErrUnavailable
 	}
-	v, err := b.projects.SetDispatch(id, req.Slots, req.Paused)
+	v, err := b.projects.SetDispatch(id, req.Slots, req.Paused, req.Shell)
 	if err != nil {
 		return web.Project{}, webProjectError(err)
 	}
@@ -234,7 +234,7 @@ func (b *webBackend) envFor(ctx context.Context, project string) (*runner.Env, e
 func webProject(v runner.ProjectView) web.Project {
 	return web.Project{
 		ID: v.ID, Name: v.Name, Dir: v.Dir, Created: v.Created, LoadError: v.LoadError,
-		Slots: v.Slots, Paused: v.Paused,
+		Slots: v.Slots, Paused: v.Paused, Shell: v.Shell, ShellForced: v.ShellForced,
 	}
 }
 

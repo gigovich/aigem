@@ -11,7 +11,7 @@ import (
 
 func (f *fixture) setDispatch(slots int, paused bool) {
 	f.t.Helper()
-	if _, err := f.projects.SetDispatch(f.project, &slots, &paused); err != nil {
+	if _, err := f.projects.SetDispatch(f.project, &slots, &paused, nil); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -304,7 +304,7 @@ func TestAFailingProjectDoesNotHoldTheOthers(t *testing.T) {
 	}
 	f.setDispatch(1, false)
 	one := 1
-	if _, err := f.projects.SetDispatch(other.ID, &one, new(bool)); err != nil {
+	if _, err := f.projects.SetDispatch(other.ID, &one, new(bool), nil); err != nil {
 		t.Fatal(err)
 	}
 	d := f.dispatcher()

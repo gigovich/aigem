@@ -31,6 +31,7 @@ const webUsage = `usage:
   aigem web --addr 127.0.0.1:7777 serve on a fixed port
   aigem web --open                open the page in the default browser
   aigem web --sign-out            forget every browser session, then serve
+  aigem web --ticket-shell        let every project's ticket runs use bash
   aigem web --addr 0.0.0.0:7777 --origin https://aigem.example.ts.net
                                   serve where the network can reach, under a
                                   name requests are checked against
@@ -82,6 +83,8 @@ func runWebCommand(args []string) error {
 	fs.Var(&origins, "origin", "public origin this daemon is reached at, scheme and all;\n"+
 		"repeat for more than one. Required to bind an address the network can reach")
 	rootFlag := fs.String("root", "", "the directory new projects are picked from (default: the current one)")
+	ticketShell := fs.Bool("ticket-shell", false,
+		"give every project's ticket runs bash; without it, each project turns it on for itself")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Println(webUsage)
@@ -131,6 +134,7 @@ func runWebCommand(args []string) error {
 	// session being saved needs the environment its SessionEnd hook runs in.
 	projects, err := runner.NewProjects(runner.ProjectsConfig{
 		Store: store.New[runner.ProjectTable](filepath.Join(stateDir, "projects.json")),
+		Shell: *ticketShell,
 		LoadEnv: func(ctx context.Context, dir string) (*runner.Env, error) {
 			env, _, err := runner.Load(ctx, runner.Options{
 				Cwd: dir, Version: versionString(), Search: searchCfg,

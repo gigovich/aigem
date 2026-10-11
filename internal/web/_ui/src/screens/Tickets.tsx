@@ -25,13 +25,15 @@ const PRIMARY =
   'h-6.5 rounded-md border border-primary bg-primary px-2.5 text-[0.78125rem] font-medium text-bg hover:brightness-110'
 
 export function Tickets() {
-  const { project, tickets, name, newOpen, slots, paused } = useApp((s) => ({
+  const { project, tickets, name, newOpen, slots, paused, shell, shellForced } = useApp((s) => ({
     project: s.project,
     tickets: s.tickets,
     name: currentProject(s)?.name ?? '',
     newOpen: s.newTicketOpen,
     slots: currentProject(s)?.slots ?? 0,
     paused: currentProject(s)?.paused ?? false,
+    shell: currentProject(s)?.shell ?? false,
+    shellForced: currentProject(s)?.shellForced ?? false,
   }))
   const running = tickets.filter((t) => t.status === 'running' && !t.progress).length
   const [filter, setFilter] = useState<TicketFilter>('active')
@@ -134,6 +136,22 @@ export function Tickets() {
                     </option>
                   ))}
                 </select>
+              </label>
+              <label
+                className="flex items-center gap-1"
+                title={
+                  shellForced
+                    ? 'On for every project: the daemon runs with --ticket-shell'
+                    : "Ticket runs may use bash, with the daemon's environment and network"
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={shell || shellForced}
+                  disabled={shellForced}
+                  onChange={(e) => void dispatch({ shell: e.target.checked })}
+                />
+                Shell
               </label>
               <button type="button" onClick={() => void dispatch({ paused: !paused })} className={BUTTON}>
                 {paused ? 'Resume' : 'Pause'}

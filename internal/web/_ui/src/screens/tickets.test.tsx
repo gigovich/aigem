@@ -454,11 +454,20 @@ test('the dispatcher controls set slots, pause and resume, and count running tic
   expect(await screen.findByText('Paused')).toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: 'Resume' }))
   await waitFor(() => expect(screen.queryByText('Paused')).not.toBeInTheDocument())
+  await userEvent.click(screen.getByRole('checkbox', { name: 'Shell' }))
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Shell' })).toBeChecked())
 
   const patches = h.sent
     .filter((s) => s.method === 'PATCH')
     .map((s) => JSON.parse(s.body) as unknown)
-  expect(patches).toEqual([{ slots: 3 }, { paused: true }, { paused: false }])
+  expect(patches).toEqual([{ slots: 3 }, { paused: true }, { paused: false }, { shell: true }])
+})
+
+test('a daemon that gives every project the shell shows the switch on and fixed', async () => {
+  await openTickets(PLAN, { '/api/projects': () => json([HOME_PROJECT, { ...PRJ, shellForced: true }]) })
+  const shell = await screen.findByRole('checkbox', { name: 'Shell' })
+  expect(shell).toBeChecked()
+  expect(shell).toBeDisabled()
 })
 
 test('a refused slot count shows the sentence; with no project there are no controls', async () => {
