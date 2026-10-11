@@ -377,15 +377,16 @@ func (b *webBackend) CloseBackend() {
 	b.closeOnce.Do(func() {
 		b.flowMu.Lock()
 		b.closed = true
-		b.flowCancel()
 		flows := make([]*auth.Flow, 0, len(b.flows))
 		for _, f := range b.flows {
 			flows = append(flows, f)
 		}
 		b.flowMu.Unlock()
+		// Cancel each login first so it ends cancelled, not failed.
 		for _, f := range flows {
 			f.Cancel()
 		}
+		b.flowCancel()
 		b.flowWG.Wait()
 	})
 }
