@@ -38,30 +38,26 @@ const (
 	webRunTableName = "runs.json"
 )
 
-// webRuntime is what the daemon holds for the whole of its life: one
-// environment for the directory it was started in, and the model registry the
+// webRuntime is what the daemon holds for the whole of its life: the project
+// registry, whose environments the runs share, and the model registry the
 // operator configured.
 //
-// One environment, not one per run: the skills, the subagents, the hooks
-// configuration and the MCP servers belong to the project, and a second copy of
-// them would be a second set of stdio servers for the same project. What a run
-// gets of its own is the tools registry and the model handle, which is exactly
-// what internal/runner says must never be shared.
+// One environment per project, not one per run: the skills, the subagents, the
+// hooks configuration and the MCP servers belong to the project, and a second
+// copy of them would be a second set of stdio servers for the same project.
+// What a run gets of its own is the tools registry and the model handle, which
+// is exactly what internal/runner says must never be shared.
 type webRuntime struct {
-	env      *runner.Env
 	models   *llm.Registry
 	projects *runner.Projects
 }
 
-// newRuns builds the daemon's run table. stateDir is where the table is kept;
-// an empty one keeps the runs in memory, which is what a daemon that could not
-// find its state directory falls back to.
+// newRuns builds the daemon's run table, kept in stateDir.
 func (rt *webRuntime) newRuns(stateDir string, notify func(runner.RunView)) (*runner.Runs, error) {
-	cfg := runner.RunsConfig{Open: rt.openRun, Notify: notify}
-	if stateDir != "" {
-		cfg.Store = store.New[[]runner.Run](filepath.Join(stateDir, webRunTableName))
-	}
-	return runner.NewRuns(cfg)
+	return runner.NewRuns(runner.RunsConfig{
+		Open: rt.openRun, Notify: notify,
+		Store: store.New[[]runner.Run](filepath.Join(stateDir, webRunTableName)),
+	})
 }
 
 // openRun assembles one conversation.
@@ -73,7 +69,7 @@ func (rt *webRuntime) newRuns(stateDir string, notify func(runner.RunView)) (*ru
 func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 	*runner.Session, runner.Opened, error,
 ) {
-	env, release, err := projectEnv(ctx, rt.env, rt.projects, req.ProjectID, true)
+	env, release, err := projectEnv(ctx, rt.projects, req.ProjectID, true)
 	if err != nil {
 		return nil, runner.Opened{}, err
 	}

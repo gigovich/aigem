@@ -90,8 +90,8 @@ func TestSkillDetailIsStaticAndContainsNoAbsoluteSourcePaths(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatal(errs)
 	}
-	b := newWebBackend(webBackendConfig{version: "test", env: &runner.Env{Skills: reg}})
-	got, err := b.Skill(context.Background(), "", "inspect")
+	b, id := envBackend(t, &runner.Env{Skills: reg})
+	got, err := b.Skill(context.Background(), id, "inspect")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestSkillReadsAndApprovalAreSynchronized(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(env.Close)
-	b := newWebBackend(webBackendConfig{version: "test", env: env})
+	b, id := envBackend(t, env)
 
 	// The readers have to be running *while* the approval replaces the catalog,
 	// or this test proves nothing: eight goroutines that finish a hundred cheap
@@ -231,13 +231,13 @@ func TestSkillReadsAndApprovalAreSynchronized(t *testing.T) {
 					return
 				default:
 				}
-				_, _ = b.Skills(context.Background(), "")
-				_, _ = b.Commands(context.Background(), "")
+				_, _ = b.Skills(context.Background(), id)
+				_, _ = b.Commands(context.Background(), id)
 			}
 		}()
 	}
 	ready.Wait()
-	approved, err := b.TrustSkills(context.Background(), "")
+	approved, err := b.TrustSkills(context.Background(), id)
 	close(stop)
 	wg.Wait()
 	if err != nil {
@@ -249,7 +249,7 @@ func TestSkillReadsAndApprovalAreSynchronized(t *testing.T) {
 	if len(approved.Notices) != 1 || strings.Contains(strings.Join(approved.Notices, " "), cwd) {
 		t.Fatalf("approval notices exposed a source path: %+v", approved.Notices)
 	}
-	if _, err := b.Skill(context.Background(), "", "project-one"); err != nil {
+	if _, err := b.Skill(context.Background(), id, "project-one"); err != nil {
 		t.Fatalf("approved skill is not readable: %v", err)
 	}
 }
@@ -264,9 +264,9 @@ func TestApprovingAProjectWithNoSkillsIsRefusedNotFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(env.Close)
-	b := newWebBackend(webBackendConfig{version: "test", env: env})
+	b, id := envBackend(t, env)
 
-	_, err = b.TrustSkills(context.Background(), "")
+	_, err = b.TrustSkills(context.Background(), id)
 	var refusal *web.Refusal
 	if !errors.As(err, &refusal) {
 		t.Fatalf("TrustSkills on a project with no skills = %v, want a refusal", err)
@@ -609,9 +609,9 @@ func TestASkillAddedAfterAnApprovalCanStillBeApproved(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(env.Close)
-	b := newWebBackend(webBackendConfig{version: "test", env: env})
+	b, id := envBackend(t, env)
 
-	first, err := b.TrustSkills(context.Background(), "")
+	first, err := b.TrustSkills(context.Background(), id)
 	if err != nil {
 		t.Fatalf("the first approval: %v", err)
 	}
@@ -619,33 +619,33 @@ func TestASkillAddedAfterAnApprovalCanStillBeApproved(t *testing.T) {
 		t.Fatalf("the first approval loaded %v, want the one skill", first.Loaded)
 	}
 	// Nothing pending now, so a second press is refused - that is the bound.
-	if _, err := b.TrustSkills(context.Background(), ""); err == nil {
+	if _, err := b.TrustSkills(context.Background(), id); err == nil {
 		t.Fatal("approving with nothing pending succeeded")
 	}
 
 	writeProjectSkill(t, cwd, "two")
 	// The page has to be able to see it before anyone can press the button.
-	listed, err := b.Skills(context.Background(), "")
+	listed, err := b.Skills(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if listed.Pending == nil || len(listed.Pending.Names) == 0 {
 		t.Fatalf("a skill added after the approval is not reported as pending: %+v", listed.Pending)
 	}
-	second, err := b.TrustSkills(context.Background(), "")
+	second, err := b.TrustSkills(context.Background(), id)
 	if err != nil {
 		t.Fatalf("approving a skill added after the first approval: %v", err)
 	}
 	if len(second.Loaded) != 2 {
 		t.Fatalf("the second approval loaded %v, want both skills", second.Loaded)
 	}
-	if _, err := b.Skill(context.Background(), "", "two"); err != nil {
+	if _, err := b.Skill(context.Background(), id, "two"); err != nil {
 		t.Fatalf("the newly approved skill is not readable: %v", err)
 	}
 	// The listing is memoised, and an approval is exactly the moment the memo is
 	// wrong: a page refetching after pressing the button must not be shown the
 	// answer from before it.
-	after, err := b.Skills(context.Background(), "")
+	after, err := b.Skills(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -811,4 +811,19 @@ func TestShutdownWaitsForALoginStartTheRequestAbandoned(t *testing.T) {
 		}
 		t.Fatalf("BeginLogin after shutdown: %v", err)
 	}
+}
+
+// envBackend is a backend whose one project answers with env.
+func envBackend(t *testing.T, env *runner.Env) (*webBackend, string) {
+	t.Helper()
+	projects := testProjects(t, func(context.Context, string) (*runner.Env, error) { return env, nil })
+	dir := env.Cwd
+	if dir == "" {
+		dir = t.TempDir()
+	}
+	v, err := projects.Add(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newWebBackend(webBackendConfig{version: "test", projects: projects}), v.ID
 }

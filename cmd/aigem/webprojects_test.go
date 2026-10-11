@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gigovich/aigem/internal/llm"
+	"github.com/gigovich/aigem/internal/pathutil"
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/web"
 )
@@ -28,38 +31,134 @@ func testProjects(t *testing.T, loadEnv func(context.Context, string) (*runner.E
 	return p
 }
 
-func TestTheDaemonsDirectoryIsListedFirstWithNoId(t *testing.T) {
-	env, _, err := runner.Load(context.Background(), runner.Options{Cwd: t.TempDir()})
+// testRoot is a canonical root with the named sub-directories made under it.
+func testRoot(t *testing.T, dirs ...string) string {
+	t.Helper()
+	root, err := pathutil.Canonical(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(env.Close)
-	b := newWebBackend(webBackendConfig{env: env, projects: testProjects(t, nil)})
-	added, err := b.AddProject(context.Background(), web.NewProject{Dir: t.TempDir()})
-	if err != nil {
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+func TestOnlyDirectoriesUnderTheRootCanBeAdded(t *testing.T) {
+	parent := testRoot(t, "root/app", "root/same", "rootless")
+	root := filepath.Join(parent, "root")
+	if err := os.Symlink(filepath.Join(parent, "rootless"), filepath.Join(root, "out")); err != nil {
 		t.Fatal(err)
 	}
-	list, err := b.Projects(context.Background())
-	if err != nil {
+	if err := os.Symlink(filepath.Join(root, "same"), filepath.Join(root, "link")); err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 2 || list[0].ID != "" || list[0].Dir != env.Cwd || list[0].Name != filepath.Base(env.Cwd) {
-		t.Fatalf("list = %+v, want the daemon's directory first", list)
+	b := newWebBackend(webBackendConfig{root: root, projects: testProjects(t, nil)})
+	ctx := context.Background()
+
+	if list, err := b.Projects(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("list = %+v, %v; want no projects", list, err)
 	}
-	if list[1].ID != added.ID {
-		t.Errorf("list[1] = %+v, want the added project", list[1])
+	added, err := b.AddProject(ctx, web.NewProject{Dir: "app"})
+	if err != nil || added.Dir != filepath.Join(root, "app") {
+		t.Fatalf("a relative dir = %+v, %v; want it joined to the root", added, err)
 	}
-	_, err = b.AddProject(context.Background(), web.NewProject{Dir: env.Cwd})
+	if _, err := b.AddProject(ctx, web.NewProject{Dir: root}); err != nil {
+		t.Errorf("the root itself = %v, want it added", err)
+	}
+	if _, err := b.AddProject(ctx, web.NewProject{Dir: "link"}); err != nil {
+		t.Fatal(err)
+	}
 	var refusal *web.Refusal
-	if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "daemon's own directory") {
-		t.Errorf("adding the daemon's directory = %v, want a refusal saying so", err)
+	if _, err := b.AddProject(ctx, web.NewProject{Dir: "same"}); !errors.As(err, &refusal) {
+		t.Errorf("a directory added through a link and then directly = %v, want a refusal", err)
 	}
-	_, err = b.AddProject(context.Background(), web.NewProject{Dir: "relative"})
-	if !errors.As(err, &refusal) || strings.HasPrefix(err.Error(), "runner:") {
-		t.Errorf("a bad directory = %v, want a refusal without the package prefix", err)
+	for _, dir := range []string{"..", "../rootless", "out", filepath.Join(parent, "rootless"), "missing"} {
+		_, err := b.AddProject(ctx, web.NewProject{Dir: dir})
+		if !errors.As(err, &refusal) || strings.HasPrefix(err.Error(), "runner:") {
+			t.Errorf("%s = %v, want a refusal without the package prefix", dir, err)
+		}
 	}
-	if unavailable := newWebBackend(webBackendConfig{env: env}).Unavailable(); !contains(unavailable, "projects") {
+	if unavailable := newWebBackend(webBackendConfig{}).Unavailable(); !contains(unavailable, "projects") {
 		t.Errorf("a backend with no registry withdraws %v, want projects among them", unavailable)
+	}
+}
+
+func TestDirsListsVisibleSubdirectoriesUnderTheRoot(t *testing.T) {
+	root := testRoot(t, "b/x", "a/.git", ".hidden", "c")
+	if err := os.WriteFile(filepath.Join(root, "file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "out")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "c"), filepath.Join(root, "in")); err != nil {
+		t.Fatal(err)
+	}
+	b := newWebBackend(webBackendConfig{root: root, projects: testProjects(t, nil)})
+	ctx := context.Background()
+
+	got, err := b.Dirs(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, d := range got.Dirs {
+		names = append(names, d.Name)
+	}
+	if got.Root != root || got.Path != "" || strings.Join(names, " ") != "a b c in" || !got.Dirs[0].Git ||
+		got.Dirs[1].Git || got.Truncated {
+		t.Errorf("listing = %+v", got)
+	}
+	if got, err := b.Dirs(ctx, "b"); err != nil || got.Path != "b" || len(got.Dirs) != 1 {
+		t.Errorf("b = %+v, %v; want x", got, err)
+	}
+	var refusal *web.Refusal
+	for _, p := range []string{"..", "out", "/", "missing"} {
+		if _, err := b.Dirs(ctx, p); !errors.As(err, &refusal) {
+			t.Errorf("%s = %v, want a refusal", p, err)
+		}
+	}
+}
+
+func TestDirsStopsAtTheCap(t *testing.T) {
+	root := testRoot(t)
+	for i := range maxDirs + 1 {
+		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("d%04d", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := newWebBackend(webBackendConfig{root: root, projects: testProjects(t, nil)})
+	got, err := b.Dirs(context.Background(), "")
+	if err != nil || len(got.Dirs) != maxDirs || !got.Truncated {
+		t.Errorf("listing = %d dirs, truncated %v, %v; want %d and truncated",
+			len(got.Dirs), got.Truncated, err, maxDirs)
+	}
+}
+
+func TestWebRootIsCanonicalAndADirectory(t *testing.T) {
+	dir := testRoot(t, "real")
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(filepath.Join(dir, "real"), link); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := webRoot(link); err != nil || got != filepath.Join(dir, "real") {
+		t.Errorf("webRoot(link) = %q, %v; want the target", got, err)
+	}
+	t.Chdir(filepath.Join(dir, "real"))
+	if got, err := webRoot(""); err != nil || got != filepath.Join(dir, "real") {
+		t.Errorf("webRoot(\"\") = %q, %v; want the working directory", got, err)
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{file, filepath.Join(dir, "missing")} {
+		if _, err := webRoot(bad); err == nil {
+			t.Errorf("webRoot(%s) succeeded, want a refusal", bad)
+		}
 	}
 }
 
@@ -112,8 +211,9 @@ func testProjectRuns(t *testing.T, projects *runner.Projects) *runner.Runs {
 func TestRemovingAProjectWithAnOpenRunIsAConflict(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	projects := testProjects(t, nil)
-	b := newWebBackend(webBackendConfig{runs: testProjectRuns(t, projects), projects: projects})
-	added, err := b.AddProject(context.Background(), web.NewProject{Dir: t.TempDir()})
+	root := testRoot(t)
+	b := newWebBackend(webBackendConfig{root: root, runs: testProjectRuns(t, projects), projects: projects})
+	added, err := b.AddProject(context.Background(), web.NewProject{Dir: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,8 +244,9 @@ func TestAProjectThatCannotLoadIsStillListedWithItsReason(t *testing.T) {
 	failing := func(context.Context, string) (*runner.Env, error) {
 		return nil, errors.New("the SessionStart hook exited 1")
 	}
-	b := newWebBackend(webBackendConfig{projects: testProjects(t, failing)})
-	added, err := b.AddProject(context.Background(), web.NewProject{Dir: t.TempDir()})
+	root := testRoot(t)
+	b := newWebBackend(webBackendConfig{root: root, projects: testProjects(t, failing)})
+	added, err := b.AddProject(context.Background(), web.NewProject{Dir: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,23 +279,18 @@ func TestTheAdapterClassifiesWhatTheProjectRegistryReports(t *testing.T) {
 }
 
 func TestSkillsAreReadFromTheProjectNamed(t *testing.T) {
-	home := t.TempDir()
-	env, _, err := runner.Load(context.Background(), runner.Options{Cwd: home})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(env.Close)
-	other := t.TempDir()
+	root := testRoot(t, "other")
+	other := filepath.Join(root, "other")
 	writeProjectSkill(t, other, "theirs")
-	b := newWebBackend(webBackendConfig{env: env, projects: testProjects(t, nil)})
+	b := newWebBackend(webBackendConfig{root: root, projects: testProjects(t, nil)})
 	added, err := b.AddProject(context.Background(), web.NewProject{Dir: other})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	mine, err := b.Skills(context.Background(), "")
-	if err != nil || mine.Pending != nil {
-		t.Fatalf("the daemon's own skills = %+v, %v; want nothing pending", mine, err)
+	var refusal *web.Refusal
+	if _, err := b.Skills(context.Background(), ""); !errors.As(err, &refusal) {
+		t.Fatalf("skills with no project = %v, want a refusal", err)
 	}
 	theirs, err := b.Skills(context.Background(), added.ID)
 	if err != nil || theirs.Pending == nil || !contains(theirs.Pending.Names, "theirs") {
@@ -233,8 +329,9 @@ func TestOpenRunResolvesTheProjectBeforeTheModel(t *testing.T) {
 
 func TestUpdatingAProjectSetsItsDispatcher(t *testing.T) {
 	ctx := context.Background()
-	b := newWebBackend(webBackendConfig{projects: testProjects(t, nil)})
-	added, err := b.AddProject(ctx, web.NewProject{Dir: t.TempDir()})
+	root := testRoot(t)
+	b := newWebBackend(webBackendConfig{root: root, projects: testProjects(t, nil)})
+	added, err := b.AddProject(ctx, web.NewProject{Dir: root})
 	if err != nil {
 		t.Fatal(err)
 	}

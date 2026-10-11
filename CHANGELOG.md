@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `aigem web` no longer treats its own directory as a project. With no projects the page is
+  the add-project form, which picks a directory from a tree under the daemon's root: the
+  directory it was started in, or `--root`, listed by the new `GET /api/fs`. `aigem web`
+  drops the `--trust-project-*` flags and refuses to start without a state directory. Runs
+  saved without a project can no longer be opened.
+
 ### Added
 
 - Web UI: the dispatcher (part 4 of agent tickets). Each project has 0 to 8 slots; while

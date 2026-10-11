@@ -183,7 +183,10 @@ function daemonWith(paths: string[], projects: unknown[] = []) {
 // the project's own catalogues with it - and survive a reload.
 test('selecting a project saves it and reads its skills and commands', async () => {
   const paths: string[] = []
-  daemonWith(paths, [{ id: 'PRJ-1', name: 'work', dir: '/w' }])
+  daemonWith(paths, [
+    { id: 'PRJ-0', name: 'home', dir: '/h' },
+    { id: 'PRJ-1', name: 'work', dir: '/w' },
+  ])
   const { refresh, selectProject } = await import('./app')
   await refresh.projects()
   selectProject('PRJ-1')
@@ -198,20 +201,33 @@ test('selecting a project saves it and reads its skills and commands', async () 
 
 // A project forgotten in another tab, or on another day, must not leave this
 // tab asking for catalogues of a project the daemon no longer lists.
-test('a saved project the daemon no longer lists is forgotten', async () => {
+test('a saved project the daemon no longer lists is forgotten for the first one', async () => {
   const paths: string[] = []
-  daemonWith(paths, [{ id: '', name: 'work', dir: '/w' }])
+  daemonWith(paths, [{ id: 'PRJ-1', name: 'work', dir: '/w' }])
   store.set((s) => ({ ...s, project: 'PRJ-7' }))
   const { refresh } = await import('./app')
   await refresh.projects()
+  expect(store.get().project).toBe('PRJ-1')
+})
+
+test('with no projects there is no selection and no catalogue read', async () => {
+  const paths: string[] = []
+  daemonWith(paths, [])
+  store.set((s) => ({ ...s, project: 'PRJ-7' }))
+  const { refresh } = await import('./app')
+  await refresh.projects()
+  await refresh.skills()
+  await refresh.commands()
   expect(store.get().project).toBe('')
+  expect(store.get().projectsLoaded).toBe(true)
+  expect(paths.filter((p) => p.includes('/api/skills') || p.includes('/api/commands'))).toEqual([])
 })
 
 // A dropped selection is what tells the caller to re-read the catalogues it
 // scoped; a selection that still stands must not trigger that re-read.
 test('refresh.projects reports whether it reset a stale selection', async () => {
   const paths: string[] = []
-  daemonWith(paths, [{ id: '', name: 'work', dir: '/w' }])
+  daemonWith(paths, [{ id: 'PRJ-0', name: 'work', dir: '/w' }])
   store.set((s) => ({ ...s, project: 'PRJ-7' }))
   const { refresh } = await import('./app')
   await expect(refresh.projects()).resolves.toBe(true)
@@ -229,7 +245,7 @@ test('selecting a project the daemon does not list is refused', async () => {
   const { refresh, selectProject } = await import('./app')
   await refresh.projects()
   selectProject('PRJ-9')
-  expect(store.get().project).toBe('')
+  expect(store.get().project).toBe('PRJ-1')
   expect(store.get().banner).toContain('PRJ-9')
 })
 

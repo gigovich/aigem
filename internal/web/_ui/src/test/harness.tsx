@@ -69,6 +69,7 @@ export const RUN: Run = {
   title: 'Rotate the signing keys',
   model: 'anthropic/claude-opus-5',
   root: '/home/dev/aigem',
+  projectId: 'PRJ-0',
   status: 'open',
   created: '2026-09-08T12:00:00Z',
   updated: '2026-09-08T12:02:00Z',
@@ -76,8 +77,8 @@ export const RUN: Run = {
   seq: 4,
 }
 
-/** The daemon's own directory, as the registry lists it: first, with no id. */
-export const DAEMON_PROJECT: Project = { id: '', name: 'aigem', dir: '/home/dev/aigem' }
+/** The project a page has unless a test names others. */
+export const HOME_PROJECT: Project = { id: 'PRJ-0', name: 'aigem', dir: '/home/dev/aigem' }
 
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
 
@@ -124,16 +125,20 @@ export function installDaemon(daemon: Daemon = {}): Harness {
       if (method !== 'GET') {
         sent.push({ path, method, body: typeof init?.body === 'string' ? init.body : '' })
       }
+      const at = (p: string) => path === p || path.startsWith(p + '?')
       const custom = daemon.routes?.[`${method} ${path}`] ?? daemon.routes?.[path]
       if (custom) return Promise.resolve(custom())
       if (path === '/api/auth/session') return Promise.resolve(new Response(null, { status: 204 }))
       if (path === '/api/meta') return Promise.resolve(ok(meta))
       if (path === '/api/runs') return Promise.resolve(ok(daemon.runs ?? []))
-      if (path === '/api/projects') return Promise.resolve(ok(daemon.projects ?? [DAEMON_PROJECT]))
+      if (path === '/api/projects') return Promise.resolve(ok(daemon.projects ?? [HOME_PROJECT]))
+      if (at('/api/fs')) {
+        const sub = new URLSearchParams(path.split('?')[1]).get('path') ?? ''
+        return Promise.resolve(ok({ root: '/home/dev', path: sub, dirs: sub ? [] : [{ name: 'thing', git: true }] }))
+      }
       if (/^\/api\/projects\/[^/]+\/repos$/.test(path)) return Promise.resolve(ok([]))
       if (/^\/api\/projects\/[^/]+\/worktrees$/.test(path)) return Promise.resolve(ok([]))
       if (path === '/api/models') return Promise.resolve(ok(daemon.models ?? []))
-      const at = (p: string) => path === p || path.startsWith(p + '?')
       if (at('/api/skills')) return Promise.resolve(ok(daemon.skills ?? { items: [] }))
       if (at('/api/commands')) return Promise.resolve(ok(daemon.commands ?? []))
       if (path === '/api/usage') return Promise.resolve(ok([]))

@@ -156,3 +156,5 @@ disable it.
 | `--trust-project-mcp`      | the currently configured project-local MCP servers and policies |
 
 See [Security model](security.md) for what these mean and why they are separate.
+`aigem web` takes none of them: run `aigem` with the flag once in the project
+directory, and the approval is kept for the daemon too.

@@ -80,11 +80,12 @@ func TestOriginListCollectsEveryFlag(t *testing.T) {
 	}
 }
 
-// --sign-out is the remediation for a leaked token, so it has to be the thing
-// that failed when it fails, rather than a flag the command served past.
-func TestSignOutWithNoStateDirectoryIsRefused(t *testing.T) {
+// Every project, run and sign-in lives in the state directory, so a daemon
+// that cannot find one refuses to start rather than serving a page that can
+// hold nothing.
+func TestNoStateDirectoryIsRefused(t *testing.T) {
 	// A state "directory" that is really a file: StateDir cannot create anything
-	// under it, so there is no sessions file to forget.
+	// under it.
 	dir := t.TempDir()
 	blocked := filepath.Join(dir, "blocked")
 	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
@@ -100,13 +101,13 @@ func TestSignOutWithNoStateDirectoryIsRefused(t *testing.T) {
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatal("--sign-out reported success with nothing to forget")
+			t.Fatal("the daemon started with no state directory")
 		}
-		if !strings.Contains(err.Error(), "sign-out") {
-			t.Errorf("error = %v, want it to name the flag that could not be honoured", err)
+		if !strings.Contains(err.Error(), "state directory") {
+			t.Errorf("error = %v, want it to name the state directory", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("--sign-out served on without forgetting anything")
+		t.Fatal("the daemon served on with no state directory")
 	}
 }
 

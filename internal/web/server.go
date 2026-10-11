@@ -238,6 +238,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/usage", methodNotAllowed("GET, HEAD"))
 	s.api("GET /api/activity", s.handleActivity)
 	s.mux.HandleFunc("/api/activity", methodNotAllowed("GET, HEAD"))
+	s.api("GET /api/fs", s.handleDirs)
+	s.mux.HandleFunc("/api/fs", methodNotAllowed("GET, HEAD"))
 	s.api("GET /api/projects", s.handleProjects)
 	s.api("POST /api/projects", s.handleAddProject)
 	s.mux.HandleFunc("/api/projects", methodNotAllowed("GET, HEAD, POST"))

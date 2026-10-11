@@ -7,16 +7,14 @@ import (
 	"time"
 )
 
-// The projects API: the registry a page lists, the one it adds to, and the
-// repositories a project holds. A project is a directory on the daemon's
-// machine that the signed-in person typed, and the sandbox roots at it as it
-// roots at the daemon's own directory today.
+// The projects API: the registry a page lists, the one it adds to, the
+// repositories a project holds, and the directories under the daemon's root a
+// new project is picked from.
 
 type ProjectsBackend interface {
-	// Projects lists the daemon's own directory first, with an empty id, then
-	// the registry in the order projects were added.
+	// Projects lists the registry in the order projects were added.
 	Projects(ctx context.Context) ([]Project, error)
-	// AddProject registers a directory; a refusal is a *Refusal.
+	// AddProject registers a directory under the daemon's root; a refusal is a *Refusal.
 	AddProject(ctx context.Context, req NewProject) (Project, error)
 	// RemoveProject forgets a project. ErrNoProject for an unknown id, a
 	// Conflict while it has an open run. It never removes files.
@@ -26,6 +24,22 @@ type ProjectsBackend interface {
 	UpdateProject(ctx context.Context, id string, req ProjectPatch) (Project, error)
 	// ProjectRepos discovers the project's git checkouts on demand.
 	ProjectRepos(ctx context.Context, id string) ([]Repository, error)
+	// Dirs lists the sub-directories of path, relative to the daemon's root; a
+	// path outside the root is a *Refusal.
+	Dirs(ctx context.Context, path string) (DirListing, error)
+}
+
+type DirListing struct {
+	Root string `json:"root"`
+	Path string `json:"path"`
+	Dirs []Dir  `json:"dirs"`
+	// Truncated is set when the directory held more than the listing carries.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+type Dir struct {
+	Name string `json:"name"`
+	Git  bool   `json:"git,omitempty"`
 }
 
 type Project struct {
@@ -158,4 +172,20 @@ func (s *Server) handleProjectRepos(w http.ResponseWriter, r *http.Request) {
 		repos = []Repository{}
 	}
 	writeJSON(w, repos)
+}
+
+func (s *Server) handleDirs(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[ProjectsBackend](s, w, "projects")
+	if !ok {
+		return
+	}
+	out, err := b.Dirs(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		writeRunError(w, "listing directories", err)
+		return
+	}
+	if out.Dirs == nil {
+		out.Dirs = []Dir{}
+	}
+	writeJSON(w, out)
 }

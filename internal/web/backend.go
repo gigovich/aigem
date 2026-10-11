@@ -216,9 +216,9 @@ type NewRun struct {
 	// Model is a reference in the "provider/id" form the wire uses; empty takes
 	// the daemon's default.
 	Model string `json:"model,omitempty"`
-	// ProjectID names the project the run works in; empty is the daemon's own
-	// directory. The run is rooted at the project directory - a request still
-	// cannot name a directory of its own, only a project the person added.
+	// ProjectID names the project the run works in, and is required. The run is
+	// rooted at the project directory - a request still cannot name a directory
+	// of its own, only a project the person added.
 	ProjectID string `json:"projectId,omitempty"`
 }
 

@@ -11,6 +11,7 @@ import type {
   Activity,
   Artifact,
   Command,
+  DirListing,
   Login,
   Meta,
   Model,
@@ -122,6 +123,8 @@ export const api = {
     return await res.text()
   },
 
+  dirs: (path: string, signal?: AbortSignal) =>
+    json<DirListing>(`/api/fs?path=${encodeURIComponent(path)}`, { signal }),
   projects: (signal?: AbortSignal) => json<Project[]>('/api/projects', { signal }),
   addProject: (req: NewProject, signal?: AbortSignal) =>
     json<Project>('/api/projects', { ...body(req), signal }),
@@ -218,14 +221,14 @@ export const api = {
     await send(`/api/auth/login/${encodeURIComponent(id)}`, { method: 'DELETE', signal })
   },
 
-  skills: (project = '', signal?: AbortSignal) =>
+  skills: (project: string, signal?: AbortSignal) =>
     json<Skills>(`/api/skills${query({ project })}`, { signal }),
-  skill: (name: string, project = '', signal?: AbortSignal) =>
+  skill: (name: string, project: string, signal?: AbortSignal) =>
     json<Skill>(`/api/skills/${encodeURIComponent(name)}${query({ project })}`, { signal }),
-  trustSkills: (project = '', signal?: AbortSignal) =>
-    json<SkillApproval>('/api/skills/trust', { ...body(project ? { project } : {}), signal }),
+  trustSkills: (project: string, signal?: AbortSignal) =>
+    json<SkillApproval>('/api/skills/trust', { ...body({ project }), signal }),
 
-  commands: (project = '', signal?: AbortSignal) =>
+  commands: (project: string, signal?: AbortSignal) =>
     json<Command[]>(`/api/commands${query({ project })}`, { signal }),
   usage: (signal?: AbortSignal) => json<ProviderUsage[]>('/api/usage', { signal }),
   activity: (since = 0, limit = 0, signal?: AbortSignal) =>

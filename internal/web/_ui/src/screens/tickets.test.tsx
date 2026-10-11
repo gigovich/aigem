@@ -4,7 +4,7 @@ import { expect, test } from 'vitest'
 import { navigate } from '@/lib/route'
 import type { Run, Ticket } from '@/lib/wire'
 import { selectProject, store } from '@/state/app'
-import { DAEMON_PROJECT, mountApp, waitFor } from '@/test/harness'
+import { HOME_PROJECT, mountApp, waitFor } from '@/test/harness'
 
 const PRJ = { id: 'PRJ-1', name: 'work', dir: '/home/dev/work' }
 const META_TICKETS = {
@@ -23,7 +23,7 @@ test('tickets load for the selected project and follow a switch', async () => {
   const other = { id: 'PRJ-2', name: 'other', dir: '/home/dev/other' }
   await mountApp({
     meta: META_TICKETS,
-    projects: [DAEMON_PROJECT, PRJ, other],
+    projects: [HOME_PROJECT, PRJ, other],
     routes: {
       '/api/projects/PRJ-1/tickets': () => json([ticket('TCK-1')]),
       '/api/projects/PRJ-2/tickets': () => json([ticket('TCK-7')]),
@@ -42,7 +42,7 @@ test('ticket.updated rereads, and an older answer does not win over a newer one'
   let calls = 0
   const h = await mountApp({
     meta: META_TICKETS,
-    projects: [DAEMON_PROJECT, PRJ],
+    projects: [HOME_PROJECT, PRJ],
     routes: {
       '/api/projects/PRJ-1/tickets': () => {
         calls++
@@ -63,7 +63,7 @@ test('ticket.updated rereads, and an older answer does not win over a newer one'
 async function openTickets(tickets: Ticket[], routes: Record<string, () => Response | Promise<Response>> = {}) {
   const h = await mountApp({
     meta: META_TICKETS,
-    projects: [DAEMON_PROJECT, PRJ],
+    projects: [HOME_PROJECT, PRJ],
     path: '/tickets',
     routes: { '/api/projects/PRJ-1/tickets': () => json(tickets), ...routes },
   })
@@ -130,11 +130,6 @@ test('the new ticket dialog sends the form and shows a refusal', async () => {
   expect(JSON.parse(post!.body)).toMatchObject({ title: 'New one', parent: 'TCK-1' })
 })
 
-test('without a project the screen says to choose one', async () => {
-  await mountApp({ meta: META_TICKETS, projects: [DAEMON_PROJECT, PRJ], path: '/tickets' })
-  expect(await screen.findByText('Tickets need a project.')).toBeInTheDocument()
-})
-
 async function openTask(
   id: string,
   tickets: Ticket[],
@@ -143,7 +138,7 @@ async function openTask(
 ) {
   const h = await mountApp({
     meta: META_TICKETS,
-    projects: [DAEMON_PROJECT, PRJ],
+    projects: [HOME_PROJECT, PRJ],
     path: `/task/${id}`,
     runs,
     routes: { '/api/projects/PRJ-1/tickets': () => json(tickets), ...routes },
@@ -226,7 +221,7 @@ test('a comment is sent and the discussion shows who wrote what', async () => {
 })
 
 test('an unknown ticket says so', async () => {
-  await mountApp({ meta: META_TICKETS, projects: [DAEMON_PROJECT, PRJ], path: '/task/TCK-99' })
+  await mountApp({ meta: META_TICKETS, projects: [HOME_PROJECT, PRJ], path: '/task/TCK-99' })
   act(() => selectProject('PRJ-1'))
   expect(await screen.findByText('No such ticket.')).toBeInTheDocument()
 })
@@ -235,7 +230,7 @@ test('a deep link waits for the first read before saying a ticket is missing', a
   let answer: (r: Response) => void = () => {}
   await mountApp({
     meta: META_TICKETS,
-    projects: [DAEMON_PROJECT, PRJ],
+    projects: [HOME_PROJECT, PRJ],
     path: '/task/TCK-99',
     routes: { '/api/projects/PRJ-1/tickets': () => new Promise<Response>((r) => (answer = r)) },
   })
@@ -443,7 +438,7 @@ test('Needs you lists the blocked tickets and the plans in review', async () => 
 test('the dispatcher controls set slots, pause and resume, and count running tickets', async () => {
   let prj = { ...PRJ, slots: 2, paused: false }
   const h = await openTickets(PLAN, {
-    '/api/projects': () => json([DAEMON_PROJECT, prj]),
+    '/api/projects': () => json([HOME_PROJECT, prj]),
     'PATCH /api/projects/PRJ-1': () => {
       prj = { ...prj, ...(JSON.parse(h.sent[h.sent.length - 1]?.body ?? '{}') as object) }
       return json(prj)
@@ -466,7 +461,7 @@ test('the dispatcher controls set slots, pause and resume, and count running tic
   expect(patches).toEqual([{ slots: 3 }, { paused: true }, { paused: false }])
 })
 
-test('a refused slot count shows the sentence; the daemon directory has no controls', async () => {
+test('a refused slot count shows the sentence; with no project there are no controls', async () => {
   await openTickets(PLAN, {
     'PATCH /api/projects/PRJ-1': () =>
       new Response('slots must be between 0 and 8', { status: 400 }),

@@ -3,9 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/gigovich/aigem/internal/pathutil"
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/web"
 )
@@ -22,9 +28,6 @@ func (b *webBackend) Projects(context.Context) ([]web.Project, error) {
 		return nil, web.ErrUnavailable
 	}
 	out := []web.Project{}
-	if b.env != nil {
-		out = append(out, web.Project{Name: filepath.Base(b.env.Cwd), Dir: b.env.Cwd})
-	}
 	for _, v := range b.projects.List() {
 		out = append(out, webProject(v))
 	}
@@ -35,11 +38,11 @@ func (b *webBackend) AddProject(_ context.Context, req web.NewProject) (web.Proj
 	if b.projects == nil {
 		return web.Project{}, web.ErrUnavailable
 	}
-	if b.env != nil && filepath.Clean(req.Dir) == b.env.Cwd {
-		return web.Project{}, web.Refuse(errors.New(
-			"that is this daemon's own directory, which is already the first project"))
+	dir, err := b.underRoot(req.Dir)
+	if err != nil {
+		return web.Project{}, err
 	}
-	v, err := b.projects.Add(req.Dir, req.Name)
+	v, err := b.projects.Add(dir, req.Name)
 	if err != nil {
 		return web.Project{}, webProjectError(err)
 	}
@@ -93,21 +96,106 @@ func (b *webBackend) ProjectRepos(ctx context.Context, id string) ([]web.Reposit
 	return out, nil
 }
 
+// maxDirs bounds one listing: the form shows a tree a person reads, and a
+// directory holding more than this is not one anybody picks a project from.
+// maxScanned bounds the entries read to find them, files included.
+const (
+	maxDirs    = 1000
+	maxScanned = 10000
+)
+
+func (b *webBackend) Dirs(ctx context.Context, path string) (web.DirListing, error) {
+	if b.projects == nil {
+		return web.DirListing{}, web.ErrUnavailable
+	}
+	dir, err := b.underRoot(path)
+	if err != nil {
+		return web.DirListing{}, err
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return web.DirListing{}, web.Refuse(err)
+	}
+	defer func() { _ = f.Close() }()
+	rel, _ := filepath.Rel(b.root, dir)
+	if rel == "." {
+		rel = ""
+	}
+	out := web.DirListing{Root: b.root, Path: filepath.ToSlash(rel)}
+	for scanned := 0; ; {
+		if scanned >= maxScanned || len(out.Dirs) > maxDirs {
+			out.Truncated = true
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return web.DirListing{}, err
+		}
+		batch, err := f.ReadDir(256)
+		scanned += len(batch)
+		for _, e := range batch {
+			if strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			full := filepath.Join(dir, e.Name())
+			// A link is listed only when it leads to a directory the root allows.
+			if e.Type()&os.ModeSymlink != 0 {
+				target, err := b.underRoot(full)
+				if err != nil {
+					continue
+				}
+				if info, err := os.Stat(target); err != nil || !info.IsDir() {
+					continue
+				}
+			} else if !e.IsDir() {
+				continue
+			}
+			_, gitErr := os.Lstat(filepath.Join(full, ".git"))
+			out.Dirs = append(out.Dirs, web.Dir{Name: e.Name(), Git: gitErr == nil})
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return web.DirListing{}, web.Refuse(err)
+		}
+	}
+	slices.SortFunc(out.Dirs, func(a, b web.Dir) int { return strings.Compare(a.Name, b.Name) })
+	if len(out.Dirs) > maxDirs {
+		out.Dirs = out.Dirs[:maxDirs]
+	}
+	return out, nil
+}
+
+// underRoot resolves a path the page sent - relative to the root, or absolute
+// - and refuses one that is not the root or beneath it. A symlink repointed
+// after the check is not guarded against: the person picking is the one who
+// could repoint it.
+func (b *webBackend) underRoot(p string) (string, error) {
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(b.root, filepath.FromSlash(p))
+	}
+	dir, err := pathutil.Canonical(p)
+	if err != nil {
+		return "", web.Refuse(err)
+	}
+	if !pathutil.Within(b.root, dir) {
+		return "", web.Refuse(fmt.Errorf("only directories under %s can be used", b.root))
+	}
+	return dir, nil
+}
+
 // projectEnv is the one rule for what a project id means, shared by the read
-// routes and by a run being opened: the daemon's own environment for an empty
-// id, otherwise the project's, loaded on first use. A retained environment
-// holds the project open - Remove refuses it until the returned func is
-// called - and the returned func is safe to call on any path.
-func projectEnv(ctx context.Context, own *runner.Env, projects *runner.Projects, id string, retain bool) (
+// routes and by a run being opened: the project's environment, loaded on first
+// use. A retained environment holds the project open - Remove refuses it until
+// the returned func is called - and the returned func is safe to call on any
+// path.
+func projectEnv(ctx context.Context, projects *runner.Projects, id string, retain bool) (
 	*runner.Env, func(), error,
 ) {
 	nothing := func() {}
 	switch {
 	case id == "":
-		if own == nil {
-			return nil, nothing, web.ErrUnavailable
-		}
-		return own, nothing, nil
+		return nil, nothing, web.Refuse(errors.New("choose a project first"))
 	case projects == nil:
 		return nil, nothing, web.Refuse(errors.New("this daemon serves no projects"))
 	case retain:
@@ -125,11 +213,11 @@ func projectEnv(ctx context.Context, own *runner.Env, projects *runner.Projects,
 // envFor is projectEnv for a read route, with the registry's answer translated
 // into the statuses internal/web knows.
 func (b *webBackend) envFor(ctx context.Context, project string) (*runner.Env, error) {
-	env, _, err := projectEnv(ctx, b.env, b.projects, project, false)
-	if err != nil && project != "" {
+	env, _, err := projectEnv(ctx, b.projects, project, false)
+	if err != nil {
 		return nil, webProjectError(err)
 	}
-	return env, err
+	return env, nil
 }
 
 func webProject(v runner.ProjectView) web.Project {

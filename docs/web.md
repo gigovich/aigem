@@ -8,7 +8,14 @@ address is the public one, not the bound one.
 aigem web                        # a port chosen by the kernel
 aigem web --addr 127.0.0.1:7777  # a fixed one
 aigem web --open                 # open it in the default browser too
+aigem web --root ~/work          # pick projects from under ~/work
 ```
+
+New projects can only be picked from under the root: the directory the daemon
+was started in, or `--root`. A daemon with no projects shows the form to add
+one in place of every screen. `--root` limits only what can be added: projects
+added earlier stay listed wherever they are. The daemon needs its state
+directory and refuses to start without one.
 
 `/healthz` says only that the process is up; `GET /api/meta`, behind the
 credential, is where a page reads the version, the default model and which
@@ -37,9 +44,9 @@ Sign-ins are kept in `$XDG_STATE_HOME/aigem/web-cookies.json` (0600), so
 restarting the daemon - deploying a new binary, say - does not sign out the
 phone whose token lives in a terminal on another machine.
 
-`--sign-out` refuses to serve at all when it cannot forget the sessions - an
-unwritable state directory, or none it can find. A revocation that quietly did
-not happen is the one answer worth refusing to start over.
+`--sign-out` refuses to serve at all when it cannot forget the sessions. A
+revocation that quietly did not happen is the one answer worth refusing to
+start over.
 
 That cuts both ways, and it is the one thing to know about this design:
 **restarting is not how you revoke a leaked token.** A restart mints a new
@@ -160,12 +167,13 @@ though the hop to the daemon is plain HTTP.
 | `DELETE /api/auth/login/{id}` | cancels a login flow; 204, and the record stays readable |
 | `GET /api/skills` | loaded skill summaries and pending project-skill names; takes `?project=` |
 | `GET /api/skills/{name}` | static skill metadata and markdown; it runs no dynamic injection; takes `?project=` |
-| `POST /api/skills/trust` | approves a project's skill set; body is empty, `{}` or `{"project":"PRJ-1"}` |
+| `POST /api/skills/trust` | approves a project's skill set; body is `{"project":"PRJ-1"}` |
 | `GET /api/commands` | the command palette catalogue from the active environment; takes `?project=` |
 | `GET /api/usage` | stored provider quota snapshots |
 | `GET /api/activity` | persistent mutation feed, paged with `?since=&limit=` |
-| `GET /api/projects` | the registry, the daemon's own directory first with an empty id; each with `slots` and `paused` |
-| `POST /api/projects` | `{"dir":"/abs/path","name":"optional"}`; 201, or 400 with why not |
+| `GET /api/projects` | the registry, in the order projects were added; each with `slots` and `paused` |
+| `POST /api/projects` | `{"dir":"app","name":"optional"}`, `dir` under the root; 201, or 400 |
+| `GET /api/fs` | `?path=` under the root; `{root, path, dirs: [{name, git}], truncated}` |
 | `DELETE /api/projects/{id}` | forgets the project; 409 while it has an open run; removes no files |
 | `PATCH /api/projects/{id}` | `{slots?, paused?}`; 200 with the project, 400 out of range, 404 |
 | `GET /api/projects/{id}/repos` | the git checkouts under the project, discovered on demand |
@@ -252,11 +260,9 @@ keys are `controlSocket`, `runs`, `models`, `providerLogin`, `skills`,
 `commands`, `usage`, `activity`, `projects` and `tickets`.
 
 A key is present when the daemon was built with that seam *and* was given what
-the seam needs. Without a state directory there is no activity feed and no
-project registry; without a loaded project there are no skills or commands. A
-route whose key is absent answers 501, so the map is what a page reads rather
-than something it has to discover by probing, and the two cannot disagree: the
-routes are gated on the same map `/api/meta` returns.
+the seam needs. A route whose key is absent answers 501, so the map is what a
+page reads rather than something it has to discover by probing, and the two
+cannot disagree: the routes are gated on the same map `/api/meta` returns.
 
 ## The control stream
 
@@ -322,10 +328,10 @@ the project directory itself when it is a checkout - listed first, with an empty
 `name` - and then each direct child holding a `.git`, by name; a child that is a
 symlink to a checkout counts as one. `main` on each is the branch a run will
 merge into, `main` or `master`, and absent when the checkout has neither. The
-daemon's own directory is a project with no record: it is listed first with an
-empty `id`, and it is what a run, the skills catalogue and the command catalogue
-mean when they name no project. Having no id of its own, it will never hold
-tickets or worktrees.
+daemon's own directory is not a project unless someone adds it: a run, the
+skills catalogue and the command catalogue must name one, and are refused
+without it. A run saved before this rule has no project; it is still listed
+and can be deleted, but not opened.
 
 Every project has one environment - its skills, hooks, MCP servers and system
 prompt - loaded the first time something needs it and kept for the daemon's
@@ -333,16 +339,18 @@ life. Loading dials the project's MCP servers and runs its SessionStart hook,
 so the first run opened in a project takes as long as those take. A load that
 fails is recorded on the project as `loadError`, announced as
 `project.updated`, and tried again by the next request; until one succeeds the
-project cannot open runs. A project added from the browser is loaded with no
-`--trust-project-*` flag: its hooks stay withheld, and its skills go through
-`POST /api/skills/trust` with `{"project":"PRJ-1"}`. MCP servers are not per
-project - they are shared through the per-root runtime - so a project under the
-daemon's own git root inherits that root's trusted servers.
+project cannot open runs. `aigem web` takes no `--trust-project-*` flag, so a
+project is loaded without one: its hooks stay withheld, and its skills go
+through `POST /api/skills/trust` with `{"project":"PRJ-1"}`. Approvals are
+kept, so running `aigem --trust-project-hooks` (or `-mcp`) once in the project
+directory approves them for the daemon too, from its next load. MCP servers are
+not per project - they are shared through the per-root runtime - so projects
+under one git root share that root's trusted servers.
 
 `POST /api/runs` takes `projectId`, and a run record carries it. `GET
 /api/skills`, `GET /api/skills/{name}` and `GET /api/commands` take
-`?project=`; without it they answer for the daemon's own directory. The first of
-those reads loads the project's environment, so `GET /api/skills?project=PRJ-1`
+`?project=`, and are refused without it. The first of those reads loads the
+project's environment, so `GET /api/skills?project=PRJ-1`
 is not free of side effects: a page pays that load on boot, for whichever
 project its saved selection names.
 
@@ -357,10 +365,9 @@ worktrees, stay where they are.
 ## Tickets
 
 A ticket is a unit of work in one project, kept in
-`$XDG_STATE_HOME/aigem/projects/<projectID>/tickets.json`. The daemon's own
-directory has no project id, so it has no tickets. Ids are `TCK-<n>` per project
-and are never reused, also after a delete or a restart. A write that fails is
-rolled back, so the file and the answer agree.
+`$XDG_STATE_HOME/aigem/projects/<projectID>/tickets.json`. Ids are `TCK-<n>`
+per project and are never reused, also after a delete or a restart. A write
+that fails is rolled back, so the file and the answer agree.
 
 A ticket has `id`, `repo`, `title`, `body`, `status`, `parent`, `dependsOn`, `by`,
 `created`, `updated`, `comments` (`[{at, by, text}]`), `runs`, `runnable` and

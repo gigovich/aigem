@@ -343,9 +343,9 @@ func (s *Server) handleSkillTrust(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// The one option is which project. An empty body and {} mean the daemon's
-	// own directory; any other field, a second document or an oversized body is
-	// still a malformed request.
+	// The one option is which project, and the backend refuses an empty one.
+	// Any other field, a second document or an oversized body is still a
+	// malformed request.
 	var req struct {
 		Project string `json:"project,omitempty"`
 	}

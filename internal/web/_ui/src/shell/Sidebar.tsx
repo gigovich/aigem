@@ -126,7 +126,7 @@ export function Sidebar({ route, onNewProject }: Props) {
                     }`}
                   >
                     <span aria-hidden="true" className="w-3.25 text-center text-[0.75rem] text-fg-subtle">
-                      {p.id ? '▪' : '⌂'}
+                      ▪
                     </span>
                     <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                       {p.name}
@@ -145,7 +145,7 @@ export function Sidebar({ route, onNewProject }: Props) {
             })}
           </ul>
         ) : (
-          <p className="m-0 px-2 pb-1 text-[0.75rem] text-fg-subtle">This daemon's directory.</p>
+          <p className="m-0 px-2 pb-1 text-[0.75rem] text-fg-subtle">This daemon serves no projects.</p>
         )}
       </div>
 

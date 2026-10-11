@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { Project } from '@/lib/wire'
 import { navigate } from '@/lib/route'
-import { DAEMON_PROJECT, META, mountApp, RUN } from '@/test/harness'
+import { HOME_PROJECT, META, mountApp, RUN } from '@/test/harness'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -11,7 +11,7 @@ afterEach(() => {
 })
 
 const WORK: Project = { id: 'PRJ-1', name: 'work', dir: '/home/dev/work' }
-const PROJECTS = [DAEMON_PROJECT, WORK]
+const PROJECTS = [HOME_PROJECT, WORK]
 
 test('the sidebar lists the projects and remembers the chosen one', async () => {
   const user = userEvent.setup()
@@ -26,7 +26,7 @@ test('the sidebar lists the projects and remembers the chosen one', async () => 
 })
 
 test('a project whose environment failed to load says so', async () => {
-  await mountApp({ projects: [DAEMON_PROJECT, { ...WORK, loadError: 'hook exited 1' }] })
+  await mountApp({ projects: [HOME_PROJECT, { ...WORK, loadError: 'hook exited 1' }] })
   const list = await screen.findByRole('list', { name: 'Projects' })
   const row = within(list).getByRole('button', { name: /work/ })
   expect(row).toHaveTextContent('failed to load')
@@ -55,18 +55,18 @@ test('a project.updated frame that drops the selection rereads its catalogues', 
     routes: {
       '/api/projects': () => {
         calls++
-        return new Response(JSON.stringify(calls === 1 ? PROJECTS : [DAEMON_PROJECT]), { status: 200 })
+        return new Response(JSON.stringify(calls === 1 ? PROJECTS : [HOME_PROJECT]), { status: 200 })
       },
     },
   })
   const list = await screen.findByRole('list', { name: 'Projects' })
   await user.click(within(list).getByRole('button', { name: /work/ }))
   await waitFor(() => expect(h.paths).toContain('/api/skills?project=PRJ-1'))
-  const bareSkillReads = () => h.paths.filter((p) => p === '/api/skills').length
-  const before = bareSkillReads()
+  const homeSkillReads = () => h.paths.filter((p) => p === '/api/skills?project=PRJ-0').length
+  const before = homeSkillReads()
 
   h.publish('project.updated', 2, { ...WORK })
-  await waitFor(() => expect(bareSkillReads()).toBe(before + 1))
+  await waitFor(() => expect(homeSkillReads()).toBe(before + 1))
   await waitFor(() =>
     expect(within(list).getByRole('button', { name: /aigem/ })).toHaveAttribute('aria-current', 'true'),
   )
@@ -84,7 +84,7 @@ test('a new project is added from the dialog, and a refusal is shown as text', a
       'POST /api/projects': () => {
         attempts++
         if (attempts === 1) {
-          return new Response('cannot add that project: /nope is not a directory', { status: 400 })
+          return new Response('only directories under /home/dev can be used', { status: 400 })
         }
         listed.push(THING)
         return new Response(JSON.stringify(THING), { status: 201 })
@@ -93,19 +93,61 @@ test('a new project is added from the dialog, and a refusal is shown as text', a
   })
   await user.click(await screen.findByRole('button', { name: 'New project' }))
   const dialog = await screen.findByRole('dialog', { name: 'New project' })
-  await user.type(within(dialog).getByRole('textbox', { name: /Directory/ }), '/nope')
+  expect(within(dialog).getByRole('button', { name: 'Add project' })).toBeDisabled()
+  await user.click(await within(dialog).findByRole('button', { name: /^thing/ }))
   await user.click(within(dialog).getByRole('button', { name: 'Add project' }))
-  expect(await within(dialog).findByRole('alert')).toHaveTextContent('/nope is not a directory')
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('only directories under /home/dev')
 
-  await user.clear(within(dialog).getByRole('textbox', { name: /Directory/ }))
-  await user.type(within(dialog).getByRole('textbox', { name: /Directory/ }), '/home/dev/thing')
   await user.type(within(dialog).getByRole('textbox', { name: /Name/ }), 'the thing')
   await user.click(within(dialog).getByRole('button', { name: 'Add project' }))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New project' })).not.toBeInTheDocument())
   expect(h.sent.filter((r) => r.path === '/api/projects').pop()?.body).toBe(
-    '{"dir":"/home/dev/thing","name":"the thing"}',
+    '{"dir":"thing","name":"the thing"}',
   )
   expect(window.localStorage.getItem('aigem.project')).toBe('PRJ-2')
+})
+
+test('with no projects the page is the add form, and a folder is opened to pick from', async () => {
+  const user = userEvent.setup()
+  const THING: Project = { id: 'PRJ-2', name: 'thing', dir: '/home/dev/thing' }
+  const listed: Project[] = []
+  const h = await mountApp({
+    projects: [],
+    routes: {
+      '/api/projects': () => new Response(JSON.stringify(listed), { status: 200 }),
+      'POST /api/projects': () => {
+        listed.push(THING)
+        return new Response(JSON.stringify(THING), { status: 201 })
+      },
+    },
+  })
+  expect(await screen.findByRole('heading', { name: 'Add your first project' })).toBeInTheDocument()
+  expect(await screen.findByRole('button', { name: '/home/dev' })).toBeInTheDocument()
+  expect(h.paths.some((p) => p.startsWith('/api/skills') || p.startsWith('/api/commands'))).toBe(false)
+
+  await user.click(screen.getByRole('button', { name: 'Expand thing' }))
+  expect(await screen.findByText('no sub-directories')).toBeInTheDocument()
+  expect(h.paths).toContain('/api/fs?path=thing')
+
+  await user.click(screen.getByRole('button', { name: /^thing/ }))
+  await user.click(screen.getByRole('button', { name: 'Add project' }))
+  await waitFor(() => expect(screen.queryByRole('heading', { name: 'Add your first project' })).not.toBeInTheDocument())
+  expect(h.sent.filter((r) => r.path === '/api/projects').pop()?.body).toBe('{"dir":"thing"}')
+  expect(window.localStorage.getItem('aigem.project')).toBe('PRJ-2')
+  await waitFor(() => expect(h.paths).toContain('/api/skills?project=PRJ-2'))
+  expect(h.paths).toContain('/api/commands?project=PRJ-2')
+})
+
+test('the root itself can be picked', async () => {
+  const user = userEvent.setup()
+  const ROOT: Project = { id: 'PRJ-3', name: 'dev', dir: '/home/dev' }
+  const h = await mountApp({
+    projects: [],
+    routes: { 'POST /api/projects': () => new Response(JSON.stringify(ROOT), { status: 201 }) },
+  })
+  await user.click(await screen.findByRole('button', { name: '/home/dev' }))
+  await user.click(screen.getByRole('button', { name: 'Add project' }))
+  await waitFor(() => expect(h.sent.find((r) => r.path === '/api/projects')?.body).toBe('{"dir":"."}'))
 })
 
 test('/projects/{id} selects the project and lands on the sessions', async () => {
@@ -119,7 +161,7 @@ test('without the projects feature the sidebar offers nothing to add', async () 
   await mountApp({ meta: { features: { controlSocket: true, runs: true } } })
   await screen.findByRole('navigation', { name: 'Navigation' })
   expect(screen.queryByRole('button', { name: 'New project' })).not.toBeInTheDocument()
-  expect(screen.getByText("This daemon's directory.")).toBeInTheDocument()
+  expect(screen.getByText('This daemon serves no projects.')).toBeInTheDocument()
 })
 
 test('the session list shows the current project, and "All projects" widens it', async () => {
@@ -209,9 +251,7 @@ test('the worktrees screen lists the repositories of the chosen project', async 
     },
   })
   act(() => navigate({ screen: 'repos' }))
-  expect(await screen.findByText(/no project record/)).toBeInTheDocument()
-
-  const projects = screen.getByRole('list', { name: 'Projects' })
+  const projects = await screen.findByRole('list', { name: 'Projects' })
   await user.click(within(projects).getByRole('button', { name: /work/ }))
   const grid = await screen.findByRole('grid', { name: 'Repositories' })
   expect(within(grid).getByText('work (the project itself)')).toBeInTheDocument()
@@ -242,8 +282,7 @@ test('the worktrees screen lists the aigem branches and discards one after askin
     },
   })
   act(() => navigate({ screen: 'repos' }))
-  await screen.findByText(/no project record/)
-  await user.click(within(screen.getByRole('list', { name: 'Projects' })).getByRole('button', { name: /work/ }))
+  await user.click(within(await screen.findByRole('list', { name: 'Projects' })).getByRole('button', { name: /work/ }))
 
   const grid = await screen.findByRole('grid', { name: 'Worktrees' })
   expect(await within(grid).findByText('aigem/TCK-4')).toBeInTheDocument()

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gigovich/aigem/internal/config"
+	"github.com/gigovich/aigem/internal/pathutil"
 	"github.com/gigovich/aigem/internal/runner"
 	"github.com/gigovich/aigem/internal/search"
 	"github.com/gigovich/aigem/internal/store"
@@ -25,6 +26,8 @@ import (
 
 const webUsage = `usage:
   aigem web                       serve the browser UI on a loopback port
+  aigem web --root ~/work         offer projects from under ~/work rather than
+                                  the directory the daemon was started in
   aigem web --addr 127.0.0.1:7777 serve on a fixed port
   aigem web --open                open the page in the default browser
   aigem web --sign-out            forget every browser session, then serve
@@ -78,16 +81,7 @@ func runWebCommand(args []string) error {
 	var origins originList
 	fs.Var(&origins, "origin", "public origin this daemon is reached at, scheme and all;\n"+
 		"repeat for more than one. Required to bind an address the network can reach")
-	// The same three the terminal takes, because the warnings a withheld
-	// capability produces name them by name: without these, the only way to
-	// follow the daemon's own advice is to start the TUI in this directory
-	// first, which is not advice anybody should have to work out.
-	trustHooks := fs.Bool("trust-project-hooks", false,
-		"approve this project's local hooks as they are now")
-	trustMCP := fs.Bool("trust-project-mcp", false,
-		"approve this project's local MCP servers as they are now")
-	trustSkills := fs.Bool("trust-project-skills", false,
-		"approve this project's local skills as they are now")
+	rootFlag := fs.String("root", "", "the directory new projects are picked from (default: the current one)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Println(webUsage)
@@ -99,38 +93,24 @@ func runWebCommand(args []string) error {
 		return fmt.Errorf("%w\n\n%s", err, webUsage)
 	}
 
-	// A failure to find the state directory is reported and not fatal: the
-	// operator locked out of the UI would be locked out by the one thing the UI
-	// is for, and /healthz and the page still answer.
-	//
-	// It is not a state the daemon works in, though. Opening a model reads the
-	// credential store, which is under the same directory, so every attempt to
-	// start a conversation will fail with whatever went wrong here. What is
-	// saved is the ability to see that, and to fix it.
-	cookies, stateDir := "", ""
-	if dir, err := config.StateDir(); err != nil {
-		fmt.Fprintf(os.Stderr, "note: browser sign-ins and the list of runs will not "+
-			"survive a restart: %v\n", err)
-	} else {
-		stateDir = dir
-		cookies = filepath.Join(dir, "web-cookies.json")
+	// Every run belongs to a project, and the project registry lives in the
+	// state directory: without one there is nothing the daemon could do.
+	stateDir, err := config.StateDir()
+	if err != nil {
+		return fmt.Errorf("the state directory could not be found: %w", err)
+	}
+	cookies := filepath.Join(stateDir, "web-cookies.json")
+	root, err := webRoot(*rootFlag)
+	if err != nil {
+		return err
 	}
 
 	if *signOut {
-		// Refused rather than skipped: the operator asked for a revocation, and
-		// serving on as if it had happened is the answer they cannot check.
-		if cookies == "" {
-			return errors.New("--sign-out: there is no browser sessions file to forget, " +
-				"because the state directory could not be found")
-		}
 		if err := web.ForgetSessions(cookies); err != nil {
 			return fmt.Errorf("could not forget the browser sessions: %w", err)
 		}
 	}
 
-	// Before the environment: loading it runs the person's SessionStart hook and
-	// starts their MCP servers, and a daemon that is going to refuse what the
-	// operator typed must not do either on its way to saying so.
 	if err := web.CheckBind(*addr, origins); err != nil {
 		return err
 	}
@@ -141,44 +121,6 @@ func runWebCommand(args []string) error {
 		fmt.Fprintln(os.Stderr, "warning: could not load search config:", err)
 	}
 
-	// The environment is loaded once and shared by every conversation the
-	// daemon opens: the skills, the subagents, the hooks configuration and the
-	// MCP servers belong to the project, and one set of stdio servers per
-	// browser tab is not a thing anyone wants.
-	//
-	// The directory is the one the daemon was started in: an empty Cwd resolves
-	// to it, and there is no flag for another because the project a browser
-	// session works in is a phase-2 choice.
-	//
-	// A daemon has nobody to ask about a withheld capability once it is
-	// running, so the --trust-project-* decisions are made here or not at all:
-	// without one of those flags a project's local hooks, MCP servers and
-	// skills stay withheld. Skills are the exception, because the browser has a
-	// screen for them - POST /api/skills/trust is the same decision, asked at
-	// the moment it matters.
-	env, _, err := runner.Load(context.Background(), runner.Options{
-		Version:            versionString(),
-		Search:             searchCfg,
-		TrustProjectHooks:  *trustHooks,
-		TrustProjectMCP:    *trustMCP,
-		TrustProjectSkills: *trustSkills,
-		// Raised as they happen rather than collected: Load dials the MCP
-		// servers and runs the SessionStart hook, and a terminal that says
-		// nothing until those finish reads as a hang.
-		Notify: func(n runner.Notice) {
-			fmt.Fprintln(os.Stderr, "warning:", n.Text)
-		},
-	})
-	if err != nil {
-		return err
-	}
-	// Closed after the runs below, so that a session's SessionEnd hook still
-	// has the environment it runs in.
-	defer env.Close()
-	if env.SystemMessage != "" {
-		fmt.Fprintln(os.Stderr, env.SystemMessage)
-	}
-
 	// The daemon it publishes to does not exist yet, so the notifier is filled
 	// in below rather than at construction. Nothing can be missed in between:
 	// the registry is empty until a request arrives, and no request can arrive
@@ -187,76 +129,62 @@ func runWebCommand(args []string) error {
 
 	// The registry before the runs, so its deferred Close runs after theirs: a
 	// session being saved needs the environment its SessionEnd hook runs in.
-	// Without a state directory there is no registry, and the page is told so
-	// through the feature map.
-	var projects *runner.Projects
-	if stateDir != "" {
-		projects, err = runner.NewProjects(runner.ProjectsConfig{
-			Store: store.New[runner.ProjectTable](filepath.Join(stateDir, "projects.json")),
-			LoadEnv: func(ctx context.Context, dir string) (*runner.Env, error) {
-				env, _, err := runner.Load(ctx, runner.Options{
-					Cwd: dir, Version: versionString(), Search: searchCfg,
-					Notify: func(n runner.Notice) { fmt.Fprintln(os.Stderr, "warning:", dir+":", n.Text) },
-				})
-				return env, err
-			},
-			Notify: announce.publishProject,
-		})
-		if err != nil {
-			return err
-		}
-		defer projects.Close()
+	projects, err := runner.NewProjects(runner.ProjectsConfig{
+		Store: store.New[runner.ProjectTable](filepath.Join(stateDir, "projects.json")),
+		LoadEnv: func(ctx context.Context, dir string) (*runner.Env, error) {
+			env, _, err := runner.Load(ctx, runner.Options{
+				Cwd: dir, Version: versionString(), Search: searchCfg,
+				Notify: func(n runner.Notice) { fmt.Fprintln(os.Stderr, "warning:", dir+":", n.Text) },
+			})
+			return env, err
+		},
+		Notify: announce.publishProject,
+	})
+	if err != nil {
+		return err
 	}
-	var tickets *runner.Tickets
-	if stateDir != "" {
-		tickets = runner.NewTickets(runner.TicketsConfig{Dir: stateDir, Notify: announce.publishTicket})
-	}
-	rt := &webRuntime{env: env, models: defaultModelRegistry(), projects: projects}
+	defer projects.Close()
+	tickets := runner.NewTickets(runner.TicketsConfig{Dir: stateDir, Notify: announce.publishTicket})
+	rt := &webRuntime{models: defaultModelRegistry(), projects: projects}
 	runs, err := rt.newRuns(stateDir, announce.publishRun)
 	if err != nil {
 		return err
 	}
 	defer runs.Close()
 
-	var activity *store.Log[web.Activity]
 	// The feed is a record of what happened, not an audit log, and a page shows
 	// the recent end of it. Anything older than this is dropped, which is also
 	// what stops a daemon that has been up for months holding every line it ever
 	// wrote - and what gives a client that can drive mutations a ceiling.
 	const activityRetention = 30 * 24 * time.Hour
-	if stateDir != "" {
-		activity = store.NewLog[web.Activity](filepath.Join(stateDir, "activity.jsonl"))
-		// Trimmed here and not while serving: compaction rewrites the file, and
-		// a page holding a cursor into the part being dropped would find its
-		// next page empty rather than wrong. Startup is the one moment no page
-		// holds one at all.
-		if n, err := activity.Compact(time.Now().Add(-activityRetention)); err != nil {
-			slog.Warn("the activity feed could not be trimmed", "err", err)
-		} else if n > 0 {
-			slog.Info("trimmed the activity feed", "dropped", n)
-		}
+	activity := store.NewLog[web.Activity](filepath.Join(stateDir, "activity.jsonl"))
+	// Trimmed here and not while serving: compaction rewrites the file, and
+	// a page holding a cursor into the part being dropped would find its
+	// next page empty rather than wrong. Startup is the one moment no page
+	// holds one at all.
+	if n, err := activity.Compact(time.Now().Add(-activityRetention)); err != nil {
+		slog.Warn("the activity feed could not be trimmed", "err", err)
+	} else if n > 0 {
+		slog.Info("trimmed the activity feed", "dropped", n)
 	}
 	backend := newWebBackend(webBackendConfig{
 		version: versionString(), models: rt.models, runs: runs,
-		env: env, projects: projects, tickets: tickets, activity: activity, notify: announce.publish,
+		root: root, projects: projects, tickets: tickets, activity: activity, notify: announce.publish,
 	})
-	var dispatcher *runner.Dispatcher
-	if tickets != nil && projects != nil {
-		backend.ticketRuns = runner.NewTicketRuns(runner.TicketRunsConfig{
-			Runs: runs, Tickets: tickets, Projects: projects,
-			Finished: backend.ticketFinished, Planned: backend.ticketPlanned,
-		})
-		backend.ticketRuns.Recover()
-		// Deferred after runs.Close, so it runs first: deliveries stop before the sessions do.
-		defer backend.ticketRuns.Close()
-		dispatcher = runner.NewDispatcher(runner.DispatcherConfig{
-			Projects: projects, Tickets: tickets, TicketRuns: backend.ticketRuns,
-			Started: backend.ticketStarted,
-		})
-		announce.wakes(dispatcher.Wake)
-		// Deferred after ticketRuns.Close, so it runs before it: no start races their shutdown.
-		defer dispatcher.Close()
-	}
+	backend.ticketRuns = runner.NewTicketRuns(runner.TicketRunsConfig{
+		Runs: runs, Tickets: tickets, Projects: projects,
+		Finished: backend.ticketFinished, Planned: backend.ticketPlanned,
+	})
+	backend.ticketRuns.Recover()
+	// Deferred after runs.Close, so it runs first: deliveries stop before the sessions do.
+	defer backend.ticketRuns.Close()
+	dispatcher := runner.NewDispatcher(runner.DispatcherConfig{
+		Projects: projects, Tickets: tickets, TicketRuns: backend.ticketRuns,
+		Started: backend.ticketStarted,
+	})
+	announce.wakes(dispatcher.Wake)
+	// Deferred after ticketRuns.Close, so it runs before it: no start races their shutdown.
+	defer dispatcher.Close()
 	srv, err := web.New(web.Config{
 		Addr:       *addr,
 		Origins:    origins,
@@ -310,12 +238,8 @@ func runWebCommand(args []string) error {
 		if err := srv.Close(); err != nil {
 			return err
 		}
-		if dispatcher != nil {
-			dispatcher.Close()
-		}
-		if backend.ticketRuns != nil {
-			backend.ticketRuns.Close()
-		}
+		dispatcher.Close()
+		backend.ticketRuns.Close()
 		runs.Close()
 		// Serve's error is the one worth reporting, so give it a moment to
 		// surface rather than exiting on the signal alone.
@@ -345,4 +269,20 @@ func openBrowser(url string) {
 		return
 	}
 	go func() { _ = cmd.Wait() }()
+}
+
+// webRoot is the directory new projects are picked from, canonical so that a
+// containment check against it compares like with like.
+func webRoot(dir string) (string, error) {
+	if dir == "" {
+		dir = "."
+	}
+	root, err := pathutil.Canonical(dir)
+	if err != nil {
+		return "", fmt.Errorf("--root: %w", err)
+	}
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("--root: %s is not a directory", root)
+	}
+	return root, nil
 }

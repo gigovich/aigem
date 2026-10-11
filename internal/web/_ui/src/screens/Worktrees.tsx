@@ -136,7 +136,7 @@ export function Worktrees() {
       </div>
       {!project ? (
         <EmptyState
-          title="This daemon's directory has no project record."
+          title="Repositories need a project."
           detail="Choose or add a project in the sidebar to list its repositories and worktrees."
         />
       ) : loaded === null ? (

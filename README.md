@@ -50,6 +50,7 @@ aigem                        # open the TUI in the current directory
 aigem -p 'what does internal/agent do?'    # one-shot, prints to stdout
 aigem auth login openai      # or `aigem models init` for a local model
 aigem web                    # serve the browser UI on a loopback port
+aigem web --root ~/work      # projects are picked from under ~/work
 ```
 
 The URL it prints carries a token; the page trades it for a cookie on first

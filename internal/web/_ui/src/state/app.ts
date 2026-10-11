@@ -45,11 +45,13 @@ export type AppState = {
   usage: ProviderUsage[]
   activity: Activity[]
   projects: Project[]
+  /** The project list has been read once, so an empty one means there are none. */
+  projectsLoaded: boolean
   tickets: Ticket[]
   /** The first ticket read for the selected project has finished. */
   ticketsLoaded: boolean
   newTicketOpen: boolean
-  /** The project every list screen reads; empty is the daemon's own directory. Saved per browser. */
+  /** The project every list screen reads; empty while there is none. Saved per browser. */
   project: string
 
   theme: Theme
@@ -143,6 +145,7 @@ export function initialState(): AppState {
     usage: [],
     activity: [],
     projects: [],
+    projectsLoaded: false,
     tickets: [],
     ticketsLoaded: false,
     newTicketOpen: false,
@@ -194,7 +197,7 @@ export function runCounts(s: AppState): { live: number; running: number; waiting
   return { live, running, waiting }
 }
 
-/** The runs that belong to a project; an absent id on a record is the daemon's own directory. */
+/** The runs that belong to a project. */
 export function inProject(runs: Run[], project: string): Run[] {
   return runs.filter((r) => (r.projectId ?? '') === project)
 }
@@ -222,6 +225,14 @@ export function selectProject(id: string) {
     return
   }
   setProject(id)
+  void refresh.skills()
+  void refresh.commands()
+  void refresh.tickets()
+}
+
+/** Read the projects, and what the selection scopes when the read moved it. */
+export async function reloadProjects() {
+  if (!(await refresh.projects())) return
   void refresh.skills()
   void refresh.commands()
   void refresh.tickets()
@@ -304,8 +315,16 @@ export const refresh = {
     })
   },
   models: () => load('models', 'models', () => api.models()),
-  skills: () => load('skills', 'skills', () => api.skills(store.get().project)),
-  commands: () => load('commands', 'commands', () => api.commands(store.get().project)),
+  skills: () => {
+    const { project } = store.get()
+    if (!project) return Promise.resolve(false)
+    return load('skills', 'skills', () => api.skills(project))
+  },
+  commands: () => {
+    const { project } = store.get()
+    if (!project) return Promise.resolve(false)
+    return load('commands', 'commands', () => api.commands(project))
+  },
   usage: () => load('usage', 'usage', () => api.usage()),
   activity: () => load('activity', 'activity', readActivityTail),
   /** Resolves true when a stale selection was reset - the caller's cue to reread its catalogues. */
@@ -313,14 +332,14 @@ export const refresh = {
     // Only what the daemon listed reconciles the selection: a read that failed
     // listed nothing, and that is not the same as the project being gone.
     if (!(await load('projects', 'projects', () => api.projects()))) return false
-    // A saved selection the daemon no longer lists - forgotten elsewhere, or a
-    // daemon without a registry - falls back to the daemon's own directory.
+    patch({ projectsLoaded: true })
+    // No selection, or one the daemon no longer lists, falls back to the first project.
     const { projects, project } = store.get()
-    if (project && !projects.some((p) => p.id === project)) {
-      setProject('')
-      return true
-    }
-    return false
+    if (projects.some((p) => p.id === project)) return false
+    const first = projects[0]?.id ?? ''
+    if (first === project) return false
+    setProject(first)
+    return true
   },
 }
 
@@ -482,10 +501,14 @@ export async function openSession() {
     flash('This daemon does not serve runs.')
     return
   }
+  const { project } = store.get()
+  if (!project) {
+    flash('Add a project first.')
+    return
+  }
   if (!claimOpening()) return
   try {
-    const project = store.get().project
-    const run = await api.openRun(project ? { projectId: project } : {})
+    const run = await api.openRun({ projectId: project })
     await refresh.runs()
     setActiveRun(run.id)
     navigate({ screen: 'chat', id: run.id })
@@ -603,13 +626,7 @@ export function start(): () => void {
           void refresh.tickets()
           break
         case ControlKind.ProjectUpdated:
-          void refresh.projects().then((reset) => {
-            if (reset) {
-              void refresh.skills()
-              void refresh.commands()
-              void refresh.tickets()
-            }
-          })
+          void reloadProjects()
           break
         case CLIENT_ERROR:
           // Not a state change: it is this connection's own mistake coming

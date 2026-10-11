@@ -98,7 +98,7 @@ test('skills lists the catalogue and the definitions awaiting approval', async (
   await mountApp({
     skills: SKILLS,
     routes: {
-      '/api/skills/code-review': () =>
+      '/api/skills/code-review?project=PRJ-0': () =>
         new Response(
           JSON.stringify({
             name: 'code-review',
@@ -148,7 +148,7 @@ test('skills asks before it loads a project definition, and only then posts', as
   const h = await mountApp({
     skills: SKILLS,
     routes: {
-      '/api/skills/code-review': () =>
+      '/api/skills/code-review?project=PRJ-0': () =>
         new Response(
           JSON.stringify({
             name: 'code-review',
@@ -199,7 +199,7 @@ test('activity draws the feed newest first and links to the run', async () => {
 })
 
 test('the tickets and task screens say they need a project', async () => {
-  await mountApp()
+  await mountApp({ meta: { features: { controlSocket: true, runs: true, tickets: true } } })
   for (const [path, title] of [
     ['tickets', 'Tickets need a project.'],
     ['task', 'Tasks need a project.'],

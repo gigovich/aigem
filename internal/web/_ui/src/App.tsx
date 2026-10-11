@@ -11,6 +11,7 @@ import {
   flash,
   openSession,
   refresh,
+  reloadProjects,
   selectProject,
   setBanner,
   setLogin,
@@ -36,7 +37,7 @@ import { Activity } from '@/screens/Activity'
 import { Chat } from '@/screens/Chat'
 import { LoginDialog } from '@/screens/LoginDialog'
 import { Models } from '@/screens/Models'
-import { NewProjectDialog } from '@/screens/NewProjectDialog'
+import { FirstProject, NewProjectDialog } from '@/screens/NewProjectDialog'
 import { Run } from '@/screens/Run'
 import { Skills } from '@/screens/Skills'
 import { Task } from '@/screens/Task'
@@ -289,13 +290,17 @@ export default function App() {
               </button>
             </div>
           )}
-          <Screen
-            route={route}
-            runId={runId}
-            conversation={conversation}
-            onNew={() => void openSession()}
-            onRemove={setRemoving}
-          />
+          {app.meta?.features?.projects === true && app.projectsLoaded && app.projects.length === 0 ? (
+            <FirstProject />
+          ) : (
+            <Screen
+              route={route}
+              runId={runId}
+              conversation={conversation}
+              onNew={() => void openSession()}
+              onRemove={setRemoving}
+            />
+          )}
         </main>
         <Inspector content={inspector} />
       </div>
@@ -411,7 +416,9 @@ function ProjectSelect({ id }: { id?: string }) {
   useEffect(() => {
     // The list first: a link is where a project id arrives from outside this
     // tab, and selecting one refuses an id the page has not been told about.
-    void refresh.projects().then(() => selectProject(id ?? ''))
+    void reloadProjects().then(() => {
+      if (id) selectProject(id)
+    })
     replace({ screen: 'chat' })
   }, [id])
   return null

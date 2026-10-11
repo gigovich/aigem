@@ -70,6 +70,13 @@ func (b *projectsBackend) ProjectRepos(_ context.Context, id string) ([]Reposito
 	return nil, ErrNoProject
 }
 
+func (b *projectsBackend) Dirs(_ context.Context, path string) (DirListing, error) {
+	if path == "../out" {
+		return DirListing{}, Refuse(errors.New("../out is outside the root"))
+	}
+	return DirListing{Root: "/home/dev", Path: path, Dirs: []Dir{{Name: "api", Git: true}}}, nil
+}
+
 func (b *projectsBackend) asked(what string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -100,7 +107,6 @@ func newProjectsServer(t *testing.T) (*Server, *projectsBackend) {
 	t.Helper()
 	b := &projectsBackend{
 		phaseBackend: &phaseBackend{fakeBackend: &fakeBackend{}},
-		projects:     []Project{{Name: "work", Dir: "/home/dev/work"}},
 		repos:        map[string][]Repository{"PRJ-1": {{Name: "api", Dir: "/p/api", Main: "main"}}},
 	}
 	srv := newTestServer(t, Config{Backend: b})
@@ -127,8 +133,8 @@ func TestTheFeatureMapNamesProjects(t *testing.T) {
 func TestProjectsAreListedAndAddedAndTheDaemonsSentenceIsShown(t *testing.T) {
 	srv, b := newProjectsServer(t)
 	list := decode[[]Project](t, api(t, srv, http.MethodGet, "/api/projects", ""))
-	if len(list) != 1 || list[0].ID != "" || list[0].Name != "work" {
-		t.Fatalf("list = %+v, want the daemon's directory with an empty id", list)
+	if len(list) != 0 {
+		t.Fatalf("list = %+v, want an empty array", list)
 	}
 
 	res := api(t, srv, http.MethodPost, "/api/projects", `{"dir":"/home/dev/thing"}`)
@@ -191,9 +197,22 @@ func TestProjectReposAreAnArrayAndAnUnknownProjectIs404(t *testing.T) {
 	}
 }
 
+func TestDirsCarryThePathAndARefusalIs400(t *testing.T) {
+	srv, _ := newProjectsServer(t)
+	got := decode[DirListing](t, api(t, srv, http.MethodGet, "/api/fs?path=src", ""))
+	if got.Root != "/home/dev" || got.Path != "src" || len(got.Dirs) != 1 || !got.Dirs[0].Git {
+		t.Errorf("listing = %+v", got)
+	}
+	res := api(t, srv, http.MethodGet, "/api/fs?path=../out", "")
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(readBody(t, res), "outside the root") {
+		t.Errorf("a path outside the root = %d, want 400 with the sentence", res.StatusCode)
+	}
+}
+
 func TestTheProjectRoutesRefuseOtherMethodsAndNeedTheFeature(t *testing.T) {
 	srv, _ := newProjectsServer(t)
 	for path, method := range map[string]string{
+		"/api/fs":                   http.MethodPost,
 		"/api/projects":             http.MethodPut,
 		"/api/projects/PRJ-1":       http.MethodGet,
 		"/api/projects/PRJ-1/repos": http.MethodPost,

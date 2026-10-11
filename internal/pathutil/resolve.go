@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // maxSymlinkHops bounds manual link following, mirroring the kernel's ELOOP
@@ -87,4 +88,14 @@ func Canonical(p string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(resolved), nil
+}
+
+// Within reports whether p is root itself or sits beneath it. Both must already
+// be canonical. A path on another volume is outside.
+func Within(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }

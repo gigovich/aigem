@@ -61,7 +61,7 @@ export type Run = {
 
 export type NewRun = { mode?: string; title?: string; model?: string; projectId?: string }
 
-/** A project: a directory on the daemon's machine. The daemon's own has an empty id. */
+/** A project: a directory on the daemon's machine. */
 export type Project = {
   id: string
   name: string
@@ -74,7 +74,13 @@ export type Project = {
 
 export type ProjectPatch = { slots?: number; paused?: boolean }
 
+/** `dir` is relative to the daemon's root, or absolute under it. */
 export type NewProject = { dir: string; name?: string }
+
+export type Dir = { name: string; git?: boolean }
+
+/** The sub-directories of `path`, relative to the daemon's `root`. */
+export type DirListing = { root: string; path: string; dirs: Dir[]; truncated?: boolean }
 
 /** A git checkout under a project. `name` is empty for the project directory itself. */
 export type Repository = { name: string; dir: string; main?: string }

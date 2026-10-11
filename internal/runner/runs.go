@@ -90,8 +90,8 @@ const (
 type Run struct {
 	ID        string `json:"id"`
 	SessionID string `json:"sessionId,omitempty"`
-	// ProjectID names the project the run works in; empty is the daemon's own
-	// directory, which is a project with no record.
+	// ProjectID names the project the run works in. A record saved before every
+	// run had a project has none, and can no longer be opened.
 	ProjectID string `json:"projectId,omitempty"`
 	// TicketID, Worktree and Branch are set on a run that works on a ticket.
 	TicketID string    `json:"ticketId,omitempty"`

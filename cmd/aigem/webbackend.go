@@ -30,8 +30,9 @@ type webBackend struct {
 	models *llm.Registry
 	// runs is the daemon's conversations. Everything under /api/runs is this
 	// registry, translated.
-	runs     *runner.Runs
-	env      *runner.Env
+	runs *runner.Runs
+	// root is the canonical directory new projects are picked from.
+	root     string
 	projects *runner.Projects
 	tickets  *runner.Tickets
 	// ticketRuns drives tickets with runs. It is set after construction, because its
@@ -56,10 +57,9 @@ type webBackend struct {
 
 	skillMu sync.Mutex
 	// pending memoises what each project's skills are waiting on, keyed by
-	// project id ("" for the daemon's own). Answering it means reading and
-	// hashing every SKILL.md, and how many there are is the project's choice,
-	// so a page polling the listing would otherwise pay for the whole tree once
-	// a second. Short enough that a skill added by hand shows up while the
+	// project id. Answering it means reading and hashing every SKILL.md, and
+	// how many there are is the project's choice, so a page polling the listing
+	// would otherwise pay for the whole tree once a second. Short enough that a skill added by hand shows up while the
 	// person is still looking at the screen.
 	pending map[string]pendingMemo
 }
@@ -98,7 +98,7 @@ type webBackendConfig struct {
 	version  string
 	models   *llm.Registry
 	runs     *runner.Runs
-	env      *runner.Env
+	root     string
 	projects *runner.Projects
 	tickets  *runner.Tickets
 	activity *store.Log[web.Activity]
@@ -118,7 +118,7 @@ func newWebBackend(cfg webBackendConfig) *webBackend {
 	}
 	flowCtx, flowCancel := context.WithCancel(context.Background())
 	return &webBackend{
-		version: cfg.version, models: cfg.models, runs: cfg.runs, env: cfg.env, projects: cfg.projects,
+		version: cfg.version, models: cfg.models, runs: cfg.runs, root: cfg.root, projects: cfg.projects,
 		tickets:  cfg.tickets,
 		activity: cfg.activity, notify: cfg.notify,
 		flows: map[string]*auth.Flow{}, flowStarting: map[string]int{}, pending: map[string]pendingMemo{},
@@ -129,20 +129,17 @@ func newWebBackend(cfg webBackendConfig) *webBackend {
 // Unavailable names what this daemon was not given what it needs to serve. A
 // page is told the screen does not exist rather than shown one that can never
 // hold anything: without a state directory there is no activity feed to read,
-// and without a loaded project there are no skills or commands to list.
+// and without a project registry there are no skills or commands to list.
 func (b *webBackend) Unavailable() []string {
 	var out []string
 	if b.activity == nil {
 		out = append(out, "activity")
 	}
-	if b.env == nil {
-		out = append(out, "skills", "commands")
-	}
 	if b.runs == nil {
 		out = append(out, "runs")
 	}
 	if b.projects == nil {
-		out = append(out, "projects")
+		out = append(out, "projects", "skills", "commands")
 	}
 	if b.tickets == nil || b.projects == nil {
 		out = append(out, "tickets")
