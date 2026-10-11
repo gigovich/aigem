@@ -286,14 +286,15 @@ func (m *Model) handleModelAddKey(msg tea.KeyPressMsg) tea.Cmd {
 		if code == tea.KeyUp || code == tea.KeyLeft {
 			delta = -1
 		}
-		if f.field == addProvider {
+		switch f.field {
+		case addProvider:
 			f.provider = (f.provider + delta + len(f.providers) + 1) % (len(f.providers) + 1)
 			f.clearKey()
 			f.scroll = 0
-		} else if f.field == addAuth {
+		case addAuth:
 			f.apiKey = !f.apiKey
 			f.clearKey()
-		} else {
+		default:
 			return m.advanceModelAdd(delta)
 		}
 	case tea.KeyBackspace:

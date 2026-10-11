@@ -32,6 +32,9 @@ func setup() (string, func() error, error) {
 	if err != nil {
 		return "", nil, err
 	}
+	if base, err = filepath.EvalSymlinks(base); err != nil {
+		return "", nil, err
+	}
 	if root := outermostWorktree(base); root != "" {
 		base = filepath.Dir(root)
 		if outermostWorktree(base) != "" {

@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -157,8 +158,12 @@ type Env struct {
 // The caller owns Close.
 func Load(ctx context.Context, opts Options) (*Env, []Notice, error) {
 	// The same failure tools.NewRegistry reports, raised where the CLI used to
-	// raise it: os.Getwd failing under a deleted working directory.
+	// raise it: os.Getwd failing under a deleted working directory. macOS
+	// getcwd still returns the deleted directory's old path, hence the Stat.
 	root, err := filepath.Abs(opts.Cwd)
+	if err == nil {
+		_, err = os.Stat(root)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("runner: resolve working directory %q: %w", opts.Cwd, err)
 	}
