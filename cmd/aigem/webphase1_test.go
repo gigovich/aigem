@@ -22,8 +22,24 @@ import (
 	"github.com/gigovich/aigem/internal/web"
 )
 
+const testUserModels = `{"providers":[{"id":"acme","base_url":"http://127.0.0.1:1","api":"openai-completions",
+	"auth":"none","models":[{"id":"m","context_window":1000}]}]}`
+
+func writeUserModels(t *testing.T, text string) {
+	t.Helper()
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	if err := os.MkdirAll(filepath.Join(cfg, "aigem"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "aigem", "models.json"), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWebModelsExposeOnlyTransportMetadataAndPersistCanonicalDefault(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	writeUserModels(t, testUserModels)
 	b := newWebBackend(webBackendConfig{version: "test"})
 	models, err := b.Models(context.Background())
 	if err != nil || len(models) == 0 {
@@ -553,7 +569,7 @@ func TestTwoConcurrentDeletesRecordOneRemoval(t *testing.T) {
 // person can hold down, and the state directory grows for as long as they do.
 func TestSettingTheDefaultModelToWhatIsSavedChangesNothing(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	writeUserModels(t, testUserModels)
 	log := store.NewLog[web.Activity](filepath.Join(t.TempDir(), "activity.jsonl"))
 	var published int
 	b := newWebBackend(webBackendConfig{version: "test", activity: log,

@@ -306,6 +306,11 @@ type modelItemKind uint8
 const (
 	modelItemModel modelItemKind = iota
 	modelItemAdd
+	modelItemProvider
+	modelItemServer
+	modelItemSetupLocal
+	modelItemManual
+	modelItemCandidate
 )
 
 // modelItem is one selectable model in the /model picker.
@@ -316,6 +321,9 @@ type modelItem struct {
 	provider string
 	locked   bool // provider needs auth and is not authenticated
 	current  bool
+	checked  bool
+	info     llm.ModelInfo   // a candidate's metadata
+	server   []llm.ModelInfo // what a discovered server serves
 }
 
 // modelPicker is the fuzzy-filtered model list shown by /model.
@@ -324,6 +332,15 @@ type modelPicker struct {
 	items  []modelItem // current filtered view
 	cursor int
 	query  string
+	stage  int
+	// provider or baseURL is where the candidates come from.
+	provider, baseURL string
+	loading           bool
+	status            string
+	// askCtx is set once a checked model turned out to have no known context
+	// window; digits typed then go to ctx rather than the filter.
+	askCtx bool
+	ctx    string
 }
 
 // localModelChoice is the action widget shown after selecting a local model.
@@ -371,6 +388,7 @@ const (
 	alertLocalStart             // download/start the configured local model
 	alertLocalDrop              // delete the configured local model and its files
 	alertLogin                  // log in to a provider
+	alertAddModel               // add a first model
 )
 
 // alertBox is a dismissable warning shown when the active model is not available
@@ -441,6 +459,9 @@ type Model struct {
 	mcp            *mcpBrowser
 	models         *modelPicker
 	modelAdd       *modelAddForm
+	// listAfterLogin is the provider whose models are listed once its login,
+	// started from the add flow, succeeds.
+	listAfterLogin string
 	localChoice    *localModelChoice // local-model action widget, nil when closed
 	localWiz       *localWizard      // /model init overlay, nil when closed
 	localProgIdx   int               // index of the live local-start progress block, -1 when none
@@ -674,6 +695,11 @@ func needsAuth(ref string, reg *llm.Registry) bool {
 // when it is available. Local availability means the server is reachable;
 // provider availability means it is authenticated.
 func assessActiveModel(ref string, reg *llm.Registry) *alertBox {
+	if ref == "" {
+		return &alertBox{
+			title: "No model yet", body: "Add a model to start.", action: alertAddModel, confirmLabel: "Add model",
+		}
+	}
 	prov, _, _ := strings.Cut(ref, "/")
 	if prov == llm.LocalProviderID {
 		cfg, exists, _ := local.Load()
@@ -900,6 +926,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelSavedMsg:
 		cmds = append(cmds, m.applyModelSaved(msg))
 
+	case localServersMsg:
+		m.applyLocalServers(msg)
+
+	case candidatesMsg:
+		m.applyCandidates(msg)
+
 	case addedModelSelectedMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -927,7 +959,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.thenSwitch != "" {
 				m.switchModel(msg.thenSwitch, true)
 			}
+			if msg.provider == m.listAfterLogin {
+				cmds = append(cmds, m.listProviderModels(msg.provider))
+			}
 		}
+		m.listAfterLogin = ""
 		m.refresh()
 
 	case availabilityMsg:
@@ -2260,7 +2296,9 @@ func (mp *modelPicker) filter() {
 	if mp.cursor >= len(mp.items) {
 		mp.cursor = max(0, len(mp.items)-1)
 	}
-	mp.items = append(mp.items, modelItem{kind: modelItemAdd, name: "Add model…"})
+	if mp.stage == pickModels {
+		mp.items = append(mp.items, modelItem{kind: modelItemAdd, name: "Add model…"})
+	}
 }
 
 func (m *Model) handleModelKey(msg tea.KeyPressMsg) tea.Cmd {
@@ -2281,9 +2319,28 @@ func (m *Model) handleModelKey(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		it := mp.items[mp.cursor]
-		if it.kind == modelItemAdd {
+		switch it.kind {
+		case modelItemAdd:
+			return m.openProviderPicker()
+		case modelItemProvider:
+			if it.locked {
+				m.models, m.listAfterLogin = nil, it.provider
+				m.layout()
+				return m.runLogin(it.provider, "")
+			}
+			return m.listProviderModels(it.provider)
+		case modelItemServer:
+			m.showCandidates("", it.ref, it.server)
+			return nil
+		case modelItemSetupLocal:
+			m.models = nil
+			m.openLocalWizard()
+			return nil
+		case modelItemManual:
 			m.openModelAdd()
 			return nil
+		case modelItemCandidate:
+			return m.addCandidates()
 		}
 		m.models = nil
 		m.layout()
@@ -2301,14 +2358,27 @@ func (m *Model) handleModelKey(msg tea.KeyPressMsg) tea.Cmd {
 	case tea.KeyEsc:
 		m.models = nil
 		m.layout()
+	case tea.KeyDelete:
+		if mp.stage == pickModels && mp.cursor < len(mp.items) && mp.items[mp.cursor].kind == modelItemModel {
+			m.removeModel(mp.items[mp.cursor])
+		}
 	case tea.KeyBackspace:
-		if mp.query != "" {
+		if mp.askCtx && mp.ctx != "" {
+			mp.ctx = trimLastRune(mp.ctx)
+			m.layout()
+		} else if mp.query != "" {
 			mp.query = trimLastRune(mp.query)
 			mp.filter()
 			m.layout()
 		}
 	default:
-		if msg.Text != "" {
+		if msg.Text == " " && mp.stage == pickCandidates {
+			mp.toggle()
+			m.layout()
+		} else if mp.askCtx && strings.Trim(msg.Text, "0123456789") == "" {
+			mp.ctx += msg.Text
+			m.layout()
+		} else if msg.Text != "" {
 			mp.query += msg.Text
 			mp.filter()
 			m.layout()
@@ -2587,8 +2657,7 @@ func (m *Model) handleLocalWizardKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *Model) runModelCommand(arg string) tea.Cmd {
 	switch arg {
 	case "add":
-		m.openModelAdd()
-		return nil
+		return m.openProviderPicker()
 	case "init":
 		m.openLocalWizard()
 		return nil
@@ -2688,6 +2757,8 @@ func (m *Model) handleAlertKey(msg tea.KeyPressMsg) tea.Cmd {
 			return m.dropLocal()
 		case alertLogin:
 			return m.runLogin(a.provider, m.model)
+		case alertAddModel:
+			return m.openProviderPicker()
 		}
 		return nil
 	case tea.KeyEsc:
@@ -2830,13 +2901,18 @@ func (m Model) modelPickerView() string {
 	if mp.cursor >= maxRows {
 		start = mp.cursor - maxRows + 1
 	}
-	title := overlayTitleStyle.Render("Model  ") +
-		overlayHintStyle.Render("(type to filter · ↑/↓ · Enter select · Esc close)")
+	titles := []string{"Model", "Add model from", "Add from " + mp.provider + mp.baseURL}
+	hints := []string{
+		"(type to filter · ↑/↓ · Enter select · Del remove · Esc close)",
+		"(type to filter · ↑/↓ · Enter select · Esc close)",
+		"(type to filter · Space check · Enter add · Esc close)",
+	}
+	title := overlayTitleStyle.Render(titles[mp.stage]+"  ") + overlayHintStyle.Render(hints[mp.stage])
 	rows := []string{padLine(title, w, cSurface0)}
 	if mp.query != "" {
 		rows = append(rows, padLine(overlayTextStyle.Render(" /"+mp.query), w, cSurface0))
 	}
-	if len(mp.items) == 1 && mp.items[0].kind == modelItemAdd {
+	if mp.query != "" && (len(mp.items) == 0 || len(mp.items) == 1 && mp.items[0].kind == modelItemAdd) {
 		rows = append(rows, padLine(overlayHintStyle.Render(" (no matches)"), w, cSurface0))
 	}
 	for i := start; i < len(mp.items) && i < start+maxRows; i++ {
@@ -2850,8 +2926,23 @@ func (m Model) modelPickerView() string {
 			icon = "🔒"
 		case it.current:
 			icon = "● "
+		case it.kind == modelItemCandidate && it.checked:
+			icon = "☑ "
+		case it.kind == modelItemCandidate:
+			icon = "☐ "
 		}
-		line := fmt.Sprintf(" %s %s", icon, truncate(it.ref, max(8, w-6)))
+		label := it.ref
+		switch it.kind {
+		case modelItemServer:
+			label = it.name + "  " + it.ref
+		case modelItemCandidate:
+			if it.info.ContextWindow > 0 {
+				label += "  " + humanTokens(it.info.ContextWindow)
+			} else {
+				label += "  context ?"
+			}
+		}
+		line := fmt.Sprintf(" %s %s", icon, truncate(label, max(8, w-6)))
 		if i == mp.cursor {
 			rows = append(rows, pickSelStyle.Width(w).MaxWidth(w).Render(line))
 		} else {
@@ -2865,6 +2956,17 @@ func (m Model) modelPickerView() string {
 				style = pickSelStyle
 			}
 			rows = append(rows, style.Width(w).MaxWidth(w).Render("   Add model…"))
+		}
+	}
+	if mp.loading {
+		rows = append(rows, padLine(overlayHintStyle.Render(" looking…"), w, cSurface0))
+	}
+	if mp.askCtx {
+		rows = append(rows, padLine(overlayTextStyle.Render(" context window: "+mp.ctx+"_"), w, cSurface0))
+	}
+	if mp.status != "" {
+		for _, l := range wrapText(mp.status, w-2) {
+			rows = append(rows, padLine(overlayTextStyle.Render(" "+l), w, cSurface0))
 		}
 	}
 	return overlayBoxStyle.Render(lipgloss.JoinVertical(lipgloss.Left, rows...))

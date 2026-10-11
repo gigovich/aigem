@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -228,7 +229,7 @@ func UsableModels(reg *llm.Registry, maxTokensFlag int) map[string]bool {
 			continue
 		}
 		got, known := recs[p.ID]
-		if !known {
+		if !known && reg.Trusted(p.ID, "") {
 			got.rec, got.ok, got.err = Get(p.ID)
 			recs[p.ID] = got
 		}
@@ -258,11 +259,17 @@ func UsableModels(reg *llm.Registry, maxTokensFlag int) map[string]bool {
 func OpenModel(reg *llm.Registry, ref string, maxTokensFlag int) (llm.Backend, llm.Provider, llm.ModelInfo, error) {
 	p, m, err := reg.Resolve(ref)
 	if err != nil {
-		return nil, p, m, err
+		return nil, p, m, fmt.Errorf("%w; add it with /model add", err)
 	}
-	cred, err := CredentialForModel(context.Background(), p.ID, m.ID)
-	if err != nil {
-		return nil, p, m, err
+	// A provider only a project file declares never gets a stored credential.
+	cred := llm.Credential{Kind: llm.AuthNone}
+	if reg.Trusted(p.ID, "") {
+		if cred, err = CredentialForModel(context.Background(), p.ID, m.ID); err != nil {
+			return nil, p, m, err
+		}
+	} else if p.NeedsAuth() {
+		return nil, p, m, fmt.Errorf("provider %s is declared only by this project, so it gets no stored key; "+
+			"add it to your own models.json to use one", p.ID)
 	}
 	if p.NeedsAuth() && cred.Kind == llm.AuthNone {
 		return nil, p, m, fmt.Errorf("model %s requires authentication - run: aigem auth login %s", m.Ref(), p.ID)
@@ -403,4 +410,35 @@ func (s *persistSource) Token() (*oauth2.Token, error) {
 		}
 	}
 	return tok, nil
+}
+
+// ProviderModels lists the models a trusted provider serves to the stored
+// credential. The ChatGPT subscription has no listing and serves the catalog's
+// subscription models; a Grok subscription the listing refuses falls back to the
+// catalog.
+func ProviderModels(ctx context.Context, reg *llm.Registry, provider string) ([]llm.ModelInfo, error) {
+	p, ok := reg.Provider(provider)
+	if !ok || !reg.Trusted(provider, "") {
+		return nil, fmt.Errorf("unknown provider %q", provider)
+	}
+	cred, err := Credential(ctx, provider)
+	if err != nil {
+		return nil, err
+	}
+	catalog := llm.CatalogModels(provider)
+	for i := range catalog {
+		catalog[i].Provider = provider
+	}
+	switch {
+	case cred.Kind == llm.AuthOAuthChatGPT:
+		notServed := func(m llm.ModelInfo) bool { return !llm.IsCodexSubscriptionModel(m.ID) }
+		return slices.DeleteFunc(catalog, notServed), nil
+	case p.NeedsAuth() && cred.Kind == llm.AuthNone:
+		return nil, fmt.Errorf("sign in to %s first", provider)
+	}
+	models, err := llm.ListModels(ctx, p, cred.Token)
+	if err != nil && cred.Kind == llm.AuthOAuthXAI {
+		return catalog, nil
+	}
+	return models, err
 }

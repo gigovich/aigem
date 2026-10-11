@@ -159,7 +159,11 @@ though the hop to the daemon is plain HTTP.
 | `GET /api/runs/{id}/socket` | the run stream, `?since=` |
 | `GET /api/runs/{id}/blobs/{seq}` | the whole body of a tool result the timeline trimmed |
 | `GET /api/runs/{id}/artifacts` | the files the run changed, both sides |
-| `GET /api/models` | configured model metadata and authentication/default state |
+| `GET /api/models` | added model metadata and authentication/default state; `project` marks one only the project file declares, `removable` one you added |
+| `POST /api/models` | adds models of one provider: `{"provider":"openai"}` or `{"baseUrl":"http://127.0.0.1:11434"}`, plus `"models"` as listed (a server's `ref` is the bare id); each needs a `contextWindow` |
+| `DELETE /api/models?ref=` | removes a model you added; 204 |
+| `GET /api/providers` | providers a model can be added from, and the model servers found on `127.0.0.1` |
+| `GET /api/providers/models` | what `?provider=` serves to its credential, or the server at `?url=` serves without one; only models not added yet |
 | `POST /api/models/default` | saves `{"ref":"provider/model"}` as the default |
 | `POST /api/auth/login` | starts interactive login (`openai` or `xai`); 201 |
 | `GET /api/auth/login/{id}` | polls that login's `pending`, `done`, `failed` or `cancelled` state |
@@ -209,8 +213,8 @@ string is read, so a bad cursor on a route this daemon does not serve is still
 
 Phase-one JSON uses camelCase field names. Model entries contain `ref`,
 `provider`, `name`, `contextWindow`, `maxTokens`, `reasoning`, `needsAuth`,
-`authenticated`, and `default`. They deliberately do not contain provider base
-URLs, transport headers, or credential descriptions. The default-model and
+`authenticated`, `default`, `project` and `removable`. They deliberately do not
+contain provider base URLs, transport headers, or credential descriptions. The default-model and
 provider-login request bodies are capped at 16 KiB, reject unknown fields and
 accept exactly one JSON document. Those three rules belong to every JSON body
 this API takes, `POST /api/runs` included: a field the daemon does not know is a
@@ -256,8 +260,8 @@ otherwise malformed values are rejected.
 
 `features` in `/api/meta` and in the control stream's `hello` names what this
 daemon can serve, and a page uses it to decide which screens exist at all. The
-keys are `controlSocket`, `runs`, `models`, `providerLogin`, `skills`,
-`commands`, `usage`, `activity`, `projects` and `tickets`.
+keys are `controlSocket`, `runs`, `models`, `modelSetup`, `providerLogin`,
+`skills`, `commands`, `usage`, `activity`, `projects` and `tickets`.
 
 A key is present when the daemon was built with that seam *and* was given what
 the seam needs. A route whose key is absent answers 501, so the map is what a
@@ -280,7 +284,8 @@ is at once it has been read:
 ```
 
 The kinds this daemon publishes are `run.updated`, carrying the record;
-`model.default`, carrying the model that is now the default; `auth.updated`,
+`model.default`, carrying the model that is now the default; `models.updated`,
+when a model was added or removed; `auth.updated`,
 naming the provider whose credentials changed; `skills.updated`, carrying what
 was loaded; `project.updated`, carrying the project that was added, removed or
 whose environment failed to load; `ticket.updated`, carrying `{projectId, id}` of

@@ -133,6 +133,34 @@ export type Model = {
   needsAuth: boolean
   authenticated: boolean
   default: boolean
+  /** Declared only by the project's own models.json: never the default. */
+  project?: boolean
+  removable?: boolean
+}
+
+export type ProviderChoice = {
+  id: string
+  needsAuth: boolean
+  authenticated: boolean
+  canLogin: boolean
+}
+
+export type LocalServer = {
+  name: string
+  baseUrl: string
+  models: Model[]
+}
+
+export type Providers = {
+  providers: ProviderChoice[]
+  local: LocalServer[]
+}
+
+/** Models of one provider: a configured one by id, or the server at baseUrl. */
+export type NewModels = {
+  provider?: string
+  baseUrl?: string
+  models: Model[]
 }
 
 export type Login = {
@@ -328,6 +356,7 @@ export type ControlFrame =
 export const ControlKind = {
   RunUpdated: 'run.updated',
   ModelDefault: 'model.default',
+  ModelsUpdated: 'models.updated',
   AuthUpdated: 'auth.updated',
   SkillsUpdated: 'skills.updated',
   ActivityUpdated: 'activity.updated',

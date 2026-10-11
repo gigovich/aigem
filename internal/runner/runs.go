@@ -1085,6 +1085,21 @@ func waitFor(wg *sync.WaitGroup, d time.Duration) bool {
 	}
 }
 
+// SetModels makes models the registry every live run switches models against.
+func (r *Runs) SetModels(models *llm.Registry) {
+	r.mu.Lock()
+	var live []*Session
+	for _, lr := range r.byID {
+		if lr.sess != nil {
+			live = append(live, lr.sess)
+		}
+	}
+	r.mu.Unlock()
+	for _, s := range live {
+		s.Local.SetModelRegistry(models)
+	}
+}
+
 // liveLocked counts the conversations with a session attached.
 func (r *Runs) liveLocked() int {
 	n := 0

@@ -15,10 +15,12 @@ import type {
   Login,
   Meta,
   Model,
+  NewModels,
   NewProject,
   NewRun,
   Project,
   ProjectPatch,
+  Providers,
   ProviderUsage,
   Repository,
   Run,
@@ -197,6 +199,15 @@ export const api = {
   },
 
   models: (signal?: AbortSignal) => json<Model[]>('/api/models', { signal }),
+  addModels: (req: NewModels, signal?: AbortSignal) =>
+    json<Model[]>('/api/models', { ...body(req), signal }),
+  removeModel: async (ref: string, signal?: AbortSignal) => {
+    await send(`/api/models${query({ ref })}`, { method: 'DELETE', signal })
+  },
+  providers: (signal?: AbortSignal) => json<Providers>('/api/providers', { signal }),
+  /** What a configured provider serves, or the server at a typed URL. */
+  providerModels: (from: { provider: string } | { url: string }, signal?: AbortSignal) =>
+    json<Model[]>(`/api/providers/models${query(from)}`, { signal }),
   setDefaultModel: (ref: string, signal?: AbortSignal) =>
     json<Model>('/api/models/default', { ...body({ ref }), signal }),
 

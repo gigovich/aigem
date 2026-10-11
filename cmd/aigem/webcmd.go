@@ -145,7 +145,7 @@ func runWebCommand(args []string) error {
 	}
 	defer projects.Close()
 	tickets := runner.NewTickets(runner.TicketsConfig{Dir: stateDir, Notify: announce.publishTicket})
-	rt := &webRuntime{models: defaultModelRegistry(), projects: projects}
+	rt := &webRuntime{models: sharedModels(defaultModelRegistry()), projects: projects}
 	runs, err := rt.newRuns(stateDir, announce.publishRun)
 	if err != nil {
 		return err

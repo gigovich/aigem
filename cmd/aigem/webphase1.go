@@ -29,27 +29,27 @@ import (
 // implement.
 
 func (b *webBackend) Models(context.Context) ([]web.Model, error) {
-	def := preferredModelRef(b.models)
-	infos := b.models.Models()
+	models := b.models.Load()
+	def := preferredModelRef(models)
+	infos := models.Models()
 	// One call rather than one per model: the answer differs per model, because
 	// an OAuth subscription covers some of a provider's models and not others,
 	// but the stored credential does not - and asking per model is a locked
 	// parse of the whole credential file each time. How many models there are is
 	// not this daemon's choice: a project's own models.json adds to the
 	// registry, so per-model reads are a cost a repository could pick.
-	usable := auth.UsableModels(b.models, defaultMaxTokens)
+	usable := auth.UsableModels(models, defaultMaxTokens)
 	out := make([]web.Model, 0, len(infos))
 	for _, info := range infos {
-		p, _, err := b.models.Resolve(info.Ref())
+		p, _, err := models.Resolve(info.Ref())
 		if err != nil {
 			continue
 		}
-		out = append(out, web.Model{
-			Ref: info.Ref(), Provider: p.ID, Name: info.Name,
-			ContextWindow: info.ContextWindow, MaxTokens: info.MaxTokens, Reasoning: info.Reasoning,
-			NeedsAuth: p.NeedsAuth(), Authenticated: usable[info.Ref()],
-			Default: info.Ref() == def,
-		})
+		trusted := models.Trusted(p.ID, info.ID)
+		m := webModel(info)
+		m.NeedsAuth, m.Authenticated, m.Default = p.NeedsAuth(), usable[info.Ref()], info.Ref() == def
+		m.Project, m.Removable = !trusted, trusted && p.ID != llm.LocalProviderID
+		out = append(out, m)
 	}
 	return out, nil
 }
@@ -58,11 +58,12 @@ func (b *webBackend) SetDefaultModel(_ context.Context, ref string) (web.Model, 
 	// The reference is the client's, so the reason it cannot be resolved is
 	// written here rather than passed through: the resolver's own errors name
 	// providers and, through the credential store, absolute paths.
-	p, info, err := b.models.Resolve(ref)
+	models := b.models.Load()
+	p, info, err := models.Resolve(ref)
 	if err != nil {
 		return web.Model{}, web.Refuse(fmt.Errorf("no model called %q is configured", ref))
 	}
-	if _, _, _, err := auth.OpenModel(b.models, info.Ref(), defaultMaxTokens); err != nil {
+	if _, _, _, err := auth.OpenModel(models, info.Ref(), defaultMaxTokens); err != nil {
 		slog.Warn("a model could not be opened", "ref", info.Ref(), "err", err)
 		return web.Model{}, web.Refuse(fmt.Errorf(
 			"%s is not signed in; sign in to %s first", info.Ref(), p.ID))
@@ -570,7 +571,7 @@ func (b *webBackend) Usage(context.Context) ([]web.ProviderUsage, error) {
 	for name := range stored {
 		providers[name] = true
 	}
-	for _, p := range b.models.Providers() {
+	for _, p := range b.models.Load().Providers() {
 		if p.NeedsAuth() && auth.IsAuthenticated(p.ID) {
 			providers[p.ID] = true
 		}

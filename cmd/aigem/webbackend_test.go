@@ -38,7 +38,7 @@ func TestWebBackendMetaReportsTheVersionAndAResolvableModel(t *testing.T) {
 	if meta.DefaultModel == "" {
 		return
 	}
-	if _, _, err := b.models.Resolve(meta.DefaultModel); err != nil {
+	if _, _, err := b.models.Load().Resolve(meta.DefaultModel); err != nil {
 		t.Errorf("DefaultModel = %q, which the registry cannot resolve: %v", meta.DefaultModel, err)
 	}
 }

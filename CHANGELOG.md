@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory it was started in, or `--root`, listed by the new `GET /api/fs`. `aigem web`
   drops the `--trust-project-*` flags and refuses to start without a state directory. Runs
   saved without a project can no longer be opened.
+- Models start empty. The built-in OpenAI and xAI models are no longer listed until you add
+  them, and the local model is listed once it is set up. Add models from a provider's own
+  listing, or from an OpenAI-compatible server found on this machine: `/model add` in the
+  TUI, **Add models** in the web UI, which shows the form in place of every screen until
+  there is one. A model only a project's `models.json` declares is never the default. The
+  TUI starts with no model and asks to add one; `-p` and `--repl` exit. `--model
+  openai/...` and other refs now name only models you added. A provider only a project's
+  `models.json` declares no longer gets a stored key.
 
 ### Added
 

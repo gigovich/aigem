@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"slices"
 	"sync"
@@ -52,6 +53,21 @@ type Backend interface {
 	// backend on the subscription path rather than api.openai.com.
 	Endpoint() string
 }
+
+// ErrNoModel is what a session with no model answers until one is added.
+var ErrNoModel = errors.New("no usable model: pick or add one with /model")
+
+// NoModel stands in for a backend before any model is added, so a front-end can
+// start and offer to add one.
+type NoModel struct{}
+
+func (NoModel) Stream(context.Context, []Message, []Tool, float64, func(StreamEvent)) (Message, error) {
+	return Message{}, ErrNoModel
+}
+
+func (NoModel) Tokenize(_ context.Context, text string) (int, error) { return len(text) / 4, nil }
+func (NoModel) Model() ModelInfo                                     { return ModelInfo{} }
+func (NoModel) Endpoint() string                                     { return "" }
 
 // Ref is a swappable Backend holder shared by the agent and its tools. A live
 // /model switch calls Set once and every component - main agent, subagents, the

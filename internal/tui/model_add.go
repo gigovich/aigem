@@ -148,24 +148,23 @@ func trimLastRune(s string) string {
 
 func (f *modelAddForm) addition() (llm.ModelAddition, error) {
 	p := f.providerInfo()
-	add := llm.ModelAddition{ProviderID: p.ID, Model: llm.ModelInfo{
-		Provider: p.ID, ID: strings.TrimSpace(f.modelID), Name: strings.TrimSpace(f.name),
-	}}
+	model := llm.ModelInfo{Provider: p.ID, ID: strings.TrimSpace(f.modelID), Name: strings.TrimSpace(f.name)}
+	add := llm.ModelAddition{ProviderID: p.ID}
 	if f.provider == len(f.providers) {
 		add.Provider = &p
 		if p.ID == "" || p.BaseURL == "" {
 			return add, fmt.Errorf("provider ID and base URL are required")
 		}
 	}
-	if add.Model.ID == "" {
+	if model.ID == "" {
 		return add, fmt.Errorf("model ID is required")
 	}
 	for _, limit := range []struct {
 		text, label string
 		dst         *int
 	}{
-		{f.context, "context window", &add.Model.ContextWindow},
-		{f.output, "output limit", &add.Model.MaxTokens},
+		{f.context, "context window", &model.ContextWindow},
+		{f.output, "output limit", &model.MaxTokens},
 	} {
 		if s := strings.TrimSpace(limit.text); s != "" {
 			n, err := strconv.Atoi(s)
@@ -175,6 +174,7 @@ func (f *modelAddForm) addition() (llm.ModelAddition, error) {
 			*limit.dst = n
 		}
 	}
+	add.Models = []llm.ModelInfo{model}
 	return add, nil
 }
 
@@ -315,7 +315,7 @@ func saveAddedModel(reg *llm.Registry, add llm.ModelAddition, key string, select
 	return func() tea.Msg {
 		defer func() { key = "" }()
 		fresh, err := reg.AddModel(add)
-		result := modelSavedMsg{registry: fresh, ref: add.Model.Ref(), selectAfter: selectAfter}
+		result := modelSavedMsg{registry: fresh, ref: add.Models[0].Ref(), selectAfter: selectAfter}
 		if err != nil {
 			// Neither a backend error nor a filesystem error may echo a pasted key.
 			text := err.Error()
@@ -339,13 +339,15 @@ func (m *Model) applyModelSaved(msg modelSavedMsg) tea.Cmd {
 		if f := m.modelAdd; f != nil {
 			f.saving, f.destination = false, ""
 			f.status = "Not saved: " + msg.err.Error() + ". API key cleared; Shift+Tab to edit."
+		} else if mp := m.models; mp != nil {
+			mp.loading, mp.status = false, "Not saved: "+msg.err.Error()
 		}
 		m.layout()
 		return nil
 	}
 	m.modelReg = msg.registry
 	m.local.SetModelRegistry(msg.registry)
-	m.modelAdd = nil
+	m.modelAdd, m.models = nil, nil
 	if msg.err != nil {
 		m.blocks = append(m.blocks, block{kind: bkError, text: "Saved, not selected: " + msg.ref + "; " + msg.err.Error()})
 	} else if msg.selectAfter {

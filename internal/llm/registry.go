@@ -173,15 +173,38 @@ func xaiPresets() Provider {
 	}
 }
 
+func catalog() []Provider { return []Provider{openAIPresets(), xaiPresets()} }
+
+// CatalogModels returns the compiled-in models a built-in provider is known to
+// serve. They are not listed until added; they fill in what a provider's own
+// model listing leaves out.
+func CatalogModels(provider string) []ModelInfo {
+	for _, p := range catalog() {
+		if p.ID == provider {
+			return p.Models
+		}
+	}
+	return nil
+}
+
+func catalogModel(provider, id string) ModelInfo {
+	for _, m := range CatalogModels(provider) {
+		if m.ID == id {
+			return m
+		}
+	}
+	return ModelInfo{}
+}
+
 // NewRegistry builds the registry: the given local provider (from --url /
-// --model / --ctx-size) plus compiled OpenAI and xAI presets, overlaid by the
-// user and project models.json files. It returns any non-fatal file warnings.
+// --model / --ctx-size) and the built-in providers with no models, overlaid by
+// the user and project models.json files. It returns any non-fatal file warnings.
 func NewRegistry(cwd string, local Provider) (*Registry, []string) {
 	return newRegistry(local, config.ModelsFiles(cwd), config.ProjectModelsFile(cwd))
 }
 
-// NewUserRegistry builds the registry from the compiled presets and the user's
-// own models.json only. It is for decisions that outlive the current directory -
+// NewUserRegistry builds the registry from the built-in providers and the
+// user's own models.json only. It is for decisions that outlive the current directory -
 // pinning a bot's model, which that bot opens later from its own cwd - so the
 // result cannot depend on which repo the command happened to run in, and a
 // project-local file can never be the source of a pinned provider.
@@ -280,7 +303,7 @@ func (p *Provider) upsertModel(m ModelInfo) {
 			return
 		}
 	}
-	p.Models = append(p.Models, m)
+	p.Models = append(p.Models, mergeModelInfo(catalogModel(p.ID, m.ID), m))
 }
 
 func mergeModelInfo(base, override ModelInfo) ModelInfo {
@@ -319,13 +342,29 @@ func (r *Registry) Provider(id string) (Provider, bool) { return r.provider(id) 
 // prepended so the local model stays first in listings and Default().
 func (r *Registry) ReplaceLocal(p Provider) {
 	r.localSource = cloneProvider(p)
-	for i := range r.providers {
-		if r.providers[i].ID == LocalProviderID {
-			r.providers[i] = p
-			return
+	r.providers = replaceLocal(r.providers, p)
+	r.trusted = replaceLocal(r.trusted, cloneProvider(p))
+}
+
+func replaceLocal(providers []Provider, p Provider) []Provider {
+	for i := range providers {
+		if providers[i].ID == LocalProviderID {
+			providers[i] = p
+			return providers
 		}
 	}
-	r.providers = append([]Provider{p}, r.providers...)
+	return append([]Provider{p}, providers...)
+}
+
+// Trusted reports whether a provider, or with a model id one of its models, comes
+// from the built-in or user sources rather than only from a project file.
+func (r *Registry) Trusted(provider, model string) bool {
+	for _, p := range r.trusted {
+		if p.ID == provider {
+			return model == "" || slices.ContainsFunc(p.Models, func(m ModelInfo) bool { return m.ID == model })
+		}
+	}
+	return false
 }
 
 // Models returns every model with its Provider field populated, provider order
@@ -341,36 +380,36 @@ func (r *Registry) Models() []ModelInfo {
 	return out
 }
 
-// Default returns the model used when no --model is given: the local model when
-// present, else the first listed model.
+// Default returns the model used when no --model is given: the first trusted
+// model, the local one first. A project file never supplies the default.
 func (r *Registry) Default() (ModelInfo, bool) {
-	for _, p := range r.providers {
-		if p.ID == LocalProviderID && len(p.Models) > 0 {
-			m := p.Models[0]
-			m.Provider = p.ID
-			return m, true
-		}
-	}
-	if models := r.Models(); len(models) > 0 {
-		return models[0], true
-	}
-	return ModelInfo{}, false
+	return r.DefaultPreferring(nil)
 }
 
 // DefaultPreferring returns the startup model when no --model is given: the
-// first model of the first authenticated provider that requires auth (so an
-// authenticated OpenAI is preferred), else the plain Default (local).
+// first trusted model of the first authenticated provider that requires auth,
+// else of the first provider needing none, else the first trusted model.
 func (r *Registry) DefaultPreferring(authed func(provider string) bool) (ModelInfo, bool) {
-	if authed != nil {
-		for _, p := range r.providers {
-			if p.NeedsAuth() && len(p.Models) > 0 && authed(p.ID) {
-				m := p.Models[0]
-				m.Provider = p.ID
-				return m, true
-			}
+	rank := func(p Provider) int {
+		switch {
+		case !p.NeedsAuth():
+			return 1
+		case authed != nil && authed(p.ID):
+			return 0
+		}
+		return 2
+	}
+	var best *Provider
+	for i, p := range r.trusted {
+		if len(p.Models) > 0 && (best == nil || rank(p) < rank(*best)) {
+			best = &r.trusted[i]
 		}
 	}
-	return r.Default()
+	if best == nil {
+		return ModelInfo{}, false
+	}
+	_, m, err := r.Resolve(best.ID + "/" + best.Models[0].ID)
+	return m, err == nil
 }
 
 // Resolve accepts "provider/id", a bare "id" (searched across providers), or ""

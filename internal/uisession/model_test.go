@@ -41,7 +41,7 @@ func TestSetModelRegistryMakesSavedModelSwitchable(t *testing.T) {
 			ID: "new-provider", BaseURL: "https://example.com/v1",
 			API: llm.APICompletions, Auth: llm.AuthNone,
 		},
-		Model: llm.ModelInfo{ID: "org/new", ContextWindow: 32000},
+		Models: []llm.ModelInfo{{ID: "org/new", ContextWindow: 32000}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +63,7 @@ func TestSetModelRegistryMakesSavedModelSwitchable(t *testing.T) {
 			ID: "needs-key", BaseURL: "https://example.com/v1",
 			API: llm.APICompletions, Auth: llm.AuthAPIKey,
 		},
-		Model: llm.ModelInfo{ID: "locked", ContextWindow: 64000},
+		Models: []llm.ModelInfo{{ID: "locked", ContextWindow: 64000}},
 	})
 	if err != nil {
 		t.Fatal(err)

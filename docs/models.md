@@ -1,7 +1,7 @@
 # Models and providers
 
-aigem talks to a local llama.cpp server by default, and can also use hosted
-providers:
+aigem starts with no models. You add the ones you want from these providers, or
+from any OpenAI-compatible server:
 
 | Provider | Authentication                                                    |
 | -------- | ----------------------------------------------------------------- |
@@ -9,9 +9,10 @@ providers:
 | `openai` | an API key, or a ChatGPT Plus/Pro subscription via OAuth          |
 | `xai`    | an API key, or a Grok subscription via device-code OAuth          |
 
-Models live in a registry: built-in presets (`local/...`, the OpenAI GPT-5.x
-family, the xAI Grok family) plus anything you add in
-`~/.config/aigem/models.json` or a project `.aigem/models.json`.
+The list is what you added, kept in `~/.config/aigem/models.json`, plus a
+project's `.aigem/models.json` and the local model once it is set up. aigem
+knows the context window and output limit of the OpenAI GPT-5.x and xAI Grok
+models it ships with, and fills them in when you add one of those.
 
 > A project file may add providers and tweak the models of an existing one, but
 > never its `base_url`, `api`, `auth`, or `headers`. It ships with a
@@ -21,7 +22,7 @@ family, the xAI Grok family) plus anything you add in
 ## CLI
 
 ```sh
-aigem models                       # list providers/models; * marks ones needing login
+aigem models                       # list the models you added; * marks ones needing login
 aigem auth status                  # show which providers are authenticated
 aigem auth login openai            # ChatGPT subscription: opens the browser (OAuth)
 aigem auth login openai --api-key-stdin    # OpenAI API key from stdin (safer than argv)
@@ -29,24 +30,46 @@ aigem auth login openai --api-key sk-...   # API key via argv (or set $OPENAI_AP
 aigem auth login xai               # Grok subscription: device code, approve in any browser
 aigem auth login xai --api-key-stdin       # xAI API key from stdin (or set $XAI_API_KEY)
 aigem auth logout openai           # clear the stored credential
-aigem --model openai/gpt-5.6-sol   # start on a specific model
+aigem --model openai/gpt-5.6-sol   # start on a model you added
 aigem --model xai/grok-4.3         # ... or an xAI one
 ```
 
 `/login` in the TUI covers the `openai` provider only; authenticate `xai` from
 the CLI.
 
-In the TUI, `/model` opens a fuzzy picker of every model grouped by provider. A
-model whose provider is not authenticated shows a lock and routes to `/login` on
-select. Selecting an authenticated model switches the live session - the
-conversation continues, and the context gauge and compaction window follow the new
-model. `/login [provider]` runs the OAuth flow; `/logout [provider]` clears the
+In the TUI, `/model` opens a fuzzy picker of the models you added. A model whose
+provider is not authenticated shows a lock and routes to `/login` on select. Del
+removes the highlighted model. Selecting an authenticated model switches the live
+session - the conversation continues, and the context gauge and compaction window
+follow the new model. `/login [provider]` runs the OAuth flow; `/logout [provider]` clears the
 token.
 
-### Add a model from the TUI
+### Add models
 
-Choose **Add model…** in `/model`, or run `/model add` directly. The action stays
-available even when the picker filter has no matches.
+In the TUI, choose **Add model…** in `/model`, or run `/model add`. A TUI with no
+model offers it on start. In the browser, use **Add models** on the Models screen;
+a daemon with no models of your own shows the same form in place of every screen.
+
+1. Choose where to add from:
+   - a provider you can use - `openai`, `xai`, or one you added. One that needs a
+     sign-in shows a lock; in the TUI choosing it signs in to `openai` first.
+   - a model server found on this machine. aigem checks `127.0.0.1` on the
+     default ports of Ollama (11434), LM Studio (1234), llama.cpp (9931, 8080),
+     vLLM (8000), Jan (1337) and KoboldCpp (5001). It never scans the network.
+   - in the browser, a server URL you type. It is never sent a stored key.
+   - in the TUI, **Set up a local model (llama.cpp)**, the wizard below, or
+     **Enter by hand…**, the form for anything a server does not list.
+2. aigem asks the provider for its models (`GET <base>/v1/models`) and lists
+   the ones not added yet. OpenAI's listing is narrowed to chat models. A ChatGPT
+   subscription has no listing and offers the models it supports; so does a Grok
+   subscription the listing refuses.
+3. Check the models to add (Space in the TUI) and confirm. A model whose context
+   window nobody reported needs one from you.
+
+A server becomes a provider needing no credential, named after it (`ollama`,
+`lmstudio`, ...); adding more from the same URL reuses it.
+
+The manual form (**Enter by hand…**) takes one model:
 
 1. Choose an existing built-in/user provider, or **New OpenAI-compatible
    provider**. Existing providers keep their endpoint and authentication. A new
@@ -73,21 +96,26 @@ The review scrolls with Up/Down; Left/Right selects its save action.
 Additions go to the user-level `models.json` (respecting `XDG_CONFIG_HOME`) and
 are available immediately and after restart. Existing entries and unknown
 configuration fields are preserved; duplicate model references and malformed
-configuration are refused rather than overwritten. Registration makes no
-network request and does not verify model availability or subscription support.
+configuration are refused rather than overwritten.
 
-Project-only providers are not offered for user-level registration: an endpoint
-from a cloned repository must not silently become a destination for saved
-credentials. The managed `local` provider still uses `/model init`; this form
-does not manage additional GGUF installations. The browser UI's model picker is
-unchanged.
+Removing a model takes it out of the user-level `models.json` and keeps its
+provider entry, so a project file can never take over that provider's id and the
+credential stored for it. Models from a project file and the local model are
+not removed this way; use `/model reset` for the local one.
+
+Project-only providers are not offered for user-level registration, and never
+get a stored key: an endpoint from a cloned repository must not silently become a
+destination for saved credentials. To use a key with one, add it to your own
+`models.json`.
 
 ## Which model gets picked
 
 With no `--model`, aigem first reuses **the model you last selected**, if it still
-resolves and is usable. Otherwise it takes the first authenticated provider that
-requires authentication, in registry order - `openai`, then `xai`, then anything
-you added - and falls back to the local model when none is authenticated.
+resolves and is usable. Otherwise it takes the first model you added of the first
+authenticated provider that requires authentication - `openai`, then `xai`, then
+anything you added - and else the first model you added. A model only a project
+file declares is never picked this way. With no model at all, the TUI starts and
+asks you to add one, and `-p` exits with an error.
 
 A bare `--model <name>` keeps the old behavior: the local provider with that model
 name.
@@ -122,19 +150,18 @@ logged.
 
 ## Local model setup
 
-The local model is set up the first time you select it. Pick `local/...` via
-`/model` in the TUI (or run `aigem models init`) and, if it has not been
-initialized, aigem runs a short wizard and then spawns `llama-server` as a
-detached daemon - it survives aigem exiting and is reused next launch.
+The local model is listed once it is set up. Choose **Set up a local model** when
+adding a model in the TUI (or run `/model init` or `aigem models init`), and aigem
+runs a short wizard and then spawns `llama-server` as a detached daemon - it
+survives aigem exiting and is reused next launch.
 
-Startup never silently downloads anything. If you have other models configured,
-just use them. If the local model is the startup selection but is not set up, the
-TUI shows a "Local model not set up" alert naming the file, with a
-**Set up & download** action you have to choose - the multi-gigabyte download
-never starts on its own.
+Startup never silently downloads anything. If you start on a local model that is
+not set up (`--model <name>`), the TUI shows a "Local model not set up" alert
+naming the file, with a **Set up & download** action you have to choose - the
+multi-gigabyte download never starts on its own.
 
 ```sh
-aigem models                 # list providers/models
+aigem models                 # list the models you added
 aigem models init            # set up the local model and start the server
 aigem models status          # initialized? running? reachable?
 aigem models start           # start the saved local server

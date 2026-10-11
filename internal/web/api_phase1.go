@@ -41,6 +41,16 @@ type ModelsBackend interface {
 	SetDefaultModel(context.Context, string) (Model, error)
 }
 
+// ModelSetupBackend adds and removes models. Providers answers which providers
+// a model can be added from: the configured ones, and the model servers found
+// on this machine.
+type ModelSetupBackend interface {
+	Providers(context.Context) (Providers, error)
+	ProviderModels(ctx context.Context, provider, baseURL string) ([]Model, error)
+	AddModels(context.Context, NewModels) ([]Model, error)
+	RemoveModel(context.Context, string) error
+}
+
 type AuthBackend interface {
 	BeginLogin(context.Context, LoginRequest) (Login, error)
 	Login(context.Context, string) (Login, error)
@@ -78,6 +88,36 @@ type Model struct {
 	NeedsAuth     bool   `json:"needsAuth"`
 	Authenticated bool   `json:"authenticated"`
 	Default       bool   `json:"default"`
+	// Project marks a model only the project's own models.json declares: it is
+	// never the default, and is used only when picked.
+	Project   bool `json:"project,omitempty"`
+	Removable bool `json:"removable,omitempty"`
+}
+
+type Providers struct {
+	Providers []Provider    `json:"providers"`
+	Local     []LocalServer `json:"local"`
+}
+
+type Provider struct {
+	ID            string `json:"id"`
+	NeedsAuth     bool   `json:"needsAuth"`
+	Authenticated bool   `json:"authenticated"`
+	CanLogin      bool   `json:"canLogin"`
+}
+
+type LocalServer struct {
+	Name    string  `json:"name"`
+	BaseURL string  `json:"baseUrl"`
+	Models  []Model `json:"models"`
+}
+
+// NewModels adds models of one provider: a configured one by id, or the server
+// at BaseURL, which becomes a provider needing no credential.
+type NewModels struct {
+	Provider string  `json:"provider,omitempty"`
+	BaseURL  string  `json:"baseUrl,omitempty"`
+	Models   []Model `json:"models"`
 }
 
 type LoginRequest struct {
@@ -206,6 +246,88 @@ func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, m)
+}
+
+func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[ModelSetupBackend](s, w, "modelSetup")
+	if !ok {
+		return
+	}
+	out, err := b.Providers(r.Context())
+	if err != nil {
+		writePhaseError(w, "listing providers", err)
+		return
+	}
+	if out.Providers == nil {
+		out.Providers = []Provider{}
+	}
+	if out.Local == nil {
+		out.Local = []LocalServer{}
+	}
+	writeJSON(w, out)
+}
+
+func (s *Server) handleProviderModels(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[ModelSetupBackend](s, w, "modelSetup")
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	if (q.Get("provider") == "") == (q.Get("url") == "") {
+		http.Error(w, "give either provider or url", http.StatusBadRequest)
+		return
+	}
+	items, err := b.ProviderModels(r.Context(), q.Get("provider"), q.Get("url"))
+	if err != nil {
+		writePhaseError(w, "listing the provider's models", err)
+		return
+	}
+	if items == nil {
+		items = []Model{}
+	}
+	writeJSON(w, items)
+}
+
+func (s *Server) handleAddModels(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[ModelSetupBackend](s, w, "modelSetup")
+	if !ok {
+		return
+	}
+	var req NewModels
+	if err := decodeJSON(w, r, &req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if (req.Provider == "") == (req.BaseURL == "") || len(req.Models) == 0 {
+		http.Error(w, "give either provider or baseUrl, and at least one model", http.StatusBadRequest)
+		return
+	}
+	items, err := b.AddModels(r.Context(), req)
+	if err != nil {
+		writePhaseError(w, "adding models", err)
+		return
+	}
+	if items == nil {
+		items = []Model{}
+	}
+	writeJSON(w, items)
+}
+
+func (s *Server) handleRemoveModel(w http.ResponseWriter, r *http.Request) {
+	b, ok := backendOf[ModelSetupBackend](s, w, "modelSetup")
+	if !ok {
+		return
+	}
+	ref := r.URL.Query().Get("ref")
+	if ref == "" {
+		http.Error(w, "ref is required", http.StatusBadRequest)
+		return
+	}
+	if err := b.RemoveModel(r.Context(), ref); err != nil {
+		writePhaseError(w, "removing the model", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {

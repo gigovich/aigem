@@ -83,9 +83,12 @@ const (
 	defaultMaxTokens = 8192
 )
 
-// localProvider builds the registry's local provider from the on-disk local
-// config (or defaults when unset).
-func localProvider(cfg local.Config, maxTokens int) llm.Provider {
+// localProvider builds the registry's local provider from the local config, or
+// none when the local model was never set up.
+func localProvider(cfg local.Config, setUp bool, maxTokens int) llm.Provider {
+	if !setUp {
+		return llm.Provider{}
+	}
 	return llm.LocalProvider(cfg.BaseURL(), cfg.ModelName, cfg.CtxSize, maxTokens)
 }
 
@@ -248,7 +251,8 @@ func main() {
 	// Resolve the model from the registry. A bare --model name configures the
 	// local provider (back-compat); a provider/id ref selects another provider;
 	// empty prefers an authenticated OpenAI, else local.
-	localCfg, _, _ := local.Load()
+	localCfg, localSetUp, _ := local.Load()
+	localSetUp = localSetUp || flagWasSet("url")
 	if flagWasSet("url") {
 		localCfg.Host, localCfg.Port = hostPortFromURL(*url, localCfg.Host, localCfg.Port)
 	}
@@ -258,9 +262,10 @@ func main() {
 	selectionRef := *model
 	if *model != "" && !strings.Contains(*model, "/") {
 		localCfg.ModelName = *model
+		localSetUp = true
 		selectionRef = llm.LocalProviderID + "/" + *model
 	}
-	modelReg, modelWarns := llm.NewRegistry(*cwd, localProvider(localCfg, *maxTokens))
+	modelReg, modelWarns := llm.NewRegistry(*cwd, localProvider(localCfg, localSetUp, *maxTokens))
 	for _, w := range modelWarns {
 		fmt.Fprintln(os.Stderr, "warning: models config:", w)
 	}
@@ -273,9 +278,26 @@ func main() {
 	if prov, _, rerr := modelReg.Resolve(selectionRef); rerr == nil && prov.ID == llm.LocalProviderID {
 		ensureLocalReady(localCfg, *prompt != "")
 	}
-	backend, _, info, err := auth.OpenModel(modelReg, selectionRef, *maxTokens)
-	if err != nil {
-		fatal(err)
+	// The TUI starts without a model it cannot open, and offers to add one or
+	// sign in; -p and --repl have no way to do either.
+	var backend llm.Backend = llm.NoModel{}
+	var info llm.ModelInfo
+	var openErr error
+	interactive := *prompt == "" && !*repl
+	if selectionRef == "" && !interactive {
+		fatal(errors.New("no model added yet: run aigem and add one with /model add, or pass --model"))
+	}
+	if selectionRef != "" {
+		b, _, i, err := auth.OpenModel(modelReg, selectionRef, *maxTokens)
+		switch {
+		case err == nil:
+			backend, info = b, i
+		case !interactive || *model != "":
+			fatal(err)
+		default:
+			_, info, _ = modelReg.Resolve(selectionRef)
+			openErr = err
+		}
 	}
 	ref := llm.NewRef(backend)
 	modelLabel, urlLabel := info.Ref(), backend.Endpoint()
@@ -385,6 +407,9 @@ func main() {
 	m := tui.New(ref, reg, *temp, modelLabel, urlLabel, sysPrompt, *ctxSize, *maxTokens,
 		env.Agents, env.Project, env.Skills, env.Hooks, env.MCP, env.SessionTitle, compactCfg, modelReg)
 	m.SetSystemRebuilder(buildSystem)
+	if openErr != nil {
+		skillNotices = append(skillNotices, openErr.Error())
+	}
 	m.SetStartupNotices(skillNotices)
 	m.SetPendingSkills(*cwd, env.Pending)
 	if err := tui.Run(m); err != nil {
@@ -624,11 +649,12 @@ func fatal(err error) {
 }
 
 // preferredModelRef is the model to run when none was named: the last one the
-// user selected, if it still resolves and is usable, else an authenticated
-// default. Empty when nothing qualifies, which is a startup with no provider
-// signed in.
+// user selected, if the user added it and it is usable, else the default.
+// Empty when no model is added.
 func preferredModelRef(reg *llm.Registry) string {
-	if pref := config.LoadPrefs().Model; pref != "" && modelUsable(reg, pref) {
+	pref := config.LoadPrefs().Model
+	provider, id, _ := strings.Cut(pref, "/")
+	if reg.Trusted(provider, id) && modelUsable(reg, pref) {
 		return pref
 	}
 	if def, ok := reg.DefaultPreferring(auth.IsAuthenticated); ok {

@@ -34,6 +34,7 @@ import { Sidebar } from '@/shell/Sidebar'
 import { StatusBar } from '@/shell/StatusBar'
 import { Toast, ToastHost } from '@/shell/ToastHost'
 import { Activity } from '@/screens/Activity'
+import { FirstModel } from '@/screens/AddModelDialog'
 import { Chat } from '@/screens/Chat'
 import { LoginDialog } from '@/screens/LoginDialog'
 import { Models } from '@/screens/Models'
@@ -292,6 +293,8 @@ export default function App() {
           )}
           {app.meta?.features?.projects === true && app.projectsLoaded && app.projects.length === 0 ? (
             <FirstProject />
+          ) : app.meta?.features?.modelSetup === true && app.modelsLoaded && !app.models.some((m) => !m.project) ? (
+            <FirstModel />
           ) : (
             <Screen
               route={route}

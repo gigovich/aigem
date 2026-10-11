@@ -44,8 +44,8 @@ still stops for an explicit confirmation.
 
 | Command             | What it does                                        |
 | ------------------- | --------------------------------------------------- |
-| `/model`            | fuzzy model picker with **Add model…**; also `init`/`status`/`start`/`stop`/`reset` |
-| `/model add`        | register a model or OpenAI-compatible provider; save or save and select |
+| `/model`            | fuzzy picker of added models with **Add model…**; Del removes one; also `init`/`status`/`start`/`stop`/`reset` |
+| `/model add`        | add models from a provider's listing or a server on this machine, or enter one by hand |
 | `/login`, `/logout` | provider authentication                             |
 | `/skills`           | scrollable skill browser                            |
 | `/skill:<name>`     | run a skill directly                                |

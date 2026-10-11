@@ -145,7 +145,9 @@ func TestPhaseOneCollectionsAreGuardedArraysAndHaveMethodFallbacks(t *testing.T)
 		}
 	}
 	for _, tc := range []struct{ method, path, allow string }{
-		{http.MethodDelete, "/api/models", "GET, HEAD"},
+		{http.MethodPut, "/api/models", "GET, HEAD, POST, DELETE"},
+		{http.MethodPost, "/api/providers", "GET, HEAD"},
+		{http.MethodPost, "/api/providers/models", "GET, HEAD"},
 		{http.MethodGet, "/api/models/default", "POST"},
 		{http.MethodGet, "/api/auth/login", "POST"},
 		{http.MethodPost, "/api/auth/login/LOGIN-1", "GET, HEAD, DELETE"},

@@ -11,6 +11,7 @@ import { EmptyState } from '@/ui/EmptyState'
 import { FilterInput } from '@/ui/FilterInput'
 import { StatusChip } from '@/ui/StatusChip'
 import { Modal } from '@/ui/Modal'
+import { AddModelDialog } from '@/screens/AddModelDialog'
 import { usePublishInspector } from '@/state/inspector'
 
 /** Available / No key, from the shared dictionary rather than a local copy. */
@@ -24,13 +25,16 @@ function modelName(m: Model): string {
 }
 
 export function Models({ selected }: { selected?: string }) {
-  const { models, runs, usage, defaultModel } = useApp((s) => ({
+  const { models, runs, usage, defaultModel, canAdd } = useApp((s) => ({
     models: s.models,
     runs: s.runs,
     usage: s.usage,
     defaultModel: s.meta?.defaultModel ?? '',
+    canAdd: s.meta?.features?.modelSetup === true,
   }))
   const [confirming, setConfirming] = useState<Model | null>(null)
+  const [removing, setRemoving] = useState<Model | null>(null)
+  const [adding, setAdding] = useState(false)
   const [filter, setFilter] = useState('')
 
   const inUse = (ref: string) => runs.filter((r) => r.live && r.model === ref).length
@@ -49,6 +53,17 @@ export function Models({ selected }: { selected?: string }) {
       flash(`${modelName(m)} is the default model`)
       // The daemon announces this on the control stream, but the tab that asked
       // should not have to wait for its own change to come back around.
+      await refresh.models()
+    } catch (err) {
+      setBanner(explain(err))
+    }
+  }
+
+  const remove = async (m: Model) => {
+    setRemoving(null)
+    try {
+      await api.removeModel(m.ref)
+      flash(`Removed ${modelName(m)}`)
       await refresh.models()
     } catch (err) {
       setBanner(explain(err))
@@ -90,6 +105,7 @@ export function Models({ selected }: { selected?: string }) {
         ...(chosen.needsAuth && !chosen.authenticated
           ? [{ label: `Sign in to ${chosen.provider}`, onClick: () => setLogin(chosen.provider) }]
           : []),
+        ...(chosen.removable ? [{ label: 'Remove', onClick: () => setRemoving(chosen) }] : []),
       ],
     }
   }, [chosen, quota, askDefault])
@@ -106,6 +122,7 @@ export function Models({ selected }: { selected?: string }) {
             {modelName(m)}
           </span>
           <span className="flex-none font-mono text-[0.6875rem] text-fg-subtle">{m.provider}</span>
+          {m.project && <span className="flex-none font-mono text-[0.6875rem] text-fg-subtle">project</span>}
           {m.default && (
             <span className="flex-none rounded-[0.1875rem] border border-line-strong px-1.25 py-px font-mono text-[0.65625rem] text-fg-muted">
               default
@@ -176,7 +193,18 @@ export function Models({ selected }: { selected?: string }) {
           The routing pool available to agents. Select a row to inspect it; the default is what a
           new session starts on{defaultModel ? ` — currently ${defaultModel}` : ''}.
         </p>
-        <FilterInput value={filter} onChange={setFilter} label="Filter models" className="mt-2.5 w-70" />
+        <div className="mt-2.5 flex items-center gap-2">
+          <FilterInput value={filter} onChange={setFilter} label="Filter models" className="w-70" />
+          {canAdd && (
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              className="h-6.5 rounded-md border border-line px-2.5 text-[0.78125rem] text-fg-muted hover:bg-s0"
+            >
+              Add models
+            </button>
+          )}
+        </div>
       </div>
       <DataGrid
         label="Models"
@@ -193,10 +221,7 @@ export function Models({ selected }: { selected?: string }) {
           needle ? (
             <EmptyState inline title={`No model matches “${filter.trim()}”.`} />
           ) : (
-            <EmptyState
-              title="No models are configured."
-              detail="Add one to .aigem/models.json, or sign a provider in from the inspector."
-            />
+            <EmptyState title="No models are added." detail="Add one with Add models." />
           )
         }
       />
@@ -213,7 +238,17 @@ export function Models({ selected }: { selected?: string }) {
           they started on.
         </Modal>
       )}
-
+      {removing && (
+        <Modal
+          title="Remove this model?"
+          subtitle={removing.ref}
+          onClose={() => setRemoving(null)}
+          confirm={{ label: 'Remove', danger: true, onClick: () => void remove(removing) }}
+        >
+          It is taken off the list. Conversations already on it keep it.
+        </Modal>
+      )}
+      {adding && <AddModelDialog onClose={() => setAdding(false)} />}
     </>
   )
 }

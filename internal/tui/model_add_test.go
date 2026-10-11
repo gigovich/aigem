@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -33,8 +34,23 @@ func customAddition(authMode string) llm.ModelAddition {
 	return llm.ModelAddition{
 		ProviderID: "addition-test",
 		Provider:   &llm.Provider{ID: "addition-test", BaseURL: "http://127.0.0.1:9/v1", API: llm.APICompletions, Auth: authMode},
-		Model:      llm.ModelInfo{Provider: "addition-test", ID: "org/model", ContextWindow: 16384, MaxTokens: 2048},
+		Models: []llm.ModelInfo{
+			{Provider: "addition-test", ID: "org/model", ContextWindow: 16384, MaxTokens: 2048},
+		},
 	}
+}
+
+// enterByHand picks "Enter by hand…" in the open provider picker.
+func enterByHand(t *testing.T, m Model) Model {
+	t.Helper()
+	if m.models == nil || m.models.stage != pickProvider {
+		t.Fatal("the provider picker is not open")
+	}
+	m.models.cursor = slices.IndexFunc(m.models.items, func(it modelItem) bool { return it.kind == modelItemManual })
+	if m.models.cursor < 0 {
+		t.Fatal("the provider picker offers no manual entry")
+	}
+	return step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
 func TestModelAddActionSurvivesNoMatches(t *testing.T) {
@@ -56,6 +72,12 @@ func TestModelAddActionSurvivesNoMatches(t *testing.T) {
 		t.Fatalf("action disappeared with no matches: %s", view)
 	}
 	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	for _, it := range m.models.all {
+		if it.kind == modelItemProvider && it.provider == llm.LocalProviderID {
+			t.Fatal("managed local setup offered as a provider")
+		}
+	}
+	m = enterByHand(t, m)
 	if m.modelAdd == nil || m.models != nil || m.input.Focused() {
 		t.Fatal("Add action did not open a modal form")
 	}
@@ -68,7 +90,7 @@ func TestModelAddActionSurvivesNoMatches(t *testing.T) {
 
 func TestModelAddCancelClearsSecretAndIgnoresLateReview(t *testing.T) {
 	m := modelAdditionTestModel(t)
-	m = typeEnter(m, "/model add")
+	m = enterByHand(t, typeEnter(m, "/model add"))
 	if m.modelAdd == nil {
 		t.Fatal("/model add did not open the form")
 	}
@@ -169,10 +191,10 @@ func TestModelAddSaveAndSelectLifecycle(t *testing.T) {
 				t.Fatalf("save failed: %+v", msg)
 			}
 			cmd := m.applyModelSaved(msg)
-			if _, _, err := oldReg.Resolve(addition.Model.Ref()); err == nil {
+			if _, _, err := oldReg.Resolve(addition.Models[0].Ref()); err == nil {
 				t.Fatal("old registry mutated")
 			}
-			if _, _, err := m.modelReg.Resolve(addition.Model.Ref()); err != nil {
+			if _, _, err := m.modelReg.Resolve(addition.Models[0].Ref()); err != nil {
 				t.Fatal(err)
 			}
 			if m.backend.Model().Ref() != oldRef || config.LoadPrefs().Model != oldDefault {
@@ -183,18 +205,19 @@ func TestModelAddSaveAndSelectLifecycle(t *testing.T) {
 					t.Fatal("selection was not scheduled")
 				}
 				m = step(m, cmd())
-				if m.backend.Model().Ref() != addition.Model.Ref() || config.LoadPrefs().Model != addition.Model.Ref() {
+				want := addition.Models[0].Ref()
+				if m.backend.Model().Ref() != want || config.LoadPrefs().Model != want {
 					t.Fatal("save-and-select failed to install registry/select/default")
 				}
 				if m.local.CtxSize() != 16384 {
 					t.Fatalf("context window = %d", m.local.CtxSize())
 				}
 			} else {
-				if cmd != nil || m.models == nil || m.models.items[m.models.cursor].ref != addition.Model.Ref() {
+				if cmd != nil || m.models == nil || m.models.items[m.models.cursor].ref != addition.Models[0].Ref() {
 					t.Fatal("Save should reopen picker highlighting the addition without switching")
 				}
 				m = step(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-				if m.backend.Model().Ref() != addition.Model.Ref() {
+				if m.backend.Model().Ref() != addition.Models[0].Ref() {
 					t.Fatal("picker could not select saved entry using refreshed session registry")
 				}
 			}
@@ -242,7 +265,7 @@ func TestModelAddCredentialFailureStillInstallsSavedRegistry(t *testing.T) {
 	if m.backend.Model().Ref() != oldRef {
 		t.Fatal("credential failure changed backend")
 	}
-	if _, _, err := m.modelReg.Resolve(addition.Model.Ref()); err != nil {
+	if _, _, err := m.modelReg.Resolve(addition.Models[0].Ref()); err != nil {
 		t.Fatal("persisted model was not installed", err)
 	}
 	if !hasBlock(m, bkError, "Saved, not selected") || strings.Contains(m.render(), "private-key") {
@@ -257,8 +280,15 @@ func TestModelAddCredentialFailureStillInstallsSavedRegistry(t *testing.T) {
 
 func TestModelAddFailedRegistrationDoesNotWriteCredential(t *testing.T) {
 	m := modelAdditionTestModel(t)
-	addition := llm.ModelAddition{ProviderID: "openai", Model: llm.ModelInfo{Provider: "openai", ID: "gpt-5.6-sol"}}
-	msg := saveAddedModel(m.modelReg, addition, "private-key", true)().(modelSavedMsg)
+	addition := llm.ModelAddition{
+		ProviderID: "openai",
+		Models:     []llm.ModelInfo{{Provider: "openai", ID: "gpt-5.6-sol"}},
+	}
+	reg, err := m.modelReg.AddModel(addition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := saveAddedModel(reg, addition, "private-key", true)().(modelSavedMsg)
 	if msg.err == nil || msg.registry != nil {
 		t.Fatalf("duplicate should fail without a new registry: %+v", msg)
 	}

@@ -160,6 +160,10 @@ func listModels() error {
 		needsAuth[p.ID] = p.NeedsAuth()
 	}
 	models := reg.Models()
+	if len(models) == 0 {
+		fmt.Fprintln(os.Stderr, "no models added yet; add one with /model add in aigem")
+		return nil
+	}
 	llm.SortModelsByRef(models)
 	var anyLocked bool
 	for _, m := range models {
@@ -203,8 +207,8 @@ func defaultModelRegistry() *llm.Registry {
 	if err != nil {
 		cwd = "."
 	}
-	cfg, _, _ := local.Load()
-	reg, warns := llm.NewRegistry(cwd, localProvider(cfg, defaultMaxTokens))
+	cfg, setUp, _ := local.Load()
+	reg, warns := llm.NewRegistry(cwd, localProvider(cfg, setUp, defaultMaxTokens))
 	warnModelsConfig(warns)
 	return reg
 }

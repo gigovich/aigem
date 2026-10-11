@@ -47,6 +47,7 @@ export type AppState = {
   projects: Project[]
   /** The project list has been read once, so an empty one means there are none. */
   projectsLoaded: boolean
+  modelsLoaded: boolean
   tickets: Ticket[]
   /** The first ticket read for the selected project has finished. */
   ticketsLoaded: boolean
@@ -146,6 +147,7 @@ export function initialState(): AppState {
     activity: [],
     projects: [],
     projectsLoaded: false,
+    modelsLoaded: false,
     tickets: [],
     ticketsLoaded: false,
     newTicketOpen: false,
@@ -314,7 +316,11 @@ export const refresh = {
       if (gen === ticketsGen && project === store.get().project) patch({ ticketsLoaded: true })
     })
   },
-  models: () => load('models', 'models', () => api.models()),
+  models: async () => {
+    const ok = await load('models', 'models', () => api.models())
+    if (ok) patch({ modelsLoaded: true })
+    return ok
+  },
   skills: () => {
     const { project } = store.get()
     if (!project) return Promise.resolve(false)
@@ -608,6 +614,7 @@ export function start(): () => void {
           void refresh.runs()
           break
         case ControlKind.ModelDefault:
+        case ControlKind.ModelsUpdated:
           void refresh.models()
           void reloadMeta()
           break

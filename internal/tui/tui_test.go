@@ -656,8 +656,7 @@ func TestUpdateNoPanic(t *testing.T) {
 
 func TestModelPickerSwitchAndLock(t *testing.T) {
 	// Isolated state/config so OpenAI is unauthenticated (locked).
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	registryWith(t, `{"id":"openai","models":[{"id":"gpt-5.6-sol"}]}`)
 
 	cwd := t.TempDir()
 	reg, _ := tools.NewRegistry(cwd)
@@ -703,8 +702,7 @@ func TestModelPickerSwitchAndLock(t *testing.T) {
 }
 
 func TestModelSwitchUpdatesGauge(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	registryWith(t, `{"id":"openai","models":[{"id":"gpt-5.6-sol"}]}`)
 	t.Setenv("OPENAI_API_KEY", "sk-test") // authenticates openai via env
 
 	cwd := t.TempDir()

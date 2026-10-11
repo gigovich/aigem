@@ -2239,3 +2239,20 @@ func TestARemoveDuringStopKeepsTheFilesDeleted(t *testing.T) {
 		t.Errorf("files left after a delete during Stop: %v", left)
 	}
 }
+
+func TestSetModelsReachesALiveSession(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	var built lastSession
+	runs := newRunsRecording(t, "", nil, nil, &built)
+	create(t, runs, runner.RunRequest{})
+	sess := built.get(t)
+	if _, err := sess.SwitchModel("local/gemma.gguf", false); err == nil {
+		t.Fatal("a session with no registry switched models")
+	}
+	reg, _ := llm.NewRegistry(t.TempDir(), llm.LocalProvider("http://127.0.0.1:9", "gemma.gguf", 1000, 100))
+	runs.SetModels(reg)
+	if _, err := sess.SwitchModel("local/gemma.gguf", false); err != nil {
+		t.Fatalf("SwitchModel after SetModels: %v", err)
+	}
+}

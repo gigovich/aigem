@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gigovich/aigem/internal/auth"
@@ -25,9 +26,12 @@ import (
 // reference is resolved and what this build is called.
 type webBackend struct {
 	version string
-	// models is the configured providers, read once: the file behind it is the
-	// operator's, not the daemon's, and a change to it is a restart either way.
-	models *llm.Registry
+	// models is the configured providers, replaced whole when a model is added
+	// or removed.
+	models *atomic.Pointer[llm.Registry]
+	// modelsMu orders the adds and removes, so the registry stored last is the
+	// one written last.
+	modelsMu sync.Mutex
 	// runs is the daemon's conversations. Everything under /api/runs is this
 	// registry, translated.
 	runs *runner.Runs
@@ -96,7 +100,7 @@ var (
 // added here is then named at every call site.
 type webBackendConfig struct {
 	version  string
-	models   *llm.Registry
+	models   *atomic.Pointer[llm.Registry]
 	runs     *runner.Runs
 	root     string
 	projects *runner.Projects
@@ -111,7 +115,7 @@ type webBackendConfig struct {
 
 func newWebBackend(cfg webBackendConfig) *webBackend {
 	if cfg.models == nil {
-		cfg.models = defaultModelRegistry()
+		cfg.models = sharedModels(defaultModelRegistry())
 	}
 	if cfg.beginFlow == nil {
 		cfg.beginFlow = auth.Begin
@@ -155,7 +159,7 @@ func (b *webBackend) Unavailable() []string {
 func (b *webBackend) Meta(_ context.Context) (web.Meta, error) {
 	return web.Meta{
 		Version:      b.version,
-		DefaultModel: preferredModelRef(b.models),
+		DefaultModel: preferredModelRef(b.models.Load()),
 	}, nil
 }
 

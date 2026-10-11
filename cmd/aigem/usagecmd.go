@@ -62,12 +62,11 @@ func runUsageCommand(args []string) error {
 func refreshUsage(ref string) error {
 	reg := defaultModelRegistry()
 	if ref == "" {
-		// DefaultPreferring falls back to the local model, which has no account and
-		// no quota to report, so the pick is made here over authenticated providers
-		// only rather than taken from it.
+		// DefaultPreferring may pick a model with no account and no quota to
+		// report, so the pick is made here over authenticated providers only.
 		def, ok := firstAuthenticatedModel(reg)
 		if !ok {
-			return fmt.Errorf("no authenticated provider to ask; run `aigem auth login <provider>`")
+			return fmt.Errorf("no signed-in model to ask; add one with /model and run `aigem auth login <provider>`")
 		}
 		ref = def.Ref()
 	}

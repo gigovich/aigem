@@ -46,9 +46,9 @@ needed.
 ## Use it
 
 ```sh
-aigem                        # open the TUI in the current directory
+aigem                        # open the TUI; the first time, it asks you to add a model
 aigem -p 'what does internal/agent do?'    # one-shot, prints to stdout
-aigem auth login openai      # or `aigem models init` for a local model
+aigem auth login openai      # sign in, then add its models with /model add
 aigem web                    # serve the browser UI on a loopback port
 aigem web --root ~/work      # projects are picked from under ~/work
 ```

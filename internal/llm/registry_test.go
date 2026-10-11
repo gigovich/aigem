@@ -11,7 +11,24 @@ func testLocal() Provider {
 	return LocalProvider("http://127.0.0.1:9280", "gemma.gguf", 262144, 8192)
 }
 
+const catalogUserModels = `{"providers":[
+	{"id":"openai","models":[{"id":"gpt-5.6-sol"},{"id":"gpt-5.6-luna"}]},
+	{"id":"xai","models":[{"id":"grok-build-0.1"}]}]}`
+
+func writeUserModels(t *testing.T, text string) {
+	t.Helper()
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	if err := os.MkdirAll(filepath.Join(cfg, "aigem"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "aigem", "models.json"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRegistryResolve(t *testing.T) {
+	writeUserModels(t, catalogUserModels)
 	reg, warns := NewRegistry(t.TempDir(), testLocal())
 	if len(warns) != 0 {
 		t.Fatalf("unexpected warnings: %v", warns)
@@ -71,6 +88,7 @@ func TestOpenAIPresetsContainOnlyGPT56Defaults(t *testing.T) {
 }
 
 func TestRegistryIncludesLunaWithVerifiedLimits(t *testing.T) {
+	writeUserModels(t, catalogUserModels)
 	reg, _ := NewRegistry(t.TempDir(), testLocal())
 	p, luna, err := reg.Resolve("openai/gpt-5.6-luna")
 	if err != nil {
@@ -104,6 +122,7 @@ func TestRegistryIncludesLunaWithVerifiedLimits(t *testing.T) {
 }
 
 func TestRegistryDefaultPreferring(t *testing.T) {
+	writeUserModels(t, catalogUserModels)
 	reg, _ := NewRegistry(t.TempDir(), testLocal())
 
 	// No auth => local default.
@@ -174,7 +193,7 @@ func TestProjectFileCannotRedirectBuiltinProvider(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(proj, "models.json"), []byte(projJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(cwd, "cfg"))
+	writeUserModels(t, catalogUserModels)
 
 	reg, _ := NewRegistry(cwd, testLocal())
 	p, _, err := reg.Resolve("openai/gpt-5.6-sol")
@@ -272,7 +291,7 @@ func TestUserFileMayRedirectBuiltinProvider(t *testing.T) {
 	if err := os.MkdirAll(cfg, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	userJSON := `{"providers":[{"id":"openai","base_url":"https://proxy.internal"}]}`
+	userJSON := `{"providers":[{"id":"openai","base_url":"https://proxy.internal","models":[{"id":"gpt-5.6-sol"}]}]}`
 	if err := os.WriteFile(filepath.Join(cfg, "models.json"), []byte(userJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -309,6 +328,7 @@ func TestLoadModelFileShapes(t *testing.T) {
 }
 
 func TestOpenLocalNoAuth(t *testing.T) {
+	writeUserModels(t, catalogUserModels)
 	reg, _ := NewRegistry(t.TempDir(), testLocal())
 	p, m, err := reg.Resolve("local/gemma.gguf")
 	if err != nil {
@@ -457,6 +477,7 @@ func TestRefSwaps(t *testing.T) {
 }
 
 func TestXAIPresetAndOpen(t *testing.T) {
+	writeUserModels(t, catalogUserModels)
 	r, _ := NewRegistry(t.TempDir(), LocalProvider("http://localhost:1", "m", 100, 10))
 	p, m, err := r.Resolve("xai/grok-build-0.1")
 	if err != nil {
@@ -499,7 +520,7 @@ func TestProjectFileCannotRedirectXAIProvider(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(proj, "models.json"), []byte(projJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(cwd, "cfg"))
+	writeUserModels(t, catalogUserModels)
 
 	reg, _ := NewRegistry(cwd, testLocal())
 	p, _, err := reg.Resolve("xai/grok-build-0.1")
@@ -511,5 +532,78 @@ func TestProjectFileCannotRedirectXAIProvider(t *testing.T) {
 	}
 	if p.Auth != AuthXAI {
 		t.Fatalf("project file changed xai auth: %q", p.Auth)
+	}
+}
+
+func TestCatalogIsHiddenUntilListed(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	reg, _ := NewRegistry(t.TempDir(), Provider{})
+	if models := reg.Models(); len(models) != 0 {
+		t.Fatalf("fresh registry lists models: %+v", models)
+	}
+	for _, id := range []string{OpenAIProviderID, XAIProviderID} {
+		if _, ok := reg.Provider(id); !ok {
+			t.Fatalf("built-in provider %q not registered", id)
+		}
+	}
+
+	writeUserModels(t, `[{"id":"openai","models":[{"id":"gpt-5.6-sol"}]}]`)
+	reg, _ = NewRegistry(t.TempDir(), Provider{})
+	_, m, err := reg.Resolve("openai/gpt-5.6-sol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "GPT-5.6 Sol" || m.ContextWindow != 1050000 || m.MaxTokens != 128000 || !m.Reasoning {
+		t.Fatalf("catalog metadata not merged: %+v", m)
+	}
+	if len(reg.Models()) != 1 {
+		t.Fatalf("models = %+v, want only the listed one", reg.Models())
+	}
+}
+
+func TestDefaultIgnoresEmptyAndProjectOnlyModels(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cwd := t.TempDir()
+	reg, _ := NewRegistry(cwd, Provider{})
+	if m, ok := reg.Default(); ok {
+		t.Fatalf("empty registry has a default: %+v", m)
+	}
+	proj := filepath.Join(cwd, ".aigem")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projJSON := `{"providers":[{"id":"repo","base_url":"https://repo.test","models":[{"id":"m"}]}]}`
+	if err := os.WriteFile(filepath.Join(proj, "models.json"), []byte(projJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ = NewRegistry(cwd, Provider{})
+	if _, _, err := reg.Resolve("repo/m"); err != nil {
+		t.Fatalf("fixture is wrong: %v", err)
+	}
+	if m, ok := reg.Default(); ok {
+		t.Fatalf("project-only model became the default: %+v", m)
+	}
+	if m, ok := reg.DefaultPreferring(func(string) bool { return true }); ok {
+		t.Fatalf("project-only model became the preferred default: %+v", m)
+	}
+}
+
+func TestDefaultPreferringRanksProviders(t *testing.T) {
+	writeUserModels(t, `[{"id":"xai","models":[{"id":"grok-build-0.1"}]},
+		{"id":"openai","models":[{"id":"gpt-5.6-sol"}]}]`)
+	reg, _ := NewRegistry(t.TempDir(), Provider{})
+	if m, ok := reg.DefaultPreferring(nil); !ok || m.Ref() != "openai/gpt-5.6-sol" {
+		t.Fatalf("nothing signed in: default = %+v, want the first trusted model", m)
+	}
+	writeUserModels(t, `[{"id":"xai","models":[{"id":"grok-build-0.1"}]},
+		{"id":"openai","models":[{"id":"gpt-5.6-sol"}]},
+		{"id":"custom","base_url":"https://c.test","auth":"none","models":[{"id":"m"}]}]`)
+	reg, _ = NewRegistry(t.TempDir(), Provider{})
+	if m, ok := reg.DefaultPreferring(func(string) bool { return false }); !ok || m.Ref() != "custom/m" {
+		t.Fatalf("nothing signed in: default = %+v, want the provider needing no auth", m)
+	}
+	xaiOnly := func(p string) bool { return p == "xai" }
+	if m, ok := reg.DefaultPreferring(xaiOnly); !ok || m.Ref() != "xai/grok-build-0.1" {
+		t.Fatalf("xai signed in: default = %+v, want xai", m)
 	}
 }

@@ -72,16 +72,18 @@ aigem search clear                       # explicitly no search backend
 
 See [Web search](search.md).
 
-With no `--model`, aigem reuses the model you last selected, then falls back to
-the first authenticated provider, then to the local model. If nothing is set up,
-the TUI shows a "Local model not set up" alert with a **Set up & download**
-action - nothing is downloaded until you choose it.
+aigem starts with no models. The TUI offers **Add model** on start: pick a
+provider or a model server found on this machine, then the models to use. See
+[Add models](models.md#add-models).
+
+With no `--model`, aigem reuses the model you last selected, then the first model
+you added of a signed-in provider, then the first model you added.
 
 To log in to a hosted provider first:
 
 ```sh
 aigem auth login openai        # ChatGPT subscription, via browser OAuth
-aigem models                   # what is available now
+aigem models                   # the models you added
 ```
 
 ## Non-interactive mode

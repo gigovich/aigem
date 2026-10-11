@@ -313,7 +313,7 @@ func TestOpenRunResolvesTheProjectBeforeTheModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt := &webRuntime{models: defaultModelRegistry(), projects: projects}
+	rt := &webRuntime{models: sharedModels(defaultModelRegistry()), projects: projects}
 	_, _, err = rt.openRun(context.Background(), runner.RunRequest{ProjectID: "PRJ-9"})
 	if !errors.Is(err, runner.ErrNoProject) {
 		t.Errorf("an unknown project = %v, want ErrNoProject", err)

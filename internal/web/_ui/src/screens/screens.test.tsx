@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { navigate } from '@/lib/route'
 import { EventKind } from '@/lib/wire'
 import type { Model, Run, Skills } from '@/lib/wire'
-import { mountApp, RUN, setViewport } from '@/test/harness'
+import { META, mountApp, RUN, setViewport } from '@/test/harness'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -81,6 +81,80 @@ test('models asks before it changes the default, and only then writes', async ()
     expect(h.sent.filter((r) => r.path === '/api/models/default')).toHaveLength(1)
   })
   expect(h.sent[h.sent.length - 1]?.body).toBe('{"ref":"openai/gpt-5"}')
+})
+
+const MODEL_SETUP = { features: { ...META.features, modelSetup: true } }
+
+test('with no model of its own the page is the add form', async () => {
+  const project: Model = { ...MODELS[1], ref: 'repo/m', provider: 'repo', name: 'Repo', project: true }
+  const providers = { providers: [{ id: 'openai', needsAuth: true, authenticated: true, canLogin: true }], local: [] }
+  await mountApp({
+    meta: MODEL_SETUP,
+    models: [project],
+    routes: { '/api/providers': () => new Response(JSON.stringify(providers), { status: 200 }) },
+  })
+  expect(await screen.findByRole('heading', { name: 'Add your first model' })).toBeInTheDocument()
+  expect(await screen.findByRole('button', { name: 'openai' })).toBeInTheDocument()
+})
+
+test('the add form lists a local server and posts the checked models with a context window', async () => {
+  const user = userEvent.setup()
+  const project: Model = { ...MODELS[1], ref: 'repo/m', provider: 'repo', name: 'Repo', project: true }
+  const served: Model[] = [
+    { ...MODELS[1], ref: 'a', provider: '', name: 'a', contextWindow: 8192 },
+    { ...MODELS[1], ref: 'b', provider: '', name: 'b', contextWindow: 0 },
+  ]
+  const providers = {
+    providers: [{ id: 'openai', needsAuth: true, authenticated: true, canLogin: true }],
+    local: [{ name: 'ollama', baseUrl: 'http://127.0.0.1:11434', models: served }],
+  }
+  const h = await mountApp({
+    meta: MODEL_SETUP,
+    models: [project],
+    routes: { '/api/providers': () => new Response(JSON.stringify(providers), { status: 200 }) },
+  })
+  expect(await screen.findByRole('button', { name: 'openai' })).toBeInTheDocument()
+  await user.click(await screen.findByRole('button', { name: /ollama/ }))
+
+  const list = await screen.findByRole('list', { name: 'Models' })
+  await user.click(within(list).getByRole('checkbox', { name: /a/ }))
+  expect(screen.queryByRole('textbox', { name: /Context window/ })).not.toBeInTheDocument()
+  await user.click(within(list).getByRole('checkbox', { name: /b/ }))
+  await user.type(screen.getByRole('textbox', { name: /Context window/ }), '4096')
+  await user.click(screen.getByRole('button', { name: 'Add 2 models' }))
+
+  await waitFor(() => {
+    expect(h.sent.filter((r) => r.method === 'POST' && r.path === '/api/models')).toHaveLength(1)
+  })
+  const sent = JSON.parse(h.sent.find((r) => r.path === '/api/models')?.body ?? '{}') as {
+    baseUrl: string
+    models: Model[]
+  }
+  expect(sent.baseUrl).toBe('http://127.0.0.1:11434')
+  expect(sent.models.map((m) => [m.ref, m.contextWindow])).toEqual([
+    ['a', 8192],
+    ['b', 4096],
+  ])
+})
+
+test('models removes an added model once asked', async () => {
+  const user = userEvent.setup()
+  const h = await mountApp({
+    meta: MODEL_SETUP,
+    models: [MODELS[0], { ...MODELS[1], removable: true }],
+    routes: { 'DELETE /api/models?ref=openai%2Fgpt-5': () => new Response(null, { status: 204 }) },
+  })
+  go('models')
+
+  await user.click(await screen.findByText('GPT-5'))
+  await user.click(await screen.findByRole('button', { name: 'Remove' }))
+  const dialog = await screen.findByRole('dialog', { name: /Remove this model/ })
+  expect(h.sent.filter((r) => r.method === 'DELETE')).toHaveLength(0)
+
+  await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
+  await waitFor(() => {
+    expect(h.sent.filter((r) => r.method === 'DELETE').map((r) => r.path)).toEqual(['/api/models?ref=openai%2Fgpt-5'])
+  })
 })
 
 test('selecting a model fills the inspector', async () => {

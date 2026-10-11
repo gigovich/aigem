@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gigovich/aigem/internal/agent"
 	"github.com/gigovich/aigem/internal/auth"
@@ -48,7 +49,7 @@ const (
 // What a run gets of its own is the tools registry and the model handle, which
 // is exactly what internal/runner says must never be shared.
 type webRuntime struct {
-	models   *llm.Registry
+	models   *atomic.Pointer[llm.Registry]
 	projects *runner.Projects
 }
 
@@ -90,15 +91,16 @@ func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 	// without asking again; everything else is asked about on the socket.
 	reg.SetPathGrants(true)
 
+	models := rt.models.Load()
 	ref := req.Model
 	if ref == "" {
-		ref = preferredModelRef(rt.models)
+		ref = preferredModelRef(models)
 	}
 	if ref == "" {
-		return nil, runner.Opened{}, errors.New("no model is signed in: run " +
-			"`aigem auth login <provider>`, or point the daemon at a local model")
+		return nil, runner.Opened{}, errors.New(
+			"no model is ready: add one on the Models screen and sign in to its provider")
 	}
-	backend, _, info, err := auth.OpenModel(rt.models, ref, defaultMaxTokens)
+	backend, _, info, err := auth.OpenModel(models, ref, defaultMaxTokens)
 	if err != nil {
 		return nil, runner.Opened{}, fmt.Errorf("could not open %s: %w", ref, err)
 	}
@@ -126,7 +128,7 @@ func (rt *webRuntime) openRun(ctx context.Context, req runner.RunRequest) (
 		Profile: req.Profile,
 		Tools:   reg,
 		Backend: backendRef,
-		Models:  rt.models,
+		Models:  models,
 		Agents:  env.Agents,
 		Skills:  env.Skills,
 		Hooks:   env.Hooks,
@@ -235,4 +237,10 @@ func (n *notifier) publishProject(v runner.ProjectView) {
 func (n *notifier) publishTicket(project string, v runner.TicketView) {
 	n.publish("ticket.updated", map[string]string{"projectId": project, "id": v.ID})
 	n.dispatch()
+}
+
+func sharedModels(reg *llm.Registry) *atomic.Pointer[llm.Registry] {
+	p := new(atomic.Pointer[llm.Registry])
+	p.Store(reg)
+	return p
 }
