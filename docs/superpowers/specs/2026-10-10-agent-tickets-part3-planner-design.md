@@ -49,6 +49,8 @@ Decisions taken with the user on 2026-10-10:
   to `planning`, and the feedback is sent to the planner run as a new message. When that run is
   no longer live, a new planner run is opened; its first message carries the draft and the
   feedback.
+  Changed later: the planner run's session closes when the plan reaches `review`, so Revise
+  always opens a new planner run.
 - **End of a planner turn.** The ticket goes to `review` in every case; `review` is "needs a
   person" for a plan, so no new status is needed:
   - with `plan_done(summary)`: the summary is a comment;

@@ -73,9 +73,7 @@ func TestAPlannerRunSplitsTheTicketAndHandsItToAPerson(t *testing.T) {
 	if pathExists(filepath.Join(f.repo, "x.txt")) {
 		t.Error("the planner wrote a file")
 	}
-	if rv, _ := f.runs.Get(v.ID); !rv.Live {
-		t.Error("the planner run ended at review; Revise needs it")
-	}
+	waitUntil(t, func() bool { rv, _ := f.runs.Get(v.ID); return !rv.Live })
 	if msg := f.firstMessage(v.ID); !strings.Contains(msg, "# TCK-1: big goal") || !strings.Contains(msg, planRule) {
 		t.Errorf("first message = %q", msg)
 	}
@@ -110,14 +108,6 @@ func TestAPlannerTurnAlwaysEndsInReview(t *testing.T) {
 	}
 	if got := f.next(slow, 0); got.Status != TicketReview || lastComment(got) != "interrupted" {
 		t.Fatalf("interrupted = %s %q", got.Status, lastComment(got))
-	}
-
-	f.script.then(call("plan_done", `{"summary":"Asked and answered."}`), say("ok"))
-	if err := f.runs.Apply(v.ID, RunOp{Op: OpSubmit, Text: "go on"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := f.next(slow, 1); got.Status != TicketReview || lastComment(got) != "Asked and answered." {
-		t.Fatalf("a person's turn in the planner = %s %q", got.Status, lastComment(got))
 	}
 }
 
@@ -255,7 +245,19 @@ func TestRejectDeletesTheDraftAndOpensTheTicket(t *testing.T) {
 	}
 }
 
-func TestReviseSendsTheFeedbackToTheLivePlanner(t *testing.T) {
+func TestThePlanReachingReviewClosesThePlannerSession(t *testing.T) {
+	f := newFixture(t, gitRepo(t, "main"))
+	id := f.openTicket("goal")
+	v := f.planned(id)
+	if rv, _ := f.runs.Get(v.ID); rv.Live {
+		t.Error("the planner run is still live in review")
+	}
+	if err := f.runs.Apply(v.ID, RunOp{Op: OpSubmit, Text: "go on"}); !errors.Is(err, ErrRunClosed) {
+		t.Errorf("a message to the planner in review = %v, want ErrRunClosed", err)
+	}
+}
+
+func TestReviseOpensANewPlannerWithTheDraftAndTheFeedback(t *testing.T) {
 	f := newFixture(t, gitRepo(t, "main"))
 	id := f.openTicket("goal")
 	f.planned(id)
@@ -266,56 +268,17 @@ func TestReviseSendsTheFeedbackToTheLivePlanner(t *testing.T) {
 	}
 	got := f.next(id, 2)
 	if got.Status != TicketReview || lastComment(got) != "Two steps." || got.Progress == nil ||
-		got.Progress.Total != 2 || len(got.Runs) != 1 {
+		got.Progress.Total != 2 || len(got.Runs) != 2 {
 		t.Fatalf("after revise = %s %q %+v runs %v", got.Status, lastComment(got), got.Progress, got.Runs)
 	}
-	if c := got.Comments[1]; c.By != "you" || c.Text != "Add the handler." {
-		t.Errorf("feedback comment = %+v", c)
-	}
-	_, err := f.tr.Revise(context.Background(), f.project, f.openTicket("other"), "x")
-	refusal(t, err, "is open, not in review")
-}
-
-func TestReviseOpensANewPlannerWhenTheOldOneIsGone(t *testing.T) {
-	f := newFixture(t, gitRepo(t, "main"))
-	id := f.openTicket("goal")
-	v := f.planned(id)
-	if err := f.tr.Stop(v.ID); err != nil {
-		t.Fatal(err)
-	}
-	f.script.then(call("plan_done", `{"summary":"Kept it."}`), say("ok"))
-	if _, err := f.tr.Revise(context.Background(), f.project, id, "Keep it as is."); err != nil {
-		t.Fatal(err)
-	}
-	got := f.next(id, 3)
-	if got.Status != TicketReview || lastComment(got) != "Kept it." || len(got.Runs) != 2 {
-		t.Fatalf("after revise = %s %q runs %v", got.Status, lastComment(got), got.Runs)
-	}
 	msg := f.firstMessage(got.Runs[1])
-	for _, want := range []string{"## Your draft", "- TCK-2: Schema", "you: Keep it as is.", planRule} {
+	for _, want := range []string{"## Your draft", "- TCK-2: Schema", "you: Add the handler.", planRule} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("the new planner's first message lacks %q:\n%s", want, msg)
 		}
 	}
-}
-
-func TestReviseRacingAStopOpensANewPlanner(t *testing.T) {
-	f := newFixture(t, gitRepo(t, "main"))
-	id := f.openTicket("goal")
-	v := f.planned(id)
-	f.tr.mu.Lock()
-	tr := f.tr.byRun[v.ID]
-	f.tr.mu.Unlock()
-	tr.mu.Lock()
-	tr.gone = true
-	tr.mu.Unlock()
-	f.script.then(call("plan_done", `{"summary":"Kept it."}`), say("ok"))
-	if _, err := f.tr.Revise(context.Background(), f.project, id, "Keep it as is."); err != nil {
-		t.Fatal(err)
-	}
-	if got := f.next(id, 2); got.Status != TicketReview || lastComment(got) != "Kept it." || len(got.Runs) != 2 {
-		t.Fatalf("after revise = %s %q runs %v", got.Status, lastComment(got), got.Runs)
-	}
+	_, err := f.tr.Revise(context.Background(), f.project, f.openTicket("other"), "x")
+	refusal(t, err, "is open, not in review")
 }
 
 func TestStopDeleteAndRestartLeaveThePlanInReview(t *testing.T) {

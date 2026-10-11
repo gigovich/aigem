@@ -180,7 +180,7 @@ though the hop to the daemon is plain HTTP.
 | `POST /api/projects/{id}/tickets/{tid}/plan` | starts a planner run on an open top-level ticket; 201 with the run, 409 |
 | `POST /api/projects/{id}/tickets/{tid}/approve` | approves the plan in review; 200 with the ticket, 409 |
 | `POST /api/projects/{id}/tickets/{tid}/reject` | `{reason}`; deletes the draft, back to `open`; 200 with the ticket, 409 |
-| `POST /api/projects/{id}/tickets/{tid}/revise` | `{text}`; sends the feedback to the planner; 200 with the ticket, 409 |
+| `POST /api/projects/{id}/tickets/{tid}/revise` | `{text}`; a new planner run gets the feedback; 200 with the ticket, 409 |
 | `GET /api/projects/{id}/worktrees` | the `aigem/*` branches: `repo`, `name`, `path`, `ticket`, `run`, `state` |
 | `DELETE /api/projects/{id}/worktrees/{name}` | removes the worktree and its branch; 204, 409 while its run is live |
 | `/api/...`  | reserved; an unknown path here is a 404, never the page, in every build |
@@ -447,24 +447,22 @@ no ticket outside the plan may wait for one. In `planning` a person cannot add, 
 relink the parent's subtickets; in `review` they can.
 
 At the end of every planner turn the ticket goes to `review` with the summary of `plan_done`,
-else the agent's last message, or "interrupted" / "the turn ended with an error: ...". Then a
-person decides:
+else the agent's last message, or "interrupted" / "the turn ended with an error: ...", and the
+planner run's session ends: no live run waits for the person. Then a person decides:
 
-- "Approve": every subticket becomes `ready`, the planner run is stopped and the parent
-  follows its subtickets again. Refused while the plan has no subticket.
-- "Reject" with a reason: the subtickets are deleted, the run is stopped and the ticket is
-  `open` again with the comment "Plan rejected: <reason>".
-- "Revise" with feedback: the feedback is a comment, the ticket goes back to `planning` and
-  the feedback goes to the planner run; when that run is gone, a new one starts with the draft
-  and the discussion.
+- "Approve": every subticket becomes `ready` and the parent follows its subtickets again.
+  Refused while the plan has no subticket.
+- "Reject" with a reason: the subtickets are deleted and the ticket is `open` again with the
+  comment "Plan rejected: <reason>".
+- "Revise" with feedback: the feedback is a comment, the ticket goes back to `planning` and a
+  new planner run starts; its first message carries the draft and the discussion.
 
 Deleting a ticket in `review` is refused: reject the plan first.
 
 Stopping the planner run moves the ticket to `review` with "stopped by a person", deleting it
 with "the run was deleted", and a daemon restart with "the daemon restarted"; the draft stays.
-Typing into a live planner run moves the ticket back to `planning`. Activity:
-`ticket.planned`, `ticket.approved` and `ticket.rejected`. The Tickets screen's "Needs you"
-filter lists `blocked` tickets and plans in `review`.
+Activity: `ticket.planned`, `ticket.approved` and `ticket.rejected`. The Tickets screen's
+"Needs you" filter lists `blocked` tickets and plans in `review`.
 
 ## Dispatcher
 
