@@ -15,7 +15,6 @@
 # Local agent/editor state
 /.claude
 /.remember/
-/.superpowers/
 /.aigem/
 
 # Editor and OS noise
