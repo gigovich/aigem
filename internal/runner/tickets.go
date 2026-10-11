@@ -503,6 +503,9 @@ func (t *Tickets) remove(project, id, run string) error {
 		if err := planLock(tab.Tickets, tab.Tickets[i].Parent, run); err != nil {
 			return nil, err
 		}
+		if s := tab.Tickets[i].Status; s == TicketRunning || s == TicketPlanning || s == TicketReview {
+			return nil, refuse("%s is %s; it cannot be deleted now", id, s)
+		}
 		if len(subtickets(tab.Tickets, id)) > 0 {
 			return nil, refuse("%s has subtickets; close it instead", id)
 		}
@@ -510,9 +513,6 @@ func (t *Tickets) remove(project, id, run string) error {
 			if slices.Contains(other.DependsOn, id) {
 				return nil, refuse("%s waits for %s; close it instead", other.ID, id)
 			}
-		}
-		if s := tab.Tickets[i].Status; s == TicketRunning || s == TicketPlanning || s == TicketReview {
-			return nil, refuse("%s is %s; it cannot be deleted now", id, s)
 		}
 		parent := tab.Tickets[i].Parent
 		tab.Tickets = slices.Delete(tab.Tickets, i, i+1)

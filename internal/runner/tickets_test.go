@@ -345,6 +345,9 @@ func TestAPlanStartsOnlyOnAnOpenTopLevelTicketAndEndsInReview(t *testing.T) {
 	_, err = ts.PlanReview("PRJ-1", goal.ID, "RUN-2", "x")
 	refusal(t, err, "TCK-1 is driven by another run")
 
+	if _, err := ts.create("PRJ-1", NewTicket{Title: "draft", Parent: goal.ID}, "RUN-1"); err != nil {
+		t.Fatal(err)
+	}
 	v, err = ts.PlanReview("PRJ-1", goal.ID, "RUN-1", "Three steps.")
 	if err != nil || v.Status != TicketReview || lastComment(v) != "Three steps." || v.Comments[0].By != "aigem" {
 		t.Fatalf("review = %+v, %v", v, err)
