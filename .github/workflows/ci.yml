@@ -121,7 +121,7 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
         with:
-          version: v2.12
+          version: v2.15
 
   cross-build:
     name: cross-build
