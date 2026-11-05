@@ -2,7 +2,7 @@
 
 ## Install
 
-The quickest route, if you have **Go 1.26 or newer**:
+The quickest route, if you have **Go 1.27 or newer**:
 
 ```sh
 go install github.com/gigovich/aigem/cmd/aigem@latest
@@ -26,7 +26,7 @@ arm64.
 
 ## Requirements
 
-- **Go 1.26+**, if you are building from source or installing with `go install`.
+- **Go 1.27+**, if you are building from source or installing with `go install`.
   Prebuilt release binaries need no toolchain.
 - **A model.** Either a hosted provider (OpenAI, xAI, or anything OpenAI-compatible
   you configure) or a local [llama.cpp](https://github.com/ggml-org/llama.cpp)

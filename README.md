@@ -33,7 +33,7 @@ part most agents leave out.
 
 ## Install
 
-With Go 1.26 or newer:
+With Go 1.27 or newer:
 
 ```sh
 go install github.com/gigovich/aigem/cmd/aigem@latest

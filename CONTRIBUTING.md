@@ -15,7 +15,7 @@ That build deliberately produces a binary with no browser UI - the bundle is not
 committed, so installing aigem never requires a Node toolchain. If you are
 working on the UI you also need Node 22 or newer, and `make web && make build`.
 
-Go 1.26 or newer is required. `go.mod` also carries a `toolchain go1.27.3`
+Go 1.27 or newer is required. `go.mod` also carries a `toolchain go1.27.3`
 directive, so the Go tool fetches that patch release automatically - it contains
 standard-library security fixes that affect aigem.
 
