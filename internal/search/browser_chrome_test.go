@@ -15,7 +15,8 @@ const fixturePage = `<!doctype html><html><head><title>Fixture</title></head><bo
 <form id="f" onsubmit="event.preventDefault();
   document.getElementById('out').textContent = 'submitted:' + document.getElementById('name').value">
 <input id="name" name="name" value="old">
-<button id="go" type="button" onclick="document.getElementById('out').textContent = 'clicked'">Go</button>
+<button id="go" type="button"
+  onclick="document.body.insertAdjacentHTML('beforeend', '<i id=clicked>ok</i>')">Go</button>
 </form>
 <div id="ed" contenteditable="true">x</div>
 <p id="out">idle</p>
@@ -61,7 +62,7 @@ func TestManagedBrowserDrivesAFixturePage(t *testing.T) {
 		{Action: actNavigate, URL: srv.URL + "/"},
 		{Action: actFill, Selector: "#name", Text: "alice"},
 		{Action: actClick, Selector: "#go"},
-		{Action: actWaitFor, Selector: "#out", TimeoutMS: 5000},
+		{Action: actWaitFor, Selector: "#clicked", TimeoutMS: 5000},
 		{Action: actPressKey, Selector: "#name", Key: "enter"},
 		{Action: actHover, Selector: "#go"},
 		{Action: actWait, MS: 10},

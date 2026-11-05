@@ -191,8 +191,8 @@ func newChromeContext(ctx context.Context, cfg BrowserConfig) (context.Context, 
 	// an anomaly and answer with a bot-check page instead of results; override it with
 	// a normal Chrome UA so the engines return real hits.
 	//
-	// Three flags override chromedp's DefaultExecAllocatorOptions (flags live in a
-	// map, so re-setting a name wins):
+	// Three flags override chromedp's DefaultExecAllocatorOptions (re-setting a name
+	// replaces its value):
 	//   - disable-dev-shm-usage=false: the default true routes Chrome's shared
 	//     memory to $TMPDIR instead of /dev/shm; on a tmpfs /tmp that dumps every
 	//     search's renderer buffers into RAM. We run on a real host with a normal
@@ -328,15 +328,23 @@ func withUnlock(cancel context.CancelFunc, unlock func()) context.CancelFunc {
 	}
 }
 
+const chromeStartTimeout = 20 * time.Second
+
 // probeChrome builds the chromedp context and forces the browser process to
-// launch (an empty Run allocates it), so a start failure surfaces here instead
-// of on the first navigation.
+// launch (an empty Do allocates it), so a start failure surfaces here instead
+// of on the first navigation. A deadline on bctx would stop the browser after
+// the start too, so a timer cancels it only while the start is in flight.
 func probeChrome(ctx context.Context, cfg BrowserConfig) (context.Context, context.CancelFunc, error) {
 	bctx, cancel, err := newChromeContext(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := chromedp.Run(bctx); err != nil {
+	timer := time.AfterFunc(chromeStartTimeout, cancel)
+	err = chromedp.Do(bctx)
+	if !timer.Stop() {
+		return nil, nil, fmt.Errorf("browser did not start within %s", chromeStartTimeout)
+	}
+	if err != nil {
 		cancel()
 		return nil, nil, err
 	}
@@ -418,10 +426,9 @@ func automateBrowserSearch(ctx context.Context, cfg BrowserConfig, query string,
 	}
 	defer cancelBrowser()
 
-	var entries []browserSerpEntry
-	if err := chromedp.Run(browserCtx,
+	if err := chromedp.Do(browserCtx,
 		chromedp.Navigate(searchURL),
-		chromedp.WaitReady("body", chromedp.ByQuery),
+		chromedp.WaitReady(chromedp.CSS("body")),
 		chromedp.Sleep(1500*time.Millisecond),
 	); err != nil {
 		return nil, fmt.Errorf("browser search page: %w", err)
@@ -429,7 +436,8 @@ func automateBrowserSearch(ctx context.Context, cfg BrowserConfig, query string,
 	if err := waitForCaptchaIfPresent(browserCtx, "search results"); err != nil {
 		return nil, err
 	}
-	if err := chromedp.Run(browserCtx, chromedp.Evaluate(browserSerpExtractionJS(cfg.Engine), &entries)); err != nil {
+	entries, err := chromedp.Run(browserCtx, chromedp.Evaluate[[]browserSerpEntry](browserSerpExtractionJS(cfg.Engine)))
+	if err != nil {
 		return nil, fmt.Errorf("browser search results: %w", err)
 	}
 
@@ -595,11 +603,9 @@ func internalIPReason(ip net.IP) string {
 }
 
 func readBrowserPage(ctx context.Context, target, fallbackTitle string) (Result, error) {
-	var page browserPageContent
-	var finalURL string
-	if err := chromedp.Run(ctx,
+	if err := chromedp.Do(ctx,
 		chromedp.Navigate(target),
-		chromedp.WaitReady("body", chromedp.ByQuery),
+		chromedp.WaitReady(chromedp.CSS("body")),
 		chromedp.Sleep(2*time.Second),
 	); err != nil {
 		return Result{}, err
@@ -607,10 +613,12 @@ func readBrowserPage(ctx context.Context, target, fallbackTitle string) (Result,
 	if err := waitForCaptchaIfPresent(ctx, "result page"); err != nil {
 		return Result{}, err
 	}
-	if err := chromedp.Run(ctx,
-		chromedp.Location(&finalURL),
-		chromedp.Evaluate(browserPageContentExtractionJS(), &page),
-	); err != nil {
+	finalURL, err := chromedp.Run(ctx, chromedp.Location())
+	if err != nil {
+		return Result{}, err
+	}
+	page, err := chromedp.Run(ctx, chromedp.Evaluate[browserPageContent](browserPageContentExtractionJS()))
+	if err != nil {
 		return Result{}, err
 	}
 	if finalURL == "" {
@@ -729,16 +737,16 @@ func waitForCaptchaIfPresent(ctx context.Context, stage string) error {
 }
 
 func browserCaptchaPresent(ctx context.Context) (bool, error) {
-	var signal browserPageSignal
-	if err := chromedp.Run(ctx, chromedp.Evaluate(browserCaptchaSignalJS(), &signal)); err != nil {
+	signal, err := chromedp.Run(ctx, chromedp.Evaluate[browserPageSignal](browserCaptchaSignalJS()))
+	if err != nil {
 		return false, fmt.Errorf("detect captcha: %w", err)
 	}
 	return isCaptchaSignal(signal), nil
 }
 
 func browserCaptchaConfirmed(ctx context.Context) (bool, error) {
-	var confirmed bool
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`Boolean(window.__aigemCaptchaConfirmed)`, &confirmed)); err != nil {
+	confirmed, err := chromedp.Run(ctx, chromedp.Evaluate[bool](`Boolean(window.__aigemCaptchaConfirmed)`))
+	if err != nil {
 		return false, fmt.Errorf("check captcha confirmation: %w", err)
 	}
 	return confirmed, nil
@@ -761,7 +769,7 @@ func showCaptchaOverlay(ctx context.Context) error {
 			box.querySelector('div:nth-child(2)').textContent = 'Checking...';
 		});
 	})()`
-	if err := chromedp.Run(ctx, chromedp.Evaluate(js, nil)); err != nil {
+	if err := chromedp.Do(ctx, chromedp.Evaluate[chromedp.Void](js)); err != nil {
 		return fmt.Errorf("show captcha prompt: %w", err)
 	}
 	return nil
@@ -927,7 +935,7 @@ func WarmBrowserProfile(ctx context.Context, cfg BrowserConfig) error {
 		return err
 	}
 	defer cancel()
-	return chromedp.Run(ctx,
+	return chromedp.Do(ctx,
 		chromedp.Navigate("about:blank"),
 		chromedp.Sleep(20*time.Second),
 	)

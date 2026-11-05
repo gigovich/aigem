@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The managed browser (`web_search` in browser mode, `open_url`, `browser_action`) runs on
+  chromedp v0.22. It talks to Chrome over a pipe instead of a local debugging port, and a
+  browser that fails to start reports Chrome's own output.
+
 ## [0.5.0] - 2026-11-05
 
 ### Added

@@ -130,8 +130,8 @@ func runBrowserActions(ctx context.Context, cfg BrowserConfig, req browserAction
 	// A navigate can redirect, and a click/submit can land, on a host the caller
 	// never named. Re-check the final host before reading anything, so the tester
 	// cannot be steered onto internal infra outside test_hosts.
-	var landing string
-	if err := chromedp.Run(bctx, chromedp.Location(&landing)); err != nil {
+	landing, err := chromedp.Run(bctx, chromedp.Location())
+	if err != nil {
 		return "", err
 	}
 	if reason := landingHostReason(landing, cfg); reason != "" {
@@ -282,53 +282,53 @@ func keySequence(name string) (string, bool) {
 func execStep(ctx context.Context, s browserStep) error {
 	switch s.Action {
 	case actNavigate:
-		if err := chromedp.Run(ctx,
+		if err := chromedp.Do(ctx,
 			chromedp.Navigate(s.URL),
-			chromedp.WaitReady("body", chromedp.ByQuery),
+			chromedp.WaitReady(chromedp.CSS("body")),
 			chromedp.Sleep(1500*time.Millisecond),
 		); err != nil {
 			return err
 		}
 		return waitForCaptchaIfPresent(ctx, "browser_action page")
 	case actSetViewport:
-		return chromedp.Run(ctx, chromedp.EmulateViewport(int64(s.Width), int64(s.Height)))
+		return chromedp.Do(ctx, chromedp.EmulateViewport(int64(s.Width), int64(s.Height)))
 	case actFill:
 		// Clear first so fill replaces rather than appends. Not chromedp.Clear: it
 		// hard-rejects anything but <input>/<textarea>, which would break fills on
 		// contenteditable and custom components that SendKeys otherwise handles.
-		if err := chromedp.Run(ctx, chromedp.WaitVisible(s.Selector, chromedp.ByQuery)); err != nil {
+		if err := chromedp.Do(ctx, chromedp.WaitVisible(chromedp.CSS(s.Selector))); err != nil {
 			return err
 		}
 		if err := clearField(ctx, s.Selector); err != nil {
 			return err
 		}
-		return chromedp.Run(ctx, chromedp.SendKeys(s.Selector, s.Text, chromedp.ByQuery))
+		return chromedp.Do(ctx, chromedp.SendKeys(chromedp.CSS(s.Selector), s.Text))
 	case actClick:
-		return chromedp.Run(ctx,
-			chromedp.WaitVisible(s.Selector, chromedp.ByQuery),
-			chromedp.Click(s.Selector, chromedp.ByQuery),
+		return chromedp.Do(ctx,
+			chromedp.WaitVisible(chromedp.CSS(s.Selector)),
+			chromedp.Click(chromedp.CSS(s.Selector)),
 		)
 	case actPressKey:
 		seq, _ := keySequence(s.Key)
 		if s.Selector != "" {
-			return chromedp.Run(ctx,
-				chromedp.WaitVisible(s.Selector, chromedp.ByQuery),
-				chromedp.Focus(s.Selector, chromedp.ByQuery),
+			return chromedp.Do(ctx,
+				chromedp.WaitVisible(chromedp.CSS(s.Selector)),
+				chromedp.Focus(chromedp.CSS(s.Selector)),
 				chromedp.KeyEvent(seq),
 			)
 		}
-		return chromedp.Run(ctx, chromedp.KeyEvent(seq))
+		return chromedp.Do(ctx, chromedp.KeyEvent(seq))
 	case actHover:
 		return hoverSelector(ctx, s.Selector)
 	case actWaitFor:
 		c, cancel := context.WithTimeout(ctx, stepTimeout(s.TimeoutMS))
 		defer cancel()
-		if err := chromedp.Run(c, chromedp.WaitVisible(s.Selector, chromedp.ByQuery)); err != nil {
+		if err := chromedp.Do(c, chromedp.WaitVisible(chromedp.CSS(s.Selector))); err != nil {
 			return fmt.Errorf("selector %q did not appear: %w", s.Selector, err)
 		}
 		return nil
 	case actWait:
-		return chromedp.Run(ctx, chromedp.Sleep(time.Duration(s.MS)*time.Millisecond))
+		return chromedp.Do(ctx, chromedp.Sleep(time.Duration(s.MS)*time.Millisecond))
 	}
 	return fmt.Errorf("unknown action %q", s.Action)
 }
@@ -359,8 +359,8 @@ func clearField(ctx context.Context, selector string) error {
   el.dispatchEvent(new Event('change', {bubbles:true}));
   return true;
 })()`, sel)
-	var ok bool
-	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &ok)); err != nil {
+	ok, err := chromedp.Run(ctx, chromedp.Evaluate[bool](js))
+	if err != nil {
 		return err
 	}
 	if !ok {
@@ -373,7 +373,7 @@ func clearField(ctx context.Context, selector string) error {
 // JavaScript-driven tooltips fire. CSS :hover-only effects are not triggered by
 // synthetic events; those need a real pointer move and are out of scope here.
 func hoverSelector(ctx context.Context, selector string) error {
-	if err := chromedp.Run(ctx, chromedp.WaitVisible(selector, chromedp.ByQuery)); err != nil {
+	if err := chromedp.Do(ctx, chromedp.WaitVisible(chromedp.CSS(selector))); err != nil {
 		return err
 	}
 	sel, _ := json.Marshal(selector)
@@ -387,8 +387,8 @@ func hoverSelector(ctx context.Context, selector string) error {
   });
   return true;
 })()`, sel)
-	var ok bool
-	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &ok)); err != nil {
+	ok, err := chromedp.Run(ctx, chromedp.Evaluate[bool](js))
+	if err != nil {
 		return err
 	}
 	if !ok {
@@ -399,32 +399,36 @@ func hoverSelector(ctx context.Context, selector string) error {
 
 func observePage(ctx context.Context, obs browserObserve) (actionObservation, error) {
 	var o actionObservation
-	if err := chromedp.Run(ctx, chromedp.Location(&o.URL), chromedp.Title(&o.Title)); err != nil {
+	var err error
+	if o.URL, err = chromedp.Run(ctx, chromedp.Location()); err != nil {
+		return o, err
+	}
+	if o.Title, err = chromedp.Run(ctx, chromedp.Title()); err != nil {
 		return o, err
 	}
 	if obs.Text {
-		var page browserPageContent
-		if err := chromedp.Run(ctx, chromedp.Evaluate(browserPageContentExtractionJS(), &page)); err != nil {
+		page, err := chromedp.Run(ctx, chromedp.Evaluate[browserPageContent](browserPageContentExtractionJS()))
+		if err != nil {
 			return o, err
 		}
 		o.Text = normalizeBrowserPageText(page)
 	}
 	if obs.ActiveElement {
-		if err := chromedp.Run(ctx, chromedp.Evaluate(activeElementJS(), &o.Active)); err != nil {
+		if o.Active, err = chromedp.Run(ctx, chromedp.Evaluate[activeElementInfo](activeElementJS())); err != nil {
 			return o, err
 		}
 		o.HasActive = true
 	}
 	for _, q := range obs.Query {
-		var qr queryResult
-		if err := chromedp.Run(ctx, chromedp.Evaluate(queryJS(q), &qr)); err != nil {
+		qr, err := chromedp.Run(ctx, chromedp.Evaluate[queryResult](queryJS(q)))
+		if err != nil {
 			return o, err
 		}
 		o.Queries = append(o.Queries, namedQuery{Name: q.Name, Selector: q.Selector, Result: qr})
 	}
 	if obs.Screenshot {
-		var buf []byte
-		if err := chromedp.Run(ctx, chromedp.FullScreenshot(&buf, 90)); err != nil {
+		buf, err := chromedp.Run(ctx, chromedp.FullScreenshot(90))
+		if err != nil {
 			return o, err
 		}
 		path, err := saveScreenshot(buf)
