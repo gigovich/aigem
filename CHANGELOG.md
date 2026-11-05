@@ -7,21 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- `aigem web` no longer treats its own directory as a project. With no projects the page is
-  the add-project form, which picks a directory from a tree under the daemon's root: the
-  directory it was started in, or `--root`, listed by the new `GET /api/fs`. `aigem web`
-  drops the `--trust-project-*` flags and refuses to start without a state directory. Runs
-  saved without a project can no longer be opened.
-- Models start empty. The built-in OpenAI and xAI models are no longer listed until you add
-  them, and the local model is listed once it is set up. Add models from a provider's own
-  listing, or from an OpenAI-compatible server found on this machine: `/model add` in the
-  TUI, **Add models** in the web UI, which shows the form in place of every screen until
-  there is one. A model only a project's `models.json` declares is never the default. The
-  TUI starts with no model and asks to add one; `-p` and `--repl` exit. `--model
-  openai/...` and other refs now name only models you added. A provider only a project's
-  `models.json` declares no longer gets a stored key.
+## [0.5.0] - 2026-11-05
 
 ### Added
 
@@ -121,11 +107,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a caller that closed on seeing the end of it raced a write it had no way to
   know about. `Close` now waits for the turn to unwind. This was visible as an
   occasional `TempDir RemoveAll cleanup: directory not empty` under `-race`.
+- A session saved its conversation after the turn was marked over, so a message sent at that
+  moment started a turn that wrote the history while it was being read. The save now copies
+  the history first.
 - The web daemon answered a browser's Close frame twice, which Chrome logged as
   an error on every run switch.
 
 ### Changed
 
+- `aigem web` no longer treats its own directory as a project. With no projects the page is
+  the add-project form, which picks a directory from a tree under the daemon's root: the
+  directory it was started in, or `--root`, listed by the new `GET /api/fs`. `aigem web`
+  drops the `--trust-project-*` flags and refuses to start without a state directory. Runs
+  saved without a project can no longer be opened.
+- Models start empty. The built-in OpenAI and xAI models are no longer listed until you add
+  them, and the local model is listed once it is set up. Add models from a provider's own
+  listing, or from an OpenAI-compatible server found on this machine: `/model add` in the
+  TUI, **Add models** in the web UI, which shows the form in place of every screen until
+  there is one. A model only a project's `models.json` declares is never the default. The
+  TUI starts with no model and asks to add one; `-p` and `--repl` exit. `--model
+  openai/...` and other refs now name only models you added. A provider only a project's
+  `models.json` declares no longer gets a stored key.
 - Saved conversations are written atomically and 0600, through the new
   `internal/store`, in a 0700 `sessions` directory. They used to be written
   0644 with `os.WriteFile`, which truncates the file before writing it: anyone
@@ -139,6 +141,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `../auth` was a path the sessions directory had no reason to reach, and the
   id inside the document is the one callers carry away to name the event
   journal.
+
+### Security
+
+- Builds use Go 1.27.3 (`toolchain go1.27.3`), which fixes GO-2026-6809 in `crypto/x509`.
+  The minimum Go version to build from source is still 1.26.
 
 ### Removed
 
@@ -560,7 +567,8 @@ First public release.
   infrastructure: the Helm chart, the Gitea CI workflow, and internal design and
   evaluation documents.
 
-[Unreleased]: https://github.com/gigovich/aigem/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/gigovich/aigem/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/gigovich/aigem/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gigovich/aigem/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/gigovich/aigem/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/gigovich/aigem/compare/v0.1.0...v0.2.0
