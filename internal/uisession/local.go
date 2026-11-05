@@ -737,7 +737,10 @@ func (l *Local) startLocked(display, title string, images int,
 }
 
 func (l *Local) finishTurn(answer string, err error) {
+	l.saveMu.Lock()
+	defer l.saveMu.Unlock()
 	l.mu.Lock()
+	write := l.snapshotLocked()
 	l.running = false
 	l.cancel = nil
 	out := Event{Kind: KindTurnEnd, Text: answer}
@@ -754,7 +757,10 @@ func (l *Local) finishTurn(answer string, err error) {
 	// remembers to. A conversation this process is holding has no one to save
 	// it on the way out if the process dies, and a turn that took a minute to
 	// produce should not be lost to a crash in the next one.
-	if saveErr := l.Save(); saveErr != nil {
+	if l.discarded {
+		return
+	}
+	if saveErr := write(); saveErr != nil {
 		l.Notice("could not save session: " + saveErr.Error())
 	}
 }

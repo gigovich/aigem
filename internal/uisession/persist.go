@@ -78,9 +78,17 @@ func (l *Local) Save() error {
 		return nil
 	}
 	l.mu.Lock()
+	write := l.snapshotLocked()
+	l.mu.Unlock()
+	return write()
+}
+
+// snapshotLocked copies the conversation while l.mu is held and returns the
+// write, which runs without it. Once a turn ends another may start and append
+// to the agent's messages, so they are read before then.
+func (l *Local) snapshotLocked() func() error {
 	if l.id == "" || l.ag == nil {
-		l.mu.Unlock()
-		return nil
+		return func() error { return nil }
 	}
 	s := &session.Session{Meta: l.metaLocked(), Messages: l.ag.Messages()}
 	arts := make(map[string]tools.FileChange, len(l.artifacts))
@@ -88,9 +96,10 @@ func (l *Local) Save() error {
 		arts[k] = v
 	}
 	j := l.journal
-	l.mu.Unlock()
-	j.putArtifacts(arts)
-	return session.Save(s, time.Now())
+	return func() error {
+		j.putArtifacts(arts)
+		return session.Save(s, time.Now())
+	}
 }
 
 // Load restores a saved conversation into this session, replacing whatever it
