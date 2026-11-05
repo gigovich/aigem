@@ -58,6 +58,9 @@ updates:
       # typescript-eslint declares typescript <6.1.0.
       - dependency-name: "typescript"
         versions: [">=6.1"]
+      # Typed to the Node the UI supports and CI builds on.
+      - dependency-name: "@types/node"
+        versions: [">=25"]
     commit-message:
       prefix: "chore"
 
