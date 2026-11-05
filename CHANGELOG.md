@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chromedp v0.22. It talks to Chrome over a pipe instead of a local debugging port, and a
   browser that fails to start reports Chrome's own output.
 
+### Fixed
+
+- A conversation is no longer read while its turn is still writing it: a save requested
+  during a turn (as when the daemon closes a run whose turn outlives the close) is left to
+  the turn's own save at its end, and switching model mid-turn no longer re-estimates the
+  context from the live history.
+
 ## [0.5.0] - 2026-11-05
 
 ### Added

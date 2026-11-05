@@ -76,6 +76,7 @@ func TestSkillsBrowserAndDispatch(t *testing.T) {
 	// Dead port: a started turn fails fast instead of hitting a real server.
 	m := New(llm.NewRef(llm.New("http://127.0.0.1:9", "t")), reg, 0.3, "t", "u", "", 8192, 8192,
 		agent.DefaultSubagents(), "", skills, nil, nil, "", agent.CompactConfig{}, nil)
+	t.Cleanup(m.local.Close)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	// /skills opens the browser; Enter shows detail.
@@ -124,6 +125,7 @@ func TestCommandMenu(t *testing.T) {
 	reg, _ := tools.NewRegistry(cwd)
 	m := New(llm.NewRef(llm.New("http://127.0.0.1:9", "t")), reg, 0.3, "t", "u", "", 8192, 8192,
 		agent.DefaultSubagents(), "", skills, nil, nil, "", agent.CompactConfig{}, nil)
+	t.Cleanup(m.local.Close)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	// A bare "/" lists every command (/new, /model, /login, /logout, /resume,
@@ -363,8 +365,10 @@ func newTestModel(t *testing.T) Model {
 		t.Fatal(err)
 	}
 	skills, _ := skill.Discover(t.TempDir())
-	return New(llm.NewRef(llm.New("http://127.0.0.1:9280", "test")), reg, 0.3, "test", "http://127.0.0.1:9280", "", 8192, 8192,
+	m := New(llm.NewRef(llm.New("http://127.0.0.1:9280", "test")), reg, 0.3, "test", "http://127.0.0.1:9280", "", 8192, 8192,
 		agent.DefaultSubagents(), "", skills, nil, nil, "", agent.CompactConfig{}, nil)
+	t.Cleanup(m.local.Close)
+	return m
 }
 
 // step applies one message and returns the updated concrete model.
@@ -967,6 +971,7 @@ func TestNewSessionClears(t *testing.T) {
 	reg, _ := tools.NewRegistry(cwd)
 	m := New(llm.NewRef(llm.New("http://127.0.0.1:9", "t")), reg, 0.3, "t", "u", "sys", 8192, 8192,
 		agent.DefaultSubagents(), "", nil, nil, nil, "", agent.CompactConfig{}, nil)
+	t.Cleanup(m.local.Close)
 	m = step(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	// Run a turn (dead port: it fails fast) to populate blocks, session, history.

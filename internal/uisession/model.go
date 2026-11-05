@@ -57,7 +57,10 @@ func (l *Local) SwitchModel(ref string, persist bool) (llm.ModelInfo, error) {
 	l.compact.CtxSize = cw
 	if l.ag != nil {
 		l.ag.SetCompaction(l.compact)
-		l.emitLocked(Event{Kind: KindUsage, Tokens: l.ag.ContextTokens()})
+		// A running turn owns the messages and reports usage itself.
+		if !l.running {
+			l.emitLocked(Event{Kind: KindUsage, Tokens: l.ag.ContextTokens()})
+		}
 	}
 	l.emitLocked(l.metaEventLocked())
 	return info, nil

@@ -549,31 +549,7 @@ func TestSubmitRunsATurn(t *testing.T) {
 // A message typed while the agent is working joins the running turn instead of
 // being dropped, which is what makes typing on a phone mid-turn useful.
 func TestSubmitDuringTurnInjects(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	reg, err := tools.NewRegistry(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	release := make(chan struct{})
-	l := New(Config{
-		Tools: reg,
-		NewAgent: func(confirm agent.ConfirmFunc) *agent.Agent {
-			return agent.New(&blockingClient{release: release}, reg, 0.3, confirm, "")
-		},
-		Ring: 128,
-	})
-	t.Cleanup(l.Close)
-
-	ch, stop, err := l.Subscribe(Client{ID: "c"}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stop()
-
-	if err := l.Submit("first", nil); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, ch, KindTurnStart)
+	l, ch, release := blockedTurn(t, Config{})
 	if err := l.Submit("second", nil); err != nil {
 		t.Fatalf("mid-turn Submit: %v", err)
 	}
@@ -593,12 +569,16 @@ func TestSubmitDuringTurnInjects(t *testing.T) {
 type blockingClient struct {
 	calls   int
 	release chan struct{}
+	entered chan struct{}
 }
 
 func (b *blockingClient) Stream(ctx context.Context, _ []llm.Message, _ []llm.Tool, _ float64,
 	_ func(llm.StreamEvent)) (llm.Message, error) {
 	b.calls++
 	if b.calls == 1 {
+		if b.entered != nil {
+			close(b.entered)
+		}
 		select {
 		case <-b.release:
 		case <-ctx.Done():
@@ -1134,5 +1114,76 @@ func TestAnAnswerToAnApprovalThatWasNeverAskedSaysSo(t *testing.T) {
 	// The same id again is the ordinary race, and says so.
 	if err := l.Resolve(id, DecisionOnce, ""); !errors.Is(err, ErrAlreadyDecided) {
 		t.Errorf("answering twice returned %v, want ErrAlreadyDecided", err)
+	}
+}
+
+// blockedTurn starts a turn whose model call is held until release is closed.
+func blockedTurn(t *testing.T, cfg Config) (*Local, <-chan Event, chan struct{}) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	reg, err := tools.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, entered := make(chan struct{}), make(chan struct{})
+	cfg.Tools, cfg.Ring = reg, 128
+	cfg.NewAgent = func(confirm agent.ConfirmFunc) *agent.Agent {
+		return agent.New(&blockingClient{release: release, entered: entered}, reg, 0.3, confirm, "")
+	}
+	l := New(cfg)
+	t.Cleanup(l.Close)
+	ch, stop, err := l.Subscribe(Client{ID: "c"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	if err := l.Submit("first", nil); err != nil {
+		t.Fatal(err)
+	}
+	awaitValue(t, entered, "the model call")
+	return l, ch, release
+}
+
+// The running turn owns the agent's messages. A save from outside it would read
+// them while the turn appends, so it is left to the save the turn makes on its
+// way out.
+func TestSaveDuringTurnLeavesItToTheTurn(t *testing.T) {
+	l, ch, release := blockedTurn(t, Config{})
+	if err := l.Save(); err != nil {
+		t.Fatal(err)
+	}
+	id := l.Meta().ID
+	if _, err := session.Load(id); err == nil {
+		t.Fatal("a save during the turn wrote the conversation")
+	}
+	close(release)
+	waitFor(t, ch, KindTurnEnd)
+	l.Close()
+	if _, err := session.Load(id); err != nil {
+		t.Fatalf("the turn did not save the conversation: %v", err)
+	}
+}
+
+// Switching model re-estimates the context, which reads the agent's messages.
+// Mid-turn the turn reports usage itself, so the switch must not.
+func TestSwitchModelDuringTurnLeavesUsageToTheTurn(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	local := llm.LocalProvider("http://127.0.0.1:9", "m.gguf", 1000, 100)
+	registry, _ := llm.NewRegistry(t.TempDir(), local)
+	backend, err := llm.Open(local, local.Models[0], llm.Credential{Kind: llm.AuthNone}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, ch, release := blockedTurn(t, Config{Models: registry, Backend: llm.NewRef(backend), CtxSize: 1000})
+	defer close(release)
+	l.Notice("switching")
+	waitFor(t, ch, KindNotice)
+	if _, err := l.SwitchModel("local/m.gguf", false); err != nil {
+		t.Fatal(err)
+	}
+	for ev := recv(t, ch); ev.Kind != KindSessionMeta; ev = recv(t, ch) {
+		if ev.Kind == KindUsage {
+			t.Fatal("a mid-turn model switch reported usage")
+		}
 	}
 }

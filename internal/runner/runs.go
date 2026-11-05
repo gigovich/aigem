@@ -1243,9 +1243,10 @@ func sessionID(rec Run, m session.Meta) string {
 // of every turn, so the messages are already safe; what a turn does not write
 // is metadata changed between turns, and switching model is exactly that - a
 // conversation resumed in the terminal would come back on the model it was
-// switched away from. Close cancels a running turn and waits for it, so by the
-// time this save reads the agent nothing is writing it. Saving first, as this
-// did, read those messages while the turn goroutine was still producing them.
+// switched away from. Close cancels a running turn and waits a bounded time for
+// it; a turn still running after that is left to save itself as it ends, which
+// Save does not race. Saving first, as this did, read those messages while the
+// turn goroutine was still producing them.
 func closeSession(sess *Session, rel func()) {
 	if sess != nil && sess.Local != nil {
 		sess.Local.Close()

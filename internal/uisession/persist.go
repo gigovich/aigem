@@ -69,8 +69,9 @@ func (l *Local) SetTitle(title string) {
 	l.emitLocked(l.metaEventLocked())
 }
 
-// Save persists the conversation. It is a no-op after Discard, and before the
-// first turn, when there is nothing to resume into.
+// Save persists the conversation. It is a no-op after Discard, before the
+// first turn, when there is nothing to resume into, and while a turn is
+// running: the turn owns the messages and saves them when it ends.
 func (l *Local) Save() error {
 	l.saveMu.Lock()
 	defer l.saveMu.Unlock()
@@ -78,6 +79,10 @@ func (l *Local) Save() error {
 		return nil
 	}
 	l.mu.Lock()
+	if l.running {
+		l.mu.Unlock()
+		return nil
+	}
 	write := l.snapshotLocked()
 	l.mu.Unlock()
 	return write()
